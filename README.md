@@ -31,7 +31,7 @@ Box, G. E. and S. L. Andersen. 1954. “Robust tests for variances and effect of
 
 Chung, J. H. and D. A. S. Fraser. 1958. "Randomization tests for a multivariate two-sample problem." *Journal of the American Statistical Association*, 53(283):729–735.
 
-Edgington, E. S. 1980. *Randomization tests.* 2nd ed. New York, NY: Marcel Dekker, Inc.
+Edgington, E. S. 1980. *Randomization tests.* 2nd Ed. New York, NY: Marcel Dekker, Inc.
 
 Fisher, R. A. 1936. "'The coefficient of racial likeness' and the future of
 craniometry." *Journal of the Anthropological Institute of Great Britain and
