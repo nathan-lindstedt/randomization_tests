@@ -41,6 +41,6 @@ Mewhort, D. J. K., Johns, B. T., and M. A. Kelly. 2010. "Applying the permutatio
 
 Rigdon, J. and M. G. Hudgens. 2015. "Randomization inference for treatment effects on a binary outcome." *Statistics in Medicine*, 34(6):924-935.
 
-Rubin, D. B. 1974. “Estimating causal effects of treatments in randomized and nonrandomized studies.” *Journal of educational Psychology*, 66:688–701. 
+Rubin, D. B. 1974. "Estimating causal effects of treatments in randomized and nonrandomized studies." *Journal of educational Psychology*, 66:688–701. 
 
 Taylor, M. A. 2020. "Visualization strategies for regression estimates with randomization inference." *The Stata Journal*, 20(2):309-335.
