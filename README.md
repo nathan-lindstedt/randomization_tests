@@ -33,7 +33,7 @@ Berry, K. J., Johnston, J. E., and P. W. Mielke. 2011. "Permutation methods." *W
 
 Box, G. E. and S. L. Andersen. 1954. “Robust tests for variances and effect of non-normality and variance heterogeneity on standard tests.” *Technical Report, North Carolina State University Institute of Statistics Mimeo Series.*
 
-Chung, J. H. and D. A. S. Fraser. 1958. "Randomization tests for a multivariate two-sample problem." *Journal of the American Statistical Association*, 53(283):729–735.
+Chung, J. H. and D. A. S. Fraser. 1958. "Randomization tests for a multivariate two-sample problem." *Journal of the American Statistical Association*, 53(283):729-735.
 
 Edgington, E. S. 1980. *Randomization tests.* 2nd Ed. New York, NY: Marcel Dekker, Inc.
 
@@ -41,11 +41,11 @@ Hubert, L. J. and J. Schultz. 1976. "Quadratic assignment as a general data anal
 
 Krackhardt, D. 1988. "Predicting with networks: nonparametric multiple regression analysis of dyadic data." *Social Networks*, 10:359–381.
 
-Mewhort, D. J. K., Johns, B. T., and M. A. Kelly. 2010. "Applying the permutation test to factorial designs." *Behavior Research Methods*, 42:366–372.
+Mewhort, D. J. K., Johns, B. T., and M. A. Kelly. 2010. "Applying the permutation test to factorial designs." *Behavior Research Methods*, 42:366-372.
 
 Rigdon, J. and M. G. Hudgens. 2015. "Randomization inference for treatment effects on a binary outcome." *Statistics in Medicine*, 34(6):924-935.
 
-Rubin, D. B. 1974. "Estimating causal effects of treatments in randomized and nonrandomized studies." *Journal of educational Psychology*, 66:688–701. 
+Rubin, D. B. 1974. "Estimating causal effects of treatments in randomized and nonrandomized studies." *Journal of educational Psychology*, 66:688-701. 
 
 Taylor, M. A. 2020. "Visualization strategies for regression estimates with randomization inference." *The Stata Journal*, 20(2):309-335.
 
