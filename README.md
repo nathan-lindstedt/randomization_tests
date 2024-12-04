@@ -25,7 +25,7 @@ Part of the reason for its unfamiliarity in the context of observational data ar
 
 Analyst concerns regarding the dread of "self-selection" in experimental designs can be assuaged by reframing their understanding of the kind of hypotheses tested in terms of the more limited observational assessments, where data are collected by recording events as they "naturally" take place without manipulations. As program participants are no longer subject to intervention group and control group assignments, but are instead observed to take part in some behavior, the analyst can only offer evidence that those engaging in that behavior differed significantly from their counterparts through the assumption of exchangability. That is, the belief that the null hypothesis of there being no significant difference should hold for those in the sample when there actually is no significant difference between them. Here random assignment being induced via permuting.
 
-Enter the randomization test or permutation test: a non-parametric method free from distributional assumptions. A succinct overview of permutation methods is given in an article by Berry, Johnston, and Mielke ([2011](https://wires.onlinelibrary.wiley.com/doi/pdf/10.1002/wics.177?casa_token=U1vt9mhFqrgAAAAA:406S-KwWKy3A6VvTqlKf3zq5JNUaK_401ousxa1HgrZ8kbfPQMN-cku3PH-0gx5JoE2ZYZfIztC_Mfxc)).
+Enter the randomization test or permutation test: a non-parametric method free from distributional assumptions. An overview of permutation methods is given in an article by Berry, Johnston, and Mielke ([2011](https://wires.onlinelibrary.wiley.com/doi/pdf/10.1002/wics.177?casa_token=U1vt9mhFqrgAAAAA:406S-KwWKy3A6VvTqlKf3zq5JNUaK_401ousxa1HgrZ8kbfPQMN-cku3PH-0gx5JoE2ZYZfIztC_Mfxc)).
 
 References 
 
