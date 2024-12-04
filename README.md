@@ -49,4 +49,4 @@ Rubin, D. B. 1974. "Estimating causal effects of treatments in randomized and no
 
 Taylor, M. A. 2020. "Visualization strategies for regression estimates with randomization inference." *The Stata Journal*, 20(2):309-335.
 
-Taylor, M. A. 2024. "Attention, shocks, and relevance judgements: the case of white nationalism in the U.S. South, 1980-2008." *Social Movment Studies*, 1-18.
+Taylor, M. A. 2024. "Attention, shocks, and relevance judgements: the case of white nationalism in the U.S. South, 1980-2008." *Social Movement Studies*, 1-18.
