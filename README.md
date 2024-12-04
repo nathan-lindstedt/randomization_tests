@@ -39,7 +39,7 @@ Edgington, E. S. 1980. *Randomization tests.* 2nd Ed. New York, NY: Marcel Dekke
 
 Hubert, L. J. and J. Schultz. 1976. "Quadratic assignment as a general data analysis strategy." *British Journal of Mathematical and Statistical Psychology*, 29:190-241.
 
-Krackhardt, D. 1988. "Predicting with networks: nonparametric multiple regression analysis of dyadic data." *Social Networks*, 10:359–381.
+Krackhardt, D. 1988. "Predicting with networks: nonparametric multiple regression analysis of dyadic data." *Social Networks*, 10:359-381.
 
 Mewhort, D. J. K., Johns, B. T., and M. A. Kelly. 2010. "Applying the permutation test to factorial designs." *Behavior Research Methods*, 42:366-372.
 
