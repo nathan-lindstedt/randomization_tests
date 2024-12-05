@@ -35,7 +35,7 @@ def permutation_test_regression(X, y, model, n_permutations=100_000, p_value_thr
         The threshold for the second level of significance.
 
     Returns
-    -------
+    ----------
     model_coefs : list of float
         The original coefficients of the fitted model.
     p_values : list of str
