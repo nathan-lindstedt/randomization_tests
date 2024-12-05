@@ -41,7 +41,6 @@ def permutation_test_regression(X, y, model, n_permutations=100_000, p_value_thr
     p_values : list of str
         The p-values for each coefficient, formatted with significance stars if below the thresholds.
     """
-
     model.fit(X, y)
     model_coefs = model.coef_.flatten().tolist()
 
