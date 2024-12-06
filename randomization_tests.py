@@ -1,6 +1,10 @@
 #%%
 # Import libraries
+from typing import List, Tuple
+
 import numpy as np
+import pandas as pd
+import statsmodels.api as sm
 
 from sklearn.linear_model import LinearRegression
 from ucimlrepo import fetch_ucirepo 
@@ -15,7 +19,15 @@ X = real_estate_valuation.data.features
 y = real_estate_valuation.data.targets 
 
 #%%
-def permutation_test_regression(X, y, model, n_permutations=100_000, p_value_threshold_one=0.05, p_value_threshold_two=0.01):
+def permutation_test_regression(
+    X: pd.DataFrame, 
+    y: pd.DataFrame, 
+    model: LinearRegression, 
+    n_permutations: int = 100_000,
+    precision: int = 3,
+    p_value_threshold_one: float = 0.05, 
+    p_value_threshold_two: float = 0.01
+) -> Tuple[List[float], List[str]]:
     """
     Perform a permutation test for a regression model to assess the significance of model coefficients.
 
@@ -38,40 +50,47 @@ def permutation_test_regression(X, y, model, n_permutations=100_000, p_value_thr
     ----------
     model_coefs : list of float
         The original coefficients of the fitted model.
-    p_values : list of str
-        The p-values for each coefficient, formatted with significance stars if below the thresholds.
+    permute_p_values : list of str
+        The empirical p-values for each coefficient, formatted with significance stars if below the thresholds.
     """
+    permuted_coefs: List = []
+    permuted_p_values: List = []
+
     model.fit(X, y)
     model_coefs = model.coef_.flatten().tolist()
 
-    permuted_coefs = []
     for _ in range(n_permutations):
         model.fit(X, np.random.permutation(y))
         permuted_coefs.append(model.coef_.flatten().tolist())
 
-    p_values = []
     for i in range(len(model_coefs)):
         p_value = (np.abs(np.array(permuted_coefs)[:, i]) >= np.abs(np.array(model_coefs)[i])).mean()
         if p_value_threshold_two <= p_value < p_value_threshold_one:
-            p_value_str = str(np.round(p_value, 2)) + ' (*)'
+            p_value_str = str(np.round(p_value, precision)) + ' (*)'
         elif p_value < p_value_threshold_two:
-            p_value_str = str(np.round(p_value, 2)) + ' (**)'
+            p_value_str = str(np.round(p_value, precision)) + ' (**)'
         else:
-            p_value_str = str(np.round(p_value, 2)) + ' (ns)'
-        p_values.append(p_value_str)
+            p_value_str = str(np.round(p_value, precision)) + ' (ns)'
+        permuted_p_values.append(p_value_str)
 
-    return model_coefs, p_values
+    sm_X = sm.add_constant(X)
+
+    sm_model = sm.OLS(y, sm_X).fit()
+    p_values = [str(np.round(pval, precision)) for pval in sm_model.pvalues[1:]]
+
+    return model_coefs, permuted_p_values, p_values
 
 #%%
 # Perform permutation test
 model = LinearRegression()
-coefs, p_values = permutation_test_regression(X, y, model)
+coefs, permuted_p_values, p_values = permutation_test_regression(X, y, model)
 
 #%%
 # Print the results
-print("Regression Model Coefficients and Permutation Test p-Values\n")
+print("Regression Model Coefficients and p-Values\n")
 print("Coefficients:", coefs)
-print("p-Values:", p_values)
+print("Empirical p-Values:", permuted_p_values)
+print("Asymptotic p-Values:", p_values)
 print("\n(*) p-value < 0.05\n(**) p-value < 0.01\n(ns) p-value >= 0.05\n")
 
 #%%
