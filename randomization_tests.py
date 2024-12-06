@@ -52,11 +52,14 @@ def permutation_test_regression(
     ----------
     model_coefs : list of float
         The original coefficients of the fitted model.
-    permute_p_values : list of str
+    permuted_p_values : list of str
         The empirical p-values for each coefficient, formatted with significance stars if below the thresholds.
+    classic_p_values : list of str
+        The asymptotic p-values for each coefficient, formatted with significance stars if below the thresholds.
     """
     permuted_coefs: List = []
     permuted_p_values: List = []
+    classic_p_values: List = []
 
     model.fit(X, y)
     model_coefs = model.coef_.flatten().tolist()
@@ -76,23 +79,30 @@ def permutation_test_regression(
         permuted_p_values.append(p_value_str)
 
     sm_X = sm.add_constant(X)
-
     sm_model = sm.OLS(y, sm_X).fit()
-    p_values = [str(np.round(pval, precision)) for pval in sm_model.pvalues[1:]]
 
-    return model_coefs, permuted_p_values, p_values
+    for p_value in sm_model.pvalues[1:]:
+        if p_value_threshold_two <= p_value < p_value_threshold_one:
+            p_value_str = str(np.round(p_value, precision)) + ' (*)'
+        elif p_value < p_value_threshold_two:
+            p_value_str = str(np.round(p_value, precision)) + ' (**)'
+        else:
+            p_value_str = str(np.round(p_value, precision)) + ' (ns)'
+        classic_p_values.append(p_value_str)
+
+    return model_coefs, permuted_p_values, classic_p_values
 
 #%%
 # Perform permutation test
 model = LinearRegression()
-coefs, permuted_p_values, p_values = permutation_test_regression(X, y, model)
+coefs, permuted_p_values, classic_p_values = permutation_test_regression(X, y, model)
 
 #%%
 # Print the results
 print("Regression Model Coefficients and p-Values\n")
 print("Coefficients:", coefs)
 print("Empirical p-Values:", permuted_p_values)
-print("Asymptotic p-Values:", p_values)
+print("Asymptotic p-Values:", classic_p_values)
 print("\n(*) p-value < 0.05\n(**) p-value < 0.01\n(ns) p-value >= 0.05\n")
 
 #%%
