@@ -27,7 +27,7 @@ Analyst concerns regarding the dread of 'self-selection' in experimental designs
 
 Enter the randomization test or permutation test: a nonparametric method free from distributional assumptions. An overview of permutation methods is given in an article by Berry, Johnston, and Mielke ([2011](https://wires.onlinelibrary.wiley.com/doi/pdf/10.1002/wics.177?casa_token=U1vt9mhFqrgAAAAA:406S-KwWKy3A6VvTqlKf3zq5JNUaK_401ousxa1HgrZ8kbfPQMN-cku3PH-0gx5JoE2ZYZfIztC_Mfxc)).
 
-References 
+References:
 
 Berry, K. J., Johnston, J. E., and P. W. Mielke. 2011. "Permutation methods." *Wiley Interdisciplinary Reviews: Computational Statistics*, 3(6):527-542.
 
@@ -50,3 +50,7 @@ Rubin, D. B. 1974. "Estimating causal effects of treatments in randomized and no
 Taylor, M. A. 2020. "Visualization strategies for regression estimates with randomization inference." *The Stata Journal*, 20(2):309-335.
 
 Taylor, M. A. 2024. "Attention, shocks, and relevance judgements: the case of white nationalism in the U.S. South, 1980-2008." *Social Movement Studies*, 1-18.
+
+Dataset Citation:
+
+Yeh, I. "Real Estate Valuation," UCI Machine Learning Repository, 2018. [Online]. Available: https://doi.org/10.24432/C5J30W.
