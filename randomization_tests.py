@@ -19,14 +19,14 @@ X = real_estate_valuation.data.features
 y = real_estate_valuation.data.targets 
 
 #%%
-def permutation_test(
+def permutation_test_regression(
     X: pd.DataFrame, 
     y: pd.DataFrame,  
     n_permutations: int = 100_000,
     precision: int = 3,
     p_value_threshold_one: float = 0.05, 
     p_value_threshold_two: float = 0.01
-) -> Tuple[List[float], List[str], List[str]]:
+) -> Tuple[List[float], List[str], List[str], float, float]:
     """
     Perform a permutation test for a regression model to assess the significance of model coefficients.
 
@@ -86,18 +86,28 @@ def permutation_test(
             p_value_str = str(np.round(p_value, precision)) + ' (ns)'
         classic_p_values.append(p_value_str)
 
-    return model_coefs, permuted_p_values, classic_p_values
+    return model_coefs, permuted_p_values, classic_p_values, p_value_threshold_one, p_value_threshold_two
 
 #%%
 # Perform permutation test
-coefs, permuted_p_values, classic_p_values = permutation_test(X, y)
+(
+    coefs, 
+    permuted_p_values, 
+    classic_p_values, 
+    p_value_threshold_one, 
+    p_value_threshold_two
+) = permutation_test_regression(X, y)
 
 #%%
 # Print the results
 print("Regression Model Coefficients and p-Values\n")
-print("Coefficients:", coefs)
-print("Empirical p-Values:", permuted_p_values)
-print("Asymptotic p-Values:", classic_p_values)
-print("\n(*) p-value < 0.05\n(**) p-value < 0.01\n(ns) p-value >= 0.05\n")
+print(f"Target: {y.columns.tolist()}")
+print(f"Features: {X.columns.tolist()}")
+print(f"Coefficients: {coefs}")
+print(f"Empirical p-Values: {permuted_p_values}")
+print(f"Asymptotic p-Values: {classic_p_values}")
+print(f"\n(*) p-value < {p_value_threshold_one}")
+print(f"(**) p-value < {p_value_threshold_two}")
+print(f"(ns) p-value >= {p_value_threshold_one}\n")
 
 #%%
