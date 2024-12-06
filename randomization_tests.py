@@ -19,7 +19,7 @@ X = real_estate_valuation.data.features
 y = real_estate_valuation.data.targets 
 
 #%%
-def permutation_test_regression(
+def permutation_test(
     X: pd.DataFrame, 
     y: pd.DataFrame, 
     model: LinearRegression, 
@@ -27,7 +27,7 @@ def permutation_test_regression(
     precision: int = 3,
     p_value_threshold_one: float = 0.05, 
     p_value_threshold_two: float = 0.01
-) -> Tuple[List[float], List[str]]:
+) -> Tuple[List[float], List[str], List[str]]:
     """
     Perform a permutation test for a regression model to assess the significance of model coefficients.
 
@@ -95,7 +95,7 @@ def permutation_test_regression(
 #%%
 # Perform permutation test
 model = LinearRegression()
-coefs, permuted_p_values, classic_p_values = permutation_test_regression(X, y, model)
+coefs, permuted_p_values, classic_p_values = permutation_test(X, y, model)
 
 #%%
 # Print the results
