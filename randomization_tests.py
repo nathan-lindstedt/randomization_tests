@@ -41,6 +41,8 @@ def permutation_test_regression(
         The regression model that implements the fit method and has a coef_ attribute.
     n_permutations : int, optional (default=100_000)
         The number of permutations to perform.
+    precision : int, optional (default=3)
+        The number of decimal places to round the p-values.
     p_value_threshold_one : float, optional (default=0.05)
         The threshold for the first level of significance.
     p_value_threshold_two : float, optional (default=0.01)
