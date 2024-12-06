@@ -21,8 +21,7 @@ y = real_estate_valuation.data.targets
 #%%
 def permutation_test(
     X: pd.DataFrame, 
-    y: pd.DataFrame, 
-    model: LinearRegression, 
+    y: pd.DataFrame,  
     n_permutations: int = 100_000,
     precision: int = 3,
     p_value_threshold_one: float = 0.05, 
@@ -37,8 +36,6 @@ def permutation_test(
         The input data to fit the model.
     y : array-like of shape (n_samples,)
         The target values.
-    model : object
-        The regression model that implements the fit method and has a coef_ attribute.
     n_permutations : int, optional (default=100_000)
         The number of permutations to perform.
     precision : int, optional (default=3)
@@ -61,7 +58,7 @@ def permutation_test(
     permuted_p_values: List = []
     classic_p_values: List = []
 
-    model.fit(X, y)
+    model = LinearRegression().fit(X, y)
     model_coefs = model.coef_.flatten().tolist()
 
     for _ in range(n_permutations):
@@ -78,8 +75,7 @@ def permutation_test(
             p_value_str = str(np.round(p_value, precision)) + ' (ns)'
         permuted_p_values.append(p_value_str)
 
-    sm_X = sm.add_constant(X)
-    sm_model = sm.OLS(y, sm_X).fit()
+    sm_model = sm.OLS(y, sm.add_constant(X)).fit()
 
     for p_value in sm_model.pvalues[1:]:
         if p_value_threshold_two <= p_value < p_value_threshold_one:
@@ -94,8 +90,7 @@ def permutation_test(
 
 #%%
 # Perform permutation test
-model = LinearRegression()
-coefs, permuted_p_values, classic_p_values = permutation_test(X, y, model)
+coefs, permuted_p_values, classic_p_values = permutation_test(X, y)
 
 #%%
 # Print the results
