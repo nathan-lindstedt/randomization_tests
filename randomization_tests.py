@@ -102,8 +102,8 @@ def permutation_test_regression(
 # Print the results
 print("Regression Model Coefficients and p-Values\n")
 print(f"Target: {y.columns.tolist()}")
-print(f"Features: {X.columns.tolist()}")
-print(f"Coefficients: {coefs}")
+print(f"Features: {X.columns.tolist()}\n")
+print(f"Coefficients: {coefs}\n")
 print(f"Empirical p-Values: {permuted_p_values}")
 print(f"Asymptotic p-Values: {classic_p_values}")
 print(f"\n(*) p-value < {p_value_threshold_one}")
