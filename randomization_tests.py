@@ -28,7 +28,8 @@ def permutation_test_regression(
     p_value_threshold_two: float = 0.01
 ) -> Tuple[List[float], List[str], List[str], float, float]:
     """
-    Perform a permutation test for a regression model to assess the significance of model coefficients.
+    Perform a permutation test for a multiple linear regression model to assess the significance of model 
+    coefficients using the Manly (1997) method.
 
     Parameters
     ----------
@@ -53,6 +54,15 @@ def permutation_test_regression(
         The empirical p-values for each coefficient, formatted with significance stars if below the thresholds.
     classic_p_values : list of str
         The asymptotic p-values for each coefficient, formatted with significance stars if below the thresholds.
+
+    References
+    ----------
+    Manly, Bryan F. J. Randomization, Bootstrap, and Monte Carlo Methods in Biology, 2nd ed. Texts in Statistical 
+    Science Series. Chapman & Hall, London. (1997).
+    
+    Hardin, Johanna, Lauren Quesada, Julie Ye, and Nicholas J. Horton. "The Exchangeability Assumption for 
+    Purmutation Tests of Multiple Regression Models: Implications for Statistics and Data Science Educators." 
+    (2024) [Online]. Available: https://arxiv.org/pdf/2406.07756.
     """
     permuted_coefs: List = []
     permuted_p_values: List = []
