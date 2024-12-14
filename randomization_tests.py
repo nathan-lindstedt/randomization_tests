@@ -126,6 +126,10 @@ def permutation_test_regression(
         The empirical p-values for each coefficient, formatted with significance stars if below the thresholds.
     classic_p_values : list of str
         The asymptotic p-values for each coefficient, formatted with significance stars if below the thresholds.
+    p_value_threshold_one : float
+        The threshold for the first level of significance.
+    p_value_threshold_two : float
+        The threshold for the second level of significance.
 
     References
     ----------
