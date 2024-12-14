@@ -38,6 +38,10 @@ def calculate_p_values(
         The input data to fit the model.
     y : array-like of shape (n_samples,)
         The target values.
+    permuted_coefs : list of float
+        The coefficients obtained from the permutation test.
+    model_coefs : list of float
+        The original coefficients of the fitted model.
     precision : int, optional (default=3)
         The number of decimal places to round the p-values.
     p_value_threshold_one : float, optional (default=0.05)
