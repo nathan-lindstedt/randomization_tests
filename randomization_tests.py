@@ -47,8 +47,6 @@ def calculate_p_values(
 
     Returns
     ----------
-    model_coefs : list of float
-        The original coefficients of the fitted model.
     permuted_p_values : list of str
         The empirical p-values for each coefficient, formatted with significance stars if below the thresholds.
     classic_p_values : list of str
@@ -77,7 +75,7 @@ def calculate_p_values(
             p_value_str = str(np.round(p_value, precision)) + ' (**)'
         else:
             p_value_str = str(np.round(p_value, precision)) + ' (ns)'
-            
+
         classic_p_values.append(p_value_str)
 
     return permuted_p_values, classic_p_values
