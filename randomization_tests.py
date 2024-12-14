@@ -77,6 +77,7 @@ def calculate_p_values(
             p_value_str = str(np.round(p_value, precision)) + ' (**)'
         else:
             p_value_str = str(np.round(p_value, precision)) + ' (ns)'
+            
         classic_p_values.append(p_value_str)
 
     return permuted_p_values, classic_p_values
