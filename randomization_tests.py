@@ -11,15 +11,6 @@ from sklearn.metrics import log_loss, mean_squared_error
 from ucimlrepo import fetch_ucirepo 
 
 #%%
-# Load the dataset
-real_estate_valuation = fetch_ucirepo(id=477) 
-
-#%%
-# Features and target variable
-X = real_estate_valuation.data.features 
-y = real_estate_valuation.data.targets 
-
-#%%
 # Define the permutation regression functions
 def calculate_p_values(
     X: pd.DataFrame, 
@@ -75,8 +66,11 @@ def calculate_p_values(
         # Use statsmodels OLS for classical p-values
         model = sm.OLS(y, sm.add_constant(X)).fit()
 
+    n_permutations = len(permuted_coefs)
     for i in range(len(model_coefs)):
-        p_value = (np.abs(np.array(permuted_coefs)[:, i]) >= np.abs(np.array(model_coefs)[i])).mean()        
+        # Phipson & Smyth (2010) correction: (b + 1) / (B + 1)
+        # Ensures p-values are never exactly 0 in finite permutation tests
+        p_value = (np.sum(np.abs(np.array(permuted_coefs)[:, i]) >= np.abs(np.array(model_coefs)[i])) + 1) / (n_permutations + 1)
         if p_value_threshold_two <= p_value < p_value_threshold_one:
             p_value_str = str(np.round(p_value, precision)) + ' (*)'
         elif p_value < p_value_threshold_two:
@@ -124,11 +118,26 @@ def print_results_table(
     print("=" * 80)
     
     # Model info
+    diag = results.get('diagnostics', {})
+    model_type = results['model_type']
     if target_name:
-        print(f"Dep. Variable: {target_name:<20} Model Type: {results['model_type']}")
+        print(f"Dep. Variable: {target_name:<25} No. Observations: {diag.get('n_observations', 'N/A'):>10}")
+    print(f"Model Type: {model_type:<28} No. Features: {diag.get('n_features', 'N/A'):>13}")
+    print(f"Method: {results['method']:<31} AIC: {diag.get('aic', 'N/A'):>13}")
+    
+    if model_type == 'linear':
+        print(f"R-squared: {diag.get('r_squared', 'N/A'):<25} BIC: {diag.get('bic', 'N/A'):>13}")
+        print(f"Adj. R-squared: {diag.get('r_squared_adj', 'N/A'):<20} F-statistic: {diag.get('f_statistic', 'N/A'):>13}")
+        f_p = diag.get('f_p_value', None)
+        f_p_str = f"{f_p:.4e}" if f_p is not None else 'N/A'
+        print(f"{'':40} Prob (F-stat): {f_p_str:>13}")
     else:
-        print(f"Model Type: {results['model_type']}")
-    print(f"Method: {results['method']}")
+        print(f"Pseudo R-squared: {diag.get('pseudo_r_squared', 'N/A'):<18} BIC: {diag.get('bic', 'N/A'):>13}")
+        print(f"Log-Likelihood: {diag.get('log_likelihood', 'N/A'):<20} LL-Null: {diag.get('log_likelihood_null', 'N/A'):>13}")
+        llr_p = diag.get('llr_p_value', None)
+        llr_p_str = f"{llr_p:.4e}" if llr_p is not None else 'N/A'
+        print(f"{'':40} LLR p-value: {llr_p_str:>15}")
+    
     print("-" * 80)
     
     # Column headers
@@ -174,11 +183,26 @@ def print_joint_results_table(
     print("=" * 80)
     
     # Model info
+    diag = results.get('diagnostics', {})
+    model_type = results['model_type']
     if target_name:
-        print(f"Dep. Variable: {target_name:<20} Model Type: {results['model_type']}")
+        print(f"Dep. Variable: {target_name:<25} No. Observations: {diag.get('n_observations', 'N/A'):>10}")
+    print(f"Model Type: {model_type:<28} No. Features: {diag.get('n_features', 'N/A'):>13}")
+    print(f"Method: {results['method']:<32} AIC: {diag.get('aic', 'N/A'):>13}")
+    
+    if model_type == 'linear':
+        print(f"R-squared: {diag.get('r_squared', 'N/A'):<25} BIC: {diag.get('bic', 'N/A'):>13}")
+        print(f"Adj. R-squared: {diag.get('r_squared_adj', 'N/A'):<20} F-statistic: {diag.get('f_statistic', 'N/A'):>13}")
+        f_p = diag.get('f_p_value', None)
+        f_p_str = f"{f_p:.4e}" if f_p is not None else 'N/A'
+        print(f"{'':40} Prob (F-stat): {f_p_str:>13}")
     else:
-        print(f"Model Type: {results['model_type']}")
-    print(f"Method: {results['method']}")
+        print(f"Pseudo R-squared: {diag.get('pseudo_r_squared', 'N/A'):<18} BIC: {diag.get('bic', 'N/A'):>13}")
+        print(f"Log-Likelihood: {diag.get('log_likelihood', 'N/A'):<20} LL-Null: {diag.get('log_likelihood_null', 'N/A'):>13}")
+        llr_p = diag.get('llr_p_value', None)
+        llr_p_str = f"{llr_p:.4e}" if llr_p is not None else 'N/A'
+        print(f"{'':40} LLR p-value: {llr_p_str:>15}")
+    
     print(f"Metric: {results['metric_type']}")
     print("-" * 80)
     
@@ -282,7 +306,8 @@ def mediation_analysis(
     mediator: str,
     n_bootstrap: int = 1000,
     confidence_level: float = 0.95,
-    precision: int = 4
+    precision: int = 4,
+    random_state: int = None
 ) -> Dict:
     """
     Perform mediation analysis to determine if a variable is a mediator.
@@ -312,6 +337,8 @@ def mediation_analysis(
         Confidence level for the bootstrap confidence interval.
     precision : int, optional (default=4)
         Number of decimal places for reported values.
+    random_state : int, optional (default=None)
+        Seed for the random number generator to ensure reproducibility.
 
     Returns
     ----------
@@ -350,12 +377,13 @@ def mediation_analysis(
     indirect_effect = a_path * b_path
     
     # Bootstrap confidence interval for indirect effect
+    rng = np.random.default_rng(random_state)
     n_samples = len(y_values)
     bootstrap_indirect = np.zeros(n_bootstrap)
     
     for i in range(n_bootstrap):
         # Resample with replacement
-        indices = np.random.choice(n_samples, size=n_samples, replace=True)
+        indices = rng.choice(n_samples, size=n_samples, replace=True)
         x_boot = x_values[indices]
         m_boot = m_values[indices]
         y_boot = y_values[indices]
@@ -414,7 +442,8 @@ def identify_confounders(
     correlation_threshold: float = 0.1,
     p_value_threshold: float = 0.05,
     n_bootstrap: int = 1000,
-    confidence_level: float = 0.95
+    confidence_level: float = 0.95,
+    random_state: int = None
 ) -> Dict:
     """
     Identify confounders through a two-step process:
@@ -439,6 +468,8 @@ def identify_confounders(
         Number of bootstrap samples for mediation analysis.
     confidence_level : float, optional (default=0.95)
         Confidence level for the bootstrap confidence interval.
+    random_state : int, optional (default=None)
+        Seed for the random number generator to ensure reproducibility.
 
     Returns
     ----------
@@ -468,7 +499,8 @@ def identify_confounders(
         med_result = mediation_analysis(
             X, y, predictor, candidate,
             n_bootstrap=n_bootstrap,
-            confidence_level=confidence_level
+            confidence_level=confidence_level,
+            random_state=random_state
         )
         mediation_results[candidate] = med_result
         
@@ -501,7 +533,8 @@ def permutation_test_regression(
     p_value_threshold_one: float = 0.05, 
     p_value_threshold_two: float = 0.01,
     method: str = 'ter_braak',
-    confounders: List[str] = None
+    confounders: List[str] = None,
+    random_state: int = None
 ) -> Dict:
     """
     Perform a permutation test for a regression model to assess the significance of 
@@ -529,6 +562,8 @@ def permutation_test_regression(
     confounders : list of str, optional (default=None)
         List of confounder column names. Required for 'kennedy' and 'kennedy_joint' methods.
         For Kennedy methods, confounders are controlled for via an exposure model (X ~ Z).
+    random_state : int, optional (default=None)
+        Seed for the random number generator to ensure reproducibility.
 
     Methods
     ----------
@@ -578,7 +613,12 @@ def permutation_test_regression(
     Hardin, Johanna, Lauren Quesada, Julie Ye, and Nicholas J. Horton. "The Exchangeability Assumption for 
     Purmutation Tests of Multiple Regression Models: Implications for Statistics and Data Science Educators." 
     (2024) [Online]. Available: https://arxiv.org/pdf/2406.07756.
+    
+    Phipson, Belinda, and Gordon K. Smyth. "Permutation P-values Should Never Be Zero: Calculating Exact 
+    P-values When Permutations Are Randomly Drawn." Statistical Applications in Genetics and Molecular 
+    Biology, 9:1, Article 39 (2010).
     """
+    rng = np.random.default_rng(random_state)
     permuted_coefs: List = []
     
     # Detect model type based on Y
@@ -598,10 +638,41 @@ def permutation_test_regression(
     else:
         model_coefs = np.ravel(model.coef_).tolist()
 
+    # Compute diagnostic statistics via statsmodels
+    n_obs = len(y_values)
+    n_features = X.shape[1]
+    if is_binary:
+        sm_model = sm.Logit(y_values, sm.add_constant(X)).fit(disp=0)
+        diagnostics = {
+            'n_observations': n_obs,
+            'n_features': n_features,
+            'pseudo_r_squared': np.round(sm_model.prsquared, 4),
+            'log_likelihood': np.round(sm_model.llf, 4),
+            'log_likelihood_null': np.round(sm_model.llnull, 4),
+            'llr_p_value': sm_model.llr_pvalue,
+            'aic': np.round(sm_model.aic, 4),
+            'bic': np.round(sm_model.bic, 4),
+        }
+    else:
+        sm_model = sm.OLS(y_values, sm.add_constant(X)).fit()
+        diagnostics = {
+            'n_observations': n_obs,
+            'n_features': n_features,
+            'r_squared': np.round(sm_model.rsquared, 4),
+            'r_squared_adj': np.round(sm_model.rsquared_adj, 4),
+            'f_statistic': np.round(sm_model.fvalue, 4),
+            'f_p_value': sm_model.f_pvalue,
+            'aic': np.round(sm_model.aic, 4),
+            'bic': np.round(sm_model.bic, 4),
+        }
+
     if method == 'ter_braak':
         # ter Braak Method: Permute residuals under the Reduced Model
-        # For logistic regression, we work in linear space using predicted probabilities
-        # transformed to continuous residuals
+        # ter Braak (1992) was designed for OLS. For binary outcomes, we use
+        # a GLM-faithful adaptation: the reduced model is fit with logistic
+        # regression to properly capture the heteroscedastic variance
+        # structure Var(Y|X) = mu(1-mu), and Bernoulli sampling converts
+        # the continuous permuted Y* back to binary for logistic refitting.
         
         # Create a matrix to hold results: rows=permutations, cols=features
         permuted_matrix = np.zeros((n_permutations, len(X.columns)))
@@ -611,24 +682,38 @@ def permutation_test_regression(
             # 1. Define the Reduced Model (Drop the current feature)
             X_reduced = X.drop(columns=[feature_name])
             
-            # 2. Fit Reduced Model and get residuals under H0
-            # For both binary and continuous Y, we use LinearRegression to get 
-            # continuous residuals in linear space (this is the standard approach
-            # for permutation tests - work in linear space for residuals)
-            model_reduced = LinearRegression().fit(X_reduced, y_values)
-            preds_reduced = model_reduced.predict(X_reduced).ravel()
-            resids_reduced = y_values - preds_reduced
+            if is_binary:
+                # 2a. Fit reduced logistic model and get residuals on
+                # the response (probability) scale. Using logistic regression
+                # here ensures the residuals reflect the true binary data
+                # variance structure under H0, unlike a linear reduced model
+                # which assumes constant variance.
+                model_reduced = LogisticRegression(
+                    penalty=None, solver='lbfgs', max_iter=5_000
+                ).fit(X_reduced, y_values)
+                preds_reduced = model_reduced.predict_proba(X_reduced)[:, 1]
+                resids_reduced = y_values - preds_reduced
+            else:
+                # 2b. Fit reduced linear model (standard ter Braak)
+                model_reduced = LinearRegression().fit(X_reduced, y_values)
+                preds_reduced = model_reduced.predict(X_reduced).ravel()
+                resids_reduced = y_values - preds_reduced
             
             # 3. Permutation Loop for this specific feature
             for p in range(n_permutations):
                 # Construct new Y under H0: Reduced Preds + Shuffled Reduced Resids
-                y_perm = preds_reduced + np.random.permutation(resids_reduced)
+                y_perm = preds_reduced + rng.permutation(resids_reduced)
                 
-                # For binary outcomes, clip predictions to valid probability range
-                # and convert back to binary for fitting
                 if is_binary:
+                    # The permuted Y* is continuous (probabilities + permuted
+                    # residuals). To maintain scale consistency with the
+                    # observed logistic coefficients (log-odds scale), we
+                    # convert Y* back to binary via Bernoulli sampling:
+                    #   Y_binary* ~ Bernoulli(clip(Y*, eps, 1-eps))
+                    # This preserves magnitude information (unlike a hard
+                    # threshold at 0.5) and naturally respects class imbalance.
                     y_perm_probs = np.clip(y_perm, 0.001, 0.999)
-                    y_perm_binary = (y_perm_probs > 0.5).astype(int)
+                    y_perm_binary = rng.binomial(1, y_perm_probs)
                     model_full = model_class().fit(X, y_perm_binary)
                     permuted_matrix[p, i] = model_full.coef_.flatten()[i]
                 else:
@@ -679,7 +764,7 @@ def permutation_test_regression(
             # Permutation loop for this feature
             for p in range(n_permutations):
                 # Shuffle residuals of X
-                shuffled_resids = np.random.permutation(x_resids.ravel())
+                shuffled_resids = rng.permutation(x_resids.ravel())
                 
                 # Reconstruct X* = X_hat + shuffled_resids
                 X_perm = X.copy()
@@ -774,7 +859,7 @@ def permutation_test_regression(
         
         for i in range(n_permutations):
             # Shuffle residuals (keeps internal correlation of X_target intact)
-            shuffled_idx = np.random.permutation(len(y_values))
+            shuffled_idx = rng.permutation(len(y_values))
             shuffled_resids = x_resids[shuffled_idx]
             
             # Reconstruct X*
@@ -796,8 +881,9 @@ def permutation_test_regression(
             perm_metric_val = get_metric(y_values, perm_preds)
             perm_improvements[i] = base_metric - perm_metric_val
         
-        # P-Value: Probability that random noise improved the model as much as real X
-        p_value = np.mean(perm_improvements >= obs_improvement)
+        # P-Value with Phipson & Smyth (2010) correction: (b + 1) / (B + 1)
+        # Ensures p-values are never exactly 0 in finite permutation tests
+        p_value = (np.sum(perm_improvements >= obs_improvement) + 1) / (n_permutations + 1)
         
         # Format p-value string
         if p_value < p_value_threshold_two:
@@ -817,7 +903,8 @@ def permutation_test_regression(
             'confounders': confounders,
             'p_value_threshold_one': p_value_threshold_one,
             'p_value_threshold_two': p_value_threshold_two,
-            'method': method
+            'method': method,
+            'diagnostics': diagnostics
         }
         
     else:
@@ -840,8 +927,23 @@ def permutation_test_regression(
         'p_value_threshold_one': p_value_threshold_one,
         'p_value_threshold_two': p_value_threshold_two,
         'method': method,
-        'model_type': 'logistic' if is_binary else 'linear'
+        'model_type': 'logistic' if is_binary else 'linear',
+        'diagnostics': diagnostics
     }
+
+#%%
+# ============================================================================
+# Test Case 1: Linear Regression (Continuous Outcome)
+# Real Estate Valuation dataset (UCI ML Repository ID=477)
+# ============================================================================
+
+# Load the dataset
+real_estate_valuation = fetch_ucirepo(id=477)
+
+#%%
+# Features and target variable
+X = real_estate_valuation.data.features
+y = real_estate_valuation.data.targets
 
 #%%
 # Perform permutation test by the ter Braak (1992) method
@@ -853,13 +955,15 @@ print_results_table(
     results_ter_braak,
     feature_names=X.columns.tolist(),
     target_name=y.columns[0],
-    title="ter Braak (1992) Permutation Test"
+    title="ter Braak (1992) Permutation Test (Linear)"
 )
 
 #%%
 # Perform permutation test by the Kennedy (1995) individual coefficient method
 # Note: When confounders=[], all features are tested with no confounders controlled for.
-# This is equivalent to ter Braak but uses the Kennedy residual permutation approach.
+# Unlike ter Braak, this does NOT condition on other predictors. ter Braak permutes
+# residuals of Y|X_{-j}, while Kennedy permutes X_j centered at its mean. Results
+# may differ when features are correlated.
 results_kennedy = permutation_test_regression(X, y, method='kennedy', confounders=[])
 
 #%%
@@ -868,7 +972,7 @@ print_results_table(
     results_kennedy,
     feature_names=X.columns.tolist(),
     target_name=y.columns[0],
-    title="Kennedy (1995) Individual Coefficient Permutation Test"
+    title="Kennedy (1995) Individual Coefficient Permutation Test (Linear)"
 )
 
 #%%
@@ -881,7 +985,7 @@ results_kennedy_joint = permutation_test_regression(X, y, method='kennedy_joint'
 print_joint_results_table(
     results_kennedy_joint,
     target_name=y.columns[0],
-    title="Kennedy (1995) Joint Permutation Test"
+    title="Kennedy (1995) Joint Permutation Test (Linear)"
 )
 
 #%%
@@ -939,7 +1043,128 @@ if predictors_with_confounders:
         results_kennedy_with_confounders,
         feature_names=X.columns.tolist(),
         target_name=y.columns[0],
-        title=f"Kennedy (1995) Method for '{example_predictor}' (controlling for {example_confounders})"
+        title=f"Kennedy (1995) Method for '{example_predictor}' (controlling for {example_confounders}) (Linear)"
     )
 
-# %%
+#%%
+# ============================================================================
+# Test Case 2: Logistic Regression (Binary Outcome)
+# Breast Cancer Wisconsin (Diagnostic) dataset (UCI ML Repository ID=17)
+# ============================================================================
+
+# Load the dataset
+breast_cancer = fetch_ucirepo(id=17)
+
+#%%
+# Features and target variable
+X_bc = breast_cancer.data.features
+y_bc = breast_cancer.data.targets
+
+# Convert target to binary: malignant (M) -> 1, benign (B) -> 0
+y_bc = (y_bc == 'M').astype(int)
+
+# Use a subset of features to keep computation tractable
+selected_features = ['radius1', 'texture1', 'perimeter1',
+                     'smoothness1', 'compactness1']
+X_bc = X_bc[selected_features]
+
+#%%
+# Perform permutation test by the ter Braak (1992) method (logistic)
+results_ter_braak_bc = permutation_test_regression(X_bc, y_bc, method='ter_braak')
+
+#%%
+# Print the results obtained by the ter Braak (1992) method (logistic)
+print_results_table(
+    results_ter_braak_bc,
+    feature_names=X_bc.columns.tolist(),
+    target_name=y_bc.columns[0],
+    title="ter Braak (1992) Permutation Test (Logistic)"
+)
+
+#%%
+# Perform permutation test by the Kennedy (1995) individual method (logistic)
+# Note: When confounders=[], all features are tested with no confounders controlled for.
+# Unlike ter Braak, this does NOT condition on other predictors. ter Braak permutes
+# residuals of Y|X_{-j}, while Kennedy permutes X_j centered at its mean. Results
+# may differ when features are correlated.
+results_kennedy_bc = permutation_test_regression(X_bc, y_bc, method='kennedy', confounders=[])
+
+#%%
+# Print the results obtained by the Kennedy (1995) individual method (logistic)
+print_results_table(
+    results_kennedy_bc,
+    feature_names=X_bc.columns.tolist(),
+    target_name=y_bc.columns[0],
+    title="Kennedy (1995) Individual Coefficient Permutation Test (Logistic)"
+)
+
+#%%
+# Perform permutation test by the Kennedy (1995) joint method (logistic)
+# Tests whether all features collectively add significant information
+results_kennedy_joint_bc = permutation_test_regression(X_bc, y_bc, method='kennedy_joint', confounders=[])
+
+#%%
+# Print the results obtained by the Kennedy (1995) joint method (logistic)
+print_joint_results_table(
+    results_kennedy_joint_bc,
+    target_name=y_bc.columns[0],
+    title="Kennedy (1995) Joint Permutation Test (Logistic)"
+)
+
+#%%
+# Full confounder identification workflow for all predictors (logistic)
+# Loops through each predictor and identifies potential confounders
+print("Confounder Identification for All Predictors (Logistic)\n")
+
+all_confounder_results_bc = {}
+for predictor in X_bc.columns:
+    confounder_results_bc = identify_confounders(X_bc, y_bc, predictor=predictor)
+    all_confounder_results_bc[predictor] = confounder_results_bc
+
+#%%
+# Print confounder identification results for all predictors (logistic)
+for predictor, results in all_confounder_results_bc.items():
+    print(f"Predictor: '{predictor}'")
+    print(f"  Identified Confounders: {results['identified_confounders']}")
+    print(f"  Identified Mediators: {results['identified_mediators']}")
+    if results['identified_confounders'] or results['identified_mediators']:
+        print(f"  Recommendation: {results['recommendation']}")
+    print()
+
+#%%
+# Summary: Show which predictors have confounders that should be controlled (logistic)
+predictors_with_confounders_bc = {
+    pred: res['identified_confounders']
+    for pred, res in all_confounder_results_bc.items()
+    if res['identified_confounders']
+}
+
+print("Summary: Predictors with Identified Confounders (Logistic)\n")
+
+if predictors_with_confounders_bc:
+    for pred, confounders in predictors_with_confounders_bc.items():
+        print(f"  {pred}: control for {confounders}")
+else:
+    print("  No confounders identified for any predictor.")
+    print("  This suggests the predictors are relatively independent.")
+print()
+
+#%%
+# Example: Use Kennedy method with identified confounders (logistic)
+# Pick the first predictor that has identified confounders, if any
+if predictors_with_confounders_bc:
+    example_predictor_bc = list(predictors_with_confounders_bc.keys())[0]
+    example_confounders_bc = predictors_with_confounders_bc[example_predictor_bc]
+
+    results_kennedy_with_confounders_bc = permutation_test_regression(
+        X_bc, y_bc,
+        method='kennedy',
+        confounders=example_confounders_bc
+    )
+
+    print_results_table(
+        results_kennedy_with_confounders_bc,
+        feature_names=X_bc.columns.tolist(),
+        target_name=y_bc.columns[0],
+        title=f"Kennedy (1995) Method for '{example_predictor_bc}' (controlling for {example_confounders_bc}) (Logistic)"
+    )
