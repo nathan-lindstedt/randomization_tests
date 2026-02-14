@@ -1,5 +1,8 @@
 #%%
-# Import libraries
+# ============================================================================
+# Imports
+# ============================================================================
+
 from typing import Dict, List, Tuple, Union
 
 import numpy as np
@@ -11,7 +14,165 @@ from sklearn.metrics import log_loss, mean_squared_error
 from ucimlrepo import fetch_ucirepo 
 
 #%%
-# Define the permutation regression functions
+# ============================================================================
+# Display Utilities
+# ============================================================================
+
+def _truncate(name: str, max_len: int) -> str:
+    """Truncate a name to max_len, appending '...' if needed."""
+    if len(name) <= max_len:
+        return name
+    return name[:max_len - 3] + '...'
+
+def print_results_table(
+    results: Dict,
+    feature_names: List[str],
+    target_name: str = None,
+    title: str = "Permutation Test Results"
+) -> None:
+    """
+    Print regression results in a formatted ASCII table similar to statsmodels.
+    
+    Parameters
+    ----------
+    results : dict
+        Results dictionary from permutation_test_regression.
+    feature_names : list of str
+        Names of the features/predictors.
+    target_name : str, optional
+        Name of the target variable.
+    title : str, optional
+        Title for the output table.
+    """
+    # Header
+    print("=" * 80)
+    print(f"{title:^80}")
+    print("=" * 80)
+    
+    # Model info
+    diag = results.get('diagnostics', {})
+    model_type = results['model_type']
+    col1 = 40  # left column width
+    col2 = 38  # right column width (total = 80 with 2 spaces)
+    if target_name:
+        trunc_target = _truncate(target_name, 20)
+        print(f"{'Dep. Variable:':<16}{trunc_target:<{col1 - 16}}{'No. Observations:':>{col2 - 11}} {diag.get('n_observations', 'N/A'):>10}")
+    print(f"{'Model Type:':<16}{model_type:<{col1 - 16}}{'No. Features:':>{col2 - 11}} {diag.get('n_features', 'N/A'):>10}")
+    print(f"{'Method:':<16}{results['method']:<{col1 - 16}}{'AIC:':>{col2 - 11}} {diag.get('aic', 'N/A'):>10}")
+    
+    if model_type == 'linear':
+        print(f"{'R-squared:':<16}{diag.get('r_squared', 'N/A'):<{col1 - 16}}{'BIC:':>{col2 - 11}} {diag.get('bic', 'N/A'):>10}")
+        print(f"{'Adj. R-squared:':<16}{diag.get('r_squared_adj', 'N/A'):<{col1 - 16}}{'F-statistic:':>{col2 - 11}} {diag.get('f_statistic', 'N/A'):>10}")
+        f_p = diag.get('f_p_value', None)
+        f_p_str = f"{f_p:.4e}" if f_p is not None else 'N/A'
+        print(f"{'':<{col1}}{'Prob (F-stat):':>{col2 - 11}} {f_p_str:>10}")
+    else:
+        print(f"{'Pseudo R-sq:':<16}{diag.get('pseudo_r_squared', 'N/A'):<{col1 - 16}}{'BIC:':>{col2 - 11}} {diag.get('bic', 'N/A'):>10}")
+        print(f"{'Log-Likelihood:':<16}{diag.get('log_likelihood', 'N/A'):<{col1 - 16}}{'LL-Null:':>{col2 - 11}} {diag.get('log_likelihood_null', 'N/A'):>10}")
+        llr_p = diag.get('llr_p_value', None)
+        llr_p_str = f"{llr_p:.4e}" if llr_p is not None else 'N/A'
+        print(f"{'':<{col1}}{'LLR p-value:':>{col2 - 11}} {llr_p_str:>10}")
+    
+    print("-" * 80)
+    
+    # Column headers
+    fc = 25  # feature column width
+    stat_label = 't' if model_type == 'linear' else 'z'
+    emp_hdr = f'P>|{stat_label}| (Emp)'
+    asy_hdr = f'P>|{stat_label}| (Asy)'
+    print(f"{'Feature':<{fc}} {'Coef':>12} {emp_hdr:>18} {asy_hdr:>18}")
+    print("-" * 80)
+    
+    # Data rows
+    coefs = results['model_coefs']
+    emp_p = results['permuted_p_values']
+    asy_p = results['classic_p_values']
+    
+    for i, feat in enumerate(feature_names):
+        trunc_feat = _truncate(feat, fc)
+        coef_str = f"{coefs[i]:>12.4f}"
+        print(f"{trunc_feat:<{fc}} {coef_str} {emp_p[i]:>18} {asy_p[i]:>18}")
+    
+    # Footer
+    print("=" * 80)
+    print(f"(*) p < {results['p_value_threshold_one']}   "
+          f"(**) p < {results['p_value_threshold_two']}   "
+          f"(ns) p >= {results['p_value_threshold_one']}")
+    print()
+
+def print_joint_results_table(
+    results: Dict,
+    target_name: str = None,
+    title: str = "Joint Permutation Test Results"
+) -> None:
+    """
+    Print joint test results in a formatted ASCII table.
+    
+    Parameters
+    ----------
+    results : dict
+        Results dictionary from permutation_test_regression with method='kennedy_joint'.
+    target_name : str, optional
+        Name of the target variable.
+    title : str, optional
+        Title for the output table.
+    """
+    # Header
+    print("=" * 80)
+    print(f"{title:^80}")
+    print("=" * 80)
+    
+    # Model info
+    diag = results.get('diagnostics', {})
+    model_type = results['model_type']
+    col1 = 40  # left column width
+    col2 = 38  # right column width (total = 80 with 2 spaces)
+    if target_name:
+        trunc_target = _truncate(target_name, 20)
+        print(f"{'Dep. Variable:':<16}{trunc_target:<{col1 - 16}}{'No. Observations:':>{col2 - 11}} {diag.get('n_observations', 'N/A'):>10}")
+    print(f"{'Model Type:':<16}{model_type:<{col1 - 16}}{'No. Features:':>{col2 - 11}} {diag.get('n_features', 'N/A'):>10}")
+    print(f"{'Method:':<16}{results['method']:<{col1 - 16}}{'AIC:':>{col2 - 11}} {diag.get('aic', 'N/A'):>10}")
+    
+    if model_type == 'linear':
+        print(f"{'R-squared:':<16}{diag.get('r_squared', 'N/A'):<{col1 - 16}}{'BIC:':>{col2 - 11}} {diag.get('bic', 'N/A'):>10}")
+        print(f"{'Adj. R-squared:':<16}{diag.get('r_squared_adj', 'N/A'):<{col1 - 16}}{'F-statistic:':>{col2 - 11}} {diag.get('f_statistic', 'N/A'):>10}")
+        f_p = diag.get('f_p_value', None)
+        f_p_str = f"{f_p:.4e}" if f_p is not None else 'N/A'
+        print(f"{'':<{col1}}{'Prob (F-stat):':>{col2 - 11}} {f_p_str:>10}")
+    else:
+        print(f"{'Pseudo R-sq:':<16}{diag.get('pseudo_r_squared', 'N/A'):<{col1 - 16}}{'BIC:':>{col2 - 11}} {diag.get('bic', 'N/A'):>10}")
+        print(f"{'Log-Likelihood:':<16}{diag.get('log_likelihood', 'N/A'):<{col1 - 16}}{'LL-Null:':>{col2 - 11}} {diag.get('log_likelihood_null', 'N/A'):>10}")
+        llr_p = diag.get('llr_p_value', None)
+        llr_p_str = f"{llr_p:.4e}" if llr_p is not None else 'N/A'
+        print(f"{'':<{col1}}{'LLR p-value:':>{col2 - 11}} {llr_p_str:>10}")
+    
+    print(f"{'Metric:':<16}{results['metric_type']}")
+    print("-" * 80)
+    
+    # Features tested
+    feat_list = ', '.join(_truncate(f, 25) for f in results['features_tested'])
+    print(f"Features Tested: {feat_list}")
+    if results['confounders']:
+        conf_list = ', '.join(_truncate(c, 25) for c in results['confounders'])
+        print(f"Confounders: {conf_list}")
+    print("-" * 80)
+    
+    # Results
+    print(f"{'Observed Improvement:':<30} {results['observed_improvement']:>12.4f}")
+    print(f"{'Joint p-Value:':<30} {results['p_value_str']:>12}")
+    
+    # Footer
+    print("=" * 80)
+    print(f"(*) p < {results['p_value_threshold_one']}   "
+          f"(**) p < {results['p_value_threshold_two']}   "
+          f"(ns) p >= {results['p_value_threshold_one']}")
+    print()
+
+#%%
+# ============================================================================
+# P-Value Calculation
+# ============================================================================
+
 def calculate_p_values(
     X: pd.DataFrame, 
     y: pd.DataFrame,
@@ -60,12 +221,25 @@ def calculate_p_values(
     is_binary = (len(unique_y) == 2) and np.all(np.isin(unique_y, [0, 1]))
 
     if is_binary:
-        # Use statsmodels Logit for classical p-values
+        # Logistic regression via maximum likelihood. The log-likelihood is
+        # l(beta) = sum[y_i * log(p_i) + (1 - y_i) * log(1 - p_i)],
+        # where p_i = 1 / (1 + exp(-X_i * beta)). Statsmodels computes
+        # Wald z-statistics and two-sided p-values for each coefficient.
         model = sm.Logit(y_values, sm.add_constant(X)).fit(disp=0)
     else:
-        # Use statsmodels OLS for classical p-values
+        # OLS regression minimizes sum(Y - X*beta)^2. The solution is
+        # beta_hat = (X'X)^(-1) X'Y. Statsmodels computes t-statistics
+        # using SE(beta_hat) = sqrt(s^2 * diag((X'X)^(-1))), where
+        # s^2 = RSS / (n - p - 1) is the residual variance estimate.
         model = sm.OLS(y, sm.add_constant(X)).fit()
 
+    # Empirical (permutation) p-values. For each coefficient, count how
+    # many permuted |beta*_j| are at least as extreme as the observed
+    # |beta_j|. The Phipson & Smyth (2010) correction adds 1 to both
+    # numerator and denominator: p = (b + 1) / (B + 1), where
+    # b = #{|beta*_j| >= |beta_j|}. This ensures the p-value is never
+    # exactly zero and properly treats the observed statistic as one
+    # member of the reference set of B + 1 values.
     n_permutations = len(permuted_coefs)
     for i in range(len(model_coefs)):
         # Phipson & Smyth (2010) correction: (b + 1) / (B + 1)
@@ -80,6 +254,9 @@ def calculate_p_values(
         
         permuted_p_values.append(p_value_str)
     
+    # Classical asymptotic p-values from statsmodels. model.pvalues[0] is
+    # the intercept; we skip it since the permutation results index
+    # coefficients without the intercept term.
     for p_value in model.pvalues[1:]:
         if p_value_threshold_two <= p_value < p_value_threshold_one:
             p_value_str = str(np.round(p_value, precision)) + ' (*)'
@@ -92,136 +269,28 @@ def calculate_p_values(
 
     return permuted_p_values, classic_p_values
 
-def print_results_table(
-    results: Dict,
-    feature_names: List[str],
-    target_name: str = None,
-    title: str = "Permutation Test Results"
-) -> None:
-    """
-    Print regression results in a formatted ASCII table similar to statsmodels.
-    
-    Parameters
-    ----------
-    results : dict
-        Results dictionary from permutation_test_regression.
-    feature_names : list of str
-        Names of the features/predictors.
-    target_name : str, optional
-        Name of the target variable.
-    title : str, optional
-        Title for the output table.
-    """
-    # Header
-    print("=" * 80)
-    print(f"{title:^80}")
-    print("=" * 80)
-    
-    # Model info
-    diag = results.get('diagnostics', {})
-    model_type = results['model_type']
-    if target_name:
-        print(f"Dep. Variable: {target_name:<25} No. Observations: {diag.get('n_observations', 'N/A'):>10}")
-    print(f"Model Type: {model_type:<28} No. Features: {diag.get('n_features', 'N/A'):>13}")
-    print(f"Method: {results['method']:<31} AIC: {diag.get('aic', 'N/A'):>13}")
-    
-    if model_type == 'linear':
-        print(f"R-squared: {diag.get('r_squared', 'N/A'):<25} BIC: {diag.get('bic', 'N/A'):>13}")
-        print(f"Adj. R-squared: {diag.get('r_squared_adj', 'N/A'):<20} F-statistic: {diag.get('f_statistic', 'N/A'):>13}")
-        f_p = diag.get('f_p_value', None)
-        f_p_str = f"{f_p:.4e}" if f_p is not None else 'N/A'
-        print(f"{'':40} Prob (F-stat): {f_p_str:>13}")
-    else:
-        print(f"Pseudo R-squared: {diag.get('pseudo_r_squared', 'N/A'):<18} BIC: {diag.get('bic', 'N/A'):>13}")
-        print(f"Log-Likelihood: {diag.get('log_likelihood', 'N/A'):<20} LL-Null: {diag.get('log_likelihood_null', 'N/A'):>13}")
-        llr_p = diag.get('llr_p_value', None)
-        llr_p_str = f"{llr_p:.4e}" if llr_p is not None else 'N/A'
-        print(f"{'':40} LLR p-value: {llr_p_str:>15}")
-    
-    print("-" * 80)
-    
-    # Column headers
-    print(f"{'Feature':<25} {'Coef':>12} {'P>|z| (Emp)':>18} {'P>|z| (Asy)':>18}")
-    print("-" * 80)
-    
-    # Data rows
-    coefs = results['model_coefs']
-    emp_p = results['permuted_p_values']
-    asy_p = results['classic_p_values']
-    
-    for i, feat in enumerate(feature_names):
-        coef_str = f"{coefs[i]:>12.4f}"
-        print(f"{feat:<25} {coef_str} {emp_p[i]:>18} {asy_p[i]:>18}")
-    
-    # Footer
-    print("=" * 80)
-    print(f"(*) p < {results['p_value_threshold_one']}   "
-          f"(**) p < {results['p_value_threshold_two']}   "
-          f"(ns) p >= {results['p_value_threshold_one']}")
-    print()
-
-def print_joint_results_table(
-    results: Dict,
-    target_name: str = None,
-    title: str = "Joint Permutation Test Results"
-) -> None:
-    """
-    Print joint test results in a formatted ASCII table.
-    
-    Parameters
-    ----------
-    results : dict
-        Results dictionary from permutation_test_regression with method='kennedy_joint'.
-    target_name : str, optional
-        Name of the target variable.
-    title : str, optional
-        Title for the output table.
-    """
-    # Header
-    print("=" * 80)
-    print(f"{title:^80}")
-    print("=" * 80)
-    
-    # Model info
-    diag = results.get('diagnostics', {})
-    model_type = results['model_type']
-    if target_name:
-        print(f"Dep. Variable: {target_name:<25} No. Observations: {diag.get('n_observations', 'N/A'):>10}")
-    print(f"Model Type: {model_type:<28} No. Features: {diag.get('n_features', 'N/A'):>13}")
-    print(f"Method: {results['method']:<32} AIC: {diag.get('aic', 'N/A'):>13}")
-    
-    if model_type == 'linear':
-        print(f"R-squared: {diag.get('r_squared', 'N/A'):<25} BIC: {diag.get('bic', 'N/A'):>13}")
-        print(f"Adj. R-squared: {diag.get('r_squared_adj', 'N/A'):<20} F-statistic: {diag.get('f_statistic', 'N/A'):>13}")
-        f_p = diag.get('f_p_value', None)
-        f_p_str = f"{f_p:.4e}" if f_p is not None else 'N/A'
-        print(f"{'':40} Prob (F-stat): {f_p_str:>13}")
-    else:
-        print(f"Pseudo R-squared: {diag.get('pseudo_r_squared', 'N/A'):<18} BIC: {diag.get('bic', 'N/A'):>13}")
-        print(f"Log-Likelihood: {diag.get('log_likelihood', 'N/A'):<20} LL-Null: {diag.get('log_likelihood_null', 'N/A'):>13}")
-        llr_p = diag.get('llr_p_value', None)
-        llr_p_str = f"{llr_p:.4e}" if llr_p is not None else 'N/A'
-        print(f"{'':40} LLR p-value: {llr_p_str:>15}")
-    
-    print(f"Metric: {results['metric_type']}")
-    print("-" * 80)
-    
-    # Features tested
-    print(f"Features Tested: {', '.join(results['features_tested'])}")
-    if results['confounders']:
-        print(f"Confounders: {', '.join(results['confounders'])}")
-    print("-" * 80)
-    
-    # Results
-    print(f"{'Observed Improvement:':<30} {results['observed_improvement']:>12.4f}")
-    print(f"{'Joint p-Value:':<30} {results['p_value_str']:>12}")
-    
-    # Footer
-    print("=" * 80)
-    print(f"(*) p < {results['p_value_threshold_one']}   "
-          f"(**) p < {results['p_value_threshold_two']}   "
-          f"(ns) p >= {results['p_value_threshold_one']}")
-    print()
+#%%
+# ============================================================================
+# Confounder Analysis
+#
+# In observational studies, confounders can bias the estimated effect of a
+# predictor X on an outcome Y. A confounder Z satisfies three conditions:
+#   1. Z is associated with X
+#   2. Z is associated with Y
+#   3. Z is NOT on the causal path from X to Y (i.e., Z is not a mediator)
+#
+# Controlling for a confounder removes bias; controlling for a mediator
+# removes part of the true causal effect and should generally be avoided.
+#
+# The workflow in this section:
+#   1. screen_potential_confounders: identifies variables correlated with
+#      both X and Y using Pearson correlation (conditions 1 & 2).
+#   2. mediation_analysis: tests whether each candidate is a mediator
+#      using Baron & Kenny (1986) with bootstrap CIs for the indirect
+#      effect (condition 3).
+#   3. identify_confounders: orchestrates both steps to distinguish
+#      confounders from mediators.
+# ============================================================================
 
 def screen_potential_confounders(
     X: pd.DataFrame,
@@ -273,6 +342,14 @@ def screen_potential_confounders(
     
     for feature in other_features:
         feature_values = X[feature].values
+        
+        # Pearson correlation measures the linear association between two
+        # variables. For a candidate confounder Z, we need:
+        #   r(Z, X) != 0   and   r(Z, Y) != 0
+        # Both must exceed correlation_threshold with p < p_value_threshold
+        # to be considered a candidate. The Pearson r is defined as:
+        #   r = sum((z_i - z_bar)(x_i - x_bar)) /
+        #       sqrt(sum((z_i - z_bar)^2) * sum((x_i - x_bar)^2))
         
         # Correlation with predictor
         corr_with_pred, p_pred = stats.pearsonr(feature_values, predictor_values)
@@ -359,24 +436,42 @@ def mediation_analysis(
     x_values = X[predictor].values.reshape(-1, 1)
     m_values = X[mediator].values.reshape(-1, 1)
     
-    # Step 1: Total effect (c path) - X → Y
+    # Baron & Kenny (1986) decomposes the total effect of X on Y into a
+    # direct effect and an indirect effect that passes through M:
+    #
+    #   Total effect (c):     Y = c*X + e1
+    #   a path:               M = a*X + e2
+    #   b path + direct (c'): Y = c'*X + b*M + e3
+    #
+    # The indirect (mediated) effect is the product a*b. If a*b is
+    # significantly different from zero, M mediates the X -> Y relationship.
+    # The total effect decomposes as: c = c' + a*b
+    
+    # Step 1: Total effect (c path) -- regress Y on X alone
     model_total = LinearRegression().fit(x_values, y_values)
     c_total = model_total.coef_[0]
     
-    # Step 2: a path - X → M
+    # Step 2: a path -- regress M on X to quantify how X influences M
     model_a = LinearRegression().fit(x_values, m_values.ravel())
     a_path = model_a.coef_[0]
     
-    # Step 3: b path and c' path - X + M → Y
+    # Step 3: b path and c' path -- regress Y on both X and M simultaneously
+    # c' is the direct effect of X on Y after controlling for M
+    # b is the effect of M on Y after controlling for X
     xm_combined = np.hstack([x_values, m_values])
     model_full = LinearRegression().fit(xm_combined, y_values)
     c_prime = model_full.coef_[0]  # Direct effect
     b_path = model_full.coef_[1]   # Effect of M on Y controlling for X
     
-    # Indirect effect
+    # Indirect effect: a*b
+    # This is the portion of X's effect on Y that is transmitted through M.
+    # If this is large relative to c, then M explains much of the X -> Y path.
     indirect_effect = a_path * b_path
     
-    # Bootstrap confidence interval for indirect effect
+    # Bootstrap confidence interval for the indirect effect (a*b).
+    # The sampling distribution of a*b is often non-normal, so percentile
+    # bootstrap CIs (Preacher & Hayes, 2004) are preferred over the Sobel
+    # test, which assumes normality of the product term.
     rng = np.random.default_rng(random_state)
     n_samples = len(y_values)
     bootstrap_indirect = np.zeros(n_bootstrap)
@@ -388,7 +483,7 @@ def mediation_analysis(
         m_boot = m_values[indices]
         y_boot = y_values[indices]
         
-        # Recalculate a and b paths
+        # Recalculate a and b paths on the bootstrap sample
         model_a_boot = LinearRegression().fit(x_boot, m_boot.ravel())
         a_boot = model_a_boot.coef_[0]
         
@@ -398,7 +493,8 @@ def mediation_analysis(
         
         bootstrap_indirect[i] = a_boot * b_boot
     
-    # Calculate confidence interval
+    # Percentile confidence interval: if the interval excludes zero, the
+    # indirect effect is statistically significant at the chosen level.
     alpha = 1 - confidence_level
     ci_lower = np.percentile(bootstrap_indirect, (alpha / 2) * 100)
     ci_upper = np.percentile(bootstrap_indirect, (1 - alpha / 2) * 100)
@@ -406,7 +502,8 @@ def mediation_analysis(
     # Determine if significant mediator (CI doesn't include 0)
     is_mediator = (ci_lower > 0) or (ci_upper < 0)
     
-    # Proportion mediated (only meaningful if total effect is non-zero)
+    # Proportion mediated: indirect / total = a*b / c
+    # Only meaningful if the total effect is non-zero.
     if abs(c_total) > 1e-10:
         proportion_mediated = indirect_effect / c_total
     else:
@@ -481,7 +578,9 @@ def identify_confounders(
         - 'mediation_results': dict - Results from mediation analysis for each candidate
         - 'recommendation': str - Plain language recommendation for Kennedy method
     """
-    # Step 1: Screen for potential confounders
+    # Step 1: Screen for variables correlated with both X and Y.
+    # Any variable Z with significant r(Z, X) and r(Z, Y) is a candidate
+    # for either confounder or mediator status.
     screening = screen_potential_confounders(
         X, y, predictor, 
         correlation_threshold=correlation_threshold,
@@ -490,7 +589,10 @@ def identify_confounders(
     
     candidates = screening['potential_confounders']
     
-    # Step 2: Run mediation analysis on each candidate
+    # Step 2: For each candidate, run mediation analysis to test whether
+    # it lies on the causal path X -> Z -> Y (mediator) or is a common
+    # cause Z -> X, Z -> Y (confounder). Mediators have a significant
+    # indirect effect (a*b != 0); confounders do not.
     identified_confounders = []
     identified_mediators = []
     mediation_results = {}
@@ -524,6 +626,29 @@ def identify_confounders(
         'mediation_results': mediation_results,
         'recommendation': recommendation
     }
+
+#%%
+# ============================================================================
+# Core Permutation Testing
+#
+# Permutation tests assess statistical significance without relying on
+# distributional assumptions (e.g., normality of residuals). Instead of
+# deriving p-values from a theoretical distribution, we build an empirical
+# null distribution by repeatedly permuting the data under H0 and comparing
+# the observed test statistic to this distribution.
+#
+# Three methods are implemented:
+#   1. ter Braak (1992): For each feature j, fit a reduced model without
+#      feature j, compute residuals, permute those residuals, and refit the
+#      full model. Tests H0: beta_j = 0 given all other predictors.
+#   2. Kennedy (1995) individual: Partial out confounders Z from each
+#      predictor X via an exposure model (X ~ Z), permute the residuals of
+#      X, and refit the outcome model. Tests H0: beta_j = 0 for each
+#      non-confounder predictor.
+#   3. Kennedy (1995) joint: Tests whether a group of predictors collectively
+#      adds significant information beyond confounders, using deviance
+#      reduction (logistic) or RSS reduction (linear) as the test statistic.
+# ============================================================================
 
 def permutation_test_regression(
     X: pd.DataFrame, 
@@ -621,7 +746,9 @@ def permutation_test_regression(
     rng = np.random.default_rng(random_state)
     permuted_coefs: List = []
     
-    # Detect model type based on Y
+    # Step 1: Detect model type from the outcome variable.
+    # If Y has exactly two values {0, 1}, we use logistic regression;
+    # otherwise we use ordinary least squares (linear regression).
     y_values = np.ravel(y)
     unique_y = np.unique(y_values)
     is_binary = (len(unique_y) == 2) and np.all(np.isin(unique_y, [0, 1]))
@@ -631,6 +758,9 @@ def permutation_test_regression(
     else:
         model_class = lambda: LinearRegression()
 
+    # Step 2: Fit the observed (unpermuted) model and extract coefficients.
+    # These are the "real" estimates we will compare against the permutation
+    # null distribution to assess statistical significance.
     model = model_class().fit(X, y_values)
     
     if is_binary:
@@ -638,7 +768,11 @@ def permutation_test_regression(
     else:
         model_coefs = np.ravel(model.coef_).tolist()
 
-    # Compute diagnostic statistics via statsmodels
+    # Step 3: Compute diagnostic statistics via statsmodels.
+    # For linear models: R^2, adjusted R^2, F-statistic, AIC, BIC.
+    #   AIC = 2k - 2*ln(L),  BIC = k*ln(n) - 2*ln(L)
+    # For logistic models: pseudo R^2 (McFadden), log-likelihood, AIC, BIC.
+    #   Pseudo R^2 = 1 - ln(L_full) / ln(L_null)
     n_obs = len(y_values)
     n_features = X.shape[1]
     if is_binary:
@@ -699,9 +833,13 @@ def permutation_test_regression(
                 preds_reduced = model_reduced.predict(X_reduced).ravel()
                 resids_reduced = y_values - preds_reduced
             
-            # 3. Permutation Loop for this specific feature
+            # 3. Permutation Loop: generate B synthetic outcomes under H0
+            # to build the null distribution of beta_j for this feature.
             for p in range(n_permutations):
-                # Construct new Y under H0: Reduced Preds + Shuffled Reduced Resids
+                # Create a synthetic outcome by adding randomly reordered
+                # residuals back to the reduced model's fitted values. This
+                # simulates what Y would look like if this feature had no
+                # effect on the outcome.
                 y_perm = preds_reduced + rng.permutation(resids_reduced)
                 
                 if is_binary:
@@ -724,73 +862,112 @@ def permutation_test_regression(
         permuted_coefs = permuted_matrix.tolist()
         
     elif method == 'kennedy':
-        # Kennedy Method: Partial out confounders from X via exposure model (X ~ Z)
-        # then permute the residuals of X
+        # Kennedy (1995) Individual Coefficient Method
+        #
+        # The key idea: instead of permuting Y (as in ter Braak), we permute X.
+        # Specifically, for each predictor X_j we want to test, we first remove
+        # the linear influence of confounders Z by fitting an "exposure model":
+        #   X_j = Z * gamma + e_j
+        # The residuals e_j represent the part of X_j not explained by Z.
+        # Under H0 (beta_j = 0), these residuals are exchangeable, so we
+        # permute them and reconstruct X_j* = X_hat_j + permute(e_j).
+        # We then refit the full outcome model Y ~ X* to get beta_j*.
+        # Repeating B times builds a null distribution for beta_j.
         
         if confounders is None:
             confounders = []
         
-        # Get features to test (all non-confounders)
+        # Identify which features are being tested vs. held fixed as confounders
         features_to_test = [col for col in X.columns if col not in confounders]
         
-        # Prepare confounder matrix
+        # Build confounder matrix Z from the columns the user identified as
+        # confounders. Before permuting each predictor X_j, we regress X_j
+        # on Z to isolate the part of X_j that is independent of the
+        # confounders. Only that independent part gets shuffled, so the
+        # confounders' influence on X_j is held constant during the test.
         if len(confounders) > 0:
             Z = X[confounders].values
         else:
             Z = np.zeros((len(X), 0))
         
-        # Create a matrix to hold results: rows=permutations, cols=features
         permuted_matrix = np.zeros((n_permutations, len(X.columns)))
         
-        # For confounder columns, we don't permute - just store observed coefs
+        # Confounder coefficients are not tested (they are assumed fixed
+        # controls, not hypotheses). Fill every permutation row with the
+        # observed coefficient so they do not affect the p-value calculation.
         for i, col in enumerate(X.columns):
             if col in confounders:
                 permuted_matrix[:, i] = model_coefs[i]
         
-        # Loop through each non-confounder feature to test
         for feature in features_to_test:
             feat_idx = X.columns.get_loc(feature)
             X_target = X[[feature]].values
             
-            # Partial out confounders from X (exposure model)
+            # Exposure model: regress X_j on Z to partial out confounder effects.
+            # x_hat = predicted X_j from confounders alone.
+            # x_resids = X_j - x_hat = variation in X_j NOT due to confounders.
+            # Under H0, these residuals carry no information about Y.
             if Z.shape[1] > 0:
                 exposure_model = LinearRegression().fit(Z, X_target)
                 x_hat = exposure_model.predict(Z)
                 x_resids = X_target - x_hat
             else:
+                # No confounders: x_hat is just the column mean of X_j,
+                # so the residuals are mean-centered values. Permuting them
+                # is equivalent to shuffling X_j itself.
                 x_hat = np.full_like(X_target, X_target.mean())
                 x_resids = X_target - x_hat
             
-            # Permutation loop for this feature
+            # For each permutation, randomly reorder the exposure residuals
+            # and add them back to the confounder-predicted values to create
+            # a synthetic version of X_j. This breaks any real association
+            # between X_j and Y while preserving X_j's relationship with Z.
+            # Refitting the full model on this synthetic X_j gives a
+            # coefficient beta_j* drawn from the null distribution.
             for p in range(n_permutations):
-                # Shuffle residuals of X
                 shuffled_resids = rng.permutation(x_resids.ravel())
                 
-                # Reconstruct X* = X_hat + shuffled_resids
+                # X_j* = X_hat_j + shuffled residuals
                 X_perm = X.copy()
                 X_perm[feature] = x_hat.ravel() + shuffled_resids
                 
-                # Fit full model on original Y with permuted X
+                # Refit Y ~ X* (all features, with X_j replaced by X_j*)
                 perm_model = model_class().fit(X_perm.values, y_values)
-                
-                # Extract coefficient for the feature
                 permuted_matrix[p, feat_idx] = perm_model.coef_.flatten()[feat_idx]
         
-        # Convert matrix back to list of lists format
         permuted_coefs = permuted_matrix.tolist()
         
     elif method == 'kennedy_joint':
-        # Kennedy Joint Method: Tests whether a GROUP of non-confounder predictors 
-        # collectively adds significant information beyond confounders.
-        # Uses deviance reduction (logistic) or RSS reduction (linear) as the metric.
+        # Kennedy (1995) Joint Test
+        #
+        # Instead of testing each predictor individually, this tests whether
+        # a GROUP of non-confounder predictors collectively adds significant
+        # predictive information beyond the confounders alone.
+        #
+        # The test statistic measures the improvement in model fit when adding
+        # the predictors of interest to a confounders-only (reduced) model:
+        #   Linear:   RSS_reduced - RSS_full  (residual sum of squares reduction)
+        #   Logistic: Deviance_reduced - Deviance_full  (deviance reduction)
+        #
+        # The null distribution is built by permuting the exposure-model
+        # residuals of ALL non-confounder predictors simultaneously (row-wise
+        # permutation preserves inter-predictor correlations), reconstructing
+        # X*, refitting, and measuring the improvement under H0.
         
         if confounders is None:
             confounders = []
         
-        # Get features to test (all non-confounders)
         features_to_test = [col for col in X.columns if col not in confounders]
         
-        # Define metric functions based on model type
+        # Define the fit metric used to measure how much better the full
+        # model fits compared to the reduced (confounders-only) model.
+        # For linear regression, this is the residual sum of squares (RSS):
+        #   RSS = sum((y_i - y_hat_i)^2), computed as MSE * n.
+        # For logistic regression, this is the deviance (scaled log-likelihood):
+        #   Deviance = 2 * sum(-y_i*log(p_i) - (1-y_i)*log(1-p_i)).
+        # A larger drop from reduced to full metric means the predictors
+        # explain more variance (linear) or reduce more prediction error
+        # (logistic) than the confounders alone.
         if is_binary:
             def get_metric(y_true, y_pred_proba):
                 return 2 * log_loss(y_true, y_pred_proba, normalize=False)
@@ -800,7 +977,6 @@ def permutation_test_regression(
                 return mean_squared_error(y_true, y_pred) * len(y_true)
             metric_type = 'RSS Reduction'
         
-        # Prepare matrices
         X_target = X[features_to_test].values
         
         if len(confounders) > 0:
@@ -808,7 +984,8 @@ def permutation_test_regression(
         else:
             Z = np.zeros((len(X), 0))
         
-        # Fit reduced model (only confounders)
+        # Fit the reduced model (confounders only) to get the baseline metric.
+        # This is the model under H0: the non-confounder predictors add nothing.
         if Z.shape[1] > 0:
             reduced_model = model_class().fit(Z, y_values)
             if is_binary:
@@ -816,7 +993,7 @@ def permutation_test_regression(
             else:
                 preds_reduced = reduced_model.predict(Z)
         else:
-            # Null model (intercept only)
+            # No confounders: the reduced model is just the intercept (mean of Y)
             if is_binary:
                 mean_y = np.mean(y_values)
                 preds_reduced = np.zeros((len(y_values), 2))
@@ -827,7 +1004,8 @@ def permutation_test_regression(
                 
         base_metric = get_metric(y_values, preds_reduced)
         
-        # Fit observed full model (X_target + Z)
+        # Fit the full model (confounders + predictors of interest).
+        # The observed improvement = base_metric - full_metric.
         if Z.shape[1] > 0:
             full_features = np.hstack([X_target, Z])
         else:
@@ -841,11 +1019,12 @@ def permutation_test_regression(
             preds_full = full_model.predict(full_features)
             
         full_metric = get_metric(y_values, preds_full)
-        
-        # Observed improvement (positive = improvement)
         obs_improvement = base_metric - full_metric
         
-        # Kennedy preprocessing: partial out Z from X_target
+        # Exposure model: partial out Z from ALL non-confounder predictors jointly.
+        # X_target = Z * Gamma + E, where E is the matrix of residuals.
+        # Row-wise permutation of E preserves the correlation structure among
+        # the non-confounder predictors, which is important for the joint test.
         if Z.shape[1] > 0:
             exposure_model = LinearRegression().fit(Z, X_target)
             x_hat = exposure_model.predict(Z)
@@ -854,18 +1033,24 @@ def permutation_test_regression(
             x_hat = np.full_like(X_target, X_target.mean(axis=0))
             x_resids = X_target - x_hat
             
-        # Permutation loop
+        # Permutation loop: for each of B iterations, randomly reorder the
+        # rows (not columns) of the residual matrix E so that each
+        # observation's residual vector is kept intact — this preserves the
+        # observed correlation structure among the non-confounder predictors.
+        # Reconstructing X* = X_hat + permuted(E) and refitting measures how
+        # much fit improvement arises by chance when the real X-Y associations
+        # are broken but inter-predictor relationships are maintained.
         perm_improvements = np.zeros(n_permutations)
         
         for i in range(n_permutations):
-            # Shuffle residuals (keeps internal correlation of X_target intact)
             shuffled_idx = rng.permutation(len(y_values))
             shuffled_resids = x_resids[shuffled_idx]
             
-            # Reconstruct X*
+            # Reconstruct X*: add the shuffled residuals back to the
+            # confounder-predicted values, creating a synthetic predictor
+            # matrix that has the same Z-relationship but a randomized X-Y link.
             x_star = x_hat + shuffled_resids
             
-            # Refit full model
             if Z.shape[1] > 0:
                 perm_features = np.hstack([x_star, Z])
             else:
@@ -881,8 +1066,12 @@ def permutation_test_regression(
             perm_metric_val = get_metric(y_values, perm_preds)
             perm_improvements[i] = base_metric - perm_metric_val
         
-        # P-Value with Phipson & Smyth (2010) correction: (b + 1) / (B + 1)
-        # Ensures p-values are never exactly 0 in finite permutation tests
+        # Compute the empirical p-value using the Phipson & Smyth (2010)
+        # correction. Count how many permuted fit improvements equal or
+        # exceed the observed improvement, then add 1 to both the count
+        # and the total number of permutations. This ensures the p-value
+        # is never exactly zero and treats the observed statistic as one
+        # member of the (B + 1)-sized reference set.
         p_value = (np.sum(perm_improvements >= obs_improvement) + 1) / (n_permutations + 1)
         
         # Format p-value string
@@ -913,7 +1102,7 @@ def permutation_test_regression(
     permuted_p_values, classic_p_values = calculate_p_values(X, y, permuted_coefs, model_coefs, precision, p_value_threshold_one, p_value_threshold_two)
     
     # For Kennedy method with confounders, mark confounder p-values as N/A
-    # since they are controls, not hypotheses being tested
+    # since they are controls, not hypotheses being tested.
     if method == 'kennedy' and confounders:
         for i, col in enumerate(X.columns):
             if col in confounders:
@@ -1028,7 +1217,7 @@ print()
 
 #%%
 # Example: Use Kennedy method with identified confounders for a specific predictor
-# Pick the first predictor that has identified confounders, if any
+# Pick the first predictor that has identified confounders, if any.
 if predictors_with_confounders:
     example_predictor = list(predictors_with_confounders.keys())[0]
     example_confounders = predictors_with_confounders[example_predictor]
