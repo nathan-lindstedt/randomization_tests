@@ -98,6 +98,107 @@ def calculate_p_values(
 
     return permuted_p_values, classic_p_values
 
+def print_results_table(
+    results: Dict,
+    feature_names: List[str],
+    target_name: str = None,
+    title: str = "Permutation Test Results"
+) -> None:
+    """
+    Print regression results in a formatted ASCII table similar to statsmodels.
+    
+    Parameters
+    ----------
+    results : dict
+        Results dictionary from permutation_test_regression.
+    feature_names : list of str
+        Names of the features/predictors.
+    target_name : str, optional
+        Name of the target variable.
+    title : str, optional
+        Title for the output table.
+    """
+    # Header
+    print("=" * 80)
+    print(f"{title:^80}")
+    print("=" * 80)
+    
+    # Model info
+    if target_name:
+        print(f"Dep. Variable: {target_name:<20} Model Type: {results['model_type']}")
+    else:
+        print(f"Model Type: {results['model_type']}")
+    print(f"Method: {results['method']}")
+    print("-" * 80)
+    
+    # Column headers
+    print(f"{'Feature':<25} {'Coef':>12} {'P>|z| (Emp)':>18} {'P>|z| (Asy)':>18}")
+    print("-" * 80)
+    
+    # Data rows
+    coefs = results['model_coefs']
+    emp_p = results['permuted_p_values']
+    asy_p = results['classic_p_values']
+    
+    for i, feat in enumerate(feature_names):
+        coef_str = f"{coefs[i]:>12.4f}"
+        print(f"{feat:<25} {coef_str} {emp_p[i]:>18} {asy_p[i]:>18}")
+    
+    # Footer
+    print("=" * 80)
+    print(f"(*) p < {results['p_value_threshold_one']}   "
+          f"(**) p < {results['p_value_threshold_two']}   "
+          f"(ns) p >= {results['p_value_threshold_one']}")
+    print()
+
+def print_joint_results_table(
+    results: Dict,
+    target_name: str = None,
+    title: str = "Joint Permutation Test Results"
+) -> None:
+    """
+    Print joint test results in a formatted ASCII table.
+    
+    Parameters
+    ----------
+    results : dict
+        Results dictionary from permutation_test_regression with method='kennedy_joint'.
+    target_name : str, optional
+        Name of the target variable.
+    title : str, optional
+        Title for the output table.
+    """
+    # Header
+    print("=" * 80)
+    print(f"{title:^80}")
+    print("=" * 80)
+    
+    # Model info
+    if target_name:
+        print(f"Dep. Variable: {target_name:<20} Model Type: {results['model_type']}")
+    else:
+        print(f"Model Type: {results['model_type']}")
+    print(f"Method: {results['method']}")
+    print(f"Metric: {results['metric_type']}")
+    print("-" * 80)
+    
+    # Features tested
+    print(f"Features Tested: {', '.join(results['features_tested'])}")
+    if results['confounders']:
+        print(f"Confounders: {', '.join(results['confounders'])}")
+    print("-" * 80)
+    
+    # Results
+    print(f"{'Observed Improvement:':<30} {results['observed_improvement']:>12.4f}")
+    print(f"{'Joint p-Value:':<30} {results['p_value_str']:>12}")
+    
+    # Footer
+    print("=" * 80)
+    print(f"(*) p < {results['p_value_threshold_one']}   "
+          f"(**) p < {results['p_value_threshold_two']}   "
+          f"(ns) p >= {results['p_value_threshold_one']}")
+    print()
+
 def screen_potential_confounders(
     X: pd.DataFrame,
     y: pd.DataFrame,
@@ -724,6 +825,14 @@ def permutation_test_regression(
 
     permuted_p_values, classic_p_values = calculate_p_values(X, y, permuted_coefs, model_coefs, precision, p_value_threshold_one, p_value_threshold_two)
     
+    # For Kennedy method with confounders, mark confounder p-values as N/A
+    # since they are controls, not hypotheses being tested
+    if method == 'kennedy' and confounders:
+        for i, col in enumerate(X.columns):
+            if col in confounders:
+                permuted_p_values[i] = 'N/A (confounder)'
+                classic_p_values[i] = 'N/A (confounder)'
+    
     return {
         'model_coefs': model_coefs,
         'permuted_p_values': permuted_p_values,
@@ -740,16 +849,12 @@ results_ter_braak = permutation_test_regression(X, y, method='ter_braak')
 
 #%%
 # Print the results obtained by the ter Braak (1992) method
-print("Regression Model Coefficients and p-Values obtained by the ter Braak (1992) method\n")
-print(f"Target: {y.columns.tolist()}")
-print(f"Features: {X.columns.tolist()}\n")
-print(f"Model Type: {results_ter_braak['model_type']}\n")
-print(f"Coefficients: {results_ter_braak['model_coefs']}\n")
-print(f"Empirical p-Values: {results_ter_braak['permuted_p_values']}")
-print(f"Asymptotic p-Values: {results_ter_braak['classic_p_values']}")
-print(f"\n(*) p-value < {results_ter_braak['p_value_threshold_one']}")
-print(f"(**) p-value < {results_ter_braak['p_value_threshold_two']}")
-print(f"(ns) p-value >= {results_ter_braak['p_value_threshold_one']}\n")
+print_results_table(
+    results_ter_braak,
+    feature_names=X.columns.tolist(),
+    target_name=y.columns[0],
+    title="ter Braak (1992) Permutation Test"
+)
 
 #%%
 # Perform permutation test by the Kennedy (1995) individual coefficient method
@@ -759,16 +864,12 @@ results_kennedy = permutation_test_regression(X, y, method='kennedy', confounder
 
 #%%
 # Print the results obtained by the Kennedy (1995) individual method
-print("Regression Model Coefficients and p-Values obtained by the Kennedy (1995) individual method\n")
-print(f"Target: {y.columns.tolist()}")
-print(f"Features: {X.columns.tolist()}\n")
-print(f"Model Type: {results_kennedy['model_type']}\n")
-print(f"Coefficients: {results_kennedy['model_coefs']}\n")
-print(f"Empirical p-Values: {results_kennedy['permuted_p_values']}")
-print(f"Asymptotic p-Values: {results_kennedy['classic_p_values']}")
-print(f"\n(*) p-value < {results_kennedy['p_value_threshold_one']}")
-print(f"(**) p-value < {results_kennedy['p_value_threshold_two']}")
-print(f"(ns) p-value >= {results_kennedy['p_value_threshold_one']}\n")
+print_results_table(
+    results_kennedy,
+    feature_names=X.columns.tolist(),
+    target_name=y.columns[0],
+    title="Kennedy (1995) Individual Coefficient Permutation Test"
+)
 
 #%%
 # Perform permutation test by the Kennedy (1995) joint method
@@ -777,16 +878,11 @@ results_kennedy_joint = permutation_test_regression(X, y, method='kennedy_joint'
 
 #%%
 # Print the results obtained by the Kennedy (1995) joint method
-print("Joint Permutation Test obtained by the Kennedy (1995) joint method\n")
-print(f"Target: {y.columns.tolist()}")
-print(f"Features Tested: {results_kennedy_joint['features_tested']}\n")
-print(f"Model Type: {results_kennedy_joint['model_type']}")
-print(f"Metric: {results_kennedy_joint['metric_type']}\n")
-print(f"Observed Improvement: {results_kennedy_joint['observed_improvement']:.4f}")
-print(f"Joint p-Value: {results_kennedy_joint['p_value_str']}")
-print(f"\n(*) p-value < {results_kennedy_joint['p_value_threshold_one']}")
-print(f"(**) p-value < {results_kennedy_joint['p_value_threshold_two']}")
-print(f"(ns) p-value >= {results_kennedy_joint['p_value_threshold_one']}\n")
+print_joint_results_table(
+    results_kennedy_joint,
+    target_name=y.columns[0],
+    title="Kennedy (1995) Joint Permutation Test"
+)
 
 #%%
 # Full confounder identification workflow for all predictors
@@ -833,14 +929,17 @@ if predictors_with_confounders:
     example_predictor = list(predictors_with_confounders.keys())[0]
     example_confounders = predictors_with_confounders[example_predictor]
     
-    print(f"Example: Kennedy Method for '{example_predictor}' controlling for {example_confounders}\n")
-    
     results_kennedy_with_confounders = permutation_test_regression(
         X, y, 
         method='kennedy', 
         confounders=example_confounders
     )
     
-    print(f"Coefficients: {results_kennedy_with_confounders['model_coefs']}\n")
-    print(f"Empirical p-Values: {results_kennedy_with_confounders['permuted_p_values']}")
-    print(f"Asymptotic p-Values: {results_kennedy_with_confounders['classic_p_values']}\n")
+    print_results_table(
+        results_kennedy_with_confounders,
+        feature_names=X.columns.tolist(),
+        target_name=y.columns[0],
+        title=f"Kennedy (1995) Method for '{example_predictor}' (controlling for {example_confounders})"
+    )
+
+# %%
