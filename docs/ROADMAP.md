@@ -43,15 +43,29 @@ core algorithms, and development infrastructure.
 
 ---
 
-## v0.1.1 — Polish & diagnostics
-
-Adds extended diagnostics, input flexibility, display improvements, and
-expands the test suite.
+## v0.1.1 — Polish
 
 - [x] **Polars input support:** all public functions accept both pandas
   and Polars DataFrames via an internal `_ensure_pandas_df` adapter in
   `_compat.py`.  A `DataFrameLike` type alias documents the supported
   input types.
+
+---
+
+## v0.1.5 — Diagnostics & intercept fix
+
+Adds extended diagnostics, fixes a correctness bug in all permutation
+refit paths, and expands the test suite.
+
+- [x] **Intercept mismatch fix (all methods).** Permutation refits in
+  `_batch_ols_coefs`, `_ter_braak_linear`, `_ter_braak_logistic`,
+  `_kennedy_individual_linear`, `_kennedy_individual_logistic`, and
+  `_kennedy_joint` were fitting without an intercept while the observed
+  model used `fit_intercept=True`.  This caused permuted slope
+  coefficients to absorb the response mean, producing spurious p-values
+  (e.g. p = 1.0 for X6 longitude in the linear example, p = 0.0 for
+  strong predictors).  All permutation refits now include an intercept
+  column matching the observed model specification.
 - [x] **Extended diagnostics module** (`diagnostics.py`): standardised
   coefficients, variance inflation factors (VIF), Monte Carlo standard
   error, empirical-vs-asymptotic divergence flags, Breusch-Pagan
@@ -60,8 +74,8 @@ expands the test suite.
   coverage reporting.
 - [x] **Exposure R² column** in the diagnostics table for the Kennedy
   individual method, quantifying how much of each predictor's variance
-  is explained by the confounders.  A near-1.0 value explains why the
-  permuted p-value is inflated.
+  is explained by the confounders.  Suppressed when no confounders are
+  specified (was displaying a wall of `0.0000` values).
 - [x] **`fit_intercept` parameter** added to all code paths (10
   functions in `core.py` and `pvalues.py`), enabling intercept-free
   models for through-origin regression.
@@ -73,12 +87,19 @@ expands the test suite.
 - [x] **Display improvements:** 80-character line-width constraint via
   `_wrap()` helper, `textwrap.wrap`-based title centering, consistent
   4-decimal p-value formatting (`"0.000"` / `"1.000"`), redesigned
-  four-section diagnostics table layout.
+  four-section diagnostics table layout, omnibus test footer in joint
+  results table.
+- [x] **P-value formatting fix:** `_fmt()` now uses fixed-width
+  `f"{val:.{precision}f}"` instead of `f"{rounded}"`, preventing
+  misleading `0.0` / `1.0` display.
+- [x] **`calculate_p_values` return type** expanded from 2-tuple to
+  4-tuple `(permuted_str, classic_str, raw_empirical, raw_classic)`,
+  eliminating redundant statsmodels refits in diagnostics.
 - [x] **Cook's distance fix:** logistic Cook's D now delegates to
   `sm.GLM(family=Binomial()).get_influence().cooks_distance` instead of
   using `sm.Logit.fittedvalues` (which returns log-odds, not
   probabilities).
-- [x] **Test suite expanded** from 40 to 124 tests covering diagnostics,
+- [x] **Test suite expanded** from 40 to 125 tests covering diagnostics,
   fit_intercept, exposure R², Polars compatibility, and display
   formatting.
 
