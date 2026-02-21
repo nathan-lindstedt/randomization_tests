@@ -42,7 +42,6 @@ Reference:
 """
 
 import numpy as np
-import pandas as pd
 import statsmodels.api as sm
 
 from ._compat import DataFrameLike, _ensure_pandas_df
@@ -56,7 +55,8 @@ def calculate_p_values(
     precision: int = 3,
     p_value_threshold_one: float = 0.05,
     p_value_threshold_two: float = 0.01,
-) -> tuple[list[str], list[str]]:
+    fit_intercept: bool = True,
+) -> tuple[list[str], list[str], np.ndarray, np.ndarray]:
     """Calculate empirical (permutation) and classical (asymptotic) p-values.
 
     Automatically detects binary vs. continuous outcomes and uses logistic
@@ -78,11 +78,20 @@ def calculate_p_values(
         precision: Decimal places for rounding.
         p_value_threshold_one: First significance threshold.
         p_value_threshold_two: Second significance threshold.
+        fit_intercept: Whether an intercept was included in the model.
+            When True (default), ``sm.add_constant`` prepends an
+            intercept column for the statsmodels fit and the first
+            element of the resulting p-value array is skipped.  When
+            False, the raw design matrix is used directly and all
+            returned p-values correspond to the features.
 
     Returns:
-        A ``(permuted_p_values, classic_p_values)`` tuple where each
-        element is a list of formatted p-value strings with significance
-        markers (``*``, ``**``, or ``ns``).
+        A four-element tuple
+        ``(permuted_p_values, classic_p_values, raw_empirical_p, raw_classic_p)``
+        where the first two elements are lists of formatted p-value
+        strings with significance markers (``*``, ``**``, or ``ns``),
+        and the last two are NumPy arrays of raw (unformatted) numeric
+        p-values used for downstream diagnostics.
     """
     X = _ensure_pandas_df(X, name="X")
     y = _ensure_pandas_df(y, name="y")
@@ -95,13 +104,16 @@ def calculate_p_values(
     is_binary = (len(unique_y) == 2) and np.all(np.isin(unique_y, [0, 1]))
 
     # --- Classical asymptotic p-values via statsmodels ---
-    # statsmodels expects an explicit intercept column, added via
-    # sm.add_constant().  It returns p-values for [intercept, x1, …, xp],
-    # so we skip index 0 when extracting feature-level p-values below.
+    # When fit_intercept is True, statsmodels expects an explicit
+    # intercept column added via sm.add_constant().  The returned
+    # p-values include [intercept, x1, …, xp] and we skip index 0.
+    # When fit_intercept is False, the raw design matrix is used and
+    # all returned p-values correspond directly to features.
+    X_sm = sm.add_constant(X) if fit_intercept else np.asarray(X)
     if is_binary:
-        sm_model = sm.Logit(y_values, sm.add_constant(X)).fit(disp=0)
+        sm_model = sm.Logit(y_values, X_sm).fit(disp=0)
     else:
-        sm_model = sm.OLS(y_values, sm.add_constant(X)).fit()
+        sm_model = sm.OLS(y_values, X_sm).fit()
 
     # --- Vectorised empirical p-values (Phipson & Smyth correction) ---
     # For each feature j, count how many of the B permuted |β*_j| values
@@ -125,14 +137,19 @@ def calculate_p_values(
     # --- Format p-value strings with significance markers ---
     def _fmt(p: float) -> str:
         rounded = np.round(p, precision)
+        val = f"{rounded:.{precision}f}"
         if p < p_value_threshold_two:
-            return f"{rounded} (**)"
+            return f"{val} (**)"
         elif p < p_value_threshold_one:
-            return f"{rounded} (*)"
-        return f"{rounded} (ns)"
+            return f"{val} (*)"
+        return f"{val} (ns)"
 
     permuted_p_values = [_fmt(p) for p in raw_p]
-    # sm_model.pvalues[0] is the intercept — skip it
-    classic_p_values = [_fmt(p) for p in sm_model.pvalues[1:]]
+    # When fit_intercept is True, sm_model.pvalues[0] is the intercept
+    # — skip it.  When False, all p-values correspond to features.
+    raw_classic_p = np.asarray(
+        sm_model.pvalues[1:] if fit_intercept else sm_model.pvalues
+    )
+    classic_p_values = [_fmt(p) for p in raw_classic_p]
 
-    return permuted_p_values, classic_p_values
+    return permuted_p_values, classic_p_values, raw_p, raw_classic_p

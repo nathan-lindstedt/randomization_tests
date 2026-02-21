@@ -96,6 +96,7 @@ from sklearn.metrics import log_loss, mean_squared_error
 
 from ._compat import DataFrameLike, _ensure_pandas_df
 from ._config import get_backend
+from .diagnostics import compute_all_diagnostics
 from .permutations import generate_unique_permutations
 from .pvalues import calculate_p_values
 
@@ -195,6 +196,7 @@ if _CAN_IMPORT_JAX:
         X_base: np.ndarray,
         Y_matrix: np.ndarray,
         max_iter: int = 100,
+        fit_intercept: bool = True,
     ) -> np.ndarray:
         """Fit logistic regression for many Y vectors at once using vmap.
 
@@ -213,11 +215,14 @@ if _CAN_IMPORT_JAX:
         Returns:
             Coefficient matrix of shape ``(B, p)``.
         """
-        # Prepend intercept column to match sklearn's default
-        # (fit_intercept=True).  The solver returns [β₀, β₁, …, βₚ];
+        # When fit_intercept is True, prepend an intercept column to
+        # match sklearn's default.  The solver returns [β₀, β₁, …, βₚ];
         # we slice off β₀ so the caller sees only feature coefficients.
-        ones = np.ones((X_base.shape[0], 1), dtype=X_base.dtype)
-        X_aug = np.hstack([ones, X_base])
+        if fit_intercept:
+            ones = np.ones((X_base.shape[0], 1), dtype=X_base.dtype)
+            X_aug = np.hstack([ones, X_base])
+        else:
+            X_aug = X_base
         X_j = jnp.array(X_aug, dtype=jnp.float32)
         Y_j = jnp.array(Y_matrix, dtype=jnp.float32)
 
@@ -232,7 +237,8 @@ if _CAN_IMPORT_JAX:
 
         # vmap across the batch dimension (rows of Y_j)
         batched_solve = jit(vmap(_solve_one))
-        return np.asarray(batched_solve(Y_j))[:, 1:]  # drop intercept
+        all_coefs = np.asarray(batched_solve(Y_j))
+        return all_coefs[:, 1:] if fit_intercept else all_coefs
 
 
 # ------------------------------------------------------------------ #
@@ -258,21 +264,45 @@ if _CAN_IMPORT_JAX:
 # (B = 5 000) because BLAS-level matrix multiplication is highly
 # optimised for modern CPUs (cache-blocking, SIMD, multi-threading).
 
-def _batch_ols_coefs(X: np.ndarray, Y_matrix: np.ndarray) -> np.ndarray:
+def _batch_ols_coefs(
+    X: np.ndarray,
+    Y_matrix: np.ndarray,
+    fit_intercept: bool = True,
+) -> np.ndarray:
     """Compute OLS coefficients for many Y vectors via one matrix multiply.
 
+    When *fit_intercept* is True (default), an intercept column is
+    prepended automatically so that the returned slope coefficients
+    match what sklearn's ``LinearRegression(fit_intercept=True)``
+    produces.  The intercept coefficients are stripped before
+    returning.
+
+    When *fit_intercept* is False, the raw design matrix is used and
+    no intercept is estimated (matching ``fit_intercept=False``).
+
     Args:
-        X: Design matrix of shape ``(n, p)``.
+        X: Design matrix of shape ``(n, p)`` — **without** an
+            intercept column.
         Y_matrix: Matrix of shape ``(B, n)`` where each row is a
             permuted response vector.
+        fit_intercept: Whether to include an intercept term.
 
     Returns:
         Coefficient matrix of shape ``(B, p)`` where
-        ``coefs[b] = pinv(X) @ Y_matrix[b]``.
+        ``coefs[b]`` contains the slope coefficients (intercept
+        excluded when *fit_intercept* is True) for Y_matrix[b].
     """
-    pinv = np.linalg.pinv(X)  # (p, n) — computed once, reused B times
-    result: np.ndarray = (pinv @ Y_matrix.T).T  # (B, p)
-    return result
+    if fit_intercept:
+        # Prepend a column of ones so the pseudoinverse yields both an
+        # intercept term (column 0) and p slope terms (columns 1:).
+        X_aug = np.column_stack([np.ones(X.shape[0]), X])  # (n, p+1)
+        pinv = np.linalg.pinv(X_aug)  # (p+1, n)
+        result: np.ndarray = (pinv @ Y_matrix.T).T  # (B, p+1)
+        return result[:, 1:]  # drop intercept column
+    else:
+        pinv = np.linalg.pinv(X)  # (p, n)
+        result = (pinv @ Y_matrix.T).T  # (B, p)
+        return result
 
 
 # ------------------------------------------------------------------ #
@@ -302,6 +332,7 @@ def _compute_diagnostics(
     X: pd.DataFrame,
     y_values: np.ndarray,
     is_binary: bool,
+    fit_intercept: bool = True,
 ) -> dict:
     """Compute model diagnostics via statsmodels.
 
@@ -313,6 +344,9 @@ def _compute_diagnostics(
         y_values: Response vector.
         is_binary: Whether the response is binary (logistic) or
             continuous (OLS).
+        fit_intercept: Whether to include an intercept term.  When
+            True (default), ``sm.add_constant(X)`` is used.  When
+            False, the raw design matrix is passed directly.
 
     Returns:
         Dictionary of diagnostic statistics.  Keys differ by model
@@ -321,9 +355,10 @@ def _compute_diagnostics(
     """
     n_obs = len(y_values)
     n_features = X.shape[1]
+    X_sm = sm.add_constant(X) if fit_intercept else np.asarray(X)
 
     if is_binary:
-        sm_model = sm.Logit(y_values, sm.add_constant(X)).fit(disp=0)
+        sm_model = sm.Logit(y_values, X_sm).fit(disp=0)
         return {
             "n_observations": n_obs,
             "n_features": n_features,
@@ -335,7 +370,7 @@ def _compute_diagnostics(
             "bic": np.round(sm_model.bic, 4),
         }
     else:
-        sm_model = sm.OLS(y_values, sm.add_constant(X)).fit()
+        sm_model = sm.OLS(y_values, X_sm).fit()
         return {
             "n_observations": n_obs,
             "n_features": n_features,
@@ -384,6 +419,7 @@ def _ter_braak_linear(
     X: pd.DataFrame,
     y_values: np.ndarray,
     perm_indices: np.ndarray,
+    fit_intercept: bool = True,
 ) -> np.ndarray:
     """Vectorised ter Braak for OLS.
 
@@ -393,6 +429,11 @@ def _ter_braak_linear(
        residuals.
     2. Build all *B* permuted Y vectors in one shot using fancy indexing.
     3. Batch-compute full-model coefficients via pseudoinverse.
+
+    Args:
+        fit_intercept: Whether to include an intercept in both the
+            reduced and full model refits.  Must match the observed
+            model so that coefficients are comparable.
 
     Returns:
         Array of shape ``(B, n_features)`` with permuted coefficients.
@@ -405,10 +446,16 @@ def _ter_braak_linear(
     for j in range(n_features):
         # Step 1: Fit the reduced model Y ~ X_{-j}.
         # Drop column j from the design matrix and compute OLS predictions.
-        # β̂_{-j} = pinv(X_{-j}) @ Y, then ŷ_{-j} = X_{-j} @ β̂_{-j}.
+        # When fit_intercept is True, an intercept column is included so
+        # that the reduced-model coefficients live in the same parameter
+        # space as the sklearn observed coefficients.
         X_red = np.delete(X_np, j, axis=1)
-        pinv_red = np.linalg.pinv(X_red)
-        preds_red = X_red @ (pinv_red @ y_values)
+        if fit_intercept:
+            X_red_aug = np.column_stack([np.ones(n), X_red])
+        else:
+            X_red_aug = X_red
+        pinv_red = np.linalg.pinv(X_red_aug)
+        preds_red = X_red_aug @ (pinv_red @ y_values)
         resids_red = y_values - preds_red
 
         # Step 2: Build all B permuted Y vectors simultaneously.
@@ -421,7 +468,7 @@ def _ter_braak_linear(
 
         # Step 3: Batch OLS — compute β̂*_b = pinv(X) @ Y*_b for all b.
         # _batch_ols_coefs returns shape (B, p); we extract column j.
-        all_coefs = _batch_ols_coefs(X_np, Y_perm)  # (B, p)
+        all_coefs = _batch_ols_coefs(X_np, Y_perm, fit_intercept)  # (B, p)
         result[:, j] = all_coefs[:, j]
 
     return result
@@ -431,6 +478,7 @@ def _ter_braak_logistic(
     X: pd.DataFrame,
     y_values: np.ndarray,
     perm_indices: np.ndarray,
+    fit_intercept: bool = True,
 ) -> np.ndarray:
     """ter Braak for logistic regression.
 
@@ -475,7 +523,10 @@ def _ter_braak_logistic(
     for j in range(n_features):
         # Step 1: Reduced logistic model — drop feature j.
         X_red = np.delete(X_np, j, axis=1)
-        model_red = LogisticRegression(penalty=None, solver="lbfgs", max_iter=5_000)
+        model_red = LogisticRegression(
+            penalty=None, solver="lbfgs", max_iter=5_000,
+            fit_intercept=fit_intercept,
+        )
         model_red.fit(X_red, y_values)
         preds_red = model_red.predict_proba(X_red)[:, 1]  # P(Y=1 | X_{-j})
 
@@ -491,11 +542,16 @@ def _ter_braak_logistic(
         # Step 5: Refit the full logistic model for all B permutations.
         if _use_jax():
             # JAX path: batch all B logistic fits via vmap'd Newton solver.
-            all_coefs = _fit_logistic_batch_jax(X_np, Y_perm_binary)
+            all_coefs = _fit_logistic_batch_jax(
+                X_np, Y_perm_binary, fit_intercept=fit_intercept,
+            )
             result[:, j] = all_coefs[:, j]
         else:
             # Fallback: sklearn loop (slower but always available).
-            model_cls = LogisticRegression(penalty=None, solver="lbfgs", max_iter=5_000)
+            model_cls = LogisticRegression(
+                penalty=None, solver="lbfgs", max_iter=5_000,
+                fit_intercept=fit_intercept,
+            )
             for p in range(n_perm):
                 model_cls.fit(X_np, Y_perm_binary[p])
                 result[p, j] = model_cls.coef_.flatten()[j]
@@ -546,6 +602,7 @@ def _kennedy_individual_linear(
     confounders: list[str],
     perm_indices: np.ndarray,
     model_coefs: np.ndarray,
+    fit_intercept: bool = True,
 ) -> np.ndarray:
     """Vectorised Kennedy individual for OLS."""
     X_np = X.values.astype(float)
@@ -571,14 +628,25 @@ def _kennedy_individual_linear(
         x_target = X[[feature]].values  # (n, 1)
 
         # Step 1: Exposure model — regress X_j on confounders Z.
-        #   X̂_j = Z @ (pinv(Z) @ X_j) = Z @ γ̂
+        #   X̂_j = Z_aug @ (pinv(Z_aug) @ X_j) = Z_aug @ γ̂
         #   eₓⱼ = X_j - X̂_j
+        # When fit_intercept is True, an intercept column is included
+        # so that the exposure-model residuals are mean-centred by
+        # construction, matching sklearn's LinearRegression default.
         if Z.shape[1] > 0:
-            pinv_z = np.linalg.pinv(Z)
-            x_hat = Z @ (pinv_z @ x_target)
+            if fit_intercept:
+                Z_aug = np.column_stack([np.ones(n), Z])  # add intercept
+            else:
+                Z_aug = Z
+            pinv_z = np.linalg.pinv(Z_aug)
+            x_hat = Z_aug @ (pinv_z @ x_target)
         else:
-            # No confounders: X̂_j is just the mean of X_j.
-            x_hat = np.full_like(x_target, x_target.mean())
+            if fit_intercept:
+                # No confounders: X̂_j is just the mean of X_j.
+                x_hat = np.full_like(x_target, x_target.mean())
+            else:
+                # No confounders and no intercept: X̂_j = 0.
+                x_hat = np.zeros_like(x_target)
         x_resids = (x_target - x_hat).ravel()  # (n,)
 
         # Step 2: Permute exposure residuals for all B permutations.
@@ -593,10 +661,20 @@ def _kennedy_individual_linear(
         # Note: Unlike the ter Braak path, we CANNOT use a single
         # pseudoinverse here because the design matrix itself changes in
         # each permutation (column j is different).  Each permutation
-        # requires its own lstsq solve.
-        for p in range(n_perm):
-            coefs, _, _, _ = np.linalg.lstsq(X_perm_all[p], y_values, rcond=None)
-            result[p, feat_idx] = coefs[feat_idx]
+        # requires its own lstsq solve.  When fit_intercept is True, an
+        # intercept column is prepended so that the permuted coefficients
+        # live in the same parameter space as the sklearn observed
+        # coefficients.
+        if fit_intercept:
+            ones_col = np.ones((n, 1))
+            for p in range(n_perm):
+                X_perm_aug = np.column_stack([ones_col, X_perm_all[p]])
+                coefs, _, _, _ = np.linalg.lstsq(X_perm_aug, y_values, rcond=None)
+                result[p, feat_idx] = coefs[feat_idx + 1]  # +1 to skip intercept
+        else:
+            for p in range(n_perm):
+                coefs, _, _, _ = np.linalg.lstsq(X_perm_all[p], y_values, rcond=None)
+                result[p, feat_idx] = coefs[feat_idx]
 
     return result
 
@@ -607,6 +685,7 @@ def _kennedy_individual_logistic(
     confounders: list[str],
     perm_indices: np.ndarray,
     model_coefs: np.ndarray,
+    fit_intercept: bool = True,
 ) -> np.ndarray:
     """Kennedy individual for logistic regression.
 
@@ -638,10 +717,13 @@ def _kennedy_individual_logistic(
         # The exposure model is always linear because X_j is continuous
         # even when Y is binary.
         if Z.shape[1] > 0:
-            exp_model = LinearRegression().fit(Z, x_target)
+            exp_model = LinearRegression(fit_intercept=fit_intercept).fit(Z, x_target)
             x_hat = exp_model.predict(Z)
         else:
-            x_hat = np.full_like(x_target, x_target.mean())
+            if fit_intercept:
+                x_hat = np.full_like(x_target, x_target.mean())
+            else:
+                x_hat = np.zeros_like(x_target)
         x_resids = (x_target - x_hat).ravel()
 
         # Permute exposure residuals and reconstruct X*_j.
@@ -656,9 +738,12 @@ def _kennedy_individual_logistic(
             X_perm_all[:, :, feat_idx] = x_hat.ravel()[np.newaxis, :] + shuffled
 
             # Prepend intercept column to match sklearn's default
-            # (fit_intercept=True).  Slice off β₀ after solving.
-            ones = np.ones((n_perm, n, 1), dtype=X_perm_all.dtype)
-            X_perm_aug = np.concatenate([ones, X_perm_all], axis=2)
+            # when fit_intercept is True.  Slice off β₀ after solving.
+            if fit_intercept:
+                ones = np.ones((n_perm, n, 1), dtype=X_perm_all.dtype)
+                X_perm_aug = np.concatenate([ones, X_perm_all], axis=2)
+            else:
+                X_perm_aug = X_perm_all
             X_j = jnp.array(X_perm_aug, dtype=jnp.float32)
             y_j = jnp.array(y_values, dtype=jnp.float32)
 
@@ -671,11 +756,15 @@ def _kennedy_individual_logistic(
                 return beta
 
             batched = jit(vmap(_solve_one))
-            all_coefs = np.asarray(batched(X_j))[:, 1:]  # drop intercept
+            all_coefs_raw = np.asarray(batched(X_j))
+            all_coefs = all_coefs_raw[:, 1:] if fit_intercept else all_coefs_raw
             result[:, feat_idx] = all_coefs[:, feat_idx]
         else:
             # Fallback: sklearn loop.
-            model_cls = LogisticRegression(penalty=None, solver="lbfgs", max_iter=5_000)
+            model_cls = LogisticRegression(
+                penalty=None, solver="lbfgs", max_iter=5_000,
+                fit_intercept=fit_intercept,
+            )
             for p in range(n_perm):
                 X_perm = X.copy()
                 X_perm.iloc[:, feat_idx] = x_hat.ravel() + shuffled[p]
@@ -727,6 +816,7 @@ def _kennedy_joint(
     confounders: list[str],
     perm_indices: np.ndarray,
     is_binary: bool,
+    fit_intercept: bool = True,
 ) -> tuple[float, np.ndarray, str, list[str]]:
     """Kennedy joint test.
 
@@ -742,7 +832,10 @@ def _kennedy_joint(
     if is_binary:
 
         def model_cls():
-            return LogisticRegression(penalty=None, solver="lbfgs", max_iter=5_000)
+            return LogisticRegression(
+                penalty=None, solver="lbfgs", max_iter=5_000,
+                fit_intercept=fit_intercept,
+            )
 
         def get_metric(y_true, y_pred_proba):
             return 2 * log_loss(y_true, y_pred_proba, normalize=False)
@@ -751,7 +844,7 @@ def _kennedy_joint(
     else:
 
         def model_cls():
-            return LinearRegression()
+            return LinearRegression(fit_intercept=fit_intercept)
 
         def get_metric(y_true, y_pred):
             return mean_squared_error(y_true, y_pred) * len(y_true)
@@ -774,12 +867,20 @@ def _kennedy_joint(
         preds_reduced = reduced.predict_proba(Z) if is_binary else reduced.predict(Z)
     else:
         # No confounders: the "reduced model" is just the intercept
-        # (the grand mean for linear, the base rate for logistic).
-        if is_binary:
-            mean_y = np.mean(y_values)
-            preds_reduced = np.column_stack([1 - mean_y * np.ones(n), mean_y * np.ones(n)])
+        # (the grand mean for linear, the base rate for logistic) when
+        # fit_intercept is True.  When fit_intercept is False, the
+        # reduced model predicts zero for all observations.
+        if fit_intercept:
+            if is_binary:
+                mean_y = np.mean(y_values)
+                preds_reduced = np.column_stack([1 - mean_y * np.ones(n), mean_y * np.ones(n)])
+            else:
+                preds_reduced = np.full(n, np.mean(y_values), dtype=float)
         else:
-            preds_reduced = np.full(n, np.mean(y_values), dtype=float)
+            if is_binary:
+                preds_reduced = np.column_stack([0.5 * np.ones(n), 0.5 * np.ones(n)])
+            else:
+                preds_reduced = np.zeros(n, dtype=float)
 
     base_metric = get_metric(y_values, preds_reduced)
 
@@ -794,10 +895,13 @@ def _kennedy_joint(
     # Regress X_target on Z to get X̂ = Z·Γ̂ and residuals E = X_target - X̂.
     # Row-wise permutation of E preserves inter-predictor correlations.
     if Z.shape[1] > 0:
-        exp_model = LinearRegression().fit(Z, X_target)
+        exp_model = LinearRegression(fit_intercept=fit_intercept).fit(Z, X_target)
         x_hat = exp_model.predict(Z)
     else:
-        x_hat = np.full_like(X_target, X_target.mean(axis=0))
+        if fit_intercept:
+            x_hat = np.full_like(X_target, X_target.mean(axis=0))
+        else:
+            x_hat = np.zeros_like(X_target)
     x_resids = X_target - x_hat
 
     # --- Permutation loop ---
@@ -843,6 +947,7 @@ def permutation_test_regression(
     method: str = "ter_braak",
     confounders: list[str] | None = None,
     random_state: int | None = None,
+    fit_intercept: bool = True,
 ) -> dict:
     """Run a permutation test for regression coefficients.
 
@@ -865,6 +970,14 @@ def permutation_test_regression(
         confounders: Column names of confounders (required for Kennedy
             methods).
         random_state: Seed for reproducibility.
+        fit_intercept: Whether to include an intercept term in the
+            model.  When ``True`` (default), an intercept is estimated
+            in both the observed and permuted models — matching
+            ``sklearn.linear_model.LinearRegression(fit_intercept=True)``
+            and ``LogisticRegression(fit_intercept=True)``.  Set to
+            ``False`` when integrating with a scikit-learn pipeline
+            that has already centred or otherwise pre-processed the
+            features.
 
     Returns:
         Dictionary containing coefficients, p-values, diagnostics, and
@@ -900,15 +1013,18 @@ def permutation_test_regression(
     # coefficients β̂.  These are the test statistics that will be
     # compared against the permutation null distribution.
     if is_binary:
-        model = LogisticRegression(penalty=None, solver="lbfgs", max_iter=5_000)
+        model = LogisticRegression(
+            penalty=None, solver="lbfgs", max_iter=5_000,
+            fit_intercept=fit_intercept,
+        )
     else:
-        model = LinearRegression()
+        model = LinearRegression(fit_intercept=fit_intercept)
 
     model.fit(X, y_values)
     model_coefs = model.coef_.flatten() if is_binary else np.ravel(model.coef_)
 
     # Model diagnostics (R², AIC, BIC, etc.) from statsmodels.
-    diagnostics = _compute_diagnostics(X, y_values, is_binary)
+    diagnostics = _compute_diagnostics(X, y_values, is_binary, fit_intercept)
 
     # Pre-generate unique permutation indices.  This is done once and
     # shared across all features/methods, ensuring consistency and
@@ -924,35 +1040,43 @@ def permutation_test_regression(
 
     if method == "ter_braak":
         if is_binary:
-            permuted_coefs = _ter_braak_logistic(X, y_values, perm_indices)
+            permuted_coefs = _ter_braak_logistic(
+                X, y_values, perm_indices, fit_intercept,
+            )
         else:
-            permuted_coefs = _ter_braak_linear(X, y_values, perm_indices)
+            permuted_coefs = _ter_braak_linear(
+                X, y_values, perm_indices, fit_intercept,
+            )
 
     elif method == "kennedy":
         if is_binary:
             permuted_coefs = _kennedy_individual_logistic(
                 X, y_values, confounders, perm_indices, model_coefs,
+                fit_intercept,
             )
         else:
             permuted_coefs = _kennedy_individual_linear(
                 X, y_values, confounders, perm_indices, model_coefs,
+                fit_intercept,
             )
 
     elif method == "kennedy_joint":
         obs_improvement, perm_improvements, metric_type, features_tested = _kennedy_joint(
-            X, y_values, confounders, perm_indices, is_binary,
+            X, y_values, confounders, perm_indices, is_binary, fit_intercept,
         )
 
         # Phipson & Smyth (2010) corrected p-value for the joint test:
         # Count how many permuted improvements >= the observed one, then
         # add 1 to both numerator and denominator.
         p_value = (np.sum(perm_improvements >= obs_improvement) + 1) / (n_permutations + 1)
+        rounded = np.round(p_value, precision)
+        val = f"{rounded:.{precision}f}"
         if p_value < p_value_threshold_two:
-            p_value_str = f"{np.round(p_value, precision)} (**)"
+            p_value_str = f"{val} (**)"
         elif p_value < p_value_threshold_one:
-            p_value_str = f"{np.round(p_value, precision)} (*)"
+            p_value_str = f"{val} (*)"
         else:
-            p_value_str = f"{np.round(p_value, precision)} (ns)"
+            p_value_str = f"{val} (ns)"
 
         return {
             "observed_improvement": obs_improvement,
@@ -975,9 +1099,10 @@ def permutation_test_regression(
 
     # Compute empirical (permutation) and classical (asymptotic) p-values.
     # See pvalues.py for the Phipson & Smyth correction details.
-    permuted_p_values, classic_p_values = calculate_p_values(
+    permuted_p_values, classic_p_values, raw_empirical_p, raw_classic_p = calculate_p_values(
         X, y, permuted_coefs, model_coefs,
         precision, p_value_threshold_one, p_value_threshold_two,
+        fit_intercept=fit_intercept,
     )
 
     # For Kennedy method with confounders, mark confounder p-values as
@@ -989,14 +1114,34 @@ def permutation_test_regression(
             if col in confounders:
                 permuted_p_values[i] = "N/A (confounder)"
                 classic_p_values[i] = "N/A (confounder)"
+                raw_empirical_p[i] = np.nan
+                raw_classic_p[i] = np.nan
+
+    # Extended diagnostics — per-predictor and model-level checks.
+    extended_diagnostics = compute_all_diagnostics(
+        X=X,
+        y_values=y_values,
+        model_coefs=model_coefs,
+        is_binary=is_binary,
+        raw_empirical_p=raw_empirical_p,
+        raw_classic_p=raw_classic_p,
+        n_permutations=n_permutations,
+        p_value_threshold=p_value_threshold_one,
+        method=method,
+        confounders=confounders,
+        fit_intercept=fit_intercept,
+    )
 
     return {
         "model_coefs": model_coefs.tolist(),
         "permuted_p_values": permuted_p_values,
         "classic_p_values": classic_p_values,
+        "raw_empirical_p": raw_empirical_p,
+        "raw_classic_p": raw_classic_p,
         "p_value_threshold_one": p_value_threshold_one,
         "p_value_threshold_two": p_value_threshold_two,
         "method": method,
         "model_type": "logistic" if is_binary else "linear",
         "diagnostics": diagnostics,
+        "extended_diagnostics": extended_diagnostics,
     }

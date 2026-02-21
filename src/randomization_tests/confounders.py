@@ -556,7 +556,7 @@ def identify_confounders(
     Returns:
         Dictionary with keys ``identified_confounders``,
         ``identified_mediators``, ``screening_results``,
-        ``mediation_results``, and ``recommendation``.
+        and ``mediation_results``.
     """
     X = _ensure_pandas_df(X, name="X")
     y = _ensure_pandas_df(y, name="y")
@@ -585,23 +585,10 @@ def identify_confounders(
         else:
             identified_confounders.append(candidate)
 
-    if identified_confounders:
-        confounder_str = ", ".join(f"'{c}'" for c in identified_confounders)
-        recommendation = (
-            f"For Kennedy method with predictor '{predictor}', "
-            f"control for: {confounder_str}"
-        )
-    else:
-        recommendation = (
-            f"No confounders identified for predictor '{predictor}'. "
-            f"Consider using ter Braak method instead."
-        )
-
     return {
         "predictor": predictor,
         "identified_confounders": identified_confounders,
         "identified_mediators": identified_mediators,
         "screening_results": screening,
         "mediation_results": mediation_results,
-        "recommendation": recommendation,
     }

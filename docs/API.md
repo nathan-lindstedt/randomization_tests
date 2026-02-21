@@ -5,6 +5,9 @@
 > Permutation tests for regression models using ter Braak (1992) and
 > Kennedy (1995) methods with vectorised OLS, optional JAX autodiff for
 > logistic regression, and pre‑generated unique permutations.
+>
+> All functions accepting data inputs support both **pandas** and
+> **Polars** DataFrames (coerced internally via `_ensure_pandas_df`).
 
 ---
 
@@ -14,8 +17,8 @@
 
 ```python
 permutation_test_regression(
-    X: pd.DataFrame,
-    y: pd.DataFrame,
+    X: DataFrameLike,
+    y: DataFrameLike,
     n_permutations: int = 5_000,
     precision: int = 3,
     p_value_threshold_one: float = 0.05,
@@ -23,6 +26,7 @@ permutation_test_regression(
     method: str = "ter_braak",
     confounders: list[str] | None = None,
     random_state: int | None = None,
+    fit_intercept: bool = True,
 ) -> dict
 ```
 
@@ -33,7 +37,7 @@ linear regression accordingly.
 
 | Parameter | Description |
 |---|---|
-| `X` | Feature matrix, shape `(n_samples, n_features)`. |
+| `X` | Feature matrix, shape `(n_samples, n_features)`. Accepts pandas or Polars DataFrames. |
 | `y` | Target values, shape `(n_samples,)`. Binary targets (`{0, 1}`) trigger logistic regression; otherwise linear regression is used. |
 | `n_permutations` | Number of unique permutations to generate. |
 | `precision` | Decimal places for reported p‑values. |
@@ -42,11 +46,13 @@ linear regression accordingly.
 | `method` | `"ter_braak"`, `"kennedy"`, or `"kennedy_joint"`. |
 | `confounders` | Column names of confounders (required for Kennedy methods). |
 | `random_state` | Seed for reproducibility. |
+| `fit_intercept` | Whether to include an intercept in the regression model. Set to `False` for through‑origin regression. |
 
 **Returns:** A dictionary containing model coefficients, empirical
-(permutation) and classical (asymptotic) p‑values, diagnostics, and
-method metadata. When `method="kennedy_joint"`, the dictionary instead
-contains the observed improvement statistic and a single joint p‑value.
+(permutation) and classical (asymptotic) p‑values, extended diagnostics,
+and method metadata. When `method="kennedy_joint"`, the dictionary
+instead contains the observed improvement statistic and a single joint
+p‑value.
 
 **Raises:** `ValueError` if *method* is not one of the recognised
 options.
@@ -106,14 +112,15 @@ available unique permutations.
 
 ```python
 calculate_p_values(
-    X: pd.DataFrame,
-    y: pd.DataFrame,
+    X: DataFrameLike,
+    y: DataFrameLike,
     permuted_coefs: np.ndarray,
     model_coefs: np.ndarray,
     precision: int = 3,
     p_value_threshold_one: float = 0.05,
     p_value_threshold_two: float = 0.01,
-) -> tuple[list[str], list[str]]
+    fit_intercept: bool = True,
+) -> tuple[list[str], list[str], np.ndarray, np.ndarray]
 ```
 
 Calculate empirical (permutation) and classical (asymptotic) p‑values.
@@ -123,17 +130,20 @@ ensure p‑values are never exactly zero.
 
 | Parameter | Description |
 |---|---|
-| `X` | Feature matrix, shape `(n_samples, n_features)`. |
+| `X` | Feature matrix, shape `(n_samples, n_features)`. Accepts pandas or Polars DataFrames. |
 | `y` | Target values. |
 | `permuted_coefs` | Coefficients from each permutation, shape `(n_permutations, n_features)`. |
 | `model_coefs` | Observed (unpermuted) coefficients, shape `(n_features,)`. |
 | `precision` | Decimal places for rounding. |
 | `p_value_threshold_one` | First significance threshold. |
 | `p_value_threshold_two` | Second significance threshold. |
+| `fit_intercept` | Whether to include an intercept in the asymptotic model. |
 
-**Returns:** A `(permuted_p_values, classic_p_values)` tuple where each
-element is a list of formatted p‑value strings with significance markers
-(`*`, `**`, or `ns`).
+**Returns:** A 4‑tuple
+`(permuted_p_values, classic_p_values, raw_permuted_p, raw_classic_p)`
+where the first two are lists of formatted p‑value strings with
+significance markers (`*`, `**`, or `ns`) and the last two are raw
+`np.ndarray` values.
 
 ---
 
@@ -143,8 +153,8 @@ element is a list of formatted p‑value strings with significance markers
 
 ```python
 identify_confounders(
-    X: pd.DataFrame,
-    y: pd.DataFrame,
+    X: DataFrameLike,
+    y: DataFrameLike,
     predictor: str,
     correlation_threshold: float = 0.1,
     p_value_threshold: float = 0.05,
@@ -164,7 +174,7 @@ classified as likely confounders.
 
 | Parameter | Description |
 |---|---|
-| `X` | Feature matrix. |
+| `X` | Feature matrix. Accepts pandas or Polars DataFrames. |
 | `y` | Target variable. |
 | `predictor` | Predictor of interest. |
 | `correlation_threshold` | Minimum absolute Pearson *r*. |
@@ -174,8 +184,7 @@ classified as likely confounders.
 | `random_state` | Seed for reproducibility. |
 
 **Returns:** Dictionary with keys `identified_confounders`,
-`identified_mediators`, `screening_results`, `mediation_results`, and
-`recommendation`.
+`identified_mediators`, `screening_results`, and `mediation_results`.
 
 ---
 
@@ -183,8 +192,8 @@ classified as likely confounders.
 
 ```python
 screen_potential_confounders(
-    X: pd.DataFrame,
-    y: pd.DataFrame,
+    X: DataFrameLike,
+    y: DataFrameLike,
     predictor: str,
     correlation_threshold: float = 0.1,
     p_value_threshold: float = 0.05,
@@ -198,7 +207,7 @@ A potential confounder *Z* satisfies `|r(Z, X)| >= threshold` **and**
 
 | Parameter | Description |
 |---|---|
-| `X` | Feature matrix. |
+| `X` | Feature matrix. Accepts pandas or Polars DataFrames. |
 | `y` | Target variable. |
 | `predictor` | Name of the predictor of interest. |
 | `correlation_threshold` | Minimum absolute Pearson *r* to flag a variable. |
@@ -214,8 +223,8 @@ A potential confounder *Z* satisfies `|r(Z, X)| >= threshold` **and**
 
 ```python
 mediation_analysis(
-    X: pd.DataFrame,
-    y: pd.DataFrame,
+    X: DataFrameLike,
+    y: DataFrameLike,
     predictor: str,
     mediator: str,
     n_bootstrap: int = 5000,
@@ -237,7 +246,7 @@ effect is the sole criterion for mediation.
 
 | Parameter | Description |
 |---|---|
-| `X` | Feature matrix. |
+| `X` | Feature matrix. Accepts pandas or Polars DataFrames. |
 | `y` | Target variable. |
 | `predictor` | Predictor (X in X → M → Y). |
 | `mediator` | Potential mediator (M). |
@@ -268,7 +277,9 @@ print_results_table(
 ```
 
 Print regression results in a formatted ASCII table similar to
-statsmodels output.
+statsmodels output.  Shows model summary statistics (top panel) and
+per‑feature coefficients with empirical (permutation) and classical
+(asymptotic) p‑values side by side (bottom panel).
 
 | Parameter | Description |
 |---|---|
@@ -297,6 +308,68 @@ table.
 | `results` | Results dictionary from `permutation_test_regression` with `method="kennedy_joint"`. |
 | `target_name` | Name of the target variable. |
 | `title` | Title for the output table. |
+
+---
+
+### `print_diagnostics_table`
+
+```python
+print_diagnostics_table(
+    results: dict,
+    feature_names: list[str],
+    title: str = "Extended Diagnostics",
+) -> None
+```
+
+Print extended model diagnostics in a formatted ASCII table.
+
+Complements `print_results_table` with additional per‑predictor and
+model‑level diagnostics.  The table has four sections:
+
+1. **Per‑predictor Diagnostics** — standardised coefficients, VIF,
+   Monte Carlo SE, optional Exposure R² (Kennedy method), and
+   empirical‑vs‑asymptotic divergence flags.
+2. **Legend** — compact key explaining each column.
+3. **Model‑level Diagnostics** — Breusch‑Pagan (linear) or deviance
+   residuals (logistic), Cook's distance counts, permutation coverage.
+4. **Notes** (conditional) — plain‑language warnings for flagged
+   diagnostics.
+
+| Parameter | Description |
+|---|---|
+| `results` | Results dictionary from `permutation_test_regression`. Must contain `extended_diagnostics`. |
+| `feature_names` | Names of the features/predictors. |
+| `title` | Title for the output table. |
+
+---
+
+### `print_confounder_table`
+
+```python
+print_confounder_table(
+    confounder_results: dict,
+    title: str = "Confounder Identification Results",
+    correlation_threshold: float = 0.1,
+    p_value_threshold: float = 0.05,
+    n_bootstrap: int = 1000,
+    confidence_level: float = 0.95,
+) -> None
+```
+
+Print confounder identification results in a formatted ASCII table.
+
+Accepts either a single `identify_confounders` result dict or a
+`dict[str, dict]` mapping predictor names to their individual result
+dicts.
+
+| Parameter | Description |
+|---|---|
+| `confounder_results` | Single result dict or `{predictor: result_dict}` mapping. |
+| `title` | Title for the output table. |
+| `correlation_threshold` | The `\|r\|` threshold used during screening (shown in header). |
+| `p_value_threshold` | Screening p‑value cutoff (shown in header). |
+| `n_bootstrap` | Bootstrap iterations for mediation (shown in header). |
+| `confidence_level` | CI level for mediation (shown in header). |
 
 ---
 

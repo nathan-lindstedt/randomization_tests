@@ -10,8 +10,10 @@ Public API:
         identify_confounders
         mediation_analysis
         screen_potential_confounders
-        print_results_table
+        print_confounder_table
+        print_diagnostics_table
         print_joint_results_table
+        print_results_table
         calculate_p_values
         generate_unique_permutations
         get_backend
@@ -25,7 +27,12 @@ from .confounders import (
     screen_potential_confounders,
 )
 from .core import permutation_test_regression
-from .display import print_joint_results_table, print_results_table
+from .display import (
+    print_confounder_table,
+    print_diagnostics_table,
+    print_joint_results_table,
+    print_results_table,
+)
 from .permutations import generate_unique_permutations
 from .pvalues import calculate_p_values
 
@@ -34,6 +41,8 @@ __all__ = [
     "identify_confounders",
     "mediation_analysis",
     "screen_potential_confounders",
+    "print_confounder_table",
+    "print_diagnostics_table",
     "print_joint_results_table",
     "print_results_table",
     "calculate_p_values",
@@ -42,4 +51,4 @@ __all__ = [
     "set_backend",
 ]
 
-__version__ = "0.1.1"
+__version__ = "0.1.5"

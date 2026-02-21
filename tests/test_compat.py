@@ -85,9 +85,11 @@ class TestPolarsEndToEnd:
         X_pl, y_pl = self._make_polars_data()
         model_coefs = np.array([2.0, -1.0, 0.0])
         permuted_coefs = np.random.default_rng(0).standard_normal((50, 3))
-        emp, asy = calculate_p_values(X_pl, y_pl, permuted_coefs, model_coefs)
+        emp, asy, raw_emp, raw_asy = calculate_p_values(X_pl, y_pl, permuted_coefs, model_coefs)
         assert len(emp) == 3
         assert len(asy) == 3
+        assert len(raw_emp) == 3
+        assert len(raw_asy) == 3
 
     def test_results_match_pandas(self):
         """Polars and pandas inputs should produce identical results."""

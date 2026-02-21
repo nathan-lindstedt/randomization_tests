@@ -22,10 +22,11 @@ pip install -e ".[jax]"
 import pandas as pd
 from randomization_tests import (
     permutation_test_regression,
+    print_diagnostics_table,
     print_results_table,
 )
 
-# Prepare data as DataFrames
+# Prepare data as DataFrames (pandas or Polars)
 X = pd.DataFrame({"x1": [1, 2, 3, 4, 5], "x2": [5, 4, 3, 2, 1]})
 y = pd.DataFrame({"y": [2.1, 4.0, 5.8, 8.2, 9.9]})
 
@@ -37,8 +38,11 @@ results = permutation_test_regression(
     random_state=42,
 )
 
-# Display a statsmodels-style table
+# Display a statsmodels-style results table
 print_results_table(results, feature_names=list(X.columns), target_name="y")
+
+# Display extended diagnostics (VIF, Cook's D, etc.)
+print_diagnostics_table(results, feature_names=list(X.columns))
 ```
 
 ## Available methods
@@ -49,16 +53,50 @@ print_results_table(results, feature_names=list(X.columns), target_name="y")
 | Kennedy (1995) individual | `"kennedy"` | Partial out confounders, permute exposure residuals. |
 | Kennedy (1995) joint | `"kennedy_joint"` | Test whether predictors collectively improve fit beyond confounders. |
 
-Kennedy methods require the `confounders` parameter (a list of column names).
+Kennedy methods require the `confounders` parameter (a list of column
+names).
 
 ## Confounder identification
 
 ```python
-from randomization_tests import identify_confounders
+from randomization_tests import identify_confounders, print_confounder_table
 
 result = identify_confounders(X, y, predictor="x1", random_state=42)
-print(result["identified_confounders"])
-print(result["recommendation"])
+print_confounder_table(result)
+```
+
+For all predictors at once:
+
+```python
+all_results = {}
+for predictor in X.columns:
+    all_results[predictor] = identify_confounders(
+        X, y, predictor=predictor, random_state=42,
+    )
+print_confounder_table(all_results)
+```
+
+## Input formats
+
+All public functions accept both **pandas** and **Polars** DataFrames:
+
+```python
+import polars as pl
+
+X_pl = pl.DataFrame({"x1": [1, 2, 3, 4, 5], "x2": [5, 4, 3, 2, 1]})
+y_pl = pl.DataFrame({"y": [2.1, 4.0, 5.8, 8.2, 9.9]})
+
+results = permutation_test_regression(X_pl, y_pl, random_state=42)
+```
+
+## Intercept control
+
+By default an intercept is included.  For through-origin regression:
+
+```python
+results = permutation_test_regression(
+    X, y, fit_intercept=False, random_state=42,
+)
 ```
 
 ## Further reading

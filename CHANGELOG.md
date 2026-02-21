@@ -5,6 +5,45 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.5] - 2026-02-21
+
+### Added
+
+- Extended diagnostics module (`diagnostics.py`): standardised coefficients,
+  VIF, Monte Carlo SE, divergence flags, Breusch-Pagan (linear),
+  deviance residuals (logistic), Cook's distance, permutation coverage,
+  and exposure R² (Kennedy method with confounders).
+- `print_diagnostics_table` for formatted ASCII display of extended
+  diagnostics with context-aware Notes section.
+- Omnibus test footer clarification in `print_joint_results_table`.
+- `fit_intercept` parameter threaded through all methods, diagnostics,
+  and p-value calculations for consistent model specification.
+- New tests for diagnostics, display, and core intercept handling
+  (125 total, up from 100).
+
+### Fixed
+
+- **Intercept mismatch in permutation refits (all methods).** The old
+  code fitted permutation models without an intercept while the observed
+  model used `fit_intercept=True`. This caused permuted slope coefficients
+  to absorb the response mean, producing spurious p-values (e.g. p = 1.0
+  for X6 longitude in the linear example, p = 0.0 for strong predictors).
+  All permutation refits now include an intercept column matching the
+  observed model specification.
+- P-value formatting: `_fmt()` now uses fixed-width `f"{val:.{precision}f}"`
+  instead of `f"{rounded}"`, preventing misleading `0.0` / `1.0` display.
+- `calculate_p_values` now returns raw numeric arrays alongside formatted
+  strings, eliminating redundant statsmodels refits in diagnostics.
+- Exposure R² column suppressed when no confounders are specified
+  (was displaying a wall of `0.0000` values).
+
+### Changed
+
+- `calculate_p_values` return type expanded from 2-tuple to 4-tuple
+  `(permuted_str, classic_str, raw_empirical, raw_classic)`.
+- Examples refactored to use the new `print_diagnostics_table` API.
+- Docs (API.md, QUICKSTART.md, ROADMAP.md) updated for v0.1.5.
+
 ## [0.1.1] - 2026-02-21
 
 ### Added

@@ -8,6 +8,8 @@ from ucimlrepo import fetch_ucirepo
 from randomization_tests import (
     identify_confounders,
     permutation_test_regression,
+    print_confounder_table,
+    print_diagnostics_table,
     print_joint_results_table,
     print_results_table,
 )
@@ -31,6 +33,11 @@ print_results_table(
     target_name=y.columns[0],
     title="ter Braak (1992) Permutation Test (Linear)",
 )
+print_diagnostics_table(
+    results_ter_braak,
+    feature_names=X.columns.tolist(),
+    title="ter Braak (1992) Extended Diagnostics (Linear)",
+)
 
 # ============================================================================
 # Kennedy (1995) individual (no confounders)
@@ -42,6 +49,11 @@ print_results_table(
     feature_names=X.columns.tolist(),
     target_name=y.columns[0],
     title="Kennedy (1995) Individual Coefficient Permutation Test (Linear)",
+)
+print_diagnostics_table(
+    results_kennedy,
+    feature_names=X.columns.tolist(),
+    title="Kennedy (1995) Individual Extended Diagnostics (Linear)",
 )
 
 # ============================================================================
@@ -59,34 +71,20 @@ print_joint_results_table(
 # Confounder identification
 # ============================================================================
 
-print("Confounder Identification for All Predictors\n")
-
 all_confounder_results = {}
 for predictor in X.columns:
     all_confounder_results[predictor] = identify_confounders(X, y, predictor=predictor)
 
-for predictor, results in all_confounder_results.items():
-    print(f"Predictor: '{predictor}'")
-    print(f"  Identified Confounders: {results['identified_confounders']}")
-    print(f"  Identified Mediators: {results['identified_mediators']}")
-    if results["identified_confounders"] or results["identified_mediators"]:
-        print(f"  Recommendation: {results['recommendation']}")
-    print()
+print_confounder_table(
+    all_confounder_results,
+    title="Confounder Identification for All Predictors (Linear)",
+)
 
 predictors_with_confounders = {
     pred: res["identified_confounders"]
     for pred, res in all_confounder_results.items()
     if res["identified_confounders"]
 }
-
-print("Summary: Predictors with Identified Confounders\n")
-if predictors_with_confounders:
-    for pred, confounders in predictors_with_confounders.items():
-        print(f"  {pred}: control for {confounders}")
-else:
-    print("  No confounders identified for any predictor.")
-    print("  This suggests the predictors are relatively independent.")
-print()
 
 # ============================================================================
 # Kennedy with identified confounders
@@ -103,5 +101,10 @@ if predictors_with_confounders:
         results_kc,
         feature_names=X.columns.tolist(),
         target_name=y.columns[0],
-        title=f"Kennedy (1995) Method for '{example_predictor}' (controlling for {example_confounders}) (Linear)",
+        title=f"Kennedy (1995) Method for '{example_predictor}' (controlling for {', '.join(example_confounders)}) (Linear)",
+    )
+    print_diagnostics_table(
+        results_kc,
+        feature_names=X.columns.tolist(),
+        title=f"Kennedy (1995) Extended Diagnostics for '{example_predictor}' (Linear)",
     )

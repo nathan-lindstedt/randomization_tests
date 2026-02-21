@@ -156,3 +156,80 @@ class TestDiagnostics:
         diag = result["diagnostics"]
         assert "pseudo_r_squared" in diag
         assert "log_likelihood" in diag
+
+
+class TestFitInterceptFalse:
+    """Verify that fit_intercept=False runs without error and produces
+    results in the same format as the default (fit_intercept=True)."""
+
+    def test_ter_braak_linear_no_intercept(self):
+        X, y = _make_linear_data()
+        result = permutation_test_regression(
+            X, y, n_permutations=50, method="ter_braak",
+            random_state=42, fit_intercept=False,
+        )
+        assert result["model_type"] == "linear"
+        assert len(result["model_coefs"]) == 3
+        assert len(result["permuted_p_values"]) == 3
+        assert len(result["classic_p_values"]) == 3
+
+    def test_ter_braak_logistic_no_intercept(self):
+        X, y = _make_binary_data()
+        result = permutation_test_regression(
+            X, y, n_permutations=50, method="ter_braak",
+            random_state=42, fit_intercept=False,
+        )
+        assert result["model_type"] == "logistic"
+        assert len(result["model_coefs"]) == 2
+
+    def test_kennedy_linear_no_intercept(self):
+        X, y = _make_linear_data()
+        result = permutation_test_regression(
+            X, y, n_permutations=50, method="kennedy",
+            confounders=["x3"], random_state=42, fit_intercept=False,
+        )
+        assert result["method"] == "kennedy"
+        assert result["permuted_p_values"][2] == "N/A (confounder)"
+
+    def test_kennedy_logistic_no_intercept(self):
+        X, y = _make_binary_data()
+        result = permutation_test_regression(
+            X, y, n_permutations=50, method="kennedy",
+            confounders=[], random_state=42, fit_intercept=False,
+        )
+        assert result["model_type"] == "logistic"
+
+    def test_kennedy_joint_linear_no_intercept(self):
+        X, y = _make_linear_data()
+        result = permutation_test_regression(
+            X, y, n_permutations=50, method="kennedy_joint",
+            confounders=[], random_state=42, fit_intercept=False,
+        )
+        assert "observed_improvement" in result
+        assert 0 < result["p_value"] <= 1.0
+
+    def test_kennedy_joint_logistic_no_intercept(self):
+        X, y = _make_binary_data()
+        result = permutation_test_regression(
+            X, y, n_permutations=50, method="kennedy_joint",
+            confounders=[], random_state=42, fit_intercept=False,
+        )
+        assert result["model_type"] == "logistic"
+        assert "p_value" in result
+
+    def test_coefs_differ_from_intercept_model(self):
+        """Coefficients with fit_intercept=False should generally
+        differ from the default (True) fit."""
+        X, y = _make_linear_data()
+        res_with = permutation_test_regression(
+            X, y, n_permutations=50, method="ter_braak",
+            random_state=42, fit_intercept=True,
+        )
+        res_without = permutation_test_regression(
+            X, y, n_permutations=50, method="ter_braak",
+            random_state=42, fit_intercept=False,
+        )
+        # At least one coefficient should differ meaningfully
+        coefs_with = np.array(res_with["model_coefs"])
+        coefs_without = np.array(res_without["model_coefs"])
+        assert not np.allclose(coefs_with, coefs_without, atol=1e-6)

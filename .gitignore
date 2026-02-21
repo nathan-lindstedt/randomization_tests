@@ -38,3 +38,6 @@ htmlcov/
 
 # Debug / scratch
 _debug_*.py
+
+# Prompts / planning
+.github/prompts/
