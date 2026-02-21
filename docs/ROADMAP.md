@@ -2,11 +2,21 @@
 
 This document outlines the planned development trajectory for
 **randomization-tests**, from its current alpha state through a stable
-1.0 release.  Version numbers are indicative — scopes may shift as the
-project evolves — but the ordering of milestones reflects deliberate
-dependency reasoning: all statistical machinery is finalized before the
-public-facing result interface is locked down, so that abstraction only
-needs to be designed once.
+1.0 release.  The overarching architectural goal is a **hypergraph
+model specification layer** that unifies single-equation regression,
+multi-equation path models, and group-level hypothesis testing under a
+single typed graph structure, with exchangeability-aware permutations
+dispatched automatically.  Each milestone builds toward this goal: the
+`ModelFamily` protocol (v0.3.0) provides node-level equation solvers,
+exchangeability cells (v0.4.0) formalise permutation constraints, the
+graph specification layer (v0.5.0) ties them together, and the
+structured result interface (v0.6.0) exposes the graph structure to
+users.
+
+Version numbers are indicative — scopes may shift as the project
+evolves — but the ordering reflects deliberate dependency reasoning:
+statistical machinery is finalised before the result interface is
+locked down, so that each abstraction only needs to be designed once.
 
 ---
 
@@ -143,54 +153,74 @@ added.
 
 ---
 
-## v0.3.0 — GLM family extensions
+## v0.3.0 — GLM Family Extensions
 
-Extends the package beyond OLS and binary logistic regression to cover
-the most commonly encountered generalised linear model families in
-applied research.
+Introduces a `ModelFamily` strategy pattern that decouples model
+fitting from the permutation engine, then implements new GLM families
+on top of it.  The protocol defines how each family fits a model,
+extracts residuals, reconstructs permuted outcomes, and computes
+diagnostics — making the core engine family-agnostic and extensible
+to future model types including mixed-effects and multi-equation
+specifications.
+
+### `ModelFamily` protocol
+- [ ] A `typing.Protocol` class defining the interface every family
+  must implement: `fit`, `predict`, `coefs`, `residuals`,
+  `reconstruct_y`, `fit_metric`, `diagnostics`, `classical_p_values`,
+  and batch-fitting methods for JAX and fallback paths.
+- [ ] `LinearFamily` and `LogisticFamily` implementations refactored
+  from existing `core.py` logic.
+- [ ] `resolve_family()` dispatch: `"auto"` resolves to `"linear"` or
+  `"logistic"` via current binary detection; explicit strings map
+  directly.
 
 ### Poisson regression
 - [ ] Permutation tests for count outcomes with an exponential mean
   function.  The ter Braak residual-permutation approach generalises
-  naturally: fit the reduced Poisson model, extract deviance or Pearson
-  residuals, permute, and refit the full model.
+  naturally: fit the reduced Poisson model, extract deviance residuals,
+  permute, and refit the full model.
 - [ ] Diagnostics: deviance, Pearson chi-squared, AIC/BIC,
   overdispersion test.
 
 ### Negative binomial regression
-- [ ] Handles overdispersed count data where the Poisson assumption fails.
-- [ ] Requires estimation of the dispersion parameter in addition to the
-  linear predictor — the permutation loop must account for this extra
-  nuisance parameter.
+- [ ] Handles overdispersed count data where the Poisson assumption
+  fails.
+- [ ] Requires estimation of the dispersion parameter once on the
+  observed data, held fixed throughout the permutation loop.
 - [ ] Diagnostics: deviance, AIC/BIC, alpha (dispersion) estimate.
-
-### Multinomial logistic regression
-- [ ] Extends binary logistic to unordered categorical outcomes with *K*
-  classes, producing *K* − 1 coefficient vectors.
-- [ ] The test statistic becomes a vector (one per contrast) or can be
-  reduced to a scalar via the log-likelihood ratio or deviance.
-- [ ] Table output should support both a stacked all-contrasts view and
-  individual per-contrast tables.
 
 ### Ordinal logistic regression
 - [ ] Proportional-odds model for ordered categorical outcomes.
-- [ ] Permutation of the ordinal response preserves the category labels;
-  the threshold parameters are re-estimated on each permutation.
+- [ ] Direct permutation of the ordinal response (residuals are not
+  well-defined for ordinal); threshold parameters re-estimated on each
+  permutation.
 
-### Shared infrastructure
-- [ ] A `family=` or `model_type=` parameter on the public API, with
-  automatic detection retained as the default for binary and continuous
-  outcomes.
-- [ ] Per-family diagnostic dictionaries and table formatting.
+### Core refactor
+- [ ] Replace `is_binary` branching in `core.py` with family method
+  calls: generic `_ter_braak`, `_kennedy_individual`, and
+  `_kennedy_joint` functions dispatch to the active family.
+- [ ] `family=` parameter on `permutation_test_regression()`, with
+  `"auto"` as the default.
+- [ ] Resolved family name included in the result dict.
+- [ ] JAX convergence control: `max_iter`, `tol`, convergence warnings
+  for all Newton-Raphson solvers.
+- [ ] `compute_all_diagnostics` accepts `model_type: str` instead of
+  `is_binary: bool`.
+- [ ] Confounder module updated: `family` parameter on
+  `identify_confounders` and `mediation_analysis`, using the
+  family-appropriate model for the b-path and total-effect equations.
 
 ---
 
-## v0.4.0 — Multilevel & longitudinal frameworks
+## v0.4.0 — Exchangeability & Multilevel Frameworks
 
-Adds support for clustered, hierarchical, and panel data structures
-where observations are not exchangeable across the full sample.
+Formalises the permutation structure: which observations are
+exchangeable with which, under what constraints.  These
+exchangeability cells are the permutation-side complement to the
+model-side `ModelFamily` protocol — together they define a complete
+permutation test specification for any single-equation model.
 
-### Cluster-aware permutations
+### Exchangeability cells
 - [ ] New `groups=` parameter accepting a column name or array that
   identifies clusters (schools, firms, regions, panel units, etc.).
 - [ ] `permutation_strategy=` argument controlling the exchangeability
@@ -203,13 +233,18 @@ where observations are not exchangeable across the full sample.
     the treatment is assigned at the cluster level.
   - `"two-stage"` — permute clusters first, then permute observations
     within clusters.  Suitable for crossed or partially nested designs.
-- [ ] Validation logic to ensure the requested strategy is compatible with
-  the data (e.g., `"between"` requires sufficient clusters for
+- [ ] Generalisation to arbitrary blocking factors: permutations occur
+  only within strata defined by one or more categorical variables.
+- [ ] User-supplied permutation constraints via a callback for
+  non-standard exchangeability structures.
+- [ ] Validation logic to ensure the requested strategy is compatible
+  with the data (e.g., `"between"` requires sufficient clusters for
   meaningful permutation).
 
 ### Mixed-effects models
 - [ ] Integration with statsmodels `MixedLM` (linear) and a suitable
-  backend for generalised linear mixed models (GLMM).
+  backend for generalised linear mixed models (GLMM) as new
+  `ModelFamily` implementations.
 - [ ] The permutation target becomes the conditional residual (BLUP
   residual) under the reduced model, with random-effect structure held
   fixed across permutations.
@@ -223,111 +258,198 @@ where observations are not exchangeable across the full sample.
 - [ ] Support for both balanced and unbalanced panels.
 - [ ] Optional autoregressive residual structure for the reduced model.
 
-### Block / stratified permutations
-- [ ] Generalisation of the `groups=` concept to arbitrary blocking
-  factors: permutations occur only within strata defined by one or more
-  categorical variables.
-- [ ] Useful for randomised block designs, matched-pairs analyses, and
-  stratified observational studies.
+### Multinomial logistic regression
+- [ ] Extends binary logistic to unordered categorical outcomes with
+  *K* classes, producing *K* − 1 coefficient vectors.
+- [ ] The test statistic becomes a vector (one per contrast) or can be
+  reduced to a scalar via the log-likelihood ratio or deviance.
+- [ ] Table output should support both a stacked all-contrasts view and
+  individual per-contrast tables.
+
+### Inferential improvements
+- [ ] Exact binomial or Clopper-Pearson confidence intervals on
+  permutation p-values reflecting Monte Carlo uncertainty when only a
+  finite number of permutations are drawn.
+- [ ] Adaptive stopping: optionally halt the permutation loop early
+  once the CI for the p-value is narrow enough to determine
+  significance with a specified confidence.
+- [ ] Conditional Monte Carlo: permute within the sufficient-statistic
+  strata of a nuisance parameter for exact conditional tests.
 
 ---
 
-## v0.5.0 — Methodological improvements
+## v0.5.0 — Graph Specification & Multi-Equation Orchestration
 
-Revisits and strengthens the statistical methods available in the
-package, incorporating more robust alternatives and additional
-inferential tools.
+The architectural centrepiece: a typed hypergraph data structure that
+lets users declare multi-equation models and have the package
+automatically derive which equations to fit, which families to use,
+which permutation strategies to apply, and which null hypotheses to
+test.  A standard regression is a single-layer graph with all
+predictors pointing at one outcome; mediation, path models, and
+multi-equation systems are deeper graphs composed of the same
+node-level equation solvers built in v0.3.0, constrained by the
+exchangeability cells built in v0.4.0.
+
+### Specification data structure
+- [ ] A `CausalGraph` class supporting:
+  - **Nodes** — observed variables, each optionally annotated with a
+    model family and role (exposure, outcome, mediator, confounder).
+  - **Directed edges** — pairwise causal claims (X → Y), each
+    testable individually via per-coefficient permutation tests.
+  - **Hyperedges** — group-level causal claims ({X₁, X₂} → Y as an
+    irreducible unit), testable via generalised joint tests.
+  - **Exchangeability cells** — optional per-node or global
+    permutation constraints inherited from the v0.4.0 cell system.
+- [ ] Validation: acyclicity check, connected-component analysis,
+  family compatibility per equation, identification of
+  under-determined nodes.
+
+### Graph compiler
+- [ ] Topological sort of the DAG to determine equation fitting order.
+- [ ] For each outcome node, derive the structural equation:
+  `(outcome, predictors, family, permutation_strategy, null_type)`.
+- [ ] Resolve families automatically (from outcome type) or from
+  per-node annotation.
+- [ ] Map hyperedges to Kennedy joint tests; map simple edges to
+  ter Braak or Kennedy individual tests based on the presence of
+  declared confounders.
+
+### Multi-equation orchestrator
+- [ ] Execute permutation tests for each structural equation in
+  topological order, dispatching to the `ModelFamily` protocol.
+- [ ] Independent permutation per equation by default: each equation
+  is tested in isolation, conditioning on observed values of upstream
+  nodes.
+- [ ] Optional propagated mode: permute upstream, refit downstream,
+  enabling permutation-based indirect-effect testing through
+  multi-step paths.
+- [ ] Collect per-equation results into a unified graph-level result
+  object.
+
+### Hyperedge testing
+- [ ] Generalise the Kennedy joint test to arbitrary hyperedges
+  declared in the specification.  A hyperedge {X₁, X₂, X₃} → Y
+  triggers joint row-wise permutation of exposure residuals for
+  X₁, X₂, X₃ simultaneously, with the test statistic being the
+  improvement in the family's fit metric.
+- [ ] Support hyperedges targeting different outcome nodes within the
+  same graph.
+- [ ] Support mixed-family hyperedges (e.g., Poisson outcome with
+  linear exposure models).
+
+### Indirect effect extraction
+- [ ] For a declared path X → M → Y, compute the product of per-edge
+  coefficients (a × b) and test via permutation.
+- [ ] Extend the existing BCa bootstrap framework to support
+  permutation-based indirect effect p-values for paths declared in
+  the graph specification.
+- [ ] Support arbitrary-length causal chains (X → M₁ → M₂ → Y) with
+  product-of-coefficients test statistics.
+
+### Model specification syntax
+- [ ] Primary API: Python method calls —
+  `g.add_node("Y", family="linear")`,
+  `g.add_edge("X1", "Y")`,
+  `g.add_hyperedge(["X1", "X2"], "Y")`.
+- [ ] Convenience: formula-style string parser —
+  `"Y ~ X1 + X2; M ~ X1; Y ~ M"` with equations parsed and DAG
+  inferred.
+- [ ] Convenience: dictionary specification for programmatic and
+  configuration-file workflows.
+
+---
+
+## v0.6.0 — Structured Results & Dual API
+
+With the graph specification and all statistical machinery finalised,
+this release redesigns the output interface to expose graph-structured
+results for both academic reporting and programmatic pipeline usage.
+
+### `PermutationTestResult` dataclass
+- [ ] Replaces plain-dictionary return values with typed dataclasses:
+  - `PermutationTestResult` — single-equation individual-coefficient
+    tests (backward-compatible with current usage).
+  - `JointPermutationTestResult` — single-equation joint tests.
+  - `GraphTestResult` — multi-equation results from the graph
+    specification layer, containing per-equation results, per-edge
+    p-values, per-hyperedge p-values, and per-path indirect effects.
+- [ ] Direct attribute access: `.coefs`, `.p_values`,
+  `.permuted_p_values`, `.classic_p_values`, `.diagnostics`,
+  `.method`, `.family`.
+- [ ] Academic output: `.summary()` prints the ASCII table (current
+  behaviour).  `.to_latex()` produces a publication-ready LaTeX
+  table.  `.to_html()` renders in Jupyter notebooks.
+  `.to_markdown()` generates a Markdown table for inclusion in
+  reports or documentation.
+- [ ] Programmatic access: `.to_dataframe()` returns a tidy pandas
+  DataFrame of coefficients, standard errors, and p-values.
+  `.to_dict()` preserves backward compatibility with the current
+  dictionary interface.
+- [ ] Graph-level summary: `.graph_summary()` showing per-edge and
+  per-path results in a single view.
+
+### Scikit-learn estimator interface
+- [ ] `PermutationTestRegressor` and `PermutationTestClassifier`
+  wrappers conforming to the scikit-learn estimator contract: `fit`,
+  `predict`, `get_params`, `set_params`, `score`.
+- [ ] Compatible with `Pipeline`, `GridSearchCV`, `cross_val_score`,
+  and other scikit-learn meta-estimators.
+- [ ] For graph specifications, a `GraphPermutationTest` estimator
+  that accepts a `CausalGraph` and exposes results via `.results_`.
+- [ ] The `fit` method runs the permutation test; results are
+  accessible via the `.results_` attribute.  `predict` delegates to
+  the underlying regression model.
+
+### Flexible input handling
+- [ ] Feature names inferred from DataFrame columns or supplied
+  explicitly.
+- [ ] numpy array, pandas, and Polars inputs accepted uniformly
+  across all API surfaces (single-equation and graph).
+
+---
+
+## v0.7.0 — Causal Discovery & Visualisation
+
+Adds methods for data-driven discovery of graph structure, feeding
+directly into the graph specification layer, plus visualisation
+utilities for permutation distributions and graph topology.
 
 ### Causal screening
-- [ ] Supplement the existing Preacher & Hayes mediation analysis with more
-  robust approaches for distinguishing confounders from mediators:
+- [ ] Supplement the existing Preacher & Hayes mediation analysis with
+  more robust approaches for distinguishing confounders from mediators:
   - **LiNGAM** (Shimizu et al., 2006) — exploits non-Gaussianity to
     identify causal direction in linear models.
   - **Additive noise models (ANM)** — nonparametric causal direction
     test based on independence of residuals.
   - **PC algorithm** — constraint-based causal discovery from
     conditional independence tests.
-- [ ] Document the assumptions and limitations of each approach clearly in
-  the API reference.
-
-### Confidence intervals on permutation p-values
-- [ ] Exact binomial or Clopper-Pearson confidence intervals reflecting
-  Monte Carlo uncertainty when only a finite number of permutations are
-  drawn.
-- [ ] Adaptive stopping: optionally halt the permutation loop early once
-  the CI for the p-value is narrow enough to determine significance
-  with a specified confidence.
-
-### Stratified / constrained permutations
-- [ ] Beyond block permutations (v0.4.0), support user-supplied
-  permutation constraints via a callback or constraint specification
-  language, for non-standard exchangeability structures.
-- [ ] Conditional Monte Carlo: permute within the sufficient-statistic
-  strata of a nuisance parameter for exact conditional tests.
+- [ ] Output a `CausalGraph` specification directly from discovery,
+  enabling a **discover → specify → test** pipeline.
+- [ ] Document the assumptions and limitations of each approach clearly
+  in the API reference.
 
 ### Visualisation utilities
 - [ ] Permutation distribution histograms with observed test statistic
   annotated.
 - [ ] Coefficient forest plots comparing observed vs. permutation null
   distributions across predictors.
+- [ ] Graph topology visualisation: render the `CausalGraph` with
+  edges coloured and weighted by permutation p-values.
 - [ ] Option to return matplotlib Figure/Axes objects for further
   customisation, or render inline in Jupyter notebooks.
 
 ---
 
-## v0.6.0 — Structured results & dual API
-
-With all statistical machinery finalised, this release redesigns the
-output interface to serve both academic reporting and programmatic
-pipeline usage from a single set of result objects.
-
-### `PermutationTestResult` dataclass
-- [ ] Replaces the current plain-dictionary return values with a typed
-  dataclass that supports:
-  - **Direct attribute access:** `.coefs`, `.p_values`,
-    `.permuted_p_values`, `.classic_p_values`, `.diagnostics`,
-    `.method`, `.model_type`.
-  - **Academic output:** `.summary()` prints the ASCII table (current
-    behaviour).  `.to_latex()` produces a publication-ready LaTeX
-    table.  `.to_html()` renders in Jupyter notebooks.
-    `.to_markdown()` generates a Markdown table for inclusion in
-    reports or documentation.
-  - **Programmatic access:** `.to_dataframe()` returns a tidy pandas
-    DataFrame of coefficients, standard errors, and p-values.
-    `.to_dict()` preserves backward compatibility with the current
-    dictionary interface.
-- [ ] Separate result classes for individual-coefficient tests
-  (`PermutationTestResult`) and joint tests
-  (`JointPermutationTestResult`) with appropriate attributes for each.
-
-### Scikit-learn estimator interface
-- [ ] `PermutationTestRegressor` and `PermutationTestClassifier` wrappers
-  conforming to the scikit-learn estimator contract: `fit`, `predict`,
-  `get_params`, `set_params`, `score`.
-- [ ] Compatible with `Pipeline`, `GridSearchCV`, `cross_val_score`, and
-  other scikit-learn meta-estimators.
-- [ ] The `fit` method runs the permutation test; results are accessible
-  via the `.results_` attribute.  `predict` delegates to the underlying
-  regression model.
-
-### Flexible input handling
-- [x] ~~Accept `numpy` arrays, `pandas` DataFrames/Series, and (optionally)
-  `polars` DataFrames as inputs, coercing internally as needed.~~
-  *(Moved to v0.1.1 — pandas and Polars DataFrames accepted via
-  `_ensure_pandas_df`.)*
-- [ ] Feature names inferred from DataFrame columns or supplied
-  explicitly.
-
----
-
-## v1.0.0 — Stable release & ecosystem
+## v1.0.0 — Stable Release & Ecosystem
 
 Marks the first stable public API with semantic versioning guarantees.
+The graph specification layer, `ModelFamily` protocol, exchangeability
+cell system, and structured result objects are all frozen.
 
 ### API freeze
-- [ ] All public function signatures, result object attributes, and
-  parameter names are frozen.  Breaking changes after this point
-  require a major version bump.
+- [ ] All public function signatures, graph specification methods,
+  result object attributes, and parameter names are frozen.  Breaking
+  changes after this point require a major version bump.
 - [ ] Comprehensive deprecation policy for any future interface changes.
 
 ### PyPI publication
@@ -340,12 +462,13 @@ Marks the first stable public API with semantic versioning guarantees.
 - [ ] Sphinx or MkDocs documentation hosted on ReadTheDocs or GitHub
   Pages.
 - [ ] Auto-generated API reference from docstrings.
-- [ ] Tutorials, worked examples, and a gallery of use cases.
-- [ ] Cross-referenced with the academic background in the README.
+- [ ] Tutorials: single-equation quickstart, multi-equation path model,
+  exchangeability cells, causal discovery → testing pipeline.
+- [ ] Gallery of worked examples.
 
 ### Benchmarks
-- [ ] Comprehensive runtime benchmarks across *n*, *n_permutations*, and
-  *n_features* for each model family.
+- [ ] Runtime benchmarks across *n*, *n_permutations*, *n_features*,
+  and *n_equations* for each model family.
 - [ ] Comparison against naive (non-vectorised) implementations to
   quantify the performance gains from batch algebra and JAX.
 - [ ] Published benchmark results in the documentation.
