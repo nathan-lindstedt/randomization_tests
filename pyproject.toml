@@ -1,0 +1,106 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "randomization-tests"
+version = "0.1.0"
+description = "Permutation tests for regression models using ter Braak (1992) and Kennedy (1995) methods"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.10"
+authors = [
+    {name = "Nathan Lindstedt"},
+]
+keywords = [
+    "permutation-test",
+    "randomization-test",
+    "regression",
+    "nonparametric",
+    "hypothesis-testing",
+    "ter-braak",
+    "kennedy",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Mathematics",
+    "Typing :: Typed",
+]
+dependencies = [
+    "numpy>=1.24",
+    "pandas>=2.0",
+    "scipy>=1.10",
+    "statsmodels>=0.14",
+    "scikit-learn>=1.3",
+]
+
+[project.urls]
+Homepage = "https://github.com/nathanlindstedt/randomization_tests"
+Repository = "https://github.com/nathanlindstedt/randomization_tests"
+Issues = "https://github.com/nathanlindstedt/randomization_tests/issues"
+Documentation = "https://github.com/nathanlindstedt/randomization_tests/tree/main/docs"
+
+[project.optional-dependencies]
+jax = ["jax>=0.4", "jaxlib>=0.4"]
+examples = ["ucimlrepo"]
+dev = [
+    "pytest>=7.0",
+    "mypy>=1.0",
+    "ruff>=0.4",
+    "ucimlrepo",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+randomization_tests = ["py.typed"]
+
+# --------------------------------------------------------------------------- #
+# Pytest
+# --------------------------------------------------------------------------- #
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-v --tb=short"
+
+# --------------------------------------------------------------------------- #
+# Ruff (linter + formatter)
+# --------------------------------------------------------------------------- #
+[tool.ruff]
+target-version = "py310"
+line-length = 88
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes
+    "I",    # isort
+    "UP",   # pyupgrade
+    "B",    # flake8-bugbear
+    "SIM",  # flake8-simplify
+]
+ignore = [
+    "E501",  # line too long — handled by formatter
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["randomization_tests"]
+
+# --------------------------------------------------------------------------- #
+# Mypy
+# --------------------------------------------------------------------------- #
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = false
+ignore_missing_imports = true

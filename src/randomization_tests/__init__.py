@@ -1,0 +1,40 @@
+"""randomization_tests — Permutation tests for regression models.
+
+Implements ter Braak (1992) and Kennedy (1995) methods with vectorised
+OLS, optional JAX autodiff for logistic regression, and pre-generated
+unique permutations.
+
+Public API:
+    .. autosummary::
+        permutation_test_regression
+        identify_confounders
+        mediation_analysis
+        screen_potential_confounders
+        print_results_table
+        print_joint_results_table
+        calculate_p_values
+        generate_unique_permutations
+"""
+
+from .core import permutation_test_regression
+from .confounders import (
+    identify_confounders,
+    mediation_analysis,
+    screen_potential_confounders,
+)
+from .display import print_joint_results_table, print_results_table
+from .pvalues import calculate_p_values
+from .permutations import generate_unique_permutations
+
+__all__ = [
+    "permutation_test_regression",
+    "identify_confounders",
+    "mediation_analysis",
+    "screen_potential_confounders",
+    "print_joint_results_table",
+    "print_results_table",
+    "calculate_p_values",
+    "generate_unique_permutations",
+]
+
+__version__ = "0.1.0"
