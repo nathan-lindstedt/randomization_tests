@@ -357,6 +357,24 @@ exchangeability cells built in v0.4.0.
 - [ ] Convenience: dictionary specification for programmatic and
   configuration-file workflows.
 
+### Interoperability
+- [ ] The `CausalGraph` internal representation should use a directed
+  incidence matrix as its canonical form (sparse, with +1/−1 entries
+  for head/tail of each hyperedge), enabling natural conversion to
+  and from external hypergraph libraries.
+- [ ] Node attribute and hyperedge attribute dictionaries for metadata
+  (family, role, exchangeability cell, test results) that survive
+  round-trip conversion.
+- [ ] Conversion utilities in a `compat` module:
+  - `to_hypernetx()` / `from_hypernetx()` — HyperNetX `Hypergraph`
+    objects.
+  - `to_toponetx()` / `from_toponetx()` — TopoNetX
+    `CombinatorialComplex` objects.
+  - `to_networkx()` / `from_networkx()` — NetworkX `DiGraph` objects
+    (hyperedges expanded to bipartite auxiliary nodes).
+- [ ] This ensures the package can participate in broader hypergraph
+  analysis pipelines as a permutation-testing module.
+
 ---
 
 ## v0.6.0 — Structured Results & Dual API
