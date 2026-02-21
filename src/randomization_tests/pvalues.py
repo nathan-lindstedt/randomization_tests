@@ -45,10 +45,12 @@ import numpy as np
 import pandas as pd
 import statsmodels.api as sm
 
+from ._compat import DataFrameLike, _ensure_pandas_df
+
 
 def calculate_p_values(
-    X: pd.DataFrame,
-    y: pd.DataFrame,
+    X: "DataFrameLike",
+    y: "DataFrameLike",
     permuted_coefs: np.ndarray,
     model_coefs: np.ndarray,
     precision: int = 3,
@@ -82,6 +84,9 @@ def calculate_p_values(
         element is a list of formatted p-value strings with significance
         markers (``*``, ``**``, or ``ns``).
     """
+    X = _ensure_pandas_df(X, name="X")
+    y = _ensure_pandas_df(y, name="y")
+
     permuted_coefs = np.asarray(permuted_coefs)
     model_coefs = np.asarray(model_coefs)
 

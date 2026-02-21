@@ -47,6 +47,8 @@ import pandas as pd
 from scipy import stats
 from sklearn.linear_model import LinearRegression
 
+from ._compat import DataFrameLike, _ensure_pandas_df
+
 # ------------------------------------------------------------------ #
 # Step 1 – Correlation screening (Pearson r)
 # ------------------------------------------------------------------ #
@@ -69,8 +71,8 @@ from sklearn.linear_model import LinearRegression
 # Step 2 (mediation analysis) resolves this ambiguity.
 
 def screen_potential_confounders(
-    X: pd.DataFrame,
-    y: pd.DataFrame,
+    X: "DataFrameLike",
+    y: "DataFrameLike",
     predictor: str,
     correlation_threshold: float = 0.1,
     p_value_threshold: float = 0.05,
@@ -81,8 +83,8 @@ def screen_potential_confounders(
     **and** ``|r(Z, Y)| >= threshold``, both with ``p < p_value_threshold``.
 
     Args:
-        X: Feature matrix.
-        y: Target variable.
+        X: Feature matrix.  Accepts pandas or Polars DataFrames.
+        y: Target variable.  Accepts pandas or Polars DataFrames.
         predictor: Name of the predictor of interest.
         correlation_threshold: Minimum absolute Pearson *r* to flag a
             variable.
@@ -93,6 +95,9 @@ def screen_potential_confounders(
         ``correlations_with_predictor``, ``correlations_with_outcome``,
         and ``excluded_variables``.
     """
+    X = _ensure_pandas_df(X, name="X")
+    y = _ensure_pandas_df(y, name="y")
+
     y_values = np.ravel(y)
     other_features = [c for c in X.columns if c != predictor]
     predictor_values = X[predictor].values
@@ -191,8 +196,8 @@ def screen_potential_confounders(
 # interval has better coverage properties than unadjusted percentiles.
 
 def mediation_analysis(
-    X: pd.DataFrame,
-    y: pd.DataFrame,
+    X: "DataFrameLike",
+    y: "DataFrameLike",
     predictor: str,
     mediator: str,
     n_bootstrap: int = 5000,
@@ -217,8 +222,8 @@ def mediation_analysis(
     :func:`numpy.linalg.lstsq`.
 
     Args:
-        X: Feature matrix.
-        y: Target variable.
+        X: Feature matrix.  Accepts pandas or Polars DataFrames.
+        y: Target variable.  Accepts pandas or Polars DataFrames.
         predictor: Predictor (X in X → M → Y).
         mediator: Potential mediator (M).
         n_bootstrap: Number of bootstrap samples.  Preacher & Hayes
@@ -245,6 +250,9 @@ def mediation_analysis(
         *Journal of the American Statistical Association*, 82(397),
         171–185.
     """
+    X = _ensure_pandas_df(X, name="X")
+    y = _ensure_pandas_df(y, name="y")
+
     y_values = np.ravel(y)
     x_vals = X[predictor].values.reshape(-1, 1)
     m_vals = X[mediator].values.reshape(-1, 1)
@@ -518,8 +526,8 @@ def _bca_ci(
 # uncontrolled).
 
 def identify_confounders(
-    X: pd.DataFrame,
-    y: pd.DataFrame,
+    X: "DataFrameLike",
+    y: "DataFrameLike",
     predictor: str,
     correlation_threshold: float = 0.1,
     p_value_threshold: float = 0.05,
@@ -536,8 +544,8 @@ def identify_confounders(
     mediators are likely confounders.
 
     Args:
-        X: Feature matrix.
-        y: Target variable.
+        X: Feature matrix.  Accepts pandas or Polars DataFrames.
+        y: Target variable.  Accepts pandas or Polars DataFrames.
         predictor: Predictor of interest.
         correlation_threshold: Minimum absolute Pearson *r*.
         p_value_threshold: Significance cutoff.
@@ -550,6 +558,9 @@ def identify_confounders(
         ``identified_mediators``, ``screening_results``,
         ``mediation_results``, and ``recommendation``.
     """
+    X = _ensure_pandas_df(X, name="X")
+    y = _ensure_pandas_df(y, name="y")
+
     screening = screen_potential_confounders(
         X, y, predictor,
         correlation_threshold=correlation_threshold,

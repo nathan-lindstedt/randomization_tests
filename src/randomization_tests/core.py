@@ -94,6 +94,7 @@ import statsmodels.api as sm
 from sklearn.linear_model import LinearRegression, LogisticRegression
 from sklearn.metrics import log_loss, mean_squared_error
 
+from ._compat import DataFrameLike, _ensure_pandas_df
 from ._config import get_backend
 from .permutations import generate_unique_permutations
 from .pvalues import calculate_p_values
@@ -833,8 +834,8 @@ def _kennedy_joint(
 #   7. Packaging everything into a results dictionary.
 
 def permutation_test_regression(
-    X: pd.DataFrame,
-    y: pd.DataFrame,
+    X: "DataFrameLike",
+    y: "DataFrameLike",
     n_permutations: int = 5_000,
     precision: int = 3,
     p_value_threshold_one: float = 0.05,
@@ -850,9 +851,11 @@ def permutation_test_regression(
 
     Args:
         X: Feature matrix of shape ``(n_samples, n_features)``.
+            Accepts pandas or Polars DataFrames.
         y: Target values of shape ``(n_samples,)``.  Binary targets
             (values in ``{0, 1}``) trigger logistic regression;
-            otherwise linear regression is used.
+            otherwise linear regression is used.  Accepts pandas or
+            Polars DataFrames.
         n_permutations: Number of unique permutations.
         precision: Decimal places for reported p-values.
         p_value_threshold_one: First significance level.
@@ -880,6 +883,9 @@ def permutation_test_regression(
           should never be zero. *Stat. Appl. Genet. Mol. Biol.*,
           9(1), Article 39.
     """
+    X = _ensure_pandas_df(X, name="X")
+    y = _ensure_pandas_df(y, name="y")
+
     if confounders is None:
         confounders = []
 

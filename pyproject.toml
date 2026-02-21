@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "randomization-tests"
-version = "0.1.0"
+version = "0.1.1"
 description = "Permutation tests for regression models using ter Braak (1992) and Kennedy (1995) methods"
 readme = "README.md"
 license = {text = "MIT"}
@@ -50,6 +50,7 @@ Documentation = "https://github.com/nathanlindstedt/randomization_tests/tree/mai
 
 [project.optional-dependencies]
 jax = ["jax>=0.4", "jaxlib>=0.4"]
+polars = ["polars>=0.20"]
 examples = ["ucimlrepo"]
 dev = [
     "pytest>=7.0",
