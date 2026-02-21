@@ -29,8 +29,6 @@ class TestGenerateUniquePermutations:
         result = generate_unique_permutations(
             4, 23, random_state=42, exclude_identity=False,
         )
-        identity = tuple(range(4))
-        found = any(tuple(row) == identity for row in result)
         # Not guaranteed but very likely with 23 of 24 permutations
         # Just check shape and uniqueness
         assert result.shape == (23, 4)

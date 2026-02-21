@@ -2,7 +2,6 @@
 
 import numpy as np
 import pandas as pd
-import pytest
 
 from randomization_tests.confounders import (
     identify_confounders,
@@ -12,17 +11,14 @@ from randomization_tests.confounders import (
 
 
 def _make_confounder_data(n=500, seed=42):
-    """
-    Create data where z is a confounder (causes both x1 and y)
+    """Create data where z is a confounder (causes both x1 and y)
     and x2 is independent noise.
 
     The key: x1 = f(z) + independent noise, y = g(z) + independent noise,
-    and x1 has NO direct causal effect on y. This means Baron & Kenny's
-    a-path (x1 → z) and b-path (z → y | x1) will yield a CI for the
-    indirect effect that includes zero, because z causes x1, not the
-    other way round — the a-path coefficient is *not* the causal effect.
-    We make x1's effect on z weak by adding substantial independent noise
-    to x1 so the regression x1 → z has a modest slope.
+    and x1 has NO direct causal effect on y.  The bootstrap test of
+    the indirect effect x1 → z → y should yield a CI that includes
+    zero because z causes x1 (not vice versa) and x1 has a large
+    independent component that dilutes the a-path coefficient.
     """
     rng = np.random.default_rng(seed)
     z = rng.standard_normal(n)
@@ -38,9 +34,7 @@ def _make_confounder_data(n=500, seed=42):
 
 
 def _make_mediator_data(n=500, seed=42):
-    """
-    Create data where m is a mediator: x -> m -> y.
-    """
+    """Create data where m is a mediator: x -> m -> y."""
     rng = np.random.default_rng(seed)
     x = rng.standard_normal(n)
     m = 0.8 * x + rng.standard_normal(n) * 0.3  # a path
@@ -81,18 +75,23 @@ class TestMediationAnalysis:
         ci = result["indirect_effect_ci"]
         assert ci[0] > 0 or ci[1] < 0
 
+    def test_ci_method_is_bca(self):
+        X, y = _make_mediator_data()
+        result = mediation_analysis(X, y, predictor="x", mediator="m", random_state=42)
+        assert result["ci_method"] == "BCa"
+
 
 class TestIdentifyConfounders:
     def test_identifies_confounder_not_mediator(self):
         """z causes both x1 and y, so it should be flagged as a candidate.
-        
-        Note: Baron & Kenny mediation analysis is symmetric — it cannot
-        distinguish z→x1 from x1→z statistically. When z and x1 are
-        correlated and z→y is strong, the indirect effect x1→z→y will
-        be significant, so z may appear as a 'mediator' even though
-        the true causal structure is confounding. This is a known
-        limitation. We test that z at least surfaces as a candidate
-        in the screening step.
+
+        Note: Mediation analysis is symmetric — it cannot distinguish
+        z → x1 from x1 → z statistically.  When z and x1 are correlated
+        and z → y is strong, the indirect effect x1 → z → y may be
+        significant, so z may appear as a 'mediator' even though the
+        true causal structure is confounding.  This is a known
+        limitation.  We test that z at least surfaces as a candidate in
+        the screening step.
         """
         X, y = _make_confounder_data()
         result = identify_confounders(X, y, predictor="x1", random_state=42)

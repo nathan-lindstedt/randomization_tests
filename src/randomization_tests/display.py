@@ -1,4 +1,16 @@
-"""Formatted ASCII table display utilities for permutation test results."""
+"""Formatted ASCII table display utilities for permutation test results.
+
+These tables mirror the statsmodels summary style, presenting both the
+model diagnostics (top panel) and the per-feature coefficients with
+empirical (permutation) and classical (asymptotic) p-values side by
+side (bottom panel).
+
+Having both p-values in the same table makes it easy to spot
+discrepancies — cases where the permutation and asymptotic p-values
+diverge (common with small samples, non-normal residuals, or heavy-
+tailed error distributions) are precisely the situations where the
+permutation test adds value.
+"""
 
 
 def _truncate(name: str, max_len: int) -> str:

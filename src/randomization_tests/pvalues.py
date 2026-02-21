@@ -2,6 +2,43 @@
 
 Provides both empirical (permutation) and classical (asymptotic)
 p-values, with vectorised computation over coefficients.
+
+Empirical p-values — Phipson & Smyth (2010) correction
+-------------------------------------------------------
+A naïve empirical p-value counts the proportion of permuted test
+statistics at least as extreme as the observed one:
+
+    p_naïve = #{|β*_j| >= |β_j|} / B
+
+where B is the number of permutations and β*_j is the j-th coefficient
+from permutation b.  This estimator has a fundamental flaw: when the
+observed statistic is the most extreme in the reference set, the p-value
+is exactly zero — an impossible result, since the observed arrangement
+is itself one of the (B+1) equally likely orderings.
+
+Phipson & Smyth (2010) correct this by treating the observed statistic
+as a member of the reference set:
+
+    p = (b + 1) / (B + 1)
+
+where b = #{|β*_j| >= |β_j|} and B is the total number of permutations.
+This ensures:
+  • p is never exactly zero (minimum is 1/(B+1));
+  • The test has correct size — Pr(p <= α) <= α under H0.
+
+Classical (asymptotic) p-values
+-------------------------------
+For comparison, classical p-values are computed via statsmodels using
+Wald-type tests.  For OLS these are t-distribution-based; for logistic
+regression they are z-distribution-based (from the MLE information
+matrix).  These p-values depend on distributional assumptions that the
+permutation test avoids.
+
+Reference:
+    Phipson, B. & Smyth, G. K. (2010). Permutation p-values should
+    never be zero: calculating exact p-values when permutations are
+    randomly drawn. *Statistical Applications in Genetics and Molecular
+    Biology*, 9(1), Article 39.
 """
 
 import numpy as np
@@ -53,18 +90,34 @@ def calculate_p_values(
     is_binary = (len(unique_y) == 2) and np.all(np.isin(unique_y, [0, 1]))
 
     # --- Classical asymptotic p-values via statsmodels ---
+    # statsmodels expects an explicit intercept column, added via
+    # sm.add_constant().  It returns p-values for [intercept, x1, …, xp],
+    # so we skip index 0 when extracting feature-level p-values below.
     if is_binary:
         sm_model = sm.Logit(y_values, sm.add_constant(X)).fit(disp=0)
     else:
         sm_model = sm.OLS(y_values, sm.add_constant(X)).fit()
 
-    # --- Vectorised empirical p-values ---
-    # Shape: (n_permutations, n_features) compared against (n_features,)
+    # --- Vectorised empirical p-values (Phipson & Smyth correction) ---
+    # For each feature j, count how many of the B permuted |β*_j| values
+    # are at least as large in absolute value as the observed |β_j|.
+    # This is a two-sided test: we compare magnitudes, not signed values.
+    #
+    # The comparison is broadcast across all B permutations at once:
+    #   np.abs(permuted_coefs)            shape: (B, p)
+    #   np.abs(model_coefs)[np.newaxis,:] shape: (1, p)
+    # yielding a boolean matrix of shape (B, p) whose column sums give
+    # the count b_j for each feature.
     n_permutations = permuted_coefs.shape[0]
     counts = np.sum(np.abs(permuted_coefs) >= np.abs(model_coefs)[np.newaxis, :], axis=0)
+
+    # Apply the Phipson & Smyth correction:
+    #   p_j = (b_j + 1) / (B + 1)
+    # The "+1" in both numerator and denominator accounts for the
+    # observed statistic itself being one of B+1 equally-likely outcomes.
     raw_p = (counts + 1) / (n_permutations + 1)
 
-    # --- Format strings ---
+    # --- Format p-value strings with significance markers ---
     def _fmt(p: float) -> str:
         rounded = np.round(p, precision)
         if p < p_value_threshold_two:

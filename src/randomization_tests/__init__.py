@@ -14,17 +14,20 @@ Public API:
         print_joint_results_table
         calculate_p_values
         generate_unique_permutations
+        get_backend
+        set_backend
 """
 
-from .core import permutation_test_regression
+from ._config import get_backend, set_backend
 from .confounders import (
     identify_confounders,
     mediation_analysis,
     screen_potential_confounders,
 )
+from .core import permutation_test_regression
 from .display import print_joint_results_table, print_results_table
-from .pvalues import calculate_p_values
 from .permutations import generate_unique_permutations
+from .pvalues import calculate_p_values
 
 __all__ = [
     "permutation_test_regression",
@@ -35,6 +38,8 @@ __all__ = [
     "print_results_table",
     "calculate_p_values",
     "generate_unique_permutations",
+    "get_backend",
+    "set_backend",
 ]
 
 __version__ = "0.1.0"

@@ -1,6 +1,10 @@
 """Tests for the display module."""
 
-from randomization_tests.display import _truncate, print_results_table, print_joint_results_table
+from randomization_tests.display import (
+    _truncate,
+    print_joint_results_table,
+    print_results_table,
+)
 
 
 class TestTruncate:

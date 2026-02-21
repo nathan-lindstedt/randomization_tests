@@ -216,18 +216,22 @@ mediation_analysis(
     y: pd.DataFrame,
     predictor: str,
     mediator: str,
-    n_bootstrap: int = 1000,
+    n_bootstrap: int = 5000,
     confidence_level: float = 0.95,
     precision: int = 4,
     random_state: int | None = None,
 ) -> dict
 ```
 
-Baron & Kenny (1986) mediation analysis with bootstrap CIs.
+Preacher & Hayes (2004, 2008) bootstrap test of the indirect effect.
 
 Decomposes the total effect of *predictor* on *y* into a direct effect
-(c′) and an indirect effect through *mediator* (a × b). Uses percentile
-bootstrap CIs (Preacher & Hayes, 2004) for the indirect effect.
+(c′) and an indirect effect through *mediator* (a × b). The indirect
+effect is tested via bias‑corrected and accelerated (BCa) bootstrap
+confidence intervals (Efron, 1987). Unlike the Baron & Kenny (1986)
+causal‑steps approach, this method does **not** require the total effect
+to be significant as a prerequisite — the bootstrap CI of the indirect
+effect is the sole criterion for mediation.
 
 | Parameter | Description |
 |---|---|
@@ -235,14 +239,15 @@ bootstrap CIs (Preacher & Hayes, 2004) for the indirect effect.
 | `y` | Target variable. |
 | `predictor` | Predictor (X in X → M → Y). |
 | `mediator` | Potential mediator (M). |
-| `n_bootstrap` | Number of bootstrap samples. |
+| `n_bootstrap` | Number of bootstrap samples. Preacher & Hayes recommend ≥ 5 000 for BCa intervals. |
 | `confidence_level` | Confidence‑interval level. |
 | `precision` | Decimal places for rounding. |
 | `random_state` | Seed for reproducibility. |
 
 **Returns:** Dictionary containing the mediation decomposition
 (`total_effect`, `direct_effect`, `indirect_effect`, `a_path`, `b_path`),
-bootstrap CI, `proportion_mediated`, `is_mediator` flag, and a textual
+BCa bootstrap CI (`indirect_effect_ci`), `ci_method` (`"BCa"`),
+`proportion_mediated`, `is_mediator` flag, and a textual
 `interpretation`.
 
 ---
@@ -293,13 +298,48 @@ table.
 
 ---
 
-## Type Aliases
+## Backend Configuration
 
-### `ArrayLike`
+The package auto‑detects JAX at import time.  You can override the
+backend via an environment variable or at runtime.
+
+### `get_backend`
 
 ```python
-ArrayLike = np.ndarray | pd.DataFrame | pd.Series
+get_backend() -> str
 ```
 
-Union type accepted by the public API for array‑like inputs.  Defined in
-`randomization_tests._typing`.
+Return the active backend name (`"jax"` or `"numpy"`).
+
+Resolution order (first match wins):
+
+1. Programmatic override set by `set_backend()`.
+2. The `RANDOMIZATION_TESTS_BACKEND` environment variable.
+3. Auto‑detection: `"jax"` if importable, else `"numpy"`.
+
+### `set_backend`
+
+```python
+set_backend(name: str) -> None
+```
+
+Override the backend selection.
+
+| Parameter | Description |
+|---|---|
+| `name` | `"jax"`, `"numpy"`, or `"auto"` (case‑insensitive). `"auto"` restores the default resolution order. |
+
+**Raises:** `ValueError` if *name* is not recognised.
+
+**Examples:**
+
+```bash
+# Disable JAX globally (shell)
+export RANDOMIZATION_TESTS_BACKEND=numpy
+```
+
+```python
+# Disable JAX programmatically
+import randomization_tests
+randomization_tests.set_backend("numpy")
+```

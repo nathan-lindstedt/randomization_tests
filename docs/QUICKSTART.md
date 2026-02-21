@@ -65,3 +65,27 @@ print(result["recommendation"])
 
 - [API Reference](API.md)
 - [Background & motivation](../README.md)
+
+## Backend configuration
+
+By default the package auto-detects JAX and uses it when available.
+To override:
+
+```python
+import randomization_tests
+
+# Force numpy/sklearn (no JAX)
+randomization_tests.set_backend("numpy")
+
+# Restore auto-detection
+randomization_tests.set_backend("auto")
+
+# Check current backend
+print(randomization_tests.get_backend())  # "numpy" or "jax"
+```
+
+Or set the `RANDOMIZATION_TESTS_BACKEND` environment variable:
+
+```bash
+export RANDOMIZATION_TESTS_BACKEND=numpy
+```

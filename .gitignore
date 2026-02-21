@@ -27,6 +27,12 @@ htmlcov/
 .coverage
 .coverage.*
 
+# Type checking
+.mypy_cache/
+
+# Linter
+.ruff_cache/
+
 # Jupyter
 .ipynb_checkpoints/
 
