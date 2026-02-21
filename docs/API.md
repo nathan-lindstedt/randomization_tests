@@ -73,15 +73,17 @@ generate_unique_permutations(
     n_permutations: int,
     random_state: int | None = None,
     exclude_identity: bool = True,
-    max_exhaustive: int = 12,
+    max_exhaustive: int = 10,
 ) -> np.ndarray
 ```
 
 Pre‑generate a matrix of unique permutation index arrays.
 
-For small `n_samples` (≤ `max_exhaustive`), all *n*! permutations are
-enumerated and a random subset is drawn. For larger inputs a hash‑based
-sampling strategy avoids duplicates.
+For small `n_samples` (≤ `max_exhaustive`), Lehmer‑code sampling draws
+permutations by their lexicographic rank — O(B·n) time and memory,
+independent of *n*!.  For larger inputs a vectorised batch strategy
+generates all B permutations in one NumPy call, with optional post‑hoc
+deduplication when the birthday‑paradox collision bound warrants it.
 
 | Parameter | Description |
 |---|---|
