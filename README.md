@@ -61,4 +61,6 @@ Taylor, M. A. 2024. "Attention, shocks, and relevance judgements: the case of wh
 
 Dataset Citation:
 
+Wolberg, W. "Breast Cancer Wisconsin (Diagnostic)," UCI Machine Learning Repository, 1995. [Online]. Available: https://doi.org/10.24432/C5DW2B.
+
 Yeh, I. "Real Estate Valuation," UCI Machine Learning Repository, 2018. [Online]. Available: https://doi.org/10.24432/C5J30W.
