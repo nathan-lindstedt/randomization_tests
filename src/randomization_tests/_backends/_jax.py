@@ -7,6 +7,12 @@ All public methods accept NumPy arrays and return NumPy arrays —
 JAX arrays are materialised at the boundary via ``np.asarray()`` so
 callers never touch JAX types directly.
 
+All arithmetic uses **float64** for numerical reliability on
+ill-conditioned Hessians, matching statsmodels and scipy.  On Apple
+Silicon this routes through CPU Accelerate BLAS rather than Metal
+(which lacks float64 support), with no measurable overhead for the
+small matrices typical of GLM regression.
+
 If JAX is not installed, the :class:`JaxBackend` can still be
 instantiated (for introspection) but ``is_available`` returns
 ``False`` and :func:`resolve_backend` will raise ``ImportError``
@@ -28,14 +34,14 @@ if TYPE_CHECKING:
 # Solver defaults
 # ------------------------------------------------------------------ #
 
-_DEFAULT_TOL: float = 1e-4
-"""Default gradient-norm tolerance for Newton–Raphson convergence.
+_DEFAULT_TOL: float = 1e-8
+"""Default convergence tolerance for Newton–Raphson.
 
-Chosen to sit well above the float32 oscillation ceiling, which
-scales with ``sqrt(n * p) * machine-epsilon``.  Empirical testing
-(``tests/test_convergence.py``) confirms 100 % convergence across
-n in [100, 1000] and p in [2, 50] at this threshold.  Matches
-sklearn's ``LogisticRegression`` default.
+With float64 arithmetic the gradient noise floor is
+``κ(H) × ε_f64 ≈ κ(H) × 1e-16``, so tolerances down to ~1e-12
+are achievable even on ill-conditioned Hessians (κ ≈ 10,000).
+The value 1e-8 matches statsmodels' IRLS default and provides a
+comfortable margin above machine epsilon.
 """
 
 _MIN_DAMPING: float = 1e-8
@@ -63,6 +69,14 @@ MLE.  Only the linear-algebra solve is protected.
 
 try:
     import jax
+
+    # Enable 64-bit floating point before any array creation.
+    # The Newton–Raphson solver requires float64 to converge
+    # reliably on ill-conditioned Hessians (κ > 1000).  In float32
+    # the gradient noise floor is κ(H) × ε ≈ 6e-4, which exceeds
+    # any reasonable tolerance.  Float64 lowers the floor to ~1e-12.
+    jax.config.update("jax_enable_x64", True)
+
     import jax.numpy as jnp
     from jax import grad, jit, vmap
 
@@ -116,29 +130,47 @@ if _CAN_IMPORT_JAX:
     ) -> tuple[jnp.ndarray, jnp.ndarray]:
         """Newton–Raphson logistic solve with early stopping.
 
-        Uses ``jax.lax.while_loop`` for dynamic iteration count
-        inside JIT — the loop exits as soon as the max absolute
-        gradient falls below *tol* or *max_iter* iterations are
-        reached.
+        Uses ``jax.lax.while_loop`` for dynamic early exit — the
+        solver stops as soon as convergence is detected (typically
+        3–4 iterations).  Float64 arithmetic ensures the gradient
+        noise floor (``κ(H) × ε_f64``) is far below any reasonable
+        tolerance, making the convergence check reliable even on
+        ill-conditioned Hessians.
+
+        All arithmetic is **float64** for reliable convergence on
+        ill-conditioned Hessians, matching statsmodels / scipy.
 
         A small constant ``min_damping * I`` is added to the Hessian
-        before each linear solve as a singularity guard.  This
-        prevents ``jnp.linalg.solve`` from producing NaN / Inf steps
-        when the Hessian is exactly singular (perfect separation,
-        rank-deficient design) without affecting well-conditioned
-        solves.  It does *not* modify the objective function — the
-        solver still targets the unregularised MLE.
+        before each linear solve as a singularity guard.  This does
+        *not* modify the objective function — the solver still
+        targets the unregularised MLE.
 
-        Convergence requires both a small gradient *and* finite
-        coefficients.  A beta containing Inf / NaN (e.g. from
-        separation-induced overflow) is never marked as converged,
-        even if the gradient happens to be small.
+        Convergence is checked via three criteria (OR):
+
+        * **Gradient criterion** — ``|g|_∞ < tol``: classical
+          first-order optimality.
+        * **Parameter-change criterion** — ``|Δβ|_∞ < tol``: detects
+          convergence when the Newton step has effectively vanished.
+          Mirrors scipy.optimize's xtol.
+        * **Relative NLL change** — ``|Δf| / max(|f|, 1) < tol``:
+          detects convergence when the objective has plateaued.
+          Mirrors scipy.optimize's ftol.
+
+        OR is safe because logistic regression is strictly convex —
+        no saddle points exist where one criterion could be satisfied
+        without genuine convergence.
+
+        All criteria are gated on finite coefficients: a beta
+        containing Inf / NaN (e.g. from separation-induced overflow)
+        is never marked as converged.
 
         Args:
             X: Augmented design matrix ``(n, p+1)``.
             y: Binary response ``(n,)``.
             max_iter: Maximum Newton iterations.
-            tol: Gradient-norm convergence threshold.
+            tol: Convergence threshold applied to gradient, step,
+                and relative function change.  Default
+                :data:`_DEFAULT_TOL`.
             min_damping: Singularity guard added to the Hessian
                 diagonal.  Default :data:`_MIN_DAMPING`.
 
@@ -146,61 +178,74 @@ if _CAN_IMPORT_JAX:
             ``(beta, converged)`` where *converged* is a scalar bool.
         """
         n_params = X.shape[1]
+        damping_matrix = min_damping * jnp.eye(n_params, dtype=jnp.float64)
+
+        # State: (iteration, beta, nll_prev, converged)
         init_state = (
             jnp.array(0),
-            jnp.zeros(n_params, dtype=jnp.float32),
+            jnp.zeros(n_params, dtype=jnp.float64),
+            jnp.array(jnp.inf, dtype=jnp.float64),
             jnp.array(False),
         )
 
         def cond(
-            state: tuple[jax.Array, jax.Array, jax.Array],
+            state: tuple[jax.Array, jax.Array, jax.Array, jax.Array],
         ) -> jax.Array:
-            i, _beta, converged = state
+            i, _beta, _nll, converged = state
             return (i < max_iter) & (~converged)
 
         def body(
-            state: tuple[jax.Array, jax.Array, jax.Array],
-        ) -> tuple[jax.Array, jax.Array, jax.Array]:
-            i, beta, _ = state
+            state: tuple[jax.Array, jax.Array, jax.Array, jax.Array],
+        ) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
+            i, beta, nll_prev, _ = state
+
             g = _logistic_grad(beta, X, y)
             H = _logistic_hessian(beta, X, y)
-
-            # Singularity guard: add min_damping * I to the Hessian.
-            #
-            # For well-conditioned data the eigenvalues of H are
-            # O(n), so 1e-8 is negligible — pure quadratic
-            # convergence is preserved (2–4 iterations typical).
-            #
-            # For singular / near-singular H (perfect separation,
-            # rank-deficient X), this prevents jnp.linalg.solve
-            # from producing NaN / Inf step components.
-            #
-            # This is NOT ridge regularisation: the objective
-            # function is unchanged.  Only the linear-algebra
-            # solve is stabilised.
-            H_damped = H + min_damping * jnp.eye(n_params)
-
+            H_damped = H + damping_matrix
             beta_new = beta - jnp.linalg.solve(H_damped, g)
 
-            # Require both a small gradient and finite coefficients.
-            # A saturated sigmoid can produce a small gradient even
-            # when beta has overflowed to huge values.
-            converged = (jnp.max(jnp.abs(g)) < tol) & jnp.all(jnp.isfinite(beta_new))
-            return (i + 1, beta_new, converged)
+            nll_new = _logistic_nll(beta_new, X, y)
 
-        _, beta_final, converged = jax.lax.while_loop(cond, body, init_state)
+            # Three convergence criteria (OR), gated on finite beta.
+            grad_small = jnp.max(jnp.abs(g)) < tol
+            step_small = jnp.max(jnp.abs(beta_new - beta)) < tol
+            nll_rel = jnp.abs(nll_new - nll_prev) / jnp.maximum(
+                jnp.maximum(jnp.abs(nll_prev), jnp.abs(nll_new)),
+                1.0,
+            )
+            func_small = nll_rel < tol
+
+            converged = (grad_small | step_small | func_small) & jnp.all(
+                jnp.isfinite(beta_new)
+            )
+            return (i + 1, beta_new, nll_new, converged)
+
+        _, beta_final, _nll_final, converged = jax.lax.while_loop(
+            cond, body, init_state
+        )
         return beta_final, converged
 
 
 def _check_convergence(converged: np.ndarray, max_iter: int) -> None:
-    """Warn if any Newton–Raphson solve did not converge."""
+    """Emit a single summary warning if any solves did not converge.
+
+    Non-converged permutations are **retained** in the null
+    distribution — discarding them would bias the p-value
+    anti-conservatively.  The warning is informational only.
+    """
     n_failed = int(np.sum(~converged))
     if n_failed > 0:
+        total = converged.shape[0]
+        pct = 100.0 * n_failed / total
         warnings.warn(
-            f"{n_failed} of {converged.shape[0]} Newton–Raphson solves "
-            f"did not converge within {max_iter} iterations.",
+            f"{n_failed} of {total} Newton–Raphson solves "
+            f"({pct:.1f}%) did not converge within {max_iter} "
+            f"iterations. Non-converged permutations are retained "
+            f"in the null distribution (conservative). If this "
+            f"fraction is large, check for multicollinearity (VIF) "
+            f"or quasi-complete separation.",
             RuntimeWarning,
-            stacklevel=2,
+            stacklevel=3,
         )
 
 
@@ -213,9 +258,10 @@ def _check_convergence(converged: np.ndarray, max_iter: int) -> None:
 class JaxBackend:
     """JAX-accelerated compute backend.
 
-    Uses ``jax.vmap`` to vectorise Newton–Raphson logistic solves
-    across all *B* permutations in a single XLA kernel launch.
-    OLS uses ``jnp.linalg.pinv`` for a JIT-compiled batch multiply.
+    All arithmetic uses float64 for numerical reliability.  Uses
+    ``jax.vmap`` to vectorise Newton–Raphson logistic solves across
+    all *B* permutations in a single XLA kernel launch.  OLS uses
+    ``jnp.linalg.pinv`` for a JIT-compiled batch multiply.
     """
 
     @property
@@ -249,8 +295,8 @@ class JaxBackend:
         else:
             X_aug = X
 
-        X_j = jnp.array(X_aug, dtype=jnp.float32)
-        Y_j = jnp.array(Y_matrix, dtype=jnp.float32)
+        X_j = jnp.array(X_aug, dtype=jnp.float64)
+        Y_j = jnp.array(Y_matrix, dtype=jnp.float64)
 
         @jit
         def _batch_solve(X_mat: jax.Array, Y_mat: jax.Array) -> jax.Array:
@@ -295,8 +341,8 @@ class JaxBackend:
         else:
             X_aug = X
 
-        X_j = jnp.array(X_aug, dtype=jnp.float32)
-        Y_j = jnp.array(Y_matrix, dtype=jnp.float32)
+        X_j = jnp.array(X_aug, dtype=jnp.float64)
+        Y_j = jnp.array(Y_matrix, dtype=jnp.float64)
 
         def _solve_one(
             y_vec: jax.Array,
@@ -344,8 +390,8 @@ class JaxBackend:
         else:
             X_aug = X_batch
 
-        X_j = jnp.array(X_aug, dtype=jnp.float32)
-        y_j = jnp.array(y, dtype=jnp.float32)
+        X_j = jnp.array(X_aug, dtype=jnp.float64)
+        y_j = jnp.array(y, dtype=jnp.float64)
 
         def _solve_one(
             X_single: jax.Array,
@@ -387,13 +433,12 @@ class JaxBackend:
         else:
             X_aug = X_batch
 
-        X_j = jnp.array(X_aug, dtype=jnp.float32)
-        y_j = jnp.array(y, dtype=jnp.float32)
+        X_j = jnp.array(X_aug, dtype=jnp.float64)
+        y_j = jnp.array(y, dtype=jnp.float64)
 
         @jit
         def _batch_lstsq(X_all: jax.Array, y_vec: jax.Array) -> jax.Array:
             def _solve_one(X_single: jax.Array) -> jax.Array:
-                # jnp.linalg.lstsq returns (solution, residuals, rank, sv)
                 coefs, _, _, _ = jnp.linalg.lstsq(X_single, y_vec, rcond=None)
                 return coefs
 

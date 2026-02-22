@@ -1,13 +1,11 @@
-"""Tests for Newton-Raphson convergence under float32 arithmetic.
+"""Tests for Newton–Raphson convergence under float64 arithmetic.
 
 Verifies that the JAX logistic solver converges at the default
-tolerance (:data:`_DEFAULT_TOL` = 1e-4) across a range of realistic
+tolerance (:data:`_DEFAULT_TOL` = 1e-8) across a range of realistic
 data scenarios (varying *n*, *p*, signal strength, and pathological
 conditions).
 
-The scenarios were chosen to cover the float32 gradient-noise
-landscape empirically: the irreducible oscillation band scales
-with *n*, *p*, and Hessian condition number.
+All arithmetic uses float64 (matching the production solver).
 
 All tests are guarded with ``pytest.importorskip("jax")``.
 """
@@ -40,7 +38,7 @@ def _make_dataset(
     p: int,
     seed: int = 42,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Return ``(X_aug_with_intercept, y)`` in float32."""
+    """Return ``(X_aug_with_intercept, y)`` in float64."""
     rng = np.random.default_rng(seed)
     X = rng.standard_normal((n, p))
 
@@ -65,8 +63,8 @@ def _make_dataset(
         raise ValueError(name)
 
     probs = 1 / (1 + np.exp(-logits))
-    y = rng.binomial(1, probs, size=n).astype(np.float32)
-    X_aug = np.column_stack([np.ones(n), X]).astype(np.float32)
+    y = rng.binomial(1, probs, size=n).astype(np.float64)
+    X_aug = np.column_stack([np.ones(n), X]).astype(np.float64)
     return X_aug, y
 
 
@@ -76,11 +74,11 @@ def _run_newton(
     max_iter: int = 200,
     tol: float | None = None,
 ) -> tuple[int | None, float]:
-    """Run Newton-Raphson manually.
+    """Run Newton–Raphson manually.
 
     Returns ``(converged_at_iter_or_None, final_max_grad)``.
     """
-    beta = jnp.zeros(X_j.shape[1], dtype=jnp.float32)
+    beta = jnp.zeros(X_j.shape[1], dtype=jnp.float64)
     for i in range(max_iter):
         g = _logistic_grad(beta, X_j, y_j)
         max_g = float(jnp.max(jnp.abs(g)))
@@ -130,7 +128,7 @@ class TestConvergenceWellConditioned:
 
         n_failed = 0
         for _ in range(B):
-            y_perm = rng.permutation(y_base).astype(np.float32)
+            y_perm = rng.permutation(y_base).astype(np.float64)
             converged_at, _ = _run_newton(X_j, jnp.array(y_perm), tol=_DEFAULT_TOL)
             if converged_at is None:
                 n_failed += 1
@@ -150,7 +148,7 @@ class TestConvergenceWellConditioned:
 
         max_iters_seen = 0
         for _ in range(B):
-            y_perm = rng.permutation(y_base).astype(np.float32)
+            y_perm = rng.permutation(y_base).astype(np.float64)
             converged_at, _ = _run_newton(X_j, jnp.array(y_perm), tol=_DEFAULT_TOL)
             if converged_at is not None:
                 max_iters_seen = max(max_iters_seen, converged_at)
@@ -187,7 +185,7 @@ class TestConvergencePathological:
         backend = JaxBackend()
         rng = np.random.default_rng(0)
         Y_matrix = np.stack([rng.permutation(y_base) for _ in range(B)]).astype(
-            np.float32
+            np.float64
         )
 
         result = backend.batch_logistic(
@@ -213,19 +211,19 @@ class TestDefaultTolValue:
     """Verify the constant is what we expect and is appropriately set."""
 
     def test_default_tol_value(self) -> None:
-        assert _DEFAULT_TOL == 1e-4
+        assert _DEFAULT_TOL == 1e-8
 
-    def test_default_tol_above_float32_noise_floor(self) -> None:
-        """``_DEFAULT_TOL`` should be well above the float32 gradient noise.
+    def test_default_tol_above_float64_noise_floor(self) -> None:
+        """``_DEFAULT_TOL`` should be well above the float64 gradient noise.
 
-        The irreducible gradient oscillation in float32 scales roughly
-        as ``sqrt(n * p) * eps_32`` (each gradient component sums *n*
-        terms across *p* coupled parameters).  For *n* = 1000,
-        *p* = 50 this is ~2.7e-5.  ``_DEFAULT_TOL`` must sit above
-        this with margin.
+        The irreducible gradient oscillation in float64 scales roughly
+        as ``sqrt(n * p) * eps_64``.  For *n* = 1000, *p* = 50 this
+        is ~5e-14.  ``_DEFAULT_TOL`` = 1e-8 sits six orders of
+        magnitude above this, giving ample margin even for
+        ill-conditioned Hessians.
         """
-        worst_case_noise = np.sqrt(1000 * 50) * np.finfo(np.float32).eps
+        worst_case_noise = np.sqrt(1000 * 50) * np.finfo(np.float64).eps
         assert worst_case_noise * 2 < _DEFAULT_TOL, (
-            f"_DEFAULT_TOL={_DEFAULT_TOL} is too close to the float32 "
+            f"_DEFAULT_TOL={_DEFAULT_TOL} is too close to the float64 "
             f"noise floor ({worst_case_noise:.2e}) for n=1000, p=50"
         )

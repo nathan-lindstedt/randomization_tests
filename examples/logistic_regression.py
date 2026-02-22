@@ -3,6 +3,8 @@ Test Case 2: Logistic Regression (Binary Outcome)
 Breast Cancer Wisconsin (Diagnostic) dataset (UCI ML Repository ID=17)
 """
 
+import warnings
+
 from ucimlrepo import fetch_ucirepo
 
 from randomization_tests import (
@@ -49,9 +51,11 @@ print_diagnostics_table(
 # Kennedy (1995) individual — logistic
 # ============================================================================
 
-results_kennedy_bc = permutation_test_regression(
-    X_bc, y_bc, method="kennedy", confounders=[]
-)
+with warnings.catch_warnings():
+    warnings.filterwarnings("ignore", message=".*without confounders.*")
+    results_kennedy_bc = permutation_test_regression(
+        X_bc, y_bc, method="kennedy", confounders=[]
+    )
 print_results_table(
     results_kennedy_bc,
     feature_names=X_bc.columns.tolist(),
@@ -68,9 +72,11 @@ print_diagnostics_table(
 # Kennedy (1995) joint — logistic
 # ============================================================================
 
-results_kennedy_joint_bc = permutation_test_regression(
-    X_bc, y_bc, method="kennedy_joint", confounders=[]
-)
+with warnings.catch_warnings():
+    warnings.filterwarnings("ignore", message=".*without confounders.*")
+    results_kennedy_joint_bc = permutation_test_regression(
+        X_bc, y_bc, method="kennedy_joint", confounders=[]
+    )
 print_joint_results_table(
     results_kennedy_joint_bc,
     target_name=y_bc.columns[0],

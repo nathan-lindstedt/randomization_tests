@@ -1192,6 +1192,7 @@ def permutation_test_regression(
         "p_value_threshold_one": p_value_threshold_one,
         "p_value_threshold_two": p_value_threshold_two,
         "method": method,
+        "confounders": confounders,
         "model_type": "logistic" if is_binary else "linear",
         "diagnostics": diagnostics,
         "extended_diagnostics": extended_diagnostics,

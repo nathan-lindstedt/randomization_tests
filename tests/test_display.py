@@ -47,6 +47,72 @@ class TestPrintResultsTable:
         assert "ter_braak" in captured.out
         assert "x1" in captured.out
 
+    def test_kennedy_no_confounders_note(self, capsys):
+        """Notes section appears for Kennedy without confounders."""
+        results = {
+            "model_coefs": [1.0],
+            "permuted_p_values": ["0.01 (**)"],
+            "classic_p_values": ["0.01 (**)"],
+            "p_value_threshold_one": 0.05,
+            "p_value_threshold_two": 0.01,
+            "method": "kennedy",
+            "confounders": [],
+            "model_type": "linear",
+            "diagnostics": {
+                "n_observations": 50,
+                "n_features": 1,
+                "aic": 100,
+                "bic": 105,
+            },
+        }
+        print_results_table(results, ["x1"])
+        out = capsys.readouterr().out
+        assert "Notes" in out
+        assert "without confounders" in out
+
+    def test_kennedy_with_confounders_no_note(self, capsys):
+        """Notes section absent for Kennedy with confounders."""
+        results = {
+            "model_coefs": [1.0],
+            "permuted_p_values": ["0.01 (**)"],
+            "classic_p_values": ["0.01 (**)"],
+            "p_value_threshold_one": 0.05,
+            "p_value_threshold_two": 0.01,
+            "method": "kennedy",
+            "confounders": ["x2"],
+            "model_type": "linear",
+            "diagnostics": {
+                "n_observations": 50,
+                "n_features": 1,
+                "aic": 100,
+                "bic": 105,
+            },
+        }
+        print_results_table(results, ["x1"])
+        out = capsys.readouterr().out
+        assert "Notes" not in out
+
+    def test_ter_braak_no_note(self, capsys):
+        """Notes section absent for ter Braak method."""
+        results = {
+            "model_coefs": [1.0],
+            "permuted_p_values": ["0.01 (**)"],
+            "classic_p_values": ["0.01 (**)"],
+            "p_value_threshold_one": 0.05,
+            "p_value_threshold_two": 0.01,
+            "method": "ter_braak",
+            "model_type": "linear",
+            "diagnostics": {
+                "n_observations": 50,
+                "n_features": 1,
+                "aic": 100,
+                "bic": 105,
+            },
+        }
+        print_results_table(results, ["x1"])
+        out = capsys.readouterr().out
+        assert "Notes" not in out
+
 
 class TestPrintJointResultsTable:
     def test_prints_without_error(self, capsys):
@@ -76,6 +142,55 @@ class TestPrintJointResultsTable:
         captured = capsys.readouterr()
         assert "kennedy_joint" in captured.out
         assert "12.34" in captured.out
+
+    def test_no_confounders_note(self, capsys):
+        """Notes section appears for joint Kennedy without confounders."""
+        results = {
+            "observed_improvement": 5.0,
+            "p_value": 0.04,
+            "p_value_str": "0.04 (*)",
+            "metric_type": "RSS Reduction",
+            "model_type": "linear",
+            "features_tested": ["x1"],
+            "confounders": [],
+            "p_value_threshold_one": 0.05,
+            "p_value_threshold_two": 0.01,
+            "method": "kennedy_joint",
+            "diagnostics": {
+                "n_observations": 50,
+                "n_features": 1,
+                "aic": 100,
+                "bic": 105,
+            },
+        }
+        print_joint_results_table(results)
+        out = capsys.readouterr().out
+        assert "Notes" in out
+        assert "without confounders" in out
+
+    def test_with_confounders_no_note(self, capsys):
+        """Notes section absent for joint Kennedy with confounders."""
+        results = {
+            "observed_improvement": 5.0,
+            "p_value": 0.04,
+            "p_value_str": "0.04 (*)",
+            "metric_type": "RSS Reduction",
+            "model_type": "linear",
+            "features_tested": ["x1"],
+            "confounders": ["x2"],
+            "p_value_threshold_one": 0.05,
+            "p_value_threshold_two": 0.01,
+            "method": "kennedy_joint",
+            "diagnostics": {
+                "n_observations": 50,
+                "n_features": 1,
+                "aic": 100,
+                "bic": 105,
+            },
+        }
+        print_joint_results_table(results)
+        out = capsys.readouterr().out
+        assert "Notes" not in out
 
 
 class TestPrintConfounderTable:

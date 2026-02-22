@@ -188,24 +188,24 @@ all existing methods from the start.
 
 ### Step 1 — `ModelFamily` protocol
 
-- [ ] A `typing.Protocol` class defining the interface every family
+- [X] A `typing.Protocol` class defining the interface every family
   must implement: `fit`, `predict`, `coefs`, `residuals`,
   `reconstruct_y`, `fit_metric`, `diagnostics`, `classical_p_values`,
   and a `batch_fit` method that delegates to the active backend.
-- [ ] `LinearFamily` and `LogisticFamily` implementations refactored
+- [X] `LinearFamily` and `LogisticFamily` implementations refactored
   from existing `core.py` logic.
-- [ ] `resolve_family()` dispatch: `"auto"` resolves to `"linear"` or
+- [X] `resolve_family()` dispatch: `"auto"` resolves to `"linear"` or
   `"logistic"` via current binary detection; explicit strings map
   directly.
 
 ### Step 2 — `_backends/` package
 
-- [ ] Promote v0.2.0's `_jax.py` module into a `_backends/` package
+- [X] Promote v0.2.0's `_jax.py` module into a `_backends/` package
   with a `BackendProtocol` defining `batch_ols`, `batch_logistic`,
   `batch_poisson`, `batch_negbin`, and `batch_ordinal` methods.
-- [ ] `_backends/_numpy.py`: NumPy/sklearn fallback (always available).
-- [ ] `_backends/_jax.py`: JAX accelerated path (optional dependency).
-- [ ] `resolve_backend()` reads `_config.get_backend()` and returns the
+- [X] `_backends/_numpy.py`: NumPy/sklearn fallback (always available).
+- [X] `_backends/_jax.py`: JAX accelerated path (optional dependency).
+- [X] `resolve_backend()` reads `_config.get_backend()` and returns the
   appropriate backend object.  Future accelerators (CuPy, etc.) slot
   in as additional modules implementing `BackendProtocol` with no
   changes to `families.py` or `core.py`.
@@ -231,9 +231,30 @@ Depends on Steps 1–2.  Converts the existing engine from hard-coded
 
 Depends on Step 2 (`_backends/_jax.py`).
 
-- [ ] JAX convergence control: `max_iter`, `tol`, convergence warnings
+- [X] JAX convergence control: `max_iter`, `tol`, convergence warnings
   for all Newton–Raphson solvers in `_backends/_jax.py`.
-- [ ] **JAX-accelerated Kennedy individual linear path:**
+- [X] **Float64 precision:** `jax.config.update("jax_enable_x64", True)`
+  at import, all dtypes changed from `float32` to `float64`.
+  `_DEFAULT_TOL` set to `1e-8` (matching statsmodels' IRLS default).
+  Float64 noise floor is `κ(H) × ε_f64 ≈ 1e-12`, well below
+  tolerance — eliminates spurious convergence failures on
+  ill-conditioned Hessians (`κ ≈ 10,000`) that plagued float32
+  (noise floor `≈ 6e-4`, above `tol = 1e-4`).
+- [X] **Triple convergence criteria (OR):** (1) gradient `|g|_∞ < tol`,
+  (2) parameter-change `|Δβ|_∞ < tol`, (3) relative NLL change
+  `|Δf|/max(|f|, 1) < tol`.  All gated on `jnp.isfinite(beta_new)`.
+  OR is safe because logistic regression is strictly convex.
+- [X] **`while_loop` dynamic early exit:** replaced `fori_loop` + `cond`
+  skip pattern (which ran all 100 iterations at ≈10s for B=5000) with
+  `jax.lax.while_loop` that exits at iteration 3–4 (≈0.4s), a 25×
+  speedup.  Float64 makes convergence checking reliable, so dynamic
+  exit is the correct choice.
+- [X] **Damped Hessian regularisation:** `_MIN_DAMPING = 1e-8` added to
+  Hessian diagonal for near-singular cases.
+- [X] **Aggregated convergence warnings:** single summary warning with
+  percentage and actionable guidance (VIF, quasi-complete separation)
+  instead of per-feature warnings.
+- [X] **JAX-accelerated Kennedy individual linear path:**
   `jax.vmap` over `jnp.linalg.lstsq` to eliminate the
   per-permutation Python loop, matching the existing JAX logistic
   architecture.  Implemented as `LinearFamily.batch_fit` dispatching
@@ -242,6 +263,22 @@ Depends on Step 2 (`_backends/_jax.py`).
   pseudoinverse multiply and gain little from JAX, but all families
   should provide a JAX path for consistency and to prefer autodiff
   over manual gradient implementations wherever possible.
+
+### Step 4 Quickfix — Display & result-dict improvements
+
+- [X] **Kennedy no-confounders Notes section:** `print_results_table`
+  and `print_joint_results_table` now render a styled Notes block
+  when the Kennedy method is called without confounders, matching the
+  existing Notes style in `print_confounder_table` and
+  `print_diagnostics_table`.  The programmatic `UserWarning` is
+  retained for non-display consumers; the example script suppresses
+  it via `warnings.catch_warnings()` so the table note is the only
+  user-facing message.
+- [X] **`confounders` key in non-joint result dict:** the return dict
+  from `permutation_test_regression` for `method="kennedy"` now
+  includes a `"confounders"` key (already present for
+  `"kennedy_joint"`), enabling display functions to detect the
+  no-confounders condition without inspecting the method string alone.
 
 ### Step 5 — Parallelisation
 

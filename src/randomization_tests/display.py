@@ -120,6 +120,25 @@ def print_results_table(
         coef_str = f"{coefs[i]:>12.4f}"
         print(f"{trunc_feat:<{fc}} {coef_str} {emp_p[i]:>18} {asy_p[i]:>18}")
 
+    # ── Notes ──────────────────────────────────────────────────── #
+    # Kennedy without confounders is valid but unusual — surface a
+    # note so the user knows ter Braak may be more appropriate.
+    method = results.get("method", "")
+    confounders = results.get("confounders")
+    if method == "kennedy" and not confounders:
+        print("-" * 80)
+        print("Notes")
+        print("-" * 80)
+        print(
+            _wrap(
+                "  [!] Kennedy method called without confounders — all features "
+                "will be tested unconditionally. Consider 'ter_braak' for "
+                "unconditional tests.",
+                width=80,
+                indent=6,
+            )
+        )
+
     print("=" * 80)
     print(
         f"(*) p < {results['p_value_threshold_one']}   "
@@ -205,6 +224,22 @@ def print_joint_results_table(
 
     print(f"{'Observed Improvement:':<30} {results['observed_improvement']:>12.4f}")
     print(f"{'Joint p-Value:':<30} {results['p_value_str']:>12}")
+
+    # ── Notes ──────────────────────────────────────────────────── #
+    confounders = results.get("confounders")
+    if not confounders:
+        print("-" * 80)
+        print("Notes")
+        print("-" * 80)
+        print(
+            _wrap(
+                "  [!] Kennedy method called without confounders — all features "
+                "will be tested unconditionally. Consider 'ter_braak' for "
+                "unconditional tests.",
+                width=80,
+                indent=6,
+            )
+        )
 
     print("=" * 80)
     print(
