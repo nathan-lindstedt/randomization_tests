@@ -20,26 +20,32 @@ from randomization_tests.diagnostics import (
     compute_vif,
 )
 
-
 # ── Fixtures ─────────────────────────────────────────────────────── #
+
 
 def _make_linear_data(n=100, seed=42):
     rng = np.random.default_rng(seed)
-    X = pd.DataFrame({
-        "x1": rng.standard_normal(n),
-        "x2": rng.standard_normal(n),
-        "x3": rng.standard_normal(n),
-    })
-    y_values = 2.0 * X["x1"].values - 1.0 * X["x2"].values + rng.standard_normal(n) * 0.5
+    X = pd.DataFrame(
+        {
+            "x1": rng.standard_normal(n),
+            "x2": rng.standard_normal(n),
+            "x3": rng.standard_normal(n),
+        }
+    )
+    y_values = (
+        2.0 * X["x1"].values - 1.0 * X["x2"].values + rng.standard_normal(n) * 0.5
+    )
     return X, y_values
 
 
 def _make_binary_data(n=200, seed=42):
     rng = np.random.default_rng(seed)
-    X = pd.DataFrame({
-        "x1": rng.standard_normal(n),
-        "x2": rng.standard_normal(n),
-    })
+    X = pd.DataFrame(
+        {
+            "x1": rng.standard_normal(n),
+            "x2": rng.standard_normal(n),
+        }
+    )
     logits = 2.0 * X["x1"].values + 0.0 * X["x2"].values
     probs = 1.0 / (1.0 + np.exp(-logits))
     y_values = rng.binomial(1, probs).astype(float)
@@ -50,10 +56,12 @@ def _make_collinear_data(n=100, seed=42):
     """Create data where x2 ≈ x1, producing high VIF."""
     rng = np.random.default_rng(seed)
     x1 = rng.standard_normal(n)
-    X = pd.DataFrame({
-        "x1": x1,
-        "x2": x1 + rng.standard_normal(n) * 0.01,  # nearly identical
-    })
+    X = pd.DataFrame(
+        {
+            "x1": x1,
+            "x2": x1 + rng.standard_normal(n) * 0.01,  # nearly identical
+        }
+    )
     y_values = 1.0 * x1 + rng.standard_normal(n) * 0.5
     return X, y_values
 
@@ -279,8 +287,12 @@ class TestComputeAllDiagnostics:
         raw_emp = np.array([0.01, 0.02, 0.5])
         raw_cls = np.array([0.01, 0.03, 0.55])
         result = compute_all_diagnostics(
-            X, y, coefs, is_binary=False,
-            raw_empirical_p=raw_emp, raw_classic_p=raw_cls,
+            X,
+            y,
+            coefs,
+            is_binary=False,
+            raw_empirical_p=raw_emp,
+            raw_classic_p=raw_cls,
             n_permutations=1000,
         )
         assert "standardized_coefs" in result
@@ -299,8 +311,12 @@ class TestComputeAllDiagnostics:
         raw_emp = np.array([0.01, 0.5])
         raw_cls = np.array([0.01, 0.55])
         result = compute_all_diagnostics(
-            X, y, coefs, is_binary=True,
-            raw_empirical_p=raw_emp, raw_classic_p=raw_cls,
+            X,
+            y,
+            coefs,
+            is_binary=True,
+            raw_empirical_p=raw_emp,
+            raw_classic_p=raw_cls,
             n_permutations=1000,
         )
         assert "standardized_coefs" in result
@@ -316,8 +332,12 @@ class TestComputeAllDiagnostics:
         raw_emp = np.array([0.01, 0.02, 0.5])
         raw_cls = np.array([0.01, 0.03, 0.55])
         result = compute_all_diagnostics(
-            X, y, coefs, is_binary=False,
-            raw_empirical_p=raw_emp, raw_classic_p=raw_cls,
+            X,
+            y,
+            coefs,
+            is_binary=False,
+            raw_empirical_p=raw_emp,
+            raw_classic_p=raw_cls,
             n_permutations=1000,
         )
         n_features = X.shape[1]
@@ -472,10 +492,12 @@ class TestExposureRSquared:
         rng = np.random.default_rng(42)
         n = 100
         z = rng.standard_normal(n)
-        X = pd.DataFrame({
-            "x1": z + rng.standard_normal(n) * 0.01,  # nearly = z
-            "z": z,
-        })
+        X = pd.DataFrame(
+            {
+                "x1": z + rng.standard_normal(n) * 0.01,  # nearly = z
+                "z": z,
+            }
+        )
         r2 = compute_exposure_r_squared(X, confounders=["z"])
         assert r2[0] > 0.99  # x1 is nearly collinear with z
         assert r2[1] is None  # z is a confounder
@@ -484,10 +506,12 @@ class TestExposureRSquared:
         """An independent predictor should have low exposure R²."""
         rng = np.random.default_rng(42)
         n = 200
-        X = pd.DataFrame({
-            "x1": rng.standard_normal(n),
-            "z": rng.standard_normal(n),
-        })
+        X = pd.DataFrame(
+            {
+                "x1": rng.standard_normal(n),
+                "z": rng.standard_normal(n),
+            }
+        )
         r2 = compute_exposure_r_squared(X, confounders=["z"])
         assert r2[0] < 0.1  # x1 is independent of z
 
@@ -496,14 +520,21 @@ class TestExposureRSquared:
         when method='kennedy'."""
         X, y = _make_linear_data()
         from sklearn.linear_model import LinearRegression
+
         model = LinearRegression().fit(X, y)
         coefs = np.ravel(model.coef_)
         raw_p = np.array([0.01, 0.5, 0.8])
 
         result = compute_all_diagnostics(
-            X=X, y_values=y, model_coefs=coefs, is_binary=False,
-            raw_empirical_p=raw_p, raw_classic_p=raw_p,
-            n_permutations=100, method="kennedy", confounders=["x3"],
+            X=X,
+            y_values=y,
+            model_coefs=coefs,
+            is_binary=False,
+            raw_empirical_p=raw_p,
+            raw_classic_p=raw_p,
+            n_permutations=100,
+            method="kennedy",
+            confounders=["x3"],
         )
         assert "exposure_r_squared" in result
         assert len(result["exposure_r_squared"]) == 3
@@ -514,14 +545,20 @@ class TestExposureRSquared:
         for ter_braak."""
         X, y = _make_linear_data()
         from sklearn.linear_model import LinearRegression
+
         model = LinearRegression().fit(X, y)
         coefs = np.ravel(model.coef_)
         raw_p = np.array([0.01, 0.5, 0.8])
 
         result = compute_all_diagnostics(
-            X=X, y_values=y, model_coefs=coefs, is_binary=False,
-            raw_empirical_p=raw_p, raw_classic_p=raw_p,
-            n_permutations=100, method="ter_braak",
+            X=X,
+            y_values=y,
+            model_coefs=coefs,
+            is_binary=False,
+            raw_empirical_p=raw_p,
+            raw_classic_p=raw_p,
+            n_permutations=100,
+            method="ter_braak",
         )
         assert "exposure_r_squared" not in result
 
@@ -531,13 +568,20 @@ class TestExposureRSquared:
         be trivially 0)."""
         X, y = _make_linear_data()
         from sklearn.linear_model import LinearRegression
+
         model = LinearRegression().fit(X, y)
         coefs = np.ravel(model.coef_)
         raw_p = np.array([0.01, 0.5, 0.8])
 
         result = compute_all_diagnostics(
-            X=X, y_values=y, model_coefs=coefs, is_binary=False,
-            raw_empirical_p=raw_p, raw_classic_p=raw_p,
-            n_permutations=100, method="kennedy", confounders=[],
+            X=X,
+            y_values=y,
+            model_coefs=coefs,
+            is_binary=False,
+            raw_empirical_p=raw_p,
+            raw_classic_p=raw_p,
+            n_permutations=100,
+            method="kennedy",
+            confounders=[],
         )
         assert "exposure_r_squared" not in result

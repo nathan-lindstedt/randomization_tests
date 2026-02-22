@@ -367,40 +367,27 @@ def print_diagnostics_table(
         div_str = f"{flag:>10}"
 
         if show_exp_r2:
-            print(
-                f"{trunc_feat:<{fc}}{std_c} {vif_str} "
-                f"{mc_str} {er2_str}   {div_str}"
-            )
+            print(f"{trunc_feat:<{fc}}{std_c} {vif_str} {mc_str} {er2_str}   {div_str}")
         else:
             print(f"{trunc_feat:<{fc}}{std_c} {vif_str} {mc_str}   {div_str}")
 
     # ── Legend ──────────────────────────────────────────────────── #
 
     print("-" * W)
-    print(
-        "  Std Coef: effect per SD.  "
-        "VIF: collinearity (> 5 moderate, > 10 severe)."
-    )
-    print(
-        "  MC SE: p-value precision "
-        "(increase B if large relative to p)."
-    )
+    print("  Std Coef: effect per SD.  VIF: collinearity (> 5 moderate, > 10 severe).")
+    print("  MC SE: p-value precision (increase B if large relative to p).")
     if show_exp_r2:
         print(
             "  Exp R\u00b2: variance of X_j explained by "
             "confounders (> 0.99 = collinear)."
         )
     if has_divergent:
-        print(
-            "  DIVERGENT = permutation and classical "
-            "p-values disagree at alpha."
-        )
+        print("  DIVERGENT = permutation and classical p-values disagree at alpha.")
 
     # Collect VIF notes
     if vif_problems:
         parts = ", ".join(
-            f"{name} = {val:.2f} ({label})"
-            for name, val, label in vif_problems
+            f"{name} = {val:.2f} ({label})" for name, val, label in vif_problems
         )
         notes.append(f"VIF: {parts}.")
 
@@ -414,9 +401,7 @@ def print_diagnostics_table(
     # the confounders — but it warrants an explicit warning so users
     # understand *why* the p-value is extreme.
     if exp_r2_problems:
-        parts = ", ".join(
-            f"{name} = {val:.4f}" for name, val in exp_r2_problems
-        )
+        parts = ", ".join(f"{name} = {val:.4f}" for name, val in exp_r2_problems)
         notes.append(
             f"Exp R\u00b2: {parts}. Near-collinear with "
             f"confounders; permuted coefficients are unstable "
@@ -454,18 +439,9 @@ def print_diagnostics_table(
     else:
         dr = ext.get("deviance_residuals", {})
         if dr:
-            print(
-                f"{'  Deviance resid. mean:':<{lw}}"
-                f"{dr.get('mean', 'N/A'):>10}"
-            )
-            print(
-                f"{'  Deviance resid. var:':<{lw}}"
-                f"{dr.get('variance', 'N/A'):>10}"
-            )
-            print(
-                f"{'  |d_i| > 2 count:':<{lw}}"
-                f"{dr.get('n_extreme', 'N/A'):>10}"
-            )
+            print(f"{'  Deviance resid. mean:':<{lw}}{dr.get('mean', 'N/A'):>10}")
+            print(f"{'  Deviance resid. var:':<{lw}}{dr.get('variance', 'N/A'):>10}")
+            print(f"{'  |d_i| > 2 count:':<{lw}}{dr.get('n_extreme', 'N/A'):>10}")
             print(
                 f"{'  Runs test Z:':<{lw}}"
                 f"{dr.get('runs_test_z', 'N/A'):>10}   "
@@ -473,15 +449,11 @@ def print_diagnostics_table(
             )
             n_extreme = dr.get("n_extreme", 0)
             if isinstance(n_extreme, (int, float)) and n_extreme > 0:
-                notes.append(
-                    f"{int(n_extreme)} obs. with "
-                    f"|deviance residual| > 2."
-                )
+                notes.append(f"{int(n_extreme)} obs. with |deviance residual| > 2.")
             runs_p = dr.get("runs_test_p")
             if runs_p is not None and runs_p < 0.05:
                 notes.append(
-                    "Runs test p < 0.05: non-random "
-                    "residual pattern detected."
+                    "Runs test p < 0.05: non-random residual pattern detected."
                 )
 
     # Cook's distance
@@ -490,11 +462,7 @@ def print_diagnostics_table(
         n_inf = cd.get("n_influential", 0)
         thresh = cd.get("threshold", 0)
         cd_label = "  Cook's D (> 4/n):"
-        print(
-            f"{cd_label:<{lw}}"
-            f"{n_inf:>10}   "
-            f"threshold = {thresh:.4f}"
-        )
+        print(f"{cd_label:<{lw}}{n_inf:>10}   threshold = {thresh:.4f}")
         if isinstance(n_inf, (int, float)) and n_inf > 0:
             notes.append(
                 f"{int(n_inf)} obs. with Cook's D > {thresh:.4f} "
@@ -521,7 +489,7 @@ def print_diagnostics_table(
     print()
 
 
-def _fmt_p(p) -> str:
+def _fmt_p(p: float | None) -> str:
     """Format a p-value for the diagnostics table."""
     if p is None:
         return "N/A"

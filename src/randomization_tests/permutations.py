@@ -62,6 +62,7 @@ import numpy as np
 #   pool=[0,1,2] → pop(2)=2, pool=[0,1] → pop(0)=0, pool=[1] → pop(0)=1
 #   result = [2, 0, 1]
 
+
 def _unrank_permutation(k: int, n: int) -> list[int]:
     """Convert rank *k* to the *k*-th lexicographic permutation of ``[0..n-1]``.
 
@@ -148,12 +149,19 @@ def generate_unique_permutations(
 
         # Identity = rank 0, so excluding it means sampling from [1, total).
         if exclude_identity:
-            ranks = rng.choice(
-                total_perms - 1, size=n_permutations, replace=False,
-            ) + 1
+            ranks = (
+                rng.choice(
+                    total_perms - 1,
+                    size=n_permutations,
+                    replace=False,
+                )
+                + 1
+            )
         else:
             ranks = rng.choice(
-                total_perms, size=n_permutations, replace=False,
+                total_perms,
+                size=n_permutations,
+                replace=False,
             )
 
         return np.array(
@@ -184,8 +192,8 @@ def generate_unique_permutations(
     # dedup pass using a Python set — still faster than the old approach
     # because the bulk generation is vectorised.
 
-    collision_prob = n_permutations * (n_permutations - 1) / (
-        2 * math.factorial(n_samples)
+    collision_prob = (
+        n_permutations * (n_permutations - 1) / (2 * math.factorial(n_samples))
     )
     need_dedup = collision_prob >= 1e-9
 

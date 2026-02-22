@@ -51,7 +51,10 @@ class TestGenerateUniquePermutations:
     def test_includes_identity_when_allowed(self):
         # With small n and many permutations, identity should appear
         result = generate_unique_permutations(
-            4, 23, random_state=42, exclude_identity=False,
+            4,
+            23,
+            random_state=42,
+            exclude_identity=False,
         )
         # Not guaranteed but very likely with 23 of 24 permutations
         # Just check shape and uniqueness

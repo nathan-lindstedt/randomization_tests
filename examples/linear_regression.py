@@ -60,7 +60,9 @@ print_diagnostics_table(
 # Kennedy (1995) joint
 # ============================================================================
 
-results_kennedy_joint = permutation_test_regression(X, y, method="kennedy_joint", confounders=[])
+results_kennedy_joint = permutation_test_regression(
+    X, y, method="kennedy_joint", confounders=[]
+)
 print_joint_results_table(
     results_kennedy_joint,
     target_name=y.columns[0],
@@ -95,7 +97,10 @@ if predictors_with_confounders:
     example_confounders = predictors_with_confounders[example_predictor]
 
     results_kc = permutation_test_regression(
-        X, y, method="kennedy", confounders=example_confounders,
+        X,
+        y,
+        method="kennedy",
+        confounders=example_confounders,
     )
     print_results_table(
         results_kc,

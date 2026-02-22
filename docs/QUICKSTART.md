@@ -99,6 +99,44 @@ results = permutation_test_regression(
 )
 ```
 
+## JAX backend
+
+The optional JAX backend accelerates logistic regression permutation
+tests via `jax.vmap` over a custom Newton–Raphson solver.
+
+### Tested versions
+
+`jax>=0.4.20` through current (0.5.x).  Older 0.4.x releases may work
+but are not tested in CI.
+
+### Installation
+
+```bash
+pip install randomization-tests[jax]
+```
+
+Or from a local clone:
+
+```bash
+pip install -e ".[jax]"
+```
+
+### Known limitations
+
+- **No Windows GPU support.** JAX does not ship Windows GPU wheels.
+  CPU-only works on all platforms.
+- **Memory.** JAX pre-allocates 75 % of GPU memory by default.  Set
+  `XLA_PYTHON_CLIENT_PREALLOCATE=false` to disable this.
+- **First-call latency.** JIT compilation adds a one-time overhead on
+  the first call per session.
+
+### Verify installation
+
+```python
+from randomization_tests import get_backend
+print(get_backend())  # "jax" if detected, "numpy" otherwise
+```
+
 ## Further reading
 
 - [API Reference](API.md)

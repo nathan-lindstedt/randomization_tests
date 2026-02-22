@@ -88,158 +88,64 @@ References:
 
 from __future__ import annotations
 
+import warnings
+
 import numpy as np
 import pandas as pd
 import statsmodels.api as sm
 from sklearn.linear_model import LinearRegression, LogisticRegression
 from sklearn.metrics import log_loss, mean_squared_error
+from statsmodels.tools.sm_exceptions import (
+    ConvergenceWarning as SmConvergenceWarning,
+)
+from statsmodels.tools.sm_exceptions import (
+    PerfectSeparationWarning,
+)
 
 from ._compat import DataFrameLike, _ensure_pandas_df
-from ._config import get_backend
+
+# ------------------------------------------------------------------ #
+# JAX-accelerated logistic regression
+# ------------------------------------------------------------------ #
+#
+# Logistic regression permutation paths have no closed-form solution
+# and require iterative fitting (Newton–Raphson) for each of the B
+# permutations.  JAX dramatically accelerates this via:
+#
+#   1. **Automatic differentiation** — jax.grad computes exact
+#      gradients of the logistic negative log-likelihood.  No hand-
+#      coded gradient formulas, and numerically stable by construction.
+#
+#   2. **vmap (vectorised map)** — transforms a single-permutation
+#      solver into a batched solver that processes all B permutations
+#      in one XLA kernel launch.  Combined with jit compilation, this
+#      eliminates Python-level dispatch overhead entirely.
+#
+# If JAX is not installed, the code below still imports successfully —
+# _jax.py handles the try/except internally and the two fit functions
+# simply won't be called (they only execute behind ``if _use_jax()``
+# guards).  The sklearn LogisticRegression loop serves as a correct
+# but slower fallback.
+#
+# The decision of whether to USE JAX is made at call time via
+# ``_use_jax()``, which combines two checks:
+#   - Is JAX importable?  (determined once at module load)
+#   - Does the runtime policy say "jax"?  (get_backend() resolution;
+#     see _config.py for the programmatic / env-var / auto cascade)
+#
+# Prior to v0.2.0, all JAX code lived inline in this file.  Extracting
+# it into _jax.py keeps core.py focused on the permutation algorithms
+# and provides a clean extraction point for v0.3.0's _backends/ package.
+from ._jax import (
+    fit_logistic_batch_jax,
+    fit_logistic_varying_X_jax,
+)
+from ._jax import (
+    use_jax as _use_jax,
+)
 from .diagnostics import compute_all_diagnostics
 from .permutations import generate_unique_permutations
 from .pvalues import calculate_p_values
-
-# ------------------------------------------------------------------ #
-# Optional JAX import
-# ------------------------------------------------------------------ #
-# JAX provides two features that dramatically accelerate logistic
-# regression permutation loops:
-#
-# 1. **Automatic differentiation (autodiff)** — jax.grad computes
-#    exact gradients of the log-likelihood without hand-coding
-#    derivative formulas.  This makes the Newton–Raphson solver both
-#    concise and numerically stable.
-#
-# 2. **vmap (vectorised map)** — transforms a function that processes
-#    one permutation into a function that processes all B permutations
-#    in a single batched call.  Combined with JIT compilation, this
-#    leverages XLA's kernel fusion and, when available, GPU parallelism.
-#
-# If JAX is not installed the module falls back to sklearn's
-# LogisticRegression in a Python loop — correct but slower.
-#
-# The actual decision of whether to USE JAX is deferred to runtime via
-# get_backend(), which checks (in order): programmatic override →
-# RANDOMIZATION_TESTS_BACKEND env var → auto-detection.  The import
-# here only determines _CAN_IMPORT_JAX (whether it's installed); the
-# policy decision is separate.  See _config.py for details.
-try:
-    import jax
-    import jax.numpy as jnp
-    from jax import grad, jit, vmap
-    _CAN_IMPORT_JAX = True
-except ImportError:
-    _CAN_IMPORT_JAX = False
-
-
-def _use_jax() -> bool:
-    """Return True if JAX should be used for the current call."""
-    return _CAN_IMPORT_JAX and get_backend() == "jax"
-
-
-# ------------------------------------------------------------------ #
-# JAX helpers (logistic regression via autodiff)
-# ------------------------------------------------------------------ #
-# Logistic regression maximises the log-likelihood:
-#
-#   ℓ(β) = Σᵢ [ yᵢ log(pᵢ) + (1 - yᵢ) log(1 - pᵢ) ]
-#
-# where pᵢ = σ(Xᵢβ) = 1 / (1 + exp(-Xᵢβ)) is the predicted
-# probability from the sigmoid function.
-#
-# Minimising the *negative* log-likelihood (NLL) is equivalent and
-# fits the standard optimisation convention.  The functions below
-# implement a Newton–Raphson solver:
-#
-#   β_{t+1} = β_t − H⁻¹(β_t) · ∇ℓ(β_t)
-#
-# where ∇ℓ is the gradient vector and H is the Hessian matrix.  JAX
-# computes both via automatic differentiation — no manual derivation
-# of the gradient or Hessian is needed.  The solver converges
-# quadratically near the optimum (typically < 10 iterations).
-
-if _CAN_IMPORT_JAX:
-    @jit
-    def _logistic_nll(
-        beta: jnp.ndarray, X: jnp.ndarray, y: jnp.ndarray,
-    ) -> jnp.ndarray:
-        """Compute the negative log-likelihood for logistic regression.
-
-        Uses the numerically stable form:
-            NLL = Σᵢ log(1 + exp(-sᵢ · Xᵢβ))
-        where sᵢ = 2yᵢ - 1 ∈ {-1, +1}.  This avoids computing log(0)
-        when predicted probabilities saturate near 0 or 1.
-        """
-        logits = X @ beta
-        # Numerically stable: log(1 + exp(-y_signed * logits))
-        # where y_signed = 2*y - 1
-        return jnp.sum(jnp.logaddexp(0.0, -logits * (2.0 * y - 1.0)))
-
-    _logistic_grad = jit(grad(_logistic_nll))
-
-    @jit
-    def _logistic_hessian_diag(
-        beta: jnp.ndarray, X: jnp.ndarray, y: jnp.ndarray,
-    ) -> jnp.ndarray:
-        """Compute the Hessian of the logistic NLL.
-
-        The Hessian of the NLL is X'WX, where W = diag(pᵢ(1-pᵢ)) is
-        the diagonal matrix of variance weights.  This is always
-        positive semi-definite, guaranteeing the Newton step descends.
-        """
-        p = jax.nn.sigmoid(X @ beta)
-        W = p * (1.0 - p)
-        return (X.T * W[None, :]) @ X
-
-    def _fit_logistic_batch_jax(
-        X_base: np.ndarray,
-        Y_matrix: np.ndarray,
-        max_iter: int = 100,
-        fit_intercept: bool = True,
-    ) -> np.ndarray:
-        """Fit logistic regression for many Y vectors at once using vmap.
-
-        vmap transforms the single-permutation solver into a batched
-        version that processes all B permutations simultaneously.  Each
-        column of Y_matrix is an independent binary response vector;
-        the design matrix X_base is shared across all solves.
-
-        Args:
-            X_base: Design matrix of shape ``(n, p)`` shared across
-                permutations.
-            Y_matrix: Matrix of shape ``(B, n)`` where each row is a
-                permuted response vector.
-            max_iter: Maximum Newton iterations per solve.
-
-        Returns:
-            Coefficient matrix of shape ``(B, p)``.
-        """
-        # When fit_intercept is True, prepend an intercept column to
-        # match sklearn's default.  The solver returns [β₀, β₁, …, βₚ];
-        # we slice off β₀ so the caller sees only feature coefficients.
-        if fit_intercept:
-            ones = np.ones((X_base.shape[0], 1), dtype=X_base.dtype)
-            X_aug = np.hstack([ones, X_base])
-        else:
-            X_aug = X_base
-        X_j = jnp.array(X_aug, dtype=jnp.float32)
-        Y_j = jnp.array(Y_matrix, dtype=jnp.float32)
-
-        def _solve_one(y_vec):
-            beta = jnp.zeros(X_j.shape[1], dtype=jnp.float32)
-            for _ in range(max_iter):
-                g = _logistic_grad(beta, X_j, y_vec)
-                H = _logistic_hessian_diag(beta, X_j, y_vec)
-                step = jnp.linalg.solve(H, g)
-                beta = beta - step
-            return beta
-
-        # vmap across the batch dimension (rows of Y_j)
-        batched_solve = jit(vmap(_solve_one))
-        all_coefs = np.asarray(batched_solve(Y_j))
-        return all_coefs[:, 1:] if fit_intercept else all_coefs
-
 
 # ------------------------------------------------------------------ #
 # Batch OLS via pseudoinverse (numpy)
@@ -263,6 +169,7 @@ if _CAN_IMPORT_JAX:
 # matrix multiply — a dramatic speedup for typical permutation counts
 # (B = 5 000) because BLAS-level matrix multiplication is highly
 # optimised for modern CPUs (cache-blocking, SIMD, multi-threading).
+
 
 def _batch_ols_coefs(
     X: np.ndarray,
@@ -327,6 +234,7 @@ def _batch_ols_coefs(
 #     Pseudo R² — McFadden's R² = 1 - ℓ(model)/ℓ(null).
 #     Log-likelihood — ℓ(model) and ℓ(null) for the intercept-only.
 #     LLR p-value — likelihood-ratio test for the full model.
+
 
 def _compute_diagnostics(
     X: pd.DataFrame,
@@ -414,6 +322,7 @@ def _compute_diagnostics(
 # Importantly, one set of permutations is generated ONCE and reused
 # across all features.  The vectorised implementation computes all B
 # full-model refits in a single matrix multiply via _batch_ols_coefs.
+
 
 def _ter_braak_linear(
     X: pd.DataFrame,
@@ -524,7 +433,9 @@ def _ter_braak_logistic(
         # Step 1: Reduced logistic model — drop feature j.
         X_red = np.delete(X_np, j, axis=1)
         model_red = LogisticRegression(
-            penalty=None, solver="lbfgs", max_iter=5_000,
+            penalty=None,
+            solver="lbfgs",
+            max_iter=5_000,
             fit_intercept=fit_intercept,
         )
         model_red.fit(X_red, y_values)
@@ -542,14 +453,18 @@ def _ter_braak_logistic(
         # Step 5: Refit the full logistic model for all B permutations.
         if _use_jax():
             # JAX path: batch all B logistic fits via vmap'd Newton solver.
-            all_coefs = _fit_logistic_batch_jax(
-                X_np, Y_perm_binary, fit_intercept=fit_intercept,
+            all_coefs = fit_logistic_batch_jax(
+                X_np,
+                Y_perm_binary,
+                fit_intercept=fit_intercept,
             )
             result[:, j] = all_coefs[:, j]
         else:
             # Fallback: sklearn loop (slower but always available).
             model_cls = LogisticRegression(
-                penalty=None, solver="lbfgs", max_iter=5_000,
+                penalty=None,
+                solver="lbfgs",
+                max_iter=5_000,
                 fit_intercept=fit_intercept,
             )
             for p in range(n_perm):
@@ -595,6 +510,7 @@ def _ter_braak_logistic(
 # confounders only, not on all other predictors.  This makes it
 # possible to test X_j while controlling for a known subset of Z,
 # rather than implicitly conditioning on everything else in the model.
+
 
 def _kennedy_individual_linear(
     X: pd.DataFrame,
@@ -737,32 +653,18 @@ def _kennedy_individual_logistic(
             X_perm_all = np.broadcast_to(X_np, (n_perm, n, n_features)).copy()
             X_perm_all[:, :, feat_idx] = x_hat.ravel()[np.newaxis, :] + shuffled
 
-            # Prepend intercept column to match sklearn's default
-            # when fit_intercept is True.  Slice off β₀ after solving.
-            if fit_intercept:
-                ones = np.ones((n_perm, n, 1), dtype=X_perm_all.dtype)
-                X_perm_aug = np.concatenate([ones, X_perm_all], axis=2)
-            else:
-                X_perm_aug = X_perm_all
-            X_j = jnp.array(X_perm_aug, dtype=jnp.float32)
-            y_j = jnp.array(y_values, dtype=jnp.float32)
-
-            def _solve_one(X_single, _y=y_j):
-                beta = jnp.zeros(X_single.shape[1], dtype=jnp.float32)
-                for _ in range(100):
-                    g = _logistic_grad(beta, X_single, _y)
-                    H = _logistic_hessian_diag(beta, X_single, _y)
-                    beta = beta - jnp.linalg.solve(H, g)
-                return beta
-
-            batched = jit(vmap(_solve_one))
-            all_coefs_raw = np.asarray(batched(X_j))
-            all_coefs = all_coefs_raw[:, 1:] if fit_intercept else all_coefs_raw
+            all_coefs = fit_logistic_varying_X_jax(
+                X_perm_all,
+                y_values,
+                fit_intercept=fit_intercept,
+            )
             result[:, feat_idx] = all_coefs[:, feat_idx]
         else:
             # Fallback: sklearn loop.
             model_cls = LogisticRegression(
-                penalty=None, solver="lbfgs", max_iter=5_000,
+                penalty=None,
+                solver="lbfgs",
+                max_iter=5_000,
                 fit_intercept=fit_intercept,
             )
             for p in range(n_perm):
@@ -810,6 +712,7 @@ def _kennedy_individual_logistic(
 #   3. The p-value is the fraction of T*_b >= T_obs, with the
 #      Phipson & Smyth (2010) correction.
 
+
 def _kennedy_joint(
     X: pd.DataFrame,
     y_values: np.ndarray,
@@ -831,23 +734,25 @@ def _kennedy_joint(
     # Logistic: Deviance = 2 × total binary cross-entropy (lower is better).
     if is_binary:
 
-        def model_cls():
+        def model_cls() -> LogisticRegression:
             return LogisticRegression(
-                penalty=None, solver="lbfgs", max_iter=5_000,
+                penalty=None,
+                solver="lbfgs",
+                max_iter=5_000,
                 fit_intercept=fit_intercept,
             )
 
-        def get_metric(y_true, y_pred_proba):
-            return 2 * log_loss(y_true, y_pred_proba, normalize=False)
+        def get_metric(y_true: np.ndarray, y_pred: np.ndarray) -> float:
+            return float(2 * log_loss(y_true, y_pred, normalize=False))
 
         metric_type = "Deviance Reduction"
     else:
 
-        def model_cls():
+        def model_cls() -> LinearRegression:
             return LinearRegression(fit_intercept=fit_intercept)
 
-        def get_metric(y_true, y_pred):
-            return mean_squared_error(y_true, y_pred) * len(y_true)
+        def get_metric(y_true: np.ndarray, y_pred: np.ndarray) -> float:
+            return float(mean_squared_error(y_true, y_pred) * len(y_true))
 
         metric_type = "RSS Reduction"
 
@@ -873,7 +778,9 @@ def _kennedy_joint(
         if fit_intercept:
             if is_binary:
                 mean_y = np.mean(y_values)
-                preds_reduced = np.column_stack([1 - mean_y * np.ones(n), mean_y * np.ones(n)])
+                preds_reduced = np.column_stack(
+                    [1 - mean_y * np.ones(n), mean_y * np.ones(n)]
+                )
             else:
                 preds_reduced = np.full(n, np.mean(y_values), dtype=float)
         else:
@@ -888,7 +795,11 @@ def _kennedy_joint(
     # The observed improvement is how much better the full model fits.
     full_features = np.hstack([X_target, Z]) if Z.shape[1] > 0 else X_target
     full_model = model_cls().fit(full_features, y_values)
-    preds_full = full_model.predict_proba(full_features) if is_binary else full_model.predict(full_features)
+    preds_full = (
+        full_model.predict_proba(full_features)
+        if is_binary
+        else full_model.predict(full_features)
+    )
     obs_improvement = base_metric - get_metric(y_values, preds_full)
 
     # --- Exposure model residuals ---
@@ -916,7 +827,11 @@ def _kennedy_joint(
         x_star = x_hat + x_resids[perm_indices[i]]
         perm_features = np.hstack([x_star, Z]) if Z.shape[1] > 0 else x_star
         perm_model = model_cls().fit(perm_features, y_values)
-        perm_preds = perm_model.predict_proba(perm_features) if is_binary else perm_model.predict(perm_features)
+        perm_preds = (
+            perm_model.predict_proba(perm_features)
+            if is_binary
+            else perm_model.predict(perm_features)
+        )
         perm_improvements[i] = base_metric - get_metric(y_values, perm_preds)
 
     return obs_improvement, perm_improvements, metric_type, features_to_test
@@ -937,9 +852,10 @@ def _kennedy_joint(
 #   6. Computing Phipson & Smyth-corrected p-values (see pvalues.py).
 #   7. Packaging everything into a results dictionary.
 
+
 def permutation_test_regression(
-    X: "DataFrameLike",
-    y: "DataFrameLike",
+    X: DataFrameLike,
+    y: DataFrameLike,
     n_permutations: int = 5_000,
     precision: int = 3,
     p_value_threshold_one: float = 0.05,
@@ -1002,7 +918,70 @@ def permutation_test_regression(
     if confounders is None:
         confounders = []
 
+    # ---- Input validation ------------------------------------------------
+    if X.shape[0] == 0:
+        raise ValueError("X must contain at least one observation.")
+    if X.shape[1] == 0:
+        raise ValueError("X must contain at least one feature.")
+    if y.shape[1] > 1:
+        raise ValueError(f"y must be a single column, got {y.shape[1]} columns.")
+
     y_values = np.ravel(y)
+
+    if X.shape[0] != len(y_values):
+        raise ValueError(f"X has {X.shape[0]} rows but y has {len(y_values)} elements.")
+    if np.isnan(y_values).any():
+        raise ValueError(
+            "y contains NaN values. Remove or impute missing data before testing."
+        )
+    if not np.isfinite(y_values).all():
+        raise ValueError(
+            "y contains infinite values. Remove or correct these before testing."
+        )
+
+    # Check X for NaN / Inf / non-numeric
+    non_numeric = [
+        str(c) for c in X.columns if not np.issubdtype(X[c].dtype, np.number)
+    ]
+    if non_numeric:
+        raise ValueError(
+            f"Features have non-numeric dtype: {non_numeric}. "
+            "Encode categorical variables before testing."
+        )
+    if X.isnull().any().any():
+        raise ValueError(
+            "X contains NaN values. Remove or impute missing data before testing."
+        )
+    if not np.isfinite(X.to_numpy()).all():
+        raise ValueError(
+            "X contains infinite values. Remove or correct these before testing."
+        )
+
+    constant_cols = [str(c) for c in X.columns if X[c].nunique() <= 1]
+    if constant_cols:
+        raise ValueError(
+            f"Features have zero variance: {constant_cols}. "
+            "Remove constant columns before testing."
+        )
+
+    if n_permutations < 1:
+        raise ValueError(f"n_permutations must be >= 1, got {n_permutations}.")
+
+    # Validate confounder names
+    if confounders:
+        missing = [c for c in confounders if c not in X.columns]
+        if missing:
+            raise ValueError(f"Confounders not found in X columns: {missing}")
+
+    # Kennedy without confounders is valid but likely a misunderstanding
+    if method in ("kennedy", "kennedy_joint") and not confounders:
+        warnings.warn(
+            f"{method!r} method called without confounders — all features "
+            "will be tested. Consider 'ter_braak' for unconditional tests.",
+            UserWarning,
+            stacklevel=2,
+        )
+
     unique_y = np.unique(y_values)
     # Auto-detect binary outcome: Y must contain exactly two unique
     # values, both in {0, 1}.  This triggers logistic regression;
@@ -1014,7 +993,9 @@ def permutation_test_regression(
     # compared against the permutation null distribution.
     if is_binary:
         model = LogisticRegression(
-            penalty=None, solver="lbfgs", max_iter=5_000,
+            penalty=None,
+            solver="lbfgs",
+            max_iter=5_000,
             fit_intercept=fit_intercept,
         )
     else:
@@ -1024,7 +1005,40 @@ def permutation_test_regression(
     model_coefs = model.coef_.flatten() if is_binary else np.ravel(model.coef_)
 
     # Model diagnostics (R², AIC, BIC, etc.) from statsmodels.
-    diagnostics = _compute_diagnostics(X, y_values, is_binary, fit_intercept)
+    # Wrapped in a warnings context and try/except because statsmodels
+    # can emit ConvergenceWarning / PerfectSeparationWarning (promoted
+    # to errors by filterwarnings="error" in tests) on degenerate data.
+    try:
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", category=SmConvergenceWarning)
+            warnings.filterwarnings("ignore", category=PerfectSeparationWarning)
+            diagnostics = _compute_diagnostics(X, y_values, is_binary, fit_intercept)
+    except Exception:
+        # Degenerate data — return NaN placeholders.
+        n_obs = len(y_values)
+        n_features = X.shape[1]
+        if is_binary:
+            diagnostics = {
+                "n_observations": n_obs,
+                "n_features": n_features,
+                "pseudo_r_squared": float("nan"),
+                "log_likelihood": float("nan"),
+                "log_likelihood_null": float("nan"),
+                "llr_p_value": float("nan"),
+                "aic": float("nan"),
+                "bic": float("nan"),
+            }
+        else:
+            diagnostics = {
+                "n_observations": n_obs,
+                "n_features": n_features,
+                "r_squared": float("nan"),
+                "r_squared_adj": float("nan"),
+                "f_statistic": float("nan"),
+                "f_p_value": float("nan"),
+                "aic": float("nan"),
+                "bic": float("nan"),
+            }
 
     # Pre-generate unique permutation indices.  This is done once and
     # shared across all features/methods, ensuring consistency and
@@ -1039,36 +1053,66 @@ def permutation_test_regression(
     # ---- Dispatch to method-specific engine ----
 
     if method == "ter_braak":
+        if is_binary and X.shape[1] == 1:
+            raise ValueError(
+                "ter Braak method with logistic regression requires at least "
+                "2 features because the reduced model (dropping the single "
+                "feature) has 0 predictors.  Use method='kennedy' with "
+                "confounders, or add additional features."
+            )
         if is_binary:
             permuted_coefs = _ter_braak_logistic(
-                X, y_values, perm_indices, fit_intercept,
+                X,
+                y_values,
+                perm_indices,
+                fit_intercept,
             )
         else:
             permuted_coefs = _ter_braak_linear(
-                X, y_values, perm_indices, fit_intercept,
+                X,
+                y_values,
+                perm_indices,
+                fit_intercept,
             )
 
     elif method == "kennedy":
         if is_binary:
             permuted_coefs = _kennedy_individual_logistic(
-                X, y_values, confounders, perm_indices, model_coefs,
+                X,
+                y_values,
+                confounders,
+                perm_indices,
+                model_coefs,
                 fit_intercept,
             )
         else:
             permuted_coefs = _kennedy_individual_linear(
-                X, y_values, confounders, perm_indices, model_coefs,
+                X,
+                y_values,
+                confounders,
+                perm_indices,
+                model_coefs,
                 fit_intercept,
             )
 
     elif method == "kennedy_joint":
-        obs_improvement, perm_improvements, metric_type, features_tested = _kennedy_joint(
-            X, y_values, confounders, perm_indices, is_binary, fit_intercept,
+        obs_improvement, perm_improvements, metric_type, features_tested = (
+            _kennedy_joint(
+                X,
+                y_values,
+                confounders,
+                perm_indices,
+                is_binary,
+                fit_intercept,
+            )
         )
 
         # Phipson & Smyth (2010) corrected p-value for the joint test:
         # Count how many permuted improvements >= the observed one, then
         # add 1 to both numerator and denominator.
-        p_value = (np.sum(perm_improvements >= obs_improvement) + 1) / (n_permutations + 1)
+        p_value = (np.sum(perm_improvements >= obs_improvement) + 1) / (
+            n_permutations + 1
+        )
         rounded = np.round(p_value, precision)
         val = f"{rounded:.{precision}f}"
         if p_value < p_value_threshold_two:
@@ -1099,10 +1143,17 @@ def permutation_test_regression(
 
     # Compute empirical (permutation) and classical (asymptotic) p-values.
     # See pvalues.py for the Phipson & Smyth correction details.
-    permuted_p_values, classic_p_values, raw_empirical_p, raw_classic_p = calculate_p_values(
-        X, y, permuted_coefs, model_coefs,
-        precision, p_value_threshold_one, p_value_threshold_two,
-        fit_intercept=fit_intercept,
+    permuted_p_values, classic_p_values, raw_empirical_p, raw_classic_p = (
+        calculate_p_values(
+            X,
+            y,
+            permuted_coefs,
+            model_coefs,
+            precision,
+            p_value_threshold_one,
+            p_value_threshold_two,
+            fit_intercept=fit_intercept,
+        )
     )
 
     # For Kennedy method with confounders, mark confounder p-values as

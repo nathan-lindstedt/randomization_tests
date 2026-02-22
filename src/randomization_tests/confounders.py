@@ -43,7 +43,6 @@ References:
 from __future__ import annotations
 
 import numpy as np
-import pandas as pd
 from scipy import stats
 from sklearn.linear_model import LinearRegression
 
@@ -70,9 +69,10 @@ from ._compat import DataFrameLike, _ensure_pandas_df
 # distinguish a confounder (X ← Z → Y) from a mediator (X → Z → Y).
 # Step 2 (mediation analysis) resolves this ambiguity.
 
+
 def screen_potential_confounders(
-    X: "DataFrameLike",
-    y: "DataFrameLike",
+    X: DataFrameLike,
+    y: DataFrameLike,
     predictor: str,
     correlation_threshold: float = 0.1,
     p_value_threshold: float = 0.05,
@@ -125,8 +125,12 @@ def screen_potential_confounders(
         # threshold (default |r| >= 0.1) prevents flagging trivially
         # small associations in large samples where everything can
         # be statistically significant.
-        sig_pred = (abs(corr_pred) >= correlation_threshold) and (p_pred < p_value_threshold)
-        sig_out = (abs(corr_out) >= correlation_threshold) and (p_out < p_value_threshold)
+        sig_pred = (abs(corr_pred) >= correlation_threshold) and (
+            p_pred < p_value_threshold
+        )
+        sig_out = (abs(corr_out) >= correlation_threshold) and (
+            p_out < p_value_threshold
+        )
 
         if sig_pred and sig_out:
             potential_confounders.append(feature)
@@ -195,9 +199,10 @@ def screen_potential_confounders(
 # Together, z₀ and â shift the percentile cutoffs so the resulting
 # interval has better coverage properties than unadjusted percentiles.
 
+
 def mediation_analysis(
-    X: "DataFrameLike",
-    y: "DataFrameLike",
+    X: DataFrameLike,
+    y: DataFrameLike,
     predictor: str,
     mediator: str,
     n_bootstrap: int = 5000,
@@ -280,8 +285,8 @@ def mediation_analysis(
     #   Y = c′·X + b·M + e₃
     xm = np.hstack([x_vals, m_vals])
     model_full = LinearRegression().fit(xm, y_values)
-    c_prime = model_full.coef_[0]   # direct effect
-    b_path = model_full.coef_[1]    # M → Y controlling for X
+    c_prime = model_full.coef_[0]  # direct effect
+    b_path = model_full.coef_[1]  # M → Y controlling for X
 
     # The indirect effect: a·b
     # This is the product of X→M and M→Y|X, representing the portion
@@ -307,15 +312,15 @@ def mediation_analysis(
     # lstsq solves  min‖Xβ - y‖²  directly, returning β = (X'X)⁻¹X'y
     # (or the Moore-Penrose pseudoinverse for rank-deficient X).
     ones = np.ones((n, 1))
-    X_a_design = np.hstack([ones, x_vals])             # (n, 2)
+    X_a_design = np.hstack([ones, x_vals])  # (n, 2)
 
     bootstrap_indirect = np.empty(n_bootstrap)
 
     for b_i in range(n_bootstrap):
         idx = boot_idx[b_i]
-        x_b = X_a_design[idx]       # (n, 2) — resampled [1, X]
-        m_b = m_vals[idx].ravel()    # (n,)   — resampled M
-        y_b = y_values[idx]          # (n,)   — resampled Y
+        x_b = X_a_design[idx]  # (n, 2) — resampled [1, X]
+        m_b = m_vals[idx].ravel()  # (n,)   — resampled M
+        y_b = y_values[idx]  # (n,)   — resampled Y
 
         # a path: M* = a₀ + a*·X* + ε
         # a_coef[0] is the intercept, a_coef[1] is the slope a*
@@ -336,8 +341,14 @@ def mediation_analysis(
     # coverage than simple percentile or normal-approximation intervals.
     # See the _bca_ci helper for the mathematical details.
     ci_lower, ci_upper = _bca_ci(
-        bootstrap_indirect, indirect_effect, n, boot_idx,
-        x_vals, m_vals, y_values, confidence_level,
+        bootstrap_indirect,
+        indirect_effect,
+        n,
+        boot_idx,
+        x_vals,
+        m_vals,
+        y_values,
+        confidence_level,
     )
 
     # Decision criterion (Preacher & Hayes):
@@ -383,7 +394,10 @@ def mediation_analysis(
         "indirect_effect": np.round(indirect_effect, precision),
         "a_path": np.round(a_path, precision),
         "b_path": np.round(b_path, precision),
-        "indirect_effect_ci": (np.round(ci_lower, precision), np.round(ci_upper, precision)),
+        "indirect_effect_ci": (
+            np.round(ci_lower, precision),
+            np.round(ci_upper, precision),
+        ),
         "ci_method": "BCa",
         "proportion_mediated": (
             np.round(proportion_mediated, precision)
@@ -472,7 +486,7 @@ def _bca_ci(
     diffs = theta_bar - jackknife_indirect
     # The 1e-10 in the denominator prevents division by zero when all
     # jackknife estimates are identical (perfectly symmetric case).
-    a_hat = np.sum(diffs ** 3) / (6.0 * (np.sum(diffs ** 2)) ** 1.5 + 1e-10)
+    a_hat = np.sum(diffs**3) / (6.0 * (np.sum(diffs**2)) ** 1.5 + 1e-10)
 
     # --- Adjusted percentiles ---
     # The BCa interval replaces the naïve (α/2, 1-α/2) percentiles
@@ -488,8 +502,12 @@ def _bca_ci(
     z_alpha_lower = stats.norm.ppf(alpha / 2)
     z_alpha_upper = stats.norm.ppf(1 - alpha / 2)
 
-    p_lower = stats.norm.cdf(z0 + (z0 + z_alpha_lower) / (1 - a_hat * (z0 + z_alpha_lower)))
-    p_upper = stats.norm.cdf(z0 + (z0 + z_alpha_upper) / (1 - a_hat * (z0 + z_alpha_upper)))
+    p_lower = stats.norm.cdf(
+        z0 + (z0 + z_alpha_lower) / (1 - a_hat * (z0 + z_alpha_lower))
+    )
+    p_upper = stats.norm.cdf(
+        z0 + (z0 + z_alpha_upper) / (1 - a_hat * (z0 + z_alpha_upper))
+    )
 
     # Clip adjusted percentiles to valid range [0.5/B, 1-0.5/B] so that
     # np.percentile does not receive out-of-bounds values.  This can
@@ -525,9 +543,10 @@ def _bca_ci(
 # still identifying genuine confounders (which introduce bias if
 # uncontrolled).
 
+
 def identify_confounders(
-    X: "DataFrameLike",
-    y: "DataFrameLike",
+    X: DataFrameLike,
+    y: DataFrameLike,
     predictor: str,
     correlation_threshold: float = 0.1,
     p_value_threshold: float = 0.05,
@@ -562,7 +581,9 @@ def identify_confounders(
     y = _ensure_pandas_df(y, name="y")
 
     screening = screen_potential_confounders(
-        X, y, predictor,
+        X,
+        y,
+        predictor,
         correlation_threshold=correlation_threshold,
         p_value_threshold=p_value_threshold,
     )
@@ -574,7 +595,10 @@ def identify_confounders(
 
     for candidate in candidates:
         med = mediation_analysis(
-            X, y, predictor, candidate,
+            X,
+            y,
+            predictor,
+            candidate,
             n_bootstrap=n_bootstrap,
             confidence_level=confidence_level,
             random_state=random_state,

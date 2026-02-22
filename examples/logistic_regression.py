@@ -49,7 +49,9 @@ print_diagnostics_table(
 # Kennedy (1995) individual — logistic
 # ============================================================================
 
-results_kennedy_bc = permutation_test_regression(X_bc, y_bc, method="kennedy", confounders=[])
+results_kennedy_bc = permutation_test_regression(
+    X_bc, y_bc, method="kennedy", confounders=[]
+)
 print_results_table(
     results_kennedy_bc,
     feature_names=X_bc.columns.tolist(),
@@ -66,7 +68,9 @@ print_diagnostics_table(
 # Kennedy (1995) joint — logistic
 # ============================================================================
 
-results_kennedy_joint_bc = permutation_test_regression(X_bc, y_bc, method="kennedy_joint", confounders=[])
+results_kennedy_joint_bc = permutation_test_regression(
+    X_bc, y_bc, method="kennedy_joint", confounders=[]
+)
 print_joint_results_table(
     results_kennedy_joint_bc,
     target_name=y_bc.columns[0],
@@ -79,7 +83,9 @@ print_joint_results_table(
 
 all_confounder_results_bc = {}
 for predictor in X_bc.columns:
-    all_confounder_results_bc[predictor] = identify_confounders(X_bc, y_bc, predictor=predictor)
+    all_confounder_results_bc[predictor] = identify_confounders(
+        X_bc, y_bc, predictor=predictor
+    )
 
 print_confounder_table(
     all_confounder_results_bc,
@@ -101,7 +107,10 @@ if predictors_with_confounders_bc:
     example_confounders_bc = predictors_with_confounders_bc[example_predictor_bc]
 
     results_kc_bc = permutation_test_regression(
-        X_bc, y_bc, method="kennedy", confounders=example_confounders_bc,
+        X_bc,
+        y_bc,
+        method="kennedy",
+        confounders=example_confounders_bc,
     )
     print_results_table(
         results_kc_bc,

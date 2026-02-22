@@ -11,19 +11,25 @@ class TestCalculatePValues:
 
     def _make_linear_data(self, n=100, seed=42):
         rng = np.random.default_rng(seed)
-        X = pd.DataFrame({
-            "x1": rng.standard_normal(n),
-            "x2": rng.standard_normal(n),
-        })
-        y = pd.DataFrame({"y": 3.0 * X["x1"] + 0.0 * X["x2"] + rng.standard_normal(n) * 0.5})
+        X = pd.DataFrame(
+            {
+                "x1": rng.standard_normal(n),
+                "x2": rng.standard_normal(n),
+            }
+        )
+        y = pd.DataFrame(
+            {"y": 3.0 * X["x1"] + 0.0 * X["x2"] + rng.standard_normal(n) * 0.5}
+        )
         return X, y
 
     def _make_binary_data(self, n=200, seed=42):
         rng = np.random.default_rng(seed)
-        X = pd.DataFrame({
-            "x1": rng.standard_normal(n),
-            "x2": rng.standard_normal(n),
-        })
+        X = pd.DataFrame(
+            {
+                "x1": rng.standard_normal(n),
+                "x2": rng.standard_normal(n),
+            }
+        )
         logits = 2.0 * X["x1"] + 0.0 * X["x2"]
         probs = 1 / (1 + np.exp(-logits))
         y = pd.DataFrame({"y": rng.binomial(1, probs)})
@@ -33,7 +39,9 @@ class TestCalculatePValues:
         X, y = self._make_linear_data()
         model_coefs = np.array([3.0, 0.0])
         permuted_coefs = np.random.default_rng(0).standard_normal((500, 2))
-        emp, asy, raw_emp, raw_asy = calculate_p_values(X, y, permuted_coefs, model_coefs)
+        emp, asy, raw_emp, raw_asy = calculate_p_values(
+            X, y, permuted_coefs, model_coefs
+        )
         assert len(emp) == 2
         assert len(asy) == 2
         assert len(raw_emp) == 2
@@ -43,7 +51,9 @@ class TestCalculatePValues:
         X, y = self._make_binary_data()
         model_coefs = np.array([2.0, 0.0])
         permuted_coefs = np.random.default_rng(0).standard_normal((500, 2))
-        emp, asy, raw_emp, raw_asy = calculate_p_values(X, y, permuted_coefs, model_coefs)
+        emp, asy, raw_emp, raw_asy = calculate_p_values(
+            X, y, permuted_coefs, model_coefs
+        )
         assert len(emp) == 2
         assert len(asy) == 2
         assert len(raw_emp) == 2

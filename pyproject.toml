@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "randomization-tests"
-version = "0.1.5"
+version = "0.2.0"
 description = "Permutation tests for regression models using ter Braak (1992) and Kennedy (1995) methods"
 readme = "README.md"
 license = {text = "MIT"}
@@ -46,7 +46,7 @@ dependencies = [
 Homepage = "https://github.com/nathanlindstedt/randomization_tests"
 Repository = "https://github.com/nathanlindstedt/randomization_tests"
 Issues = "https://github.com/nathanlindstedt/randomization_tests/issues"
-Documentation = "https://github.com/nathanlindstedt/randomization_tests/tree/main/docs"
+Documentation = "https://github.com/nathanlindstedt/randomization_tests/tree/experimental/docs"
 
 [project.optional-dependencies]
 jax = ["jax>=0.4", "jaxlib>=0.4"]
@@ -70,7 +70,13 @@ randomization_tests = ["py.typed"]
 # --------------------------------------------------------------------------- #
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-v --tb=short"
+addopts = "-v --tb=short -m 'not slow'"
+filterwarnings = [
+    "error",
+]
+markers = [
+    "slow: large-n or degenerate-data tests (deselect with '-m not slow')",
+]
 
 # --------------------------------------------------------------------------- #
 # Ruff (linter + formatter)
@@ -104,5 +110,17 @@ known-first-party = ["randomization_tests"]
 python_version = "3.10"
 warn_return_any = true
 warn_unused_configs = true
-disallow_untyped_defs = false
+disallow_untyped_defs = true
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["jax.*", "jaxlib.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["polars.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["ucimlrepo.*"]
 ignore_missing_imports = true

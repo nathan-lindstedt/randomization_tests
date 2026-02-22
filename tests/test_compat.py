@@ -46,12 +46,18 @@ class TestPolarsEndToEnd:
     @staticmethod
     def _make_polars_data(n=100, seed=42):
         rng = np.random.default_rng(seed)
-        X_pl = pl.DataFrame({
-            "x1": rng.standard_normal(n),
-            "x2": rng.standard_normal(n),
-            "x3": rng.standard_normal(n),
-        })
-        y_vals = 2.0 * X_pl["x1"].to_numpy() - 1.0 * X_pl["x2"].to_numpy() + rng.standard_normal(n) * 0.5
+        X_pl = pl.DataFrame(
+            {
+                "x1": rng.standard_normal(n),
+                "x2": rng.standard_normal(n),
+                "x3": rng.standard_normal(n),
+            }
+        )
+        y_vals = (
+            2.0 * X_pl["x1"].to_numpy()
+            - 1.0 * X_pl["x2"].to_numpy()
+            + rng.standard_normal(n) * 0.5
+        )
         y_pl = pl.DataFrame({"y": y_vals})
         return X_pl, y_pl
 
@@ -60,7 +66,11 @@ class TestPolarsEndToEnd:
 
         X_pl, y_pl = self._make_polars_data()
         result = permutation_test_regression(
-            X_pl, y_pl, n_permutations=50, method="ter_braak", random_state=42,
+            X_pl,
+            y_pl,
+            n_permutations=50,
+            method="ter_braak",
+            random_state=42,
         )
         assert "model_coefs" in result
         assert len(result["model_coefs"]) == 3
@@ -85,7 +95,9 @@ class TestPolarsEndToEnd:
         X_pl, y_pl = self._make_polars_data()
         model_coefs = np.array([2.0, -1.0, 0.0])
         permuted_coefs = np.random.default_rng(0).standard_normal((50, 3))
-        emp, asy, raw_emp, raw_asy = calculate_p_values(X_pl, y_pl, permuted_coefs, model_coefs)
+        emp, asy, raw_emp, raw_asy = calculate_p_values(
+            X_pl, y_pl, permuted_coefs, model_coefs
+        )
         assert len(emp) == 3
         assert len(asy) == 3
         assert len(raw_emp) == 3
@@ -100,10 +112,18 @@ class TestPolarsEndToEnd:
         y_pd = y_pl.to_pandas()
 
         result_pl = permutation_test_regression(
-            X_pl, y_pl, n_permutations=50, method="ter_braak", random_state=42,
+            X_pl,
+            y_pl,
+            n_permutations=50,
+            method="ter_braak",
+            random_state=42,
         )
         result_pd = permutation_test_regression(
-            X_pd, y_pd, n_permutations=50, method="ter_braak", random_state=42,
+            X_pd,
+            y_pd,
+            n_permutations=50,
+            method="ter_braak",
+            random_state=42,
         )
         np.testing.assert_allclose(result_pl["model_coefs"], result_pd["model_coefs"])
         assert result_pl["permuted_p_values"] == result_pd["permuted_p_values"]

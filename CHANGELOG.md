@@ -5,6 +5,53 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] - 2026-02-22
+
+### Added
+
+- **Permutation deduplication profiling:** benchmarked the three-tier
+  strategy (Lehmer, dedup, vectorised) across a (n, B) grid from n=8
+  to n=10,000.  Published analysis at
+  `docs/permutation-dedup-performance.md` with methodology, heatmaps,
+  and regime analysis.  Current thresholds (`max_exhaustive=10`,
+  collision bound < 1e-9) validated — no changes needed.
+- **Edge-case tests** (`test_edge_cases.py`): 30 tests covering empty
+  DataFrames, single-feature models, constant columns, perfect
+  separation, and permutation-count boundaries.
+- **JAX convergence tests** (`test_jax_convergence.py`): 9 tests for
+  ill-conditioned Hessians, rank-deficient designs, and perfect
+  separation under the custom Newton-Raphson solver.
+- **Large-n smoke tests** (`test_smoke.py`): 5 tests verifying memory
+  and runtime at n=10,000 for all methods and model types.
+- **Pre-commit configuration** (`.pre-commit-config.yaml`): ruff lint +
+  format, mypy with strict settings, trailing-whitespace and
+  end-of-file-fixer hooks.
+- **Lower-bound CI job** (`test-deps-lower`): validates against pinned
+  older dependency versions (numpy 1.24, pandas 2.0, etc.) on
+  Python 3.10.
+- **JAX CI job** (`test-jax`): dedicated workflow job for JAX backend
+  tests including slow convergence tests.
+- **Slow-test CI job** (`test-slow`): runs large-n smoke tests
+  separately from the fast test matrix.
+- JAX backend documentation in `docs/QUICKSTART.md` (tested versions,
+  install, limitations, verification).
+- Branch strategy and dependency compatibility docs in
+  `CONTRIBUTING.md`.
+
+### Changed
+
+- **JAX code extracted into `_jax.py`:** `_logistic_nll`,
+  `_logistic_grad`, `_logistic_hessian_diag`, `fit_logistic_batch_jax`,
+  and `fit_logistic_varying_X_jax` moved from `core.py` to a dedicated
+  `_jax.py` module.  `core.py` imports from `_jax` — no protocol or
+  backend abstraction yet (deferred to v0.3.0).
+- CI triggers retargeted from `main` to `experimental` branch.
+- mypy strict mode: `disallow_untyped_defs = true`, zero `type: ignore`
+  suppressions via `TYPE_CHECKING` pattern for optional dependencies.
+- `pytest` configured with `filterwarnings = ["error"]` and `slow`
+  marker; `addopts` excludes slow tests by default.
+- Test suite expanded from 125 to 163 tests (+ 6 slow/skipped).
+
 ## [0.1.5] - 2026-02-21
 
 ### Added

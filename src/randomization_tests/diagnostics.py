@@ -63,13 +63,22 @@ Model-level diagnostics:
 
 from __future__ import annotations
 
+import logging
 import math
+import warnings
 
 import numpy as np
 import pandas as pd
 import statsmodels.api as sm
 from statsmodels.stats.diagnostic import het_breuschpagan
+from statsmodels.tools.sm_exceptions import (
+    ConvergenceWarning as SmConvergenceWarning,
+)
+from statsmodels.tools.sm_exceptions import (
+    PerfectSeparationWarning,
+)
 
+logger = logging.getLogger(__name__)
 
 # ------------------------------------------------------------------ #
 # Per-predictor diagnostics
@@ -95,6 +104,7 @@ from statsmodels.stats.diagnostic import het_breuschpagan
 #    relative to the distance between the p-value and the threshold,
 #    the significance conclusion is uncertain and B should be
 #    increased.
+
 
 def compute_standardized_coefs(
     X: pd.DataFrame,
@@ -126,7 +136,8 @@ def compute_standardized_coefs(
         # SD(X_j) gives the log-odds change per one-SD increase in
         # X_j.  There is no natural SD(Y) for a binary outcome, so
         # we omit the denominator.
-        return model_coefs * sd_x
+        result: np.ndarray = model_coefs * sd_x
+        return result
     else:
         # Linear: β* = β · SD(X_j) / SD(Y)
         # This is the classic "beta weight" — the expected change in
@@ -135,7 +146,8 @@ def compute_standardized_coefs(
         sd_y = np.std(y_values, ddof=1)
         if sd_y == 0:
             return np.zeros_like(model_coefs)
-        return model_coefs * sd_x / sd_y
+        result = model_coefs * sd_x / sd_y
+        return result
 
 
 def compute_vif(X: pd.DataFrame) -> np.ndarray:
@@ -161,8 +173,8 @@ def compute_vif(X: pd.DataFrame) -> np.ndarray:
     # number of features p is typically small (< 20), so the cost is
     # dominated by the permutation loop in the core module.
     for j in range(n_features):
-        y_j = X_np[:, j]                       # shape: (n,)
-        X_others = np.delete(X_np, j, axis=1)   # shape: (n, p-1)
+        y_j = X_np[:, j]  # shape: (n,)
+        X_others = np.delete(X_np, j, axis=1)  # shape: (n, p-1)
 
         if X_others.shape[1] == 0:
             # Only one predictor — no collinearity possible.
@@ -208,7 +220,8 @@ def compute_monte_carlo_se(
     # of roughly [0.044, 0.056].  This tells the user the p-value is
     # well-resolved.  Near p̂ = 0.5, SE is maximised at ~0.007.
     p = np.asarray(raw_p_values)
-    return np.sqrt(p * (1.0 - p) / (n_permutations + 1))
+    result: np.ndarray = np.sqrt(p * (1.0 - p) / (n_permutations + 1))
+    return result
 
 
 def compute_divergence_flags(
@@ -242,7 +255,7 @@ def compute_divergence_flags(
     #
     # Confounders in Kennedy methods have NaN p-values; these are
     # silently skipped (flagged as "").
-    for e, c in zip(emp, cls):
+    for e, c in zip(emp, cls, strict=True):
         if np.isnan(e) or np.isnan(c):
             flags.append("")
         elif (e < threshold) != (c < threshold):
@@ -278,6 +291,7 @@ def compute_divergence_flags(
 # for small n (where the full space is enumerable) and reassures
 # users that B is adequate.
 
+
 def compute_breusch_pagan(
     X: pd.DataFrame,
     y_values: np.ndarray,
@@ -307,7 +321,8 @@ def compute_breusch_pagan(
     #   F:  (R² / p) / ((1 − R²) / (n − p − 1)) ~ F(p, n − p − 1)
     # The F variant is preferred for small samples; both are reported.
     lm_stat, lm_p, f_stat, f_p = het_breuschpagan(
-        ols_result.resid, X_aug,
+        ols_result.resid,
+        X_aug,
     )
 
     # Flag heteroscedasticity at α = 0.05.  When present, the
@@ -461,9 +476,7 @@ def _runs_test(binary_seq: np.ndarray) -> tuple[float, float]:
     # These follow from combinatorial arguments — see Bradley (1968)
     # "Distribution-Free Statistical Tests", Chapter 12.
     mu = 2.0 * n_pos * n_neg / n + 1.0
-    var = (2.0 * n_pos * n_neg * (2.0 * n_pos * n_neg - n)) / (
-        n * n * (n - 1.0)
-    )
+    var = (2.0 * n_pos * n_neg * (2.0 * n_pos * n_neg - n)) / (n * n * (n - 1.0))
 
     if var <= 0:
         return 0.0, 1.0
@@ -540,7 +553,9 @@ def compute_cooks_distance(
         # This matches the standard GLM Cook's D from McCullagh &
         # Nelder (1989, §12.5) and Pregibon (1981).
         sm_model = sm.GLM(
-            y_values, X_aug, family=sm.families.Binomial(),
+            y_values,
+            X_aug,
+            family=sm.families.Binomial(),
         ).fit(disp=0)
         influence = sm_model.get_influence()
         cooks_d = np.asarray(influence.cooks_distance[0])
@@ -597,6 +612,7 @@ def compute_permutation_coverage(
     # in a try/except.  In practice, for n > ~25 the coverage is
     # essentially zero (25! ≈ 1.6 × 10²⁵) and the string is purely
     # informational.
+    n_factorial: int | str
     try:
         n_factorial = math.factorial(n_samples)
         coverage = n_permutations / n_factorial
@@ -629,6 +645,7 @@ def compute_permutation_coverage(
 # coefficients extremely unstable and typically inflates the p-value
 # toward 1.0 — not because of a test error, but because there is
 # genuinely no independent signal left in X_j.
+
 
 def compute_exposure_r_squared(
     X: pd.DataFrame,
@@ -691,7 +708,7 @@ def compute_exposure_r_squared(
         if fit_intercept:
             ss_total = np.sum((x_j - x_j.mean()) ** 2)
         else:
-            ss_total = np.sum(x_j ** 2)
+            ss_total = np.sum(x_j**2)
 
         if ss_total < 1e-12:
             result.append(1.0)
@@ -714,6 +731,7 @@ def compute_exposure_r_squared(
         # ----------------------------------------------------------
         if Z.shape[1] > 0:
             from sklearn.linear_model import LinearRegression
+
             exp_model = LinearRegression(
                 fit_intercept=fit_intercept,
             ).fit(Z, x_j)
@@ -745,6 +763,7 @@ def compute_exposure_r_squared(
 # flat dictionary suitable for inclusion in the results dict.  The
 # caller does not need to know which individual functions exist —
 # this keeps the public API surface small.
+
 
 def compute_all_diagnostics(
     X: pd.DataFrame,
@@ -792,32 +811,103 @@ def compute_all_diagnostics(
     # per predictor.  They are converted to plain Python lists so
     # that the results dict is JSON-serialisable.
     result["standardized_coefs"] = compute_standardized_coefs(
-        X, y_values, model_coefs, is_binary,
+        X,
+        y_values,
+        model_coefs,
+        is_binary,
     ).tolist()
 
     result["vif"] = compute_vif(X).tolist()
 
     result["monte_carlo_se"] = compute_monte_carlo_se(
-        raw_empirical_p, n_permutations,
+        raw_empirical_p,
+        n_permutations,
     ).tolist()
 
     result["divergence_flags"] = compute_divergence_flags(
-        raw_empirical_p, raw_classic_p, threshold=p_value_threshold,
+        raw_empirical_p,
+        raw_classic_p,
+        threshold=p_value_threshold,
     )
 
     # ---- Model-level diagnostics ----
     # These check global assumptions (exchangeability, influence) and
     # report a single summary per model.  The branch on is_binary
     # selects Breusch-Pagan (linear) vs. deviance residuals (logistic).
+    #
+    # Each block is wrapped in try/except because statsmodels can fail
+    # on degenerate data (perfect separation, rank-deficient designs,
+    # near-saturated probabilities).  The permutation test itself
+    # succeeds in these cases — only the post-hoc diagnostics break.
+    # Graceful degradation returns NaN-filled sentinel dicts so the
+    # rest of the results pipeline is unaffected.
     if is_binary:
-        result["deviance_residuals"] = compute_deviance_residual_diagnostics(
-            X, y_values,
-        )
+        try:
+            with warnings.catch_warnings():
+                warnings.filterwarnings(
+                    "ignore",
+                    category=RuntimeWarning,
+                )
+                warnings.filterwarnings(
+                    "ignore",
+                    category=SmConvergenceWarning,
+                )
+                warnings.filterwarnings(
+                    "ignore",
+                    category=PerfectSeparationWarning,
+                )
+                result["deviance_residuals"] = compute_deviance_residual_diagnostics(
+                    X, y_values
+                )
+        except Exception as exc:
+            logger.debug("Deviance residual diagnostics failed: %s", exc)
+            result["deviance_residuals"] = {
+                "mean": float("nan"),
+                "variance": float("nan"),
+                "n_extreme": 0,
+                "runs_test_z": float("nan"),
+                "runs_test_p": float("nan"),
+                "warning": f"Diagnostics unavailable: {exc}",
+            }
     else:
-        result["breusch_pagan"] = compute_breusch_pagan(X, y_values)
+        try:
+            result["breusch_pagan"] = compute_breusch_pagan(X, y_values)
+        except Exception as exc:
+            logger.debug("Breusch-Pagan diagnostics failed: %s", exc)
+            result["breusch_pagan"] = {
+                "lm_stat": float("nan"),
+                "lm_p_value": float("nan"),
+                "f_stat": float("nan"),
+                "f_p_value": float("nan"),
+                "warning": f"Diagnostics unavailable: {exc}",
+            }
 
     # Influential observations
-    result["cooks_distance"] = compute_cooks_distance(X, y_values, is_binary)
+    try:
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore",
+                category=RuntimeWarning,
+            )
+            warnings.filterwarnings(
+                "ignore",
+                category=SmConvergenceWarning,
+            )
+            warnings.filterwarnings(
+                "ignore",
+                category=PerfectSeparationWarning,
+            )
+            result["cooks_distance"] = compute_cooks_distance(X, y_values, is_binary)
+    except Exception as exc:
+        logger.debug("Cook's distance diagnostics failed: %s", exc)
+        n = len(y_values)
+        result["cooks_distance"] = {
+            "cooks_d": np.full(n, float("nan")),
+            "n_influential": 0,
+            "threshold": 4.0 / n if n > 0 else float("nan"),
+            "influential_indices": [],
+            "warning": f"Diagnostics unavailable: {exc}",
+        }
 
     # Permutation coverage
     result["permutation_coverage"] = compute_permutation_coverage(
@@ -835,7 +925,9 @@ def compute_all_diagnostics(
     # misleading wall of 0.0000 values.
     if method == "kennedy" and confounders:
         result["exposure_r_squared"] = compute_exposure_r_squared(
-            X, confounders, fit_intercept,
+            X,
+            confounders,
+            fit_intercept,
         )
 
     return result

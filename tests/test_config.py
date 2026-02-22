@@ -13,6 +13,7 @@ class TestGetBackend:
     def setup_method(self):
         """Reset state before each test."""
         import randomization_tests._config as _cfg
+
         _cfg._backend_override = None
         # Clear the env var if set
         os.environ.pop("RANDOMIZATION_TESTS_BACKEND", None)
@@ -20,6 +21,7 @@ class TestGetBackend:
     def teardown_method(self):
         """Reset state after each test."""
         import randomization_tests._config as _cfg
+
         _cfg._backend_override = None
         os.environ.pop("RANDOMIZATION_TESTS_BACKEND", None)
 
@@ -58,10 +60,12 @@ class TestSetBackend:
 
     def setup_method(self):
         import randomization_tests._config as _cfg
+
         _cfg._backend_override = None
 
     def teardown_method(self):
         import randomization_tests._config as _cfg
+
         _cfg._backend_override = None
 
     def test_accepts_valid_names(self):
@@ -82,10 +86,12 @@ class TestBackendIntegration:
 
     def setup_method(self):
         import randomization_tests._config as _cfg
+
         _cfg._backend_override = None
 
     def teardown_method(self):
         import randomization_tests._config as _cfg
+
         _cfg._backend_override = None
 
     def test_numpy_backend_runs_logistic(self):
@@ -98,13 +104,19 @@ class TestBackendIntegration:
         set_backend("numpy")
 
         rng = np.random.default_rng(42)
-        X = pd.DataFrame({"x1": rng.standard_normal(100), "x2": rng.standard_normal(100)})
+        X = pd.DataFrame(
+            {"x1": rng.standard_normal(100), "x2": rng.standard_normal(100)}
+        )
         logits = 2.0 * X["x1"]
         probs = 1 / (1 + np.exp(-logits))
         y = pd.DataFrame({"y": rng.binomial(1, probs)})
 
         result = permutation_test_regression(
-            X, y, n_permutations=20, method="ter_braak", random_state=42,
+            X,
+            y,
+            n_permutations=20,
+            method="ter_braak",
+            random_state=42,
         )
         assert result["model_type"] == "logistic"
         assert "model_coefs" in result
@@ -112,5 +124,6 @@ class TestBackendIntegration:
     def test_public_api_exports(self):
         """get_backend and set_backend should be importable from the package."""
         import randomization_tests
+
         assert hasattr(randomization_tests, "get_backend")
         assert hasattr(randomization_tests, "set_backend")

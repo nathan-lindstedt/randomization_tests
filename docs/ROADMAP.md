@@ -25,28 +25,28 @@ locked down, so that each abstraction only needs to be designed once.
 The initial packaged release.  Establishes the src-layout structure,
 core algorithms, and development infrastructure.
 
-- [x] **Permutation methods:** ter Braak (1992) residual permutation,
+- [X] **Permutation methods:** ter Braak (1992) residual permutation,
   Kennedy (1995) individual exposure-residual permutation, and Kennedy
   (1995) joint F-style test.
-- [x] **Vectorised OLS** via batch pseudoinverse multiplication — the
+- [X] **Vectorised OLS** via batch pseudoinverse multiplication — the
   design matrix is inverted once and applied to all permuted response
   vectors simultaneously.
-- [x] **Optional JAX backend** for logistic regression: `jax.vmap` over a
+- [X] **Optional JAX backend** for logistic regression: `jax.vmap` over a
   custom Newton-Raphson solver with `jax.grad`-computed gradients.
   Transparent fallback to scikit-learn when JAX is not installed.
-- [x] **Unique permutation pre-generation** with hash-based deduplication
+- [X] **Unique permutation pre-generation** with hash-based deduplication
   for large *n* and exhaustive enumeration for small *n* (≤ 12).
-- [x] **Phipson & Smyth (2010) corrected p-values** that are guaranteed
+- [X] **Phipson & Smyth (2010) corrected p-values** that are guaranteed
   never to be exactly zero.
-- [x] **Confounder identification pipeline:** Pearson correlation screening
+- [X] **Confounder identification pipeline:** Pearson correlation screening
   followed by Preacher & Hayes (2004, 2008) mediation analysis with
   bias-corrected and accelerated (BCa) bootstrap confidence intervals
   (Efron, 1987).  The indirect effect (a × b) is tested directly via
   5 000 bootstrap resamples; the jackknife-based acceleration
   correction accounts for skewness in the sampling distribution.
-- [x] **Formatted ASCII table output** modeled after statsmodels, with
+- [X] **Formatted ASCII table output** modeled after statsmodels, with
   separate layouts for individual-coefficient and joint tests.
-- [x] **Development infrastructure:** Google-style docstrings, PEP 561
+- [X] **Development infrastructure:** Google-style docstrings, PEP 561
   `py.typed` marker, modern Python 3.10+ type annotations, GitHub
   Actions CI (ruff, mypy, pytest across Python 3.10–3.13), and a test
   suite of 40 tests.
@@ -55,7 +55,7 @@ core algorithms, and development infrastructure.
 
 ## v0.1.1 — Polish
 
-- [x] **Polars input support:** all public functions accept both pandas
+- [X] **Polars input support:** all public functions accept both pandas
   and Polars DataFrames via an internal `_ensure_pandas_df` adapter in
   `_compat.py`.  A `DataFrameLike` type alias documents the supported
   input types.
@@ -67,7 +67,7 @@ core algorithms, and development infrastructure.
 Adds extended diagnostics, fixes a correctness bug in all permutation
 refit paths, and expands the test suite.
 
-- [x] **Intercept mismatch fix (all methods).** Permutation refits in
+- [X] **Intercept mismatch fix (all methods).** Permutation refits in
   `_batch_ols_coefs`, `_ter_braak_linear`, `_ter_braak_logistic`,
   `_kennedy_individual_linear`, `_kennedy_individual_logistic`, and
   `_kennedy_joint` were fitting without an intercept while the observed
@@ -76,40 +76,40 @@ refit paths, and expands the test suite.
   (e.g. p = 1.0 for X6 longitude in the linear example, p = 0.0 for
   strong predictors).  All permutation refits now include an intercept
   column matching the observed model specification.
-- [x] **Extended diagnostics module** (`diagnostics.py`): standardised
+- [X] **Extended diagnostics module** (`diagnostics.py`): standardised
   coefficients, variance inflation factors (VIF), Monte Carlo standard
   error, empirical-vs-asymptotic divergence flags, Breusch-Pagan
   heteroscedasticity test (linear), deviance residuals and runs test
   (logistic), Cook's distance influence counts, and permutation
   coverage reporting.
-- [x] **Exposure R² column** in the diagnostics table for the Kennedy
+- [X] **Exposure R² column** in the diagnostics table for the Kennedy
   individual method, quantifying how much of each predictor's variance
   is explained by the confounders.  Suppressed when no confounders are
   specified (was displaying a wall of `0.0000` values).
-- [x] **`fit_intercept` parameter** added to all code paths (10
+- [X] **`fit_intercept` parameter** added to all code paths (10
   functions in `core.py` and `pvalues.py`), enabling intercept-free
   models for through-origin regression.
-- [x] **Confounder display table** (`print_confounder_table`): formatted
+- [X] **Confounder display table** (`print_confounder_table`): formatted
   80-character ASCII table for confounder identification results,
   replacing raw `print()` output.  Supports single- and multi-predictor
   inputs, parameter header, clean-predictor summary, and conditional
   mediator warning notes.
-- [x] **Display improvements:** 80-character line-width constraint via
+- [X] **Display improvements:** 80-character line-width constraint via
   `_wrap()` helper, `textwrap.wrap`-based title centering, consistent
   4-decimal p-value formatting (`"0.000"` / `"1.000"`), redesigned
   four-section diagnostics table layout, omnibus test footer in joint
   results table.
-- [x] **P-value formatting fix:** `_fmt()` now uses fixed-width
+- [X] **P-value formatting fix:** `_fmt()` now uses fixed-width
   `f"{val:.{precision}f}"` instead of `f"{rounded}"`, preventing
   misleading `0.0` / `1.0` display.
-- [x] **`calculate_p_values` return type** expanded from 2-tuple to
+- [X] **`calculate_p_values` return type** expanded from 2-tuple to
   4-tuple `(permuted_str, classic_str, raw_empirical, raw_classic)`,
   eliminating redundant statsmodels refits in diagnostics.
-- [x] **Cook's distance fix:** logistic Cook's D now delegates to
+- [X] **Cook's distance fix:** logistic Cook's D now delegates to
   `sm.GLM(family=Binomial()).get_influence().cooks_distance` instead of
   using `sm.Logit.fittedvalues` (which returns log-odds, not
   probabilities).
-- [x] **Test suite expanded** from 40 to 125 tests covering diagnostics,
+- [X] **Test suite expanded** from 40 to 125 tests covering diagnostics,
   fit_intercept, exposure R², Polars compatibility, and display
   formatting.
 
@@ -122,59 +122,164 @@ the existing feature set before any new statistical capabilities are
 added.
 
 ### CI & code quality
-- [ ] Achieve a fully clean ruff and mypy pass with zero warnings or
+
+- [X] Achieve a fully clean ruff and mypy pass with zero warnings or
   suppressed ignores.
-- [ ] Add a pre-commit configuration (ruff lint + format, mypy,
+- [X] Add a pre-commit configuration (ruff lint + format, mypy,
   trailing-whitespace, end-of-file-fixer) so contributors catch issues
   before pushing.
 
 ### Test coverage
-- [ ] Expand the test suite with edge-case coverage: empty DataFrames,
+
+- [X] Expand the test suite with edge-case coverage: empty DataFrames,
   single-feature models, constant columns, perfect separation in
   logistic regression, and permutation requests that approach or exceed
   the available unique permutation count.
-- [ ] Add convergence-failure tests for the JAX Newton-Raphson solver
+- [X] Add convergence-failure tests for the JAX Newton-Raphson solver
   (ill-conditioned Hessians, rank-deficient designs).
-- [ ] Add large-*n* smoke tests (e.g., *n* = 10,000, modest
+- [X] Add large-*n* smoke tests (e.g., *n* = 10,000, modest
   *n_permutations*) to verify memory footprint and runtime stay within
   reasonable bounds.
 
+### CI & branching
+
+- [X] Retarget all CI triggers from `main` to `experimental`.  The `main`
+  branch is the stable instructional default; `experimental` is the
+  active development branch.  Version branches (e.g. `v0.3.0`) branch
+  off `experimental` and merge back into it when complete.
+- [X] Document the branch strategy in `CONTRIBUTING.md`.
+
 ### Dependency management
-- [ ] Establish a tested compatibility matrix of lower- and upper-bound
+
+- [X] Establish a tested compatibility matrix of lower- and upper-bound
   dependency versions (numpy, pandas, scipy, statsmodels, scikit-learn)
   and verify in CI.
-- [ ] Pin or document JAX version compatibility for the optional backend.
+- [X] Pin or document JAX version compatibility for the optional backend.
 
 ### Performance
-- [ ] Parallelise the scikit-learn logistic regression fallback loop via
-  joblib or multiprocessing, since each permutation fit is independent.
-- [ ] Profile the hash-based permutation deduplication to identify any
+
+- [X] Profile the hash-based permutation deduplication to identify any
   bottlenecks when *n_permutations* is large relative to *n*!.
+  Published analysis: `docs/permutation-dedup-performance.md`.
+- [X] Extract JAX-specific code from `core.py` into a standalone
+  `_jax.py` module (pure separation of concerns — no protocol or
+  backend abstraction yet).  This keeps `core.py` cleaner and
+  provides a clean extraction point for v0.3.0 when `_jax.py` becomes
+  `_backends/_jax.py`.
 
 ---
 
 ## v0.3.0 — GLM Family Extensions
 
 Introduces a `ModelFamily` strategy pattern that decouples model
-fitting from the permutation engine, then implements new GLM families
-on top of it.  The protocol defines how each family fits a model,
-extracts residuals, reconstructs permuted outcomes, and computes
-diagnostics — making the core engine family-agnostic and extensible
-to future model types including mixed-effects and multi-equation
-specifications.
+fitting from the permutation engine, then implements new permutation
+methods and GLM families on top of it.  The protocol defines how each
+family fits a model, extracts residuals, reconstructs permuted
+outcomes, and computes diagnostics — making the core engine
+family-agnostic and extensible to future model types including
+mixed-effects and multi-equation specifications.
 
-### `ModelFamily` protocol
+The ordering within this milestone is deliberate: the abstraction
+layer (`ModelFamily`, `_backends/`) must exist before any code that
+depends on it.  The core refactor converts existing linear and
+logistic paths to the new protocol.  New permutation methods and GLM
+families are then built on the stabilised abstractions, inheriting
+all existing methods from the start.
+
+### Step 1 — `ModelFamily` protocol
+
 - [ ] A `typing.Protocol` class defining the interface every family
   must implement: `fit`, `predict`, `coefs`, `residuals`,
   `reconstruct_y`, `fit_metric`, `diagnostics`, `classical_p_values`,
-  and batch-fitting methods for JAX and fallback paths.
+  and a `batch_fit` method that delegates to the active backend.
 - [ ] `LinearFamily` and `LogisticFamily` implementations refactored
   from existing `core.py` logic.
 - [ ] `resolve_family()` dispatch: `"auto"` resolves to `"linear"` or
   `"logistic"` via current binary detection; explicit strings map
   directly.
 
-### Poisson regression
+### Step 2 — `_backends/` package
+
+- [ ] Promote v0.2.0's `_jax.py` module into a `_backends/` package
+  with a `BackendProtocol` defining `batch_ols`, `batch_logistic`,
+  `batch_poisson`, `batch_negbin`, and `batch_ordinal` methods.
+- [ ] `_backends/_numpy.py`: NumPy/sklearn fallback (always available).
+- [ ] `_backends/_jax.py`: JAX accelerated path (optional dependency).
+- [ ] `resolve_backend()` reads `_config.get_backend()` and returns the
+  appropriate backend object.  Future accelerators (CuPy, etc.) slot
+  in as additional modules implementing `BackendProtocol` with no
+  changes to `families.py` or `core.py`.
+
+### Step 3 — Core refactor
+
+Depends on Steps 1–2.  Converts the existing engine from hard-coded
+`is_binary` branching to family-dispatched method calls.
+
+- [ ] Replace `is_binary` branching in `core.py` with family method
+  calls: generic `_ter_braak`, `_kennedy_individual`, and
+  `_kennedy_joint` functions dispatch to the active family.
+- [ ] `family=` parameter on `permutation_test_regression()`, with
+  `"auto"` as the default.
+- [ ] Resolved family name included in the result dict.
+- [ ] `compute_all_diagnostics` accepts `model_type: str` instead of
+  `is_binary: bool`.
+- [ ] Confounder module updated: `family` parameter on
+  `identify_confounders` and `mediation_analysis`, using the
+  family-appropriate model for the b-path and total-effect equations.
+
+### Step 4 — JAX improvements
+
+Depends on Step 2 (`_backends/_jax.py`).
+
+- [ ] JAX convergence control: `max_iter`, `tol`, convergence warnings
+  for all Newton–Raphson solvers in `_backends/_jax.py`.
+- [ ] **JAX-accelerated Kennedy individual linear path:**
+  `jax.vmap` over `jnp.linalg.lstsq` to eliminate the
+  per-permutation Python loop, matching the existing JAX logistic
+  architecture.  Implemented as `LinearFamily.batch_fit` dispatching
+  through the JAX backend.
+  The ter Braak and joint linear paths already use a single NumPy
+  pseudoinverse multiply and gain little from JAX, but all families
+  should provide a JAX path for consistency and to prefer autodiff
+  over manual gradient implementations wherever possible.
+
+### Step 5 — Parallelisation
+
+Depends on Step 1 (`ModelFamily.batch_fit()`).
+
+- [ ] Parallelise the scikit-learn fallback loops via
+  `joblib.Parallel` inside `ModelFamily.batch_fit()`.  Add
+  `n_jobs: int = 1` parameter to `permutation_test_regression()`
+  (deferred from v0.2.0 — `batch_fit()` is the natural home for
+  this, avoiding throwaway code in internal functions that would be
+  deleted during the family refactor).
+
+### Step 6 — Freedman–Lane permutation method
+
+Depends on Step 3 (family-dispatched core).  New permutation method
+for all existing families.
+
+- [ ] `method="freedman_lane"` (individual) and
+  `method="freedman_lane_joint"` — permutes residuals from the
+  **full** model and adds them to fitted values from the **reduced**
+  model.  Better power than Kennedy when predictors are correlated
+  (Anderson & Legendre 1999; Winkler et al. 2014).  The default
+  permutation method in FSL PALM, AFNI, and FreeSurfer.
+- [ ] Shares >90% of the Kennedy codepath — only the residual source
+  and fitted-value base differ.  Reuses `family.residuals()`,
+  `family.reconstruct_y()`, and `family.batch_fit()` pipeline.
+- [ ] When `confounders=[]`, Freedman–Lane reduces to ter Braak;
+  a `UserWarning` guides users to the simpler method.
+- [ ] All five methods (ter Braak, Kennedy individual/joint,
+  Freedman–Lane individual/joint) available for every family.
+
+### Step 7 — New GLM families
+
+Depends on Steps 1–3 and 6.  Each new family inherits all five
+permutation methods and both backends from the start.
+
+#### Poisson regression
+
 - [ ] Permutation tests for count outcomes with an exponential mean
   function.  The ter Braak residual-permutation approach generalises
   naturally: fit the reduced Poisson model, extract deviance residuals,
@@ -182,33 +287,57 @@ specifications.
 - [ ] Diagnostics: deviance, Pearson chi-squared, AIC/BIC,
   overdispersion test.
 
-### Negative binomial regression
+#### Negative binomial regression
+
 - [ ] Handles overdispersed count data where the Poisson assumption
   fails.
 - [ ] Requires estimation of the dispersion parameter once on the
   observed data, held fixed throughout the permutation loop.
 - [ ] Diagnostics: deviance, AIC/BIC, alpha (dispersion) estimate.
 
-### Ordinal logistic regression
+#### Ordinal logistic regression
+
 - [ ] Proportional-odds model for ordered categorical outcomes.
 - [ ] Direct permutation of the ordinal response (residuals are not
   well-defined for ordinal); threshold parameters re-estimated on each
   permutation.
 
-### Core refactor
-- [ ] Replace `is_binary` branching in `core.py` with family method
-  calls: generic `_ter_braak`, `_kennedy_individual`, and
-  `_kennedy_joint` functions dispatch to the active family.
-- [ ] `family=` parameter on `permutation_test_regression()`, with
-  `"auto"` as the default.
-- [ ] Resolved family name included in the result dict.
-- [ ] JAX convergence control: `max_iter`, `tol`, convergence warnings
-  for all Newton-Raphson solvers.
-- [ ] `compute_all_diagnostics` accepts `model_type: str` instead of
-  `is_binary: bool`.
-- [ ] Confounder module updated: `family` parameter on
-  `identify_confounders` and `mediation_analysis`, using the
-  family-appropriate model for the b-path and total-effect equations.
+#### Multinomial logistic regression
+
+- [ ] Extends binary logistic to unordered categorical outcomes with
+  *K* classes, producing *K* − 1 coefficient vectors.
+- [ ] The test statistic becomes a vector (one per contrast) or can be
+  reduced to a scalar via the log-likelihood ratio or deviance.
+- [ ] Table output should support both a stacked all-contrasts view and
+  individual per-contrast tables.
+
+### Step 8 — Sign-flip test
+
+Depends on Step 1 (`family.residuals()`, `family.reconstruct_y()`).
+
+Sign-flipping rests on the assumption of symmetric error
+distributions, which is strictly weaker than exchangeability but
+applies only to paired or within-subject designs where the
+difference scores are symmetric about zero under the null.  Because
+the assumption domain differs from that of permutation tests —
+symmetry governs within-unit comparisons, exchangeability governs
+between-unit comparisons — sign-flipping is exposed as a **separate
+public entry point** rather than as a `method` on
+`permutation_test_regression()`.
+
+- [ ] `sign_flip_test_regression()`: separate public function with
+  input validation requiring paired structure (two-column response or
+  pre-computed difference vector).
+- [ ] Resampling module `sign_flips.py` (parallel to `permutations.py`)
+  generating the 2ⁿ reference distribution of sign-flip assignments.
+- [ ] Integrates with `ModelFamily`: sign-flip the residuals returned
+  by `family.residuals()`, reconstruct via `family.reconstruct_y()`.
+  No family-specific code needed.
+- [ ] Documentation clearly distinguishes the symmetry assumption from
+  the exchangeability assumption, including when each is appropriate
+  and when each is violated.
+- [ ] Standard in neuroimaging (FSL PALM supports both permutation
+  and sign-flip).
 
 ---
 
@@ -221,6 +350,7 @@ model-side `ModelFamily` protocol — together they define a complete
 permutation test specification for any single-equation model.
 
 ### Exchangeability cells
+
 - [ ] New `groups=` parameter accepting a column name or array that
   identifies clusters (schools, firms, regions, panel units, etc.).
 - [ ] `permutation_strategy=` argument controlling the exchangeability
@@ -242,6 +372,10 @@ permutation test specification for any single-equation model.
   meaningful permutation).
 
 ### Mixed-effects models
+
+Depends on exchangeability cells (permutation must respect the
+nesting structure that the random effects encode).
+
 - [ ] Integration with statsmodels `MixedLM` (linear) and a suitable
   backend for generalised linear mixed models (GLMM) as new
   `ModelFamily` implementations.
@@ -252,21 +386,18 @@ permutation test specification for any single-equation model.
   components, ICC.
 
 ### Longitudinal / panel data
+
+Depends on exchangeability cells (within-panel permutation is a
+special case of within-group exchangeability).
+
 - [ ] Within-panel permutation as the default strategy when a time or
   wave variable is provided, preserving the temporal dependency
   structure within each unit.
 - [ ] Support for both balanced and unbalanced panels.
 - [ ] Optional autoregressive residual structure for the reduced model.
 
-### Multinomial logistic regression
-- [ ] Extends binary logistic to unordered categorical outcomes with
-  *K* classes, producing *K* − 1 coefficient vectors.
-- [ ] The test statistic becomes a vector (one per contrast) or can be
-  reduced to a scalar via the log-likelihood ratio or deviance.
-- [ ] Table output should support both a stacked all-contrasts view and
-  individual per-contrast tables.
-
 ### Inferential improvements
+
 - [ ] Exact binomial or Clopper-Pearson confidence intervals on
   permutation p-values reflecting Monte Carlo uncertainty when only a
   finite number of permutations are drawn.
@@ -291,6 +422,7 @@ node-level equation solvers built in v0.3.0, constrained by the
 exchangeability cells built in v0.4.0.
 
 ### Specification data structure
+
 - [ ] A `CausalGraph` class supporting:
   - **Nodes** — observed variables, each optionally annotated with a
     model family and role (exposure, outcome, mediator, confounder).
@@ -305,6 +437,7 @@ exchangeability cells built in v0.4.0.
   under-determined nodes.
 
 ### Graph compiler
+
 - [ ] Topological sort of the DAG to determine equation fitting order.
 - [ ] For each outcome node, derive the structural equation:
   `(outcome, predictors, family, permutation_strategy, null_type)`.
@@ -315,6 +448,7 @@ exchangeability cells built in v0.4.0.
   declared confounders.
 
 ### Multi-equation orchestrator
+
 - [ ] Execute permutation tests for each structural equation in
   topological order, dispatching to the `ModelFamily` protocol.
 - [ ] Independent permutation per equation by default: each equation
@@ -327,6 +461,7 @@ exchangeability cells built in v0.4.0.
   object.
 
 ### Hyperedge testing
+
 - [ ] Generalise the Kennedy joint test to arbitrary hyperedges
   declared in the specification.  A hyperedge {X₁, X₂, X₃} → Y
   triggers joint row-wise permutation of exposure residuals for
@@ -338,6 +473,7 @@ exchangeability cells built in v0.4.0.
   linear exposure models).
 
 ### Indirect effect extraction
+
 - [ ] For a declared path X → M → Y, compute the product of per-edge
   coefficients (a × b) and test via permutation.
 - [ ] Extend the existing BCa bootstrap framework to support
@@ -347,6 +483,7 @@ exchangeability cells built in v0.4.0.
   product-of-coefficients test statistics.
 
 ### Model specification syntax
+
 - [ ] Primary API: Python method calls —
   `g.add_node("Y", family="linear")`,
   `g.add_edge("X1", "Y")`,
@@ -358,6 +495,7 @@ exchangeability cells built in v0.4.0.
   configuration-file workflows.
 
 ### Interoperability
+
 - [ ] The `CausalGraph` internal representation should use a directed
   incidence matrix as its canonical form (sparse, with +1/−1 entries
   for head/tail of each hyperedge), enabling natural conversion to
@@ -384,6 +522,7 @@ this release redesigns the output interface to expose graph-structured
 results for both academic reporting and programmatic pipeline usage.
 
 ### `PermutationTestResult` dataclass
+
 - [ ] Replaces plain-dictionary return values with typed dataclasses:
   - `PermutationTestResult` — single-equation individual-coefficient
     tests (backward-compatible with current usage).
@@ -407,6 +546,7 @@ results for both academic reporting and programmatic pipeline usage.
   per-path results in a single view.
 
 ### Scikit-learn estimator interface
+
 - [ ] `PermutationTestRegressor` and `PermutationTestClassifier`
   wrappers conforming to the scikit-learn estimator contract: `fit`,
   `predict`, `get_params`, `set_params`, `score`.
@@ -419,6 +559,7 @@ results for both academic reporting and programmatic pipeline usage.
   the underlying regression model.
 
 ### Flexible input handling
+
 - [ ] Feature names inferred from DataFrame columns or supplied
   explicitly.
 - [ ] numpy array, pandas, and Polars inputs accepted uniformly
@@ -433,6 +574,7 @@ directly into the graph specification layer, plus visualisation
 utilities for permutation distributions and graph topology.
 
 ### Causal screening
+
 - [ ] Supplement the existing Preacher & Hayes mediation analysis with
   more robust approaches for distinguishing confounders from mediators:
   - **LiNGAM** (Shimizu et al., 2006) — exploits non-Gaussianity to
@@ -447,6 +589,7 @@ utilities for permutation distributions and graph topology.
   in the API reference.
 
 ### Visualisation utilities
+
 - [ ] Permutation distribution histograms with observed test statistic
   annotated.
 - [ ] Coefficient forest plots comparing observed vs. permutation null
@@ -465,18 +608,21 @@ The graph specification layer, `ModelFamily` protocol, exchangeability
 cell system, and structured result objects are all frozen.
 
 ### API freeze
+
 - [ ] All public function signatures, graph specification methods,
   result object attributes, and parameter names are frozen.  Breaking
   changes after this point require a major version bump.
 - [ ] Comprehensive deprecation policy for any future interface changes.
 
 ### PyPI publication
+
 - [ ] Publish to PyPI so the package is installable via
   `pip install randomization-tests`.
 - [ ] Automated release workflow in GitHub Actions: tag a version, build
   the sdist/wheel, upload to PyPI.
 
 ### Documentation site
+
 - [ ] Sphinx or MkDocs documentation hosted on ReadTheDocs or GitHub
   Pages.
 - [ ] Auto-generated API reference from docstrings.
@@ -485,6 +631,7 @@ cell system, and structured result objects are all frozen.
 - [ ] Gallery of worked examples.
 
 ### Benchmarks
+
 - [ ] Runtime benchmarks across *n*, *n_permutations*, *n_features*,
   and *n_equations* for each model family.
 - [ ] Comparison against naive (non-vectorised) implementations to
@@ -492,13 +639,16 @@ cell system, and structured result objects are all frozen.
 - [ ] Published benchmark results in the documentation.
 
 ### GPU acceleration
-- [ ] Extend the JAX backend to cover all model families (currently
-  logistic only).
-- [ ] Evaluate CuPy as an alternative GPU path for numpy-based batch
-  operations.
+
+- [ ] Evaluate CuPy as an additional backend by implementing
+  `_backends/_cupy.py` with `BackendProtocol` — all model families
+  gain GPU support automatically through the existing backend
+  dispatch system established in v0.3.0.
 - [ ] Document hardware requirements and expected speedups.
+- [ ] Published GPU-vs-CPU benchmark results in the documentation.
 
 ### Community
+
 - [ ] Issue and pull request templates.
 - [ ] GitHub Discussions board for questions and feature requests.
 - [ ] Citation file (`CITATION.cff`) for academic use.

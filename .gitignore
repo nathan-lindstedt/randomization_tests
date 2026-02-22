@@ -41,3 +41,8 @@ _debug_*.py
 
 # Prompts / planning
 .github/prompts/
+.github/copilot-instructions.md
+docs/hypergraph-ecosystem-synergies.md
+docs/hypergraph-exchangeability-rationale.md
+docs/hypergraph-scalability-analysis.md
+docs/User: Permutation testing can also be do.md

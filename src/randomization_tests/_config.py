@@ -38,7 +38,9 @@ _backend_override: str | None = None
 def _jax_is_available() -> bool:
     """Return ``True`` if JAX can be imported."""
     try:
+        # Side-effect import to test availability; value unused.
         import jax  # noqa: F401
+
         return True
     except ImportError:
         return False

@@ -41,8 +41,16 @@ Reference:
     Biology*, 9(1), Article 39.
 """
 
+import warnings
+
 import numpy as np
 import statsmodels.api as sm
+from statsmodels.tools.sm_exceptions import (
+    ConvergenceWarning as SmConvergenceWarning,
+)
+from statsmodels.tools.sm_exceptions import (
+    PerfectSeparationWarning,
+)
 
 from ._compat import DataFrameLike, _ensure_pandas_df
 
@@ -109,11 +117,20 @@ def calculate_p_values(
     # p-values include [intercept, x1, …, xp] and we skip index 0.
     # When fit_intercept is False, the raw design matrix is used and
     # all returned p-values correspond directly to features.
+    #
+    # The warnings context suppresses PerfectSeparationWarning and
+    # ConvergenceWarning that statsmodels emits on degenerate data
+    # (e.g. perfect separation, rank-deficient designs).  These
+    # are informational — the MLE may be unreliable, but the
+    # classical p-values are secondary to the permutation p-values.
     X_sm = sm.add_constant(X) if fit_intercept else np.asarray(X)
-    if is_binary:
-        sm_model = sm.Logit(y_values, X_sm).fit(disp=0)
-    else:
-        sm_model = sm.OLS(y_values, X_sm).fit()
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", category=SmConvergenceWarning)
+        warnings.filterwarnings("ignore", category=PerfectSeparationWarning)
+        if is_binary:
+            sm_model = sm.Logit(y_values, X_sm).fit(disp=0)
+        else:
+            sm_model = sm.OLS(y_values, X_sm).fit()
 
     # --- Vectorised empirical p-values (Phipson & Smyth correction) ---
     # For each feature j, count how many of the B permuted |β*_j| values
@@ -126,7 +143,9 @@ def calculate_p_values(
     # yielding a boolean matrix of shape (B, p) whose column sums give
     # the count b_j for each feature.
     n_permutations = permuted_coefs.shape[0]
-    counts = np.sum(np.abs(permuted_coefs) >= np.abs(model_coefs)[np.newaxis, :], axis=0)
+    counts = np.sum(
+        np.abs(permuted_coefs) >= np.abs(model_coefs)[np.newaxis, :], axis=0
+    )
 
     # Apply the Phipson & Smyth correction:
     #   p_j = (b_j + 1) / (B + 1)

@@ -12,22 +12,27 @@ converter simply passes pandas objects through untouched.
 
 from __future__ import annotations
 
-from typing import Union
+from typing import TYPE_CHECKING, TypeAlias
 
 import pandas as pd
+
+if TYPE_CHECKING:
+    import polars as pl
+
+    DataFrameLike: TypeAlias = pd.DataFrame | pl.DataFrame | pl.LazyFrame
+else:
+    DataFrameLike: TypeAlias = pd.DataFrame
 
 # Runtime detection — avoids a hard dependency on Polars.
 try:
     import polars as pl
 
     _HAS_POLARS = True
-    DataFrameLike = Union[pd.DataFrame, pl.DataFrame, pl.LazyFrame]
 except ImportError:
     _HAS_POLARS = False
-    DataFrameLike = pd.DataFrame  # type: ignore[misc]
 
 
-def _ensure_pandas_df(obj: "DataFrameLike", *, name: str = "input") -> pd.DataFrame:
+def _ensure_pandas_df(obj: DataFrameLike, *, name: str = "input") -> pd.DataFrame:
     """Convert *obj* to a :class:`pandas.DataFrame` if necessary.
 
     Accepted types:
