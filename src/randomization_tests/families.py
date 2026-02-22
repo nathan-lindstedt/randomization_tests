@@ -285,6 +285,30 @@ class ModelFamily(Protocol):
         """
         ...
 
+    def batch_fit_varying_X(
+        self,
+        X_batch: np.ndarray,
+        y: np.ndarray,
+        fit_intercept: bool,
+        **kwargs: Any,
+    ) -> np.ndarray:
+        """Batch-fit the model across many permuted design matrices.
+
+        Used by the Kennedy individual path, where the *design matrix*
+        changes each permutation (column *j* is replaced with permuted
+        exposure residuals) while the response vector stays the same.
+
+        Args:
+            X_batch: Design matrices ``(B, n, p)`` — no intercept.
+            y: Shared response vector ``(n,)``.
+            fit_intercept: Whether to include an intercept.
+            **kwargs: Backend-specific options.
+
+        Returns:
+            Coefficient matrix ``(B, p)`` (intercept excluded).
+        """
+        ...
+
 
 # ------------------------------------------------------------------ #
 # LinearFamily
@@ -595,6 +619,28 @@ class LinearFamily:
         if backend is None:
             backend = resolve_backend()
         return np.asarray(backend.batch_ols(X, Y_matrix, fit_intercept=fit_intercept))
+
+    def batch_fit_varying_X(
+        self,
+        X_batch: np.ndarray,
+        y: np.ndarray,
+        fit_intercept: bool,
+        **kwargs: Any,
+    ) -> np.ndarray:
+        """Batch OLS with per-permutation design matrices.
+
+        Delegates to ``backend.batch_ols_varying_X()`` for the
+        Kennedy individual path where column *j* of *X* differs
+        across permutations.
+        """
+        from ._backends import resolve_backend
+
+        backend = kwargs.pop("backend", None)
+        if backend is None:
+            backend = resolve_backend()
+        return np.asarray(
+            backend.batch_ols_varying_X(X_batch, y, fit_intercept=fit_intercept)
+        )
 
 
 # ------------------------------------------------------------------ #
@@ -909,6 +955,30 @@ class LogisticFamily:
             backend = resolve_backend()
         return np.asarray(
             backend.batch_logistic(X, Y_matrix, fit_intercept=fit_intercept, **kwargs)
+        )
+
+    def batch_fit_varying_X(
+        self,
+        X_batch: np.ndarray,
+        y: np.ndarray,
+        fit_intercept: bool,
+        **kwargs: Any,
+    ) -> np.ndarray:
+        """Batch logistic with per-permutation design matrices.
+
+        Delegates to ``backend.batch_logistic_varying_X()`` for the
+        Kennedy individual path where column *j* of *X* differs
+        across permutations.
+        """
+        from ._backends import resolve_backend
+
+        backend = kwargs.pop("backend", None)
+        if backend is None:
+            backend = resolve_backend()
+        return np.asarray(
+            backend.batch_logistic_varying_X(
+                X_batch, y, fit_intercept=fit_intercept, **kwargs
+            )
         )
 
 

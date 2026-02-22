@@ -136,12 +136,6 @@ from ._compat import DataFrameLike, _ensure_pandas_df
 # Prior to v0.2.0, all JAX code lived inline in this file.  Extracting
 # it into _jax.py keeps core.py focused on the permutation algorithms
 # and provides a clean extraction point for v0.3.0's _backends/ package.
-from ._jax import (
-    fit_logistic_varying_X_jax,
-)
-from ._jax import (
-    use_jax as _use_jax,
-)
 from .diagnostics import compute_all_diagnostics
 from .families import ModelFamily, resolve_family
 from .permutations import generate_unique_permutations
@@ -465,15 +459,50 @@ def _ter_braak_generic(
 # rather than implicitly conditioning on everything else in the model.
 
 
-def _kennedy_individual_linear(
+def _kennedy_individual_generic(
     X: pd.DataFrame,
     y_values: np.ndarray,
+    family: ModelFamily,
     confounders: list[str],
     perm_indices: np.ndarray,
     model_coefs: np.ndarray,
     fit_intercept: bool = True,
 ) -> np.ndarray:
-    """Vectorised Kennedy individual for OLS."""
+    """Family-generic Kennedy individual exposure-residual permutation.
+
+    Replaces the former ``_kennedy_individual_linear`` and
+    ``_kennedy_individual_logistic`` with a single code path.
+
+    The exposure model (X_j regressed on confounders Z) is always
+    linear regardless of the outcome family.  The only family-specific
+    step is the **outcome refit** (Y ~ X*), which is dispatched via
+    ``family.batch_fit_varying_X(X_batch, y, fit_intercept)`` to the
+    active backend.
+
+    Algorithm for each non-confounder feature X_j:
+
+    1. **Exposure model** — Regress X_j on Z via OLS to get predicted
+       values X̂_j and residuals eₓⱼ = X_j − X̂_j.
+    2. **Permute** — Shuffle eₓⱼ using ``perm_indices`` to get B
+       permuted residual vectors π_b(eₓⱼ).
+    3. **Reconstruct** — X*_j = X̂_j + π_b(eₓⱼ) for each permutation.
+    4. **Batch refit** — Replace column j in X with X*_j for all B
+       permutations, then call ``family.batch_fit_varying_X()`` which
+       dispatches to the appropriate backend solver.
+
+    Args:
+        X: Feature matrix as a pandas DataFrame.
+        y_values: Response vector of shape ``(n,)``.
+        family: Resolved ``ModelFamily`` instance.
+        confounders: List of confounder column names.
+        perm_indices: Pre-generated permutation indices ``(B, n)``.
+        model_coefs: Observed model coefficients ``(p,)`` — used to
+            fill confounder slots (they are not being tested).
+        fit_intercept: Whether to include an intercept.
+
+    Returns:
+        Array of shape ``(B, n_features)`` with permuted coefficients.
+    """
     X_np = X.values.astype(float)
     n_perm, n = perm_indices.shape
     n_features = X_np.shape[1]
@@ -497,134 +526,37 @@ def _kennedy_individual_linear(
         x_target = X[[feature]].values  # (n, 1)
 
         # Step 1: Exposure model — regress X_j on confounders Z.
-        #   X̂_j = Z_aug @ (pinv(Z_aug) @ X_j) = Z_aug @ γ̂
-        #   eₓⱼ = X_j - X̂_j
-        # When fit_intercept is True, an intercept column is included
-        # so that the exposure-model residuals are mean-centred by
-        # construction, matching sklearn's LinearRegression default.
+        # The exposure model is always linear because X_j is continuous
+        # regardless of whether Y is binary.
         if Z.shape[1] > 0:
             if fit_intercept:
-                Z_aug = np.column_stack([np.ones(n), Z])  # add intercept
+                Z_aug = np.column_stack([np.ones(n), Z])
             else:
                 Z_aug = Z
             pinv_z = np.linalg.pinv(Z_aug)
             x_hat = Z_aug @ (pinv_z @ x_target)
         else:
             if fit_intercept:
-                # No confounders: X̂_j is just the mean of X_j.
                 x_hat = np.full_like(x_target, x_target.mean())
             else:
-                # No confounders and no intercept: X̂_j = 0.
                 x_hat = np.zeros_like(x_target)
         x_resids = (x_target - x_hat).ravel()  # (n,)
 
         # Step 2: Permute exposure residuals for all B permutations.
         shuffled = x_resids[perm_indices]  # (B, n)
 
-        # Step 3: Reconstruct X*_j = X̂_j + π(eₓⱼ) and refit.
-        # We build all B design matrices at once by broadcasting the
-        # original X across the batch dimension, then replacing column j.
+        # Step 3: Reconstruct X*_j = X̂_j + π(eₓⱼ) and build the
+        # batch of design matrices.
         X_perm_all = np.broadcast_to(X_np, (n_perm, n, n_features)).copy()
-        X_perm_all[:, :, feat_idx] = x_hat.ravel()[np.newaxis, :] + shuffled  # (B, n)
+        X_perm_all[:, :, feat_idx] = x_hat.ravel()[np.newaxis, :] + shuffled
 
-        # Note: Unlike the ter Braak path, we CANNOT use a single
-        # pseudoinverse here because the design matrix itself changes in
-        # each permutation (column j is different).  Each permutation
-        # requires its own lstsq solve.  When fit_intercept is True, an
-        # intercept column is prepended so that the permuted coefficients
-        # live in the same parameter space as the sklearn observed
-        # coefficients.
-        if fit_intercept:
-            ones_col = np.ones((n, 1))
-            for p in range(n_perm):
-                X_perm_aug = np.column_stack([ones_col, X_perm_all[p]])
-                coefs, _, _, _ = np.linalg.lstsq(X_perm_aug, y_values, rcond=None)
-                result[p, feat_idx] = coefs[feat_idx + 1]  # +1 to skip intercept
-        else:
-            for p in range(n_perm):
-                coefs, _, _, _ = np.linalg.lstsq(X_perm_all[p], y_values, rcond=None)
-                result[p, feat_idx] = coefs[feat_idx]
-
-    return result
-
-
-def _kennedy_individual_logistic(
-    X: pd.DataFrame,
-    y_values: np.ndarray,
-    confounders: list[str],
-    perm_indices: np.ndarray,
-    model_coefs: np.ndarray,
-    fit_intercept: bool = True,
-) -> np.ndarray:
-    """Kennedy individual for logistic regression.
-
-    The exposure model is always linear (X_j on Z is a continuous
-    regression regardless of whether Y is binary).  What changes is
-    the outcome model: logistic instead of OLS.
-    """
-    X_np = X.values.astype(float)
-    n_perm, n = perm_indices.shape
-    n_features = X_np.shape[1]
-    result = np.zeros((n_perm, n_features))
-
-    features_to_test = [c for c in X.columns if c not in confounders]
-
-    if confounders:
-        Z = X[confounders].values
-    else:
-        Z = np.zeros((n, 0))
-
-    for i, col in enumerate(X.columns):
-        if col in confounders:
-            result[:, i] = model_coefs[i]
-
-    for feature in features_to_test:
-        feat_idx = X.columns.get_loc(feature)
-        x_target = X[[feature]].values
-
-        # Exposure model — same linear regression as the OLS path.
-        # The exposure model is always linear because X_j is continuous
-        # even when Y is binary.
-        if Z.shape[1] > 0:
-            exp_model = LinearRegression(fit_intercept=fit_intercept).fit(Z, x_target)
-            x_hat = exp_model.predict(Z)
-        else:
-            if fit_intercept:
-                x_hat = np.full_like(x_target, x_target.mean())
-            else:
-                x_hat = np.zeros_like(x_target)
-        x_resids = (x_target - x_hat).ravel()
-
-        # Permute exposure residuals and reconstruct X*_j.
-        shuffled = x_resids[perm_indices]  # (B, n)
-
-        if _use_jax():
-            # JAX path: build all B design matrices, then vmap the
-            # Newton solver across the batch dimension.  Each element of
-            # X_j gets the same y vector but a different X matrix (column
-            # j replaced with X*_j).
-            X_perm_all = np.broadcast_to(X_np, (n_perm, n, n_features)).copy()
-            X_perm_all[:, :, feat_idx] = x_hat.ravel()[np.newaxis, :] + shuffled
-
-            all_coefs = fit_logistic_varying_X_jax(
-                X_perm_all,
-                y_values,
-                fit_intercept=fit_intercept,
-            )
-            result[:, feat_idx] = all_coefs[:, feat_idx]
-        else:
-            # Fallback: sklearn loop.
-            model_cls = LogisticRegression(
-                penalty=None,
-                solver="lbfgs",
-                max_iter=5_000,
-                fit_intercept=fit_intercept,
-            )
-            for p in range(n_perm):
-                X_perm = X.copy()
-                X_perm.iloc[:, feat_idx] = x_hat.ravel() + shuffled[p]
-                model_cls.fit(X_perm.values, y_values)
-                result[p, feat_idx] = model_cls.coef_.flatten()[feat_idx]
+        # Step 4: Batch-refit the outcome model on all B permuted
+        # design matrices.  family.batch_fit_varying_X() dispatches to
+        # the appropriate backend:
+        #   - Linear: numpy lstsq loop or JAX vmap'd lstsq
+        #   - Logistic: JAX vmap'd Newton solver or sklearn loop
+        all_coefs = family.batch_fit_varying_X(X_perm_all, y_values, fit_intercept)
+        result[:, feat_idx] = all_coefs[:, feat_idx]
 
     return result
 
@@ -1014,24 +946,15 @@ def permutation_test_regression(
         )
 
     elif method == "kennedy":
-        if is_binary:
-            permuted_coefs = _kennedy_individual_logistic(
-                X,
-                y_values,
-                confounders,
-                perm_indices,
-                model_coefs,
-                fit_intercept,
-            )
-        else:
-            permuted_coefs = _kennedy_individual_linear(
-                X,
-                y_values,
-                confounders,
-                perm_indices,
-                model_coefs,
-                fit_intercept,
-            )
+        permuted_coefs = _kennedy_individual_generic(
+            X,
+            y_values,
+            resolved,
+            confounders,
+            perm_indices,
+            model_coefs,
+            fit_intercept,
+        )
 
     elif method == "kennedy_joint":
         obs_improvement, perm_improvements, metric_type, features_tested = (
