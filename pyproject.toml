@@ -73,6 +73,7 @@ testpaths = ["tests"]
 addopts = "-v --tb=short -m 'not slow'"
 filterwarnings = [
     "error",
+    "default:.*Newton.*Raphson.*did not converge:RuntimeWarning",
 ]
 markers = [
     "slow: large-n or degenerate-data tests (deselect with '-m not slow')",

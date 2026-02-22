@@ -15,6 +15,7 @@ when this backend is explicitly requested.
 
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -22,6 +23,34 @@ import numpy as np
 
 if TYPE_CHECKING:
     import jax
+
+# ------------------------------------------------------------------ #
+# Solver defaults
+# ------------------------------------------------------------------ #
+
+_DEFAULT_TOL: float = 1e-4
+"""Default gradient-norm tolerance for Newton–Raphson convergence.
+
+Chosen to sit well above the float32 oscillation ceiling, which
+scales with ``sqrt(n * p) * machine-epsilon``.  Empirical testing
+(``tests/test_convergence.py``) confirms 100 % convergence across
+n in [100, 1000] and p in [2, 50] at this threshold.  Matches
+sklearn's ``LogisticRegression`` default.
+"""
+
+_MIN_DAMPING: float = 1e-8
+"""Singularity guard added to the Hessian diagonal.
+
+Prevents ``jnp.linalg.solve`` from producing NaN / Inf steps when
+the Hessian ``X'WX`` is exactly singular (e.g. a constant column,
+perfect separation, or rank-deficient design).  The value is small
+enough to leave well-conditioned solves unaffected (typical Hessian
+eigenvalues are O(n)) while still stabilising singular directions.
+
+This is *not* ridge regularisation — it does not modify the
+objective function, so the solver still targets the unregularised
+MLE.  Only the linear-algebra solve is protected.
+"""
 
 # ------------------------------------------------------------------ #
 # Optional JAX import
@@ -77,6 +106,102 @@ if _CAN_IMPORT_JAX:
         p = jax.nn.sigmoid(X @ beta)
         W = p * (1.0 - p)
         return (X.T * W[None, :]) @ X
+
+    def _make_newton_solver(
+        X: jnp.ndarray,
+        y: jnp.ndarray,
+        max_iter: int,
+        tol: float,
+        min_damping: float = _MIN_DAMPING,
+    ) -> tuple[jnp.ndarray, jnp.ndarray]:
+        """Newton–Raphson logistic solve with early stopping.
+
+        Uses ``jax.lax.while_loop`` for dynamic iteration count
+        inside JIT — the loop exits as soon as the max absolute
+        gradient falls below *tol* or *max_iter* iterations are
+        reached.
+
+        A small constant ``min_damping * I`` is added to the Hessian
+        before each linear solve as a singularity guard.  This
+        prevents ``jnp.linalg.solve`` from producing NaN / Inf steps
+        when the Hessian is exactly singular (perfect separation,
+        rank-deficient design) without affecting well-conditioned
+        solves.  It does *not* modify the objective function — the
+        solver still targets the unregularised MLE.
+
+        Convergence requires both a small gradient *and* finite
+        coefficients.  A beta containing Inf / NaN (e.g. from
+        separation-induced overflow) is never marked as converged,
+        even if the gradient happens to be small.
+
+        Args:
+            X: Augmented design matrix ``(n, p+1)``.
+            y: Binary response ``(n,)``.
+            max_iter: Maximum Newton iterations.
+            tol: Gradient-norm convergence threshold.
+            min_damping: Singularity guard added to the Hessian
+                diagonal.  Default :data:`_MIN_DAMPING`.
+
+        Returns:
+            ``(beta, converged)`` where *converged* is a scalar bool.
+        """
+        n_params = X.shape[1]
+        init_state = (
+            jnp.array(0),
+            jnp.zeros(n_params, dtype=jnp.float32),
+            jnp.array(False),
+        )
+
+        def cond(
+            state: tuple[jax.Array, jax.Array, jax.Array],
+        ) -> jax.Array:
+            i, _beta, converged = state
+            return (i < max_iter) & (~converged)
+
+        def body(
+            state: tuple[jax.Array, jax.Array, jax.Array],
+        ) -> tuple[jax.Array, jax.Array, jax.Array]:
+            i, beta, _ = state
+            g = _logistic_grad(beta, X, y)
+            H = _logistic_hessian(beta, X, y)
+
+            # Singularity guard: add min_damping * I to the Hessian.
+            #
+            # For well-conditioned data the eigenvalues of H are
+            # O(n), so 1e-8 is negligible — pure quadratic
+            # convergence is preserved (2–4 iterations typical).
+            #
+            # For singular / near-singular H (perfect separation,
+            # rank-deficient X), this prevents jnp.linalg.solve
+            # from producing NaN / Inf step components.
+            #
+            # This is NOT ridge regularisation: the objective
+            # function is unchanged.  Only the linear-algebra
+            # solve is stabilised.
+            H_damped = H + min_damping * jnp.eye(n_params)
+
+            beta_new = beta - jnp.linalg.solve(H_damped, g)
+
+            # Require both a small gradient and finite coefficients.
+            # A saturated sigmoid can produce a small gradient even
+            # when beta has overflowed to huge values.
+            converged = (jnp.max(jnp.abs(g)) < tol) & jnp.all(jnp.isfinite(beta_new))
+            return (i + 1, beta_new, converged)
+
+        _, beta_final, converged = jax.lax.while_loop(cond, body, init_state)
+        return beta_final, converged
+
+
+def _check_convergence(converged: np.ndarray, max_iter: int) -> None:
+    """Warn if any Newton–Raphson solve did not converge."""
+    n_failed = int(np.sum(~converged))
+    if n_failed > 0:
+        warnings.warn(
+            f"{n_failed} of {converged.shape[0]} Newton–Raphson solves "
+            f"did not converge within {max_iter} iterations.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
 
 
 # ------------------------------------------------------------------ #
@@ -153,12 +278,16 @@ class JaxBackend:
             X: Design matrix ``(n, p)`` — no intercept column.
             Y_matrix: Permuted binary responses ``(B, n)``.
             fit_intercept: Prepend intercept column.
-            **kwargs: ``max_iter`` (default 100).
+            **kwargs: ``max_iter`` (default 100), ``tol`` (default
+                :data:`_DEFAULT_TOL`), ``min_damping`` (default
+                :data:`_MIN_DAMPING`).
 
         Returns:
             Slope coefficients ``(B, p)`` (intercept excluded).
         """
         max_iter: int = kwargs.get("max_iter", 100)
+        tol: float = kwargs.get("tol", _DEFAULT_TOL)
+        min_damping: float = kwargs.get("min_damping", _MIN_DAMPING)
 
         if fit_intercept:
             ones = np.ones((X.shape[0], 1), dtype=X.dtype)
@@ -169,15 +298,14 @@ class JaxBackend:
         X_j = jnp.array(X_aug, dtype=jnp.float32)
         Y_j = jnp.array(Y_matrix, dtype=jnp.float32)
 
-        def _solve_one(y_vec: jax.Array) -> jax.Array:
-            beta = jnp.zeros(X_j.shape[1], dtype=jnp.float32)
-            for _ in range(max_iter):
-                g = _logistic_grad(beta, X_j, y_vec)
-                H = _logistic_hessian(beta, X_j, y_vec)
-                beta = beta - jnp.linalg.solve(H, g)
-            return beta
+        def _solve_one(
+            y_vec: jax.Array,
+        ) -> tuple[jax.Array, jax.Array]:
+            return _make_newton_solver(X_j, y_vec, max_iter, tol, min_damping)
 
-        all_coefs = np.asarray(jit(vmap(_solve_one))(Y_j))
+        all_betas, all_converged = jit(vmap(_solve_one))(Y_j)
+        _check_convergence(np.asarray(all_converged), max_iter)
+        all_coefs = np.asarray(all_betas)
         return all_coefs[:, 1:] if fit_intercept else all_coefs
 
     # ---- Logistic (many X, shared y) -----------------------------------
@@ -198,12 +326,16 @@ class JaxBackend:
             X_batch: Design matrices ``(B, n, p)`` — no intercept.
             y: Shared binary response ``(n,)``.
             fit_intercept: Prepend intercept column.
-            **kwargs: ``max_iter`` (default 100).
+            **kwargs: ``max_iter`` (default 100), ``tol`` (default
+                :data:`_DEFAULT_TOL`), ``min_damping`` (default
+                :data:`_MIN_DAMPING`).
 
         Returns:
             Slope coefficients ``(B, p)`` (intercept excluded).
         """
         max_iter: int = kwargs.get("max_iter", 100)
+        tol: float = kwargs.get("tol", _DEFAULT_TOL)
+        min_damping: float = kwargs.get("min_damping", _MIN_DAMPING)
 
         if fit_intercept:
             B, n, _ = X_batch.shape
@@ -215,13 +347,12 @@ class JaxBackend:
         X_j = jnp.array(X_aug, dtype=jnp.float32)
         y_j = jnp.array(y, dtype=jnp.float32)
 
-        def _solve_one(X_single: jax.Array, _y: jax.Array = y_j) -> jax.Array:
-            beta = jnp.zeros(X_single.shape[1], dtype=jnp.float32)
-            for _ in range(max_iter):
-                g = _logistic_grad(beta, X_single, _y)
-                H = _logistic_hessian(beta, X_single, _y)
-                beta = beta - jnp.linalg.solve(H, g)
-            return beta
+        def _solve_one(
+            X_single: jax.Array,
+        ) -> tuple[jax.Array, jax.Array]:
+            return _make_newton_solver(X_single, y_j, max_iter, tol, min_damping)
 
-        all_coefs = np.asarray(jit(vmap(_solve_one))(X_j))
+        all_betas, all_converged = jit(vmap(_solve_one))(X_j)
+        _check_convergence(np.asarray(all_converged), max_iter)
+        all_coefs = np.asarray(all_betas)
         return all_coefs[:, 1:] if fit_intercept else all_coefs

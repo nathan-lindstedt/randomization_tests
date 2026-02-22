@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from ._backends._jax import _CAN_IMPORT_JAX, JaxBackend
+from ._backends._jax import _CAN_IMPORT_JAX, _DEFAULT_TOL, JaxBackend
 from ._config import get_backend
 
 # ------------------------------------------------------------------ #
@@ -47,10 +47,11 @@ def fit_logistic_batch_jax(
     Y_matrix: np.ndarray,
     max_iter: int = 100,
     fit_intercept: bool = True,
+    tol: float = _DEFAULT_TOL,
 ) -> np.ndarray:
     """Shim — delegates to ``JaxBackend.batch_logistic``."""
     return _get_jax_backend().batch_logistic(
-        X_base, Y_matrix, fit_intercept=fit_intercept, max_iter=max_iter
+        X_base, Y_matrix, fit_intercept=fit_intercept, max_iter=max_iter, tol=tol
     )
 
 
@@ -59,8 +60,9 @@ def fit_logistic_varying_X_jax(
     y: np.ndarray,
     max_iter: int = 100,
     fit_intercept: bool = True,
+    tol: float = _DEFAULT_TOL,
 ) -> np.ndarray:
     """Shim — delegates to ``JaxBackend.batch_logistic_varying_X``."""
     return _get_jax_backend().batch_logistic_varying_X(
-        X_batch, y, fit_intercept=fit_intercept, max_iter=max_iter
+        X_batch, y, fit_intercept=fit_intercept, max_iter=max_iter, tol=tol
     )
