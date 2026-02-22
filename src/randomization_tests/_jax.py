@@ -66,3 +66,14 @@ def fit_logistic_varying_X_jax(
     return _get_jax_backend().batch_logistic_varying_X(
         X_batch, y, fit_intercept=fit_intercept, max_iter=max_iter, tol=tol
     )
+
+
+def fit_ols_varying_X_jax(
+    X_batch: np.ndarray,
+    y: np.ndarray,
+    fit_intercept: bool = True,
+) -> np.ndarray:
+    """Shim — delegates to ``JaxBackend.batch_ols_varying_X``."""
+    return _get_jax_backend().batch_ols_varying_X(
+        X_batch, y, fit_intercept=fit_intercept
+    )

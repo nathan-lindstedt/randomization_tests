@@ -128,6 +128,29 @@ class BackendProtocol(Protocol):
         """
         ...
 
+    def batch_ols_varying_X(
+        self,
+        X_batch: np.ndarray,
+        y: np.ndarray,
+        fit_intercept: bool = True,
+    ) -> np.ndarray:
+        """Batch OLS: many *X* matrices, shared *y*.
+
+        Used by the Kennedy individual linear path where column *j*
+        of *X* is replaced with permuted exposure residuals.
+        Each permutation has its own design matrix, so the single-
+        pseudoinverse trick cannot be used.
+
+        Args:
+            X_batch: Design matrices ``(B, n, p)`` — no intercept.
+            y: Shared continuous response ``(n,)``.
+            fit_intercept: Prepend intercept column.
+
+        Returns:
+            Slope coefficients ``(B, p)`` (intercept excluded).
+        """
+        ...
+
 
 # ------------------------------------------------------------------ #
 # Backend resolution

@@ -356,3 +356,48 @@ class JaxBackend:
         _check_convergence(np.asarray(all_converged), max_iter)
         all_coefs = np.asarray(all_betas)
         return all_coefs[:, 1:] if fit_intercept else all_coefs
+
+    # ---- OLS (many X, shared y) ----------------------------------------
+
+    def batch_ols_varying_X(
+        self,
+        X_batch: np.ndarray,
+        y: np.ndarray,
+        fit_intercept: bool = True,
+    ) -> np.ndarray:
+        """Batch OLS with per-permutation design matrices via vmap.
+
+        Kennedy individual linear path — each permutation has its
+        own design matrix (column *j* replaced with permuted exposure
+        residuals).  Uses ``jax.vmap`` over ``jnp.linalg.lstsq`` to
+        solve all *B* systems in a single XLA kernel launch.
+
+        Args:
+            X_batch: Design matrices ``(B, n, p)`` — no intercept.
+            y: Shared continuous response ``(n,)``.
+            fit_intercept: Prepend intercept column.
+
+        Returns:
+            Slope coefficients ``(B, p)`` (intercept excluded).
+        """
+        if fit_intercept:
+            B, n, _ = X_batch.shape
+            ones = np.ones((B, n, 1), dtype=X_batch.dtype)
+            X_aug = np.concatenate([ones, X_batch], axis=2)
+        else:
+            X_aug = X_batch
+
+        X_j = jnp.array(X_aug, dtype=jnp.float32)
+        y_j = jnp.array(y, dtype=jnp.float32)
+
+        @jit
+        def _batch_lstsq(X_all: jax.Array, y_vec: jax.Array) -> jax.Array:
+            def _solve_one(X_single: jax.Array) -> jax.Array:
+                # jnp.linalg.lstsq returns (solution, residuals, rank, sv)
+                coefs, _, _, _ = jnp.linalg.lstsq(X_single, y_vec, rcond=None)
+                return coefs
+
+            return vmap(_solve_one)(X_all)
+
+        all_coefs = np.asarray(_batch_lstsq(X_j, y_j))
+        return all_coefs[:, 1:] if fit_intercept else all_coefs

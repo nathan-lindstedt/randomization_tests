@@ -151,3 +151,42 @@ class NumpyBackend:
             result[b] = model.coef_.flatten()
 
         return result
+
+    # ---- OLS (many X, shared y) ----------------------------------------
+
+    def batch_ols_varying_X(
+        self,
+        X_batch: np.ndarray,
+        y: np.ndarray,
+        fit_intercept: bool = True,
+    ) -> np.ndarray:
+        """Batch OLS with per-permutation design matrices.
+
+        Kennedy individual linear path — each permutation has its
+        own design matrix (column *j* replaced with permuted exposure
+        residuals), so a separate ``lstsq`` solve is needed per
+        permutation.
+
+        Args:
+            X_batch: Design matrices ``(B, n, p)`` — no intercept.
+            y: Shared continuous response ``(n,)``.
+            fit_intercept: Prepend intercept column.
+
+        Returns:
+            Slope coefficients ``(B, p)`` (intercept excluded).
+        """
+        B, n, p = X_batch.shape
+        result = np.empty((B, p))
+
+        if fit_intercept:
+            ones_col = np.ones((n, 1))
+            for b in range(B):
+                X_aug = np.column_stack([ones_col, X_batch[b]])  # (n, p+1)
+                coefs, _, _, _ = np.linalg.lstsq(X_aug, y, rcond=None)
+                result[b] = coefs[1:]  # drop intercept
+        else:
+            for b in range(B):
+                coefs, _, _, _ = np.linalg.lstsq(X_batch[b], y, rcond=None)
+                result[b] = coefs
+
+        return result
