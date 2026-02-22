@@ -1,10 +1,18 @@
 """
 Test Case 2: Logistic Regression (Binary Outcome)
 Breast Cancer Wisconsin (Diagnostic) dataset (UCI ML Repository ID=17)
+
+Demonstrates:
+- ``family="logistic"`` — explicit family selection via ``resolve_family``
+- All three permutation methods routed through ``LogisticFamily``
+- Direct ``ModelFamily`` protocol usage (fit / predict / residuals /
+  reconstruct_y / fit_metric / diagnostics / classical_p_values /
+  batch_fit)
 """
 
 import warnings
 
+import numpy as np
 from ucimlrepo import fetch_ucirepo
 
 from randomization_tests import (
@@ -15,6 +23,7 @@ from randomization_tests import (
     print_joint_results_table,
     print_results_table,
 )
+from randomization_tests.families import LogisticFamily, resolve_family
 
 # ============================================================================
 # Load data
@@ -31,56 +40,67 @@ selected_features = ["radius1", "texture1", "perimeter1", "smoothness1", "compac
 X_bc = X_bc[selected_features]
 
 # ============================================================================
-# ter Braak (1992) — logistic
+# Verify resolve_family auto-detects "logistic" for binary Y
 # ============================================================================
 
-results_ter_braak_bc = permutation_test_regression(X_bc, y_bc, method="ter_braak")
+auto_family = resolve_family("auto", np.ravel(y_bc))
+assert auto_family.name == "logistic", f"Expected 'logistic', got {auto_family.name!r}"
+print(f"resolve_family('auto', y) → {auto_family.name!r}")
+
+# ============================================================================
+# ter Braak (1992) — family="logistic" (explicit)
+# ============================================================================
+
+results_ter_braak_bc = permutation_test_regression(
+    X_bc, y_bc, method="ter_braak", family="logistic"
+)
 print_results_table(
     results_ter_braak_bc,
     feature_names=X_bc.columns.tolist(),
     target_name=y_bc.columns[0],
-    title="ter Braak (1992) Permutation Test (Logistic)",
+    title="ter Braak (1992) Permutation Test (family='logistic')",
 )
 print_diagnostics_table(
     results_ter_braak_bc,
     feature_names=X_bc.columns.tolist(),
-    title="ter Braak (1992) Extended Diagnostics (Logistic)",
+    title="ter Braak (1992) Diagnostics (family='logistic')",
 )
+assert results_ter_braak_bc["model_type"] == "logistic"
 
 # ============================================================================
-# Kennedy (1995) individual — logistic
+# Kennedy (1995) individual — family="logistic"
 # ============================================================================
 
 with warnings.catch_warnings():
     warnings.filterwarnings("ignore", message=".*without confounders.*")
     results_kennedy_bc = permutation_test_regression(
-        X_bc, y_bc, method="kennedy", confounders=[]
+        X_bc, y_bc, method="kennedy", confounders=[], family="logistic"
     )
 print_results_table(
     results_kennedy_bc,
     feature_names=X_bc.columns.tolist(),
     target_name=y_bc.columns[0],
-    title="Kennedy (1995) Individual Coefficient Permutation Test (Logistic)",
+    title="Kennedy (1995) Individual Permutation Test (family='logistic')",
 )
 print_diagnostics_table(
     results_kennedy_bc,
     feature_names=X_bc.columns.tolist(),
-    title="Kennedy (1995) Individual Extended Diagnostics (Logistic)",
+    title="Kennedy (1995) Individual Diagnostics (family='logistic')",
 )
 
 # ============================================================================
-# Kennedy (1995) joint — logistic
+# Kennedy (1995) joint — family="logistic"
 # ============================================================================
 
 with warnings.catch_warnings():
     warnings.filterwarnings("ignore", message=".*without confounders.*")
     results_kennedy_joint_bc = permutation_test_regression(
-        X_bc, y_bc, method="kennedy_joint", confounders=[]
+        X_bc, y_bc, method="kennedy_joint", confounders=[], family="logistic"
     )
 print_joint_results_table(
     results_kennedy_joint_bc,
     target_name=y_bc.columns[0],
-    title="Kennedy (1995) Joint Permutation Test (Logistic)",
+    title="Kennedy (1995) Joint Permutation Test (family='logistic')",
 )
 
 # ============================================================================
@@ -105,7 +125,7 @@ predictors_with_confounders_bc = {
 }
 
 # ============================================================================
-# Kennedy with identified confounders — logistic
+# Kennedy with identified confounders — family="logistic"
 # ============================================================================
 
 if predictors_with_confounders_bc:
@@ -117,15 +137,84 @@ if predictors_with_confounders_bc:
         y_bc,
         method="kennedy",
         confounders=example_confounders_bc,
+        family="logistic",
     )
     print_results_table(
         results_kc_bc,
         feature_names=X_bc.columns.tolist(),
         target_name=y_bc.columns[0],
-        title=f"Kennedy (1995) Method for '{example_predictor_bc}' (controlling for {', '.join(example_confounders_bc)}) (Logistic)",
+        title=(
+            f"Kennedy (1995) for '{example_predictor_bc}' "
+            f"(controlling for {', '.join(example_confounders_bc)}) "
+            f"(family='logistic')"
+        ),
     )
     print_diagnostics_table(
         results_kc_bc,
         feature_names=X_bc.columns.tolist(),
-        title=f"Kennedy (1995) Extended Diagnostics for '{example_predictor_bc}' (Logistic)",
+        title=(
+            f"Kennedy (1995) Diagnostics for '{example_predictor_bc}' "
+            f"(family='logistic')"
+        ),
     )
+
+# ============================================================================
+# Direct ModelFamily protocol usage
+# ============================================================================
+# The ModelFamily protocol encapsulates every model-specific operation —
+# fitting, prediction, residual extraction, Y-reconstruction, batch
+# fitting, diagnostics, and classical p-values.  Below we exercise
+# each method directly for LogisticFamily.
+
+family = LogisticFamily()
+X_np = X_bc.values.astype(float)
+y_np = np.ravel(y_bc).astype(float)
+
+print(f"\n{'=' * 60}")
+print("Direct LogisticFamily protocol usage")
+print(f"{'=' * 60}")
+print(f"  name:               {family.name}")
+print(f"  residual_type:      {family.residual_type}")
+print(f"  direct_permutation: {family.direct_permutation}")
+
+# validate_y — should pass for binary {0, 1}
+family.validate_y(y_np)
+print("  validate_y:         passed")
+
+# fit / predict / coefs / residuals
+model = family.fit(X_np, y_np, fit_intercept=True)
+preds = family.predict(model, X_np)
+coefs = family.coefs(model)
+resids = family.residuals(model, X_np, y_np)
+print(f"  coefs:              {np.round(coefs, 4)}")
+print(f"  mean |residual|:    {np.mean(np.abs(resids)):.4f}")
+print(f"  pred range:         [{preds.min():.4f}, {preds.max():.4f}]")
+
+# fit_metric (deviance)
+deviance = family.fit_metric(y_np, preds)
+print(f"  deviance:           {deviance:.2f}")
+
+# reconstruct_y — clip + Bernoulli sampling (stochastic!)
+rng = np.random.default_rng(42)
+perm_resids = rng.permutation(resids)
+y_star = family.reconstruct_y(preds, perm_resids, rng)
+print(f"  reconstruct_y:      shape={y_star.shape}, unique={np.unique(y_star)}")
+
+# batch_fit — fit logistic on B permuted Y vectors at once
+n_batch = 50
+perm_indices = np.array([rng.permutation(len(y_np)) for _ in range(n_batch)])
+Y_matrix = y_np[perm_indices]  # shape (B, n)
+batch_coefs = family.batch_fit(X_np, Y_matrix, fit_intercept=True)
+print(
+    f"  batch_fit:          shape={batch_coefs.shape} (B={n_batch}, p={X_np.shape[1]})"
+)
+
+# diagnostics — pseudo-R², LLR, AIC, BIC via statsmodels
+diag = family.diagnostics(X_np, y_np, fit_intercept=True)
+print(
+    f"  diagnostics:        pseudo_R²={diag['pseudo_r_squared']:.4f}, AIC={diag['aic']:.2f}"
+)
+
+# classical_p_values — Wald z-test via statsmodels
+p_classical = family.classical_p_values(X_np, y_np, fit_intercept=True)
+print(f"  classical_p_values: {np.round(p_classical, 6)}")
