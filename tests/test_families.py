@@ -1,10 +1,11 @@
-"""Tests for the ModelFamily protocol and LinearFamily implementation."""
+"""Tests for the ModelFamily protocol, LinearFamily, and LogisticFamily."""
 
 import numpy as np
 import pytest
 
 from randomization_tests.families import (
     LinearFamily,
+    LogisticFamily,
     ModelFamily,
     register_family,
     resolve_family,
@@ -255,3 +256,248 @@ class TestRegistry:
     def test_frozen_dataclass(self, family):
         with pytest.raises(AttributeError):
             family.name = "other"  # type: ignore[misc]
+
+
+# ================================================================== #
+# LogisticFamily tests
+# ================================================================== #
+
+
+@pytest.fixture()
+def logistic_data(rng):
+    n, p = 200, 2
+    X = rng.standard_normal((n, p))
+    logits = 2.0 * X[:, 0] + 0.0 * X[:, 1]
+    probs = 1 / (1 + np.exp(-logits))
+    y = rng.binomial(1, probs).astype(float)
+    return X, y
+
+
+@pytest.fixture()
+def logistic_family():
+    return LogisticFamily()
+
+
+# ------------------------------------------------------------------ #
+# Protocol conformance (logistic)
+# ------------------------------------------------------------------ #
+
+
+class TestLogisticProtocolConformance:
+    def test_isinstance_check(self, logistic_family):
+        assert isinstance(logistic_family, ModelFamily)
+
+    def test_name(self, logistic_family):
+        assert logistic_family.name == "logistic"
+
+    def test_residual_type(self, logistic_family):
+        assert logistic_family.residual_type == "probability"
+
+    def test_direct_permutation(self, logistic_family):
+        assert logistic_family.direct_permutation is False
+
+
+# ------------------------------------------------------------------ #
+# validate_y (logistic)
+# ------------------------------------------------------------------ #
+
+
+class TestLogisticValidateY:
+    def test_valid_binary(self, logistic_family):
+        logistic_family.validate_y(np.array([0, 1, 0, 1, 1, 0]))
+
+    def test_rejects_continuous(self, logistic_family):
+        with pytest.raises(ValueError, match="binary"):
+            logistic_family.validate_y(np.array([0.5, 1.5, 2.5]))
+
+    def test_rejects_single_class(self, logistic_family):
+        with pytest.raises(ValueError, match="binary"):
+            logistic_family.validate_y(np.zeros(50))
+
+    def test_rejects_three_classes(self, logistic_family):
+        with pytest.raises(ValueError, match="binary"):
+            logistic_family.validate_y(np.array([0, 1, 2]))
+
+
+# ------------------------------------------------------------------ #
+# Single-model operations (logistic)
+# ------------------------------------------------------------------ #
+
+
+class TestLogisticSingleModel:
+    def test_fit_predict_shape(self, logistic_family, logistic_data):
+        X, y = logistic_data
+        model = logistic_family.fit(X, y)
+        preds = logistic_family.predict(model, X)
+        assert preds.shape == y.shape
+
+    def test_predict_range(self, logistic_family, logistic_data):
+        X, y = logistic_data
+        model = logistic_family.fit(X, y)
+        preds = logistic_family.predict(model, X)
+        assert np.all(preds >= 0.0)
+        assert np.all(preds <= 1.0)
+
+    def test_coefs_shape(self, logistic_family, logistic_data):
+        X, y = logistic_data
+        model = logistic_family.fit(X, y)
+        c = logistic_family.coefs(model)
+        assert c.shape == (X.shape[1],)
+
+    def test_significant_predictor_positive(self, logistic_family, logistic_data):
+        X, y = logistic_data
+        model = logistic_family.fit(X, y)
+        c = logistic_family.coefs(model)
+        # x1 has true coef 2.0 — should be clearly positive
+        assert c[0] > 0.5
+
+    def test_residuals_shape(self, logistic_family, logistic_data):
+        X, y = logistic_data
+        model = logistic_family.fit(X, y)
+        r = logistic_family.residuals(model, X, y)
+        assert r.shape == y.shape
+
+    def test_residuals_range(self, logistic_family, logistic_data):
+        X, y = logistic_data
+        model = logistic_family.fit(X, y)
+        r = logistic_family.residuals(model, X, y)
+        assert np.all(r >= -1.0)
+        assert np.all(r <= 1.0)
+
+
+# ------------------------------------------------------------------ #
+# reconstruct_y (logistic)
+# ------------------------------------------------------------------ #
+
+
+class TestLogisticReconstructY:
+    def test_output_is_binary(self, logistic_family, rng):
+        preds = np.full(100, 0.5)
+        resids = rng.uniform(-0.3, 0.3, size=100)
+        result = logistic_family.reconstruct_y(preds, resids, rng)
+        assert set(np.unique(result)).issubset({0, 1})
+
+    def test_shape_preserved(self, logistic_family, rng):
+        preds = np.full((20, 50), 0.5)
+        resids = rng.uniform(-0.3, 0.3, size=(20, 50))
+        result = logistic_family.reconstruct_y(preds, resids, rng)
+        assert result.shape == (20, 50)
+
+
+# ------------------------------------------------------------------ #
+# fit_metric (logistic — deviance)
+# ------------------------------------------------------------------ #
+
+
+class TestLogisticFitMetric:
+    def test_perfect_prediction(self, logistic_family):
+        y_true = np.array([0.0, 1.0, 0.0, 1.0])
+        y_pred = np.array([0.001, 0.999, 0.001, 0.999])
+        # Near-zero deviance for near-perfect predictions
+        assert logistic_family.fit_metric(y_true, y_pred) < 0.1
+
+    def test_bad_prediction_high_deviance(self, logistic_family):
+        y_true = np.array([0.0, 1.0, 0.0, 1.0])
+        y_pred = np.array([0.5, 0.5, 0.5, 0.5])
+        # Deviance should be higher than near-perfect case
+        assert logistic_family.fit_metric(y_true, y_pred) > 1.0
+
+
+# ------------------------------------------------------------------ #
+# diagnostics (logistic)
+# ------------------------------------------------------------------ #
+
+
+class TestLogisticDiagnostics:
+    def test_keys(self, logistic_family, logistic_data):
+        X, y = logistic_data
+        diag = logistic_family.diagnostics(X, y)
+        expected_keys = {
+            "n_observations",
+            "n_features",
+            "pseudo_r_squared",
+            "log_likelihood",
+            "log_likelihood_null",
+            "llr_p_value",
+            "aic",
+            "bic",
+        }
+        assert set(diag.keys()) == expected_keys
+
+    def test_n_observations(self, logistic_family, logistic_data):
+        X, y = logistic_data
+        diag = logistic_family.diagnostics(X, y)
+        assert diag["n_observations"] == len(y)
+
+    def test_pseudo_r_squared_positive(self, logistic_family, logistic_data):
+        X, y = logistic_data
+        diag = logistic_family.diagnostics(X, y)
+        assert diag["pseudo_r_squared"] > 0.0
+
+
+# ------------------------------------------------------------------ #
+# classical_p_values (logistic)
+# ------------------------------------------------------------------ #
+
+
+class TestLogisticClassicalPValues:
+    def test_shape(self, logistic_family, logistic_data):
+        X, y = logistic_data
+        pvals = logistic_family.classical_p_values(X, y)
+        assert pvals.shape == (X.shape[1],)
+
+    def test_range(self, logistic_family, logistic_data):
+        X, y = logistic_data
+        pvals = logistic_family.classical_p_values(X, y)
+        assert np.all(pvals >= 0.0)
+        assert np.all(pvals <= 1.0)
+
+    def test_significant_predictor(self, logistic_family, logistic_data):
+        X, y = logistic_data
+        pvals = logistic_family.classical_p_values(X, y)
+        # x1 has true coef 2.0 — should be highly significant
+        assert pvals[0] < 0.01
+
+
+# ------------------------------------------------------------------ #
+# batch_fit (logistic)
+# ------------------------------------------------------------------ #
+
+
+class TestLogisticBatchFit:
+    def test_shape(self, logistic_family, logistic_data, rng):
+        X, y = logistic_data
+        B = 10
+        Y_matrix = np.tile(y, (B, 1))
+        for i in range(B):
+            rng.shuffle(Y_matrix[i])
+        coefs = logistic_family.batch_fit(X, Y_matrix, fit_intercept=True)
+        assert coefs.shape == (B, X.shape[1])
+
+    def test_unpermuted_row_matches_single_fit(self, logistic_family, logistic_data):
+        X, y = logistic_data
+        Y_matrix = y.reshape(1, -1)
+        batch_coefs = logistic_family.batch_fit(X, Y_matrix, fit_intercept=True)
+        model = logistic_family.fit(X, y, fit_intercept=True)
+        single_coefs = logistic_family.coefs(model)
+        np.testing.assert_allclose(batch_coefs[0], single_coefs, atol=0.1)
+
+
+# ------------------------------------------------------------------ #
+# Registry (logistic additions)
+# ------------------------------------------------------------------ #
+
+
+class TestLogisticRegistry:
+    def test_logistic_registered(self):
+        fam = resolve_family("logistic", np.array([0.0, 1.0]))
+        assert isinstance(fam, LogisticFamily)
+
+    def test_auto_binary(self):
+        y = np.array([0, 1, 0, 1, 1, 0, 0, 1], dtype=float)
+        fam = resolve_family("auto", y)
+        assert isinstance(fam, LogisticFamily)
+
+    def test_frozen_dataclass(self, logistic_family):
+        with pytest.raises(AttributeError):
+            logistic_family.name = "other"  # type: ignore[misc]

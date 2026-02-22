@@ -38,8 +38,14 @@ from typing import Any, Protocol, runtime_checkable
 
 import numpy as np
 import statsmodels.api as sm
-from sklearn.linear_model import LinearRegression
-from sklearn.metrics import mean_squared_error
+from sklearn.linear_model import LinearRegression, LogisticRegression
+from sklearn.metrics import log_loss, mean_squared_error
+from statsmodels.tools.sm_exceptions import (
+    ConvergenceWarning as SmConvergenceWarning,
+)
+from statsmodels.tools.sm_exceptions import (
+    PerfectSeparationWarning,
+)
 
 # ------------------------------------------------------------------ #
 # ModelFamily protocol
@@ -553,6 +559,321 @@ class LinearFamily:
 
 
 # ------------------------------------------------------------------ #
+# LogisticFamily
+# ------------------------------------------------------------------ #
+#
+# Logistic regression models binary outcomes Y ∈ {0, 1} via the
+# logistic (sigmoid) link function:
+#
+#   P(Y = 1 | X) = σ(Xβ) = 1 / (1 + exp(−Xβ))
+#
+# There is no closed-form solution — fitting requires iterative
+# optimisation (Newton–Raphson, L-BFGS, etc.).  This has two major
+# implications for the permutation framework:
+#
+# 1. **Residuals are on the probability scale**: e = Y − P̂(Y=1|X).
+#    These range from (−1, 0) when Y=0 and (0, +1) when Y=1,
+#    unlike OLS residuals which span the full real line.  Permuting
+#    them and adding back to P̂ can produce values outside [0, 1],
+#    so we clip to [0.001, 0.999] before reconstruction.
+#
+# 2. **Reconstruction requires Bernoulli sampling**: after clipping,
+#    Y* ~ Bernoulli(clip(P̂ + π(e))).  This stochastic step
+#    converts the continuous permuted probability back to a valid
+#    binary outcome.  Without it, the refitted logistic model would
+#    receive non-binary Y, which violates the likelihood.
+#
+# **Joint-test metric** is deviance = 2 × binary cross-entropy
+# (unnormalised).  The test statistic Deviance_reduced − Deviance_full
+# measures how much the tested features improve fit, analogous to
+# the likelihood-ratio test in classical GLM theory.
+#
+# **Batch fitting** is the performance bottleneck.  Each of the B
+# permutations requires a fresh Newton–Raphson solve.  When JAX is
+# available, ``jax.vmap`` vectorises all B solves into a single XLA
+# kernel launch (GPU-acceleratable).  The NumPy fallback loops over
+# B sklearn fits — correct but ~100× slower for large B.
+#
+# **Diagnostics** use statsmodels ``Logit`` for McFadden's pseudo-R²,
+# log-likelihood, LLR test, AIC, and BIC.  Classical p-values come
+# from the Wald z-test (asymptotic normality of the MLE), which can
+# be unreliable with small samples or quasi-complete separation —
+# precisely the situations where the permutation test adds value.
+
+
+@dataclass(frozen=True)
+class LogisticFamily:
+    """Logistic regression family for binary outcomes.
+
+    Implements the ``ModelFamily`` protocol for binary Y ∈ {0, 1}
+    using maximum-likelihood logistic regression.  Residuals are on
+    the probability scale (``Y − P̂``), reconstruction uses Bernoulli
+    sampling, and the joint-test metric is deviance.
+
+    The class is stateless — all data flows through method arguments.
+    ``batch_fit`` delegates to the active backend (sklearn loop or
+    JAX ``vmap``'d Newton–Raphson).
+    """
+
+    @property
+    def name(self) -> str:
+        return "logistic"
+
+    @property
+    def residual_type(self) -> str:
+        return "probability"
+
+    @property
+    def direct_permutation(self) -> bool:
+        return False
+
+    # ---- Validation ------------------------------------------------
+    #
+    # Logistic regression requires exactly two classes, coded as 0/1.
+    # Other binary encodings (−1/+1, "yes"/"no") must be recoded
+    # before reaching this point.  A single-class Y is degenerate —
+    # the MLE does not exist because the log-likelihood is flat.
+
+    def validate_y(self, y: np.ndarray) -> None:
+        """Check that *y* is binary with values in {0, 1}."""
+        unique = np.unique(y)
+        if not (len(unique) == 2 and np.all(np.isin(unique, [0, 1]))):
+            msg = (
+                "LogisticFamily requires binary Y with exactly two "
+                "unique values in {0, 1}."
+            )
+            raise ValueError(msg)
+
+    # ---- Single-model operations -----------------------------------
+    #
+    # These methods wrap sklearn's LogisticRegression with
+    # ``penalty=None`` (unregularised MLE) and ``solver='lbfgs'``.
+    # The max_iter=5000 default gives the L-BFGS solver ample room
+    # to converge even on ill-conditioned designs.  For the hot-loop
+    # batch path, the JAX Newton–Raphson solver (with damping and
+    # float64) is used instead — these single-model methods are only
+    # called once on the observed data.
+
+    def fit(
+        self,
+        X: np.ndarray,
+        y: np.ndarray,
+        fit_intercept: bool = True,
+    ) -> Any:
+        """Fit a logistic model via sklearn ``LogisticRegression``.
+
+        Uses unregularised MLE (``penalty=None``) so that
+        coefficients are comparable to the statsmodels Wald test.
+        """
+        model = LogisticRegression(
+            penalty=None,
+            solver="lbfgs",
+            max_iter=5_000,
+            fit_intercept=fit_intercept,
+        )
+        model.fit(X, y)
+        return model
+
+    def predict(self, model: Any, X: np.ndarray) -> np.ndarray:
+        """Return predicted probabilities ``P̂(Y=1|X)``.
+
+        For logistic models, "prediction" is the probability of the
+        positive class, not the hard label.  This is what the
+        residual and reconstruction methods expect.
+        """
+        # predict_proba returns shape (n, 2); column 1 is P(Y=1).
+        return np.asarray(model.predict_proba(X)[:, 1])  # shape: (n,)
+
+    def coefs(self, model: Any) -> np.ndarray:
+        """Extract slope coefficients (intercept excluded).
+
+        ``model.coef_`` is shape (1, p) for binary classification;
+        ``flatten`` normalises to (p,).
+        """
+        return np.ravel(model.coef_)  # shape: (p,)
+
+    def residuals(self, model: Any, X: np.ndarray, y: np.ndarray) -> np.ndarray:
+        """Probability-scale residuals: ``e = Y − P̂(Y=1|X)``.
+
+        These range from (−1, 0) when Y=0 and (0, +1) when Y=1.
+        Unlike OLS raw residuals, they do NOT sum to zero in general
+        (the score equation for logistic regression is
+        Σ(yᵢ − p̂ᵢ)xᵢ = 0, not Σ(yᵢ − p̂ᵢ) = 0 unless there is
+        an intercept and X contains a constant column).
+        """
+        return np.asarray(y - self.predict(model, X))  # shape: (n,)
+
+    # ---- Permutation helpers ---------------------------------------
+    #
+    # The logistic reconstruction pipeline has three stages:
+    #   1. Add permuted residuals to reduced-model predictions.
+    #   2. Clip to [0.001, 0.999] to avoid log(0) in the refit.
+    #   3. Draw Y* ~ Bernoulli(clipped probability).
+    #
+    # The clip bounds are deliberately not [0, 1] because exact 0/1
+    # probabilities cause infinite log-odds, which makes the
+    # Newton–Raphson solver diverge immediately.
+
+    def reconstruct_y(
+        self,
+        predictions: np.ndarray,
+        permuted_residuals: np.ndarray,
+        rng: np.random.Generator,
+    ) -> np.ndarray:
+        """Clip + Bernoulli reconstruction for binary outcomes.
+
+        Steps:
+          1. ``p* = clip(P̂ + π(e), 0.001, 0.999)``
+          2. ``Y* ~ Bernoulli(p*)``
+
+        *rng* is required — unlike the linear family, logistic
+        reconstruction is stochastic.
+        """
+        # Stage 1-2: clipped probability.
+        probs = np.clip(
+            predictions + permuted_residuals, 0.001, 0.999
+        )  # shape: (B, n) or (n,)
+        # Stage 3: Bernoulli draw — each element of Y* is an
+        # independent coin flip with probability p*.
+        return np.asarray(rng.binomial(1, probs))  # shape: same as probs
+
+    def fit_metric(
+        self,
+        y_true: np.ndarray,
+        y_pred: np.ndarray,
+    ) -> float:
+        """Deviance: ``2 × binary cross-entropy (unnormalised)``.
+
+        Deviance = −2 Σ[yᵢ log p̂ᵢ + (1−yᵢ) log(1−p̂ᵢ)]
+
+        This is the logistic analogue of RSS — the quantity that MLE
+        minimises (up to a constant).  The joint test uses
+        Deviance_reduced − Deviance_full as its test statistic,
+        mirroring the likelihood-ratio test.
+
+        ``y_pred`` is clipped to [0.001, 0.999] to avoid log(0).
+        """
+        # Clip predictions to avoid log(0) / inf in cross-entropy.
+        y_pred_safe = np.clip(y_pred, 0.001, 0.999)
+        return float(2.0 * log_loss(y_true, y_pred_safe, normalize=False))
+
+    # ---- Diagnostics & classical inference -------------------------
+    #
+    # Logistic diagnostics use statsmodels ``Logit``, which provides:
+    #
+    #   Pseudo R² — McFadden's R² = 1 − ℓ(model)/ℓ(null).
+    #     Unlike linear R², this is NOT bounded above by 1 in
+    #     practice.  Values of 0.2–0.4 are considered excellent fit
+    #     for discrete-choice models (McFadden, 1977).
+    #
+    #   Log-likelihood — ℓ(model) and ℓ(null) for the intercept-only
+    #     model.  The difference drives the LLR test.
+    #
+    #   LLR p-value — likelihood-ratio test: −2[ℓ(null) − ℓ(model)]
+    #     ~ χ²(p) under H₀.  This is the logistic analogue of the
+    #     F-test in OLS.
+    #
+    #   AIC / BIC — information criteria for model comparison.
+    #
+    # Classical p-values come from the Wald z-test:
+    #   z_j = β̂_j / SE(β̂_j),   p = 2·P(|Z| > |z_j|)
+    # where SE is derived from the observed Fisher information
+    # (inverse Hessian of the log-likelihood).  These assume
+    # asymptotic normality of the MLE — unreliable with small n,
+    # rare events, or quasi-complete separation.
+
+    def diagnostics(
+        self,
+        X: np.ndarray,
+        y: np.ndarray,
+        fit_intercept: bool = True,
+    ) -> dict[str, Any]:
+        """Logistic diagnostics via statsmodels (pseudo-R², LLR, AIC, BIC).
+
+        When *fit_intercept* is True, ``sm.add_constant`` prepends a
+        column of ones so that statsmodels estimates the same model as
+        sklearn's ``LogisticRegression(fit_intercept=True)``.
+        """
+        X_sm = sm.add_constant(X) if fit_intercept else np.asarray(X)
+        # disp=0 suppresses the iteration log that statsmodels prints
+        # by default for iterative MLE solvers.
+        sm_model = sm.Logit(y, X_sm).fit(disp=0)
+        return {
+            "n_observations": len(y),
+            "n_features": X.shape[1],
+            "pseudo_r_squared": np.round(sm_model.prsquared, 4),
+            "log_likelihood": np.round(sm_model.llf, 4),
+            "log_likelihood_null": np.round(sm_model.llnull, 4),
+            "llr_p_value": sm_model.llr_pvalue,
+            "aic": np.round(sm_model.aic, 4),
+            "bic": np.round(sm_model.bic, 4),
+        }
+
+    def classical_p_values(
+        self,
+        X: np.ndarray,
+        y: np.ndarray,
+        fit_intercept: bool = True,
+    ) -> np.ndarray:
+        """Asymptotic Wald z-test p-values via statsmodels Logit.
+
+        Returns one p-value per slope coefficient (intercept excluded).
+        PerfectSeparationWarning and ConvergenceWarning are suppressed
+        — the permutation p-value is the primary inference tool.
+        """
+        X_sm = sm.add_constant(X) if fit_intercept else np.asarray(X)
+        with warnings.catch_warnings():
+            # Quasi-complete separation inflates SEs to infinity,
+            # making Wald p-values meaningless.  Suppress the warning
+            # because the user relies on permutation p-values.
+            warnings.filterwarnings("ignore", category=SmConvergenceWarning)
+            warnings.filterwarnings("ignore", category=PerfectSeparationWarning)
+            warnings.filterwarnings("ignore", category=RuntimeWarning)
+            sm_model = sm.Logit(y, X_sm).fit(disp=0)
+        # sm_model.pvalues includes the intercept at index 0 when
+        # fit_intercept is True; strip it to match the protocol contract.
+        pvals = sm_model.pvalues[1:] if fit_intercept else sm_model.pvalues
+        return np.asarray(pvals)  # shape: (p,)
+
+    # ---- Batch fitting (hot loop) ----------------------------------
+    #
+    # Unlike OLS, logistic batch fitting requires B independent
+    # Newton–Raphson solves — there is no pseudoinverse shortcut.
+    #
+    # Backend dispatch:
+    #   NumPy: sequential sklearn loop, ~1 fit/ms per permutation.
+    #   JAX:   vmap'd Newton–Raphson with jit compilation and
+    #          optional GPU execution.  All B solves run as a single
+    #          XLA kernel.  Float64, damped Hessian, triple
+    #          convergence criteria.  See ``_backends/_jax.py``.
+    #
+    # kwargs forwarded to the backend:
+    #   max_iter (int)  — Newton–Raphson iteration cap (default 100).
+    #   tol (float)     — convergence tolerance (default 1e-8).
+
+    def batch_fit(
+        self,
+        X: np.ndarray,
+        Y_matrix: np.ndarray,
+        fit_intercept: bool,
+        **kwargs: Any,
+    ) -> np.ndarray:
+        """Batch logistic via the active backend.
+
+        Delegates to ``backend.batch_logistic()`` for the shared-X
+        case (ter Braak: same X, many permuted Y vectors).
+        """
+        from ._backends import resolve_backend
+
+        backend = kwargs.pop("backend", None)
+        if backend is None:
+            backend = resolve_backend()
+        return np.asarray(
+            backend.batch_logistic(X, Y_matrix, fit_intercept=fit_intercept, **kwargs)
+        )
+
+
+# ------------------------------------------------------------------ #
 # Family resolution
 # ------------------------------------------------------------------ #
 #
@@ -635,3 +956,4 @@ def resolve_family(family: str, y: np.ndarray) -> ModelFamily:
 # ------------------------------------------------------------------ #
 
 register_family("linear", LinearFamily)
+register_family("logistic", LogisticFamily)
