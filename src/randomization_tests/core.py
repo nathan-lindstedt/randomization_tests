@@ -865,19 +865,22 @@ def permutation_test_regression(
     confounders: list[str] | None = None,
     random_state: int | None = None,
     fit_intercept: bool = True,
+    family: str = "auto",
 ) -> dict:
     """Run a permutation test for regression coefficients.
 
-    Automatically detects binary vs. continuous outcomes and uses
-    logistic or linear regression accordingly.
+    By default (``family="auto"``), detects binary vs. continuous
+    outcomes and selects logistic or linear regression accordingly.
+    Pass an explicit family string (``"linear"``, ``"logistic"``) to
+    override auto-detection.
 
     Args:
         X: Feature matrix of shape ``(n_samples, n_features)``.
             Accepts pandas or Polars DataFrames.
-        y: Target values of shape ``(n_samples,)``.  Binary targets
-            (values in ``{0, 1}``) trigger logistic regression;
-            otherwise linear regression is used.  Accepts pandas or
-            Polars DataFrames.
+        y: Target values of shape ``(n_samples,)``.  When
+            ``family="auto"``, binary targets (values in ``{0, 1}``)
+            trigger logistic regression; otherwise linear regression
+            is used.  Accepts pandas or Polars DataFrames.
         n_permutations: Number of unique permutations.
         precision: Decimal places for reported p-values.
         p_value_threshold_one: First significance level.
@@ -895,13 +898,21 @@ def permutation_test_regression(
             ``False`` when integrating with a scikit-learn pipeline
             that has already centred or otherwise pre-processed the
             features.
+        family: Model family string.  ``"auto"`` (default) detects
+            binary {0, 1} targets → logistic, otherwise linear.
+            Explicit values (``"linear"``, ``"logistic"``) bypass
+            auto-detection and are validated against the response
+            via the family's ``validate_y()`` method.
 
     Returns:
         Dictionary containing coefficients, p-values, diagnostics, and
-        method metadata.
+        method metadata.  Includes ``"model_type"`` set to the
+        resolved family name (e.g. ``"linear"`` or ``"logistic"``).
 
     Raises:
-        ValueError: If *method* is not one of the recognised options.
+        ValueError: If *method* is not one of the recognised options,
+            if *family* is unknown, or if *y* fails the family's
+            ``validate_y()`` check.
 
     References:
         * ter Braak, C. J. F. (1992). Permutation versus bootstrap
@@ -986,16 +997,25 @@ def permutation_test_regression(
     # ---- Family resolution ------------------------------------------------
     # Resolve the model family via the registry.  "auto" inspects Y for
     # binary {0, 1} values and selects logistic; otherwise linear.
+    # Explicit family strings (e.g. "linear", "logistic") bypass
+    # auto-detection and map directly to the registered class.
     # The family object encapsulates all model-specific operations so
     # that the dispatch below is family-agnostic wherever possible.
-    family = resolve_family("auto", y_values)
-    is_binary = family.name == "logistic"
+    resolved = resolve_family(family, y_values)
+    is_binary = resolved.name == "logistic"
+
+    # Validate Y against the resolved family's constraints.
+    # For "auto" this is a no-op (auto-detection already chose the
+    # right family).  For explicit families it catches mismatches
+    # early — e.g. passing continuous Y with family="logistic".
+    if family != "auto":
+        resolved.validate_y(y_values)
 
     # Fit the observed (unpermuted) model to get the original
     # coefficients β̂.  These are the test statistics that will be
     # compared against the permutation null distribution.
-    observed_model = family.fit(X.values.astype(float), y_values, fit_intercept)
-    model_coefs = family.coefs(observed_model)
+    observed_model = resolved.fit(X.values.astype(float), y_values, fit_intercept)
+    model_coefs = resolved.coefs(observed_model)
 
     # Model diagnostics (R², AIC, BIC, etc.) via the family's
     # statsmodels adapter.  Wrapped in try/except because statsmodels
@@ -1004,7 +1024,7 @@ def permutation_test_regression(
         with warnings.catch_warnings():
             warnings.filterwarnings("ignore", category=SmConvergenceWarning)
             warnings.filterwarnings("ignore", category=PerfectSeparationWarning)
-            diagnostics = family.diagnostics(
+            diagnostics = resolved.diagnostics(
                 X.values.astype(float), y_values, fit_intercept
             )
     except Exception:
@@ -1100,7 +1120,7 @@ def permutation_test_regression(
             "p_value": p_value,
             "p_value_str": p_value_str,
             "metric_type": metric_type,
-            "model_type": family.name,
+            "model_type": resolved.name,
             "features_tested": features_tested,
             "confounders": confounders,
             "p_value_threshold_one": p_value_threshold_one,
@@ -1166,7 +1186,7 @@ def permutation_test_regression(
         "p_value_threshold_two": p_value_threshold_two,
         "method": method,
         "confounders": confounders,
-        "model_type": family.name,
+        "model_type": resolved.name,
         "diagnostics": diagnostics,
         "extended_diagnostics": extended_diagnostics,
     }

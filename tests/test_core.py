@@ -344,3 +344,191 @@ class TestFitInterceptFalse:
         coefs_with = np.array(res_with["model_coefs"])
         coefs_without = np.array(res_without["model_coefs"])
         assert not np.allclose(coefs_with, coefs_without, atol=1e-6)
+
+
+class TestFamilyParameter:
+    """Verify that the ``family`` parameter on
+    ``permutation_test_regression`` controls model selection correctly
+    and that ``validate_y`` is enforced for explicit families."""
+
+    # ---- Explicit family matches data → success ----
+
+    def test_explicit_linear_with_continuous_y(self):
+        """Passing family='linear' with continuous Y should produce
+        a linear result identical to auto-detection."""
+        X, y = _make_linear_data()
+        result = permutation_test_regression(
+            X,
+            y,
+            n_permutations=50,
+            method="ter_braak",
+            random_state=42,
+            family="linear",
+        )
+        assert result["model_type"] == "linear"
+        assert len(result["model_coefs"]) == 3
+
+    def test_explicit_logistic_with_binary_y(self):
+        """Passing family='logistic' with binary Y should produce
+        a logistic result identical to auto-detection."""
+        X, y = _make_binary_data()
+        result = permutation_test_regression(
+            X,
+            y,
+            n_permutations=50,
+            method="ter_braak",
+            random_state=42,
+            family="logistic",
+        )
+        assert result["model_type"] == "logistic"
+        assert len(result["model_coefs"]) == 2
+
+    def test_auto_selects_linear_for_continuous(self):
+        """Default family='auto' should resolve to linear for
+        continuous Y."""
+        X, y = _make_linear_data()
+        result = permutation_test_regression(
+            X,
+            y,
+            n_permutations=50,
+            method="ter_braak",
+            random_state=42,
+            family="auto",
+        )
+        assert result["model_type"] == "linear"
+
+    def test_auto_selects_logistic_for_binary(self):
+        """Default family='auto' should resolve to logistic for
+        binary {0, 1} Y."""
+        X, y = _make_binary_data()
+        result = permutation_test_regression(
+            X,
+            y,
+            n_permutations=50,
+            method="ter_braak",
+            random_state=42,
+            family="auto",
+        )
+        assert result["model_type"] == "logistic"
+
+    # ---- Explicit family vs data mismatch → validate_y error ----
+
+    def test_logistic_family_with_continuous_y_raises(self):
+        """Explicit family='logistic' with continuous Y should fail
+        the family's validate_y check."""
+        X, y = _make_linear_data()
+        with pytest.raises(ValueError, match="binary"):
+            permutation_test_regression(
+                X,
+                y,
+                n_permutations=50,
+                family="logistic",
+            )
+
+    def test_linear_family_with_constant_y_raises(self):
+        """Explicit family='linear' with constant Y should fail
+        the family's validate_y check (zero variance)."""
+        X, _ = _make_linear_data()
+        y_const = pd.DataFrame({"y": np.ones(len(X))})
+        with pytest.raises(ValueError, match="non-constant"):
+            permutation_test_regression(
+                X,
+                y_const,
+                n_permutations=50,
+                family="linear",
+            )
+
+    # ---- Unknown family string ----
+
+    def test_unknown_family_raises(self):
+        """An unrecognised family string should raise ValueError."""
+        X, y = _make_linear_data()
+        with pytest.raises(ValueError, match="Unknown family"):
+            permutation_test_regression(
+                X,
+                y,
+                n_permutations=50,
+                family="gamma",
+            )
+
+    # ---- Explicit family matches auto result ----
+
+    def test_explicit_linear_matches_auto(self):
+        """Explicit family='linear' should produce the same
+        coefficients as family='auto' on continuous data."""
+        X, y = _make_linear_data()
+        res_auto = permutation_test_regression(
+            X,
+            y,
+            n_permutations=50,
+            method="ter_braak",
+            random_state=42,
+            family="auto",
+        )
+        res_explicit = permutation_test_regression(
+            X,
+            y,
+            n_permutations=50,
+            method="ter_braak",
+            random_state=42,
+            family="linear",
+        )
+        np.testing.assert_array_equal(
+            res_auto["model_coefs"], res_explicit["model_coefs"]
+        )
+
+    def test_explicit_logistic_matches_auto(self):
+        """Explicit family='logistic' should produce the same
+        coefficients as family='auto' on binary data."""
+        X, y = _make_binary_data()
+        res_auto = permutation_test_regression(
+            X,
+            y,
+            n_permutations=50,
+            method="ter_braak",
+            random_state=42,
+            family="auto",
+        )
+        res_explicit = permutation_test_regression(
+            X,
+            y,
+            n_permutations=50,
+            method="ter_braak",
+            random_state=42,
+            family="logistic",
+        )
+        np.testing.assert_array_equal(
+            res_auto["model_coefs"], res_explicit["model_coefs"]
+        )
+
+    # ---- Kennedy methods with explicit family ----
+
+    def test_kennedy_with_explicit_family(self):
+        """Kennedy method should work with an explicit family."""
+        X, y = _make_linear_data()
+        result = permutation_test_regression(
+            X,
+            y,
+            n_permutations=50,
+            method="kennedy",
+            confounders=["x3"],
+            random_state=42,
+            family="linear",
+        )
+        assert result["model_type"] == "linear"
+        assert result["permuted_p_values"][2] == "N/A (confounder)"
+
+    def test_kennedy_joint_with_explicit_family(self):
+        """Kennedy joint method should work with an explicit family."""
+        X, y = _make_binary_data()
+        with pytest.warns(UserWarning, match="without confounders"):
+            result = permutation_test_regression(
+                X,
+                y,
+                n_permutations=50,
+                method="kennedy_joint",
+                random_state=42,
+                family="logistic",
+            )
+        assert result["model_type"] == "logistic"
+        assert "observed_improvement" in result
