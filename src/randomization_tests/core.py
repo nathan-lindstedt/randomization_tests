@@ -144,6 +144,7 @@ from ._jax import (
     use_jax as _use_jax,
 )
 from .diagnostics import compute_all_diagnostics
+from .families import resolve_family
 from .permutations import generate_unique_permutations
 from .pvalues import calculate_p_values
 
@@ -982,63 +983,35 @@ def permutation_test_regression(
             stacklevel=2,
         )
 
-    unique_y = np.unique(y_values)
-    # Auto-detect binary outcome: Y must contain exactly two unique
-    # values, both in {0, 1}.  This triggers logistic regression;
-    # otherwise OLS is used.
-    is_binary = bool((len(unique_y) == 2) and np.all(np.isin(unique_y, [0, 1])))
+    # ---- Family resolution ------------------------------------------------
+    # Resolve the model family via the registry.  "auto" inspects Y for
+    # binary {0, 1} values and selects logistic; otherwise linear.
+    # The family object encapsulates all model-specific operations so
+    # that the dispatch below is family-agnostic wherever possible.
+    family = resolve_family("auto", y_values)
+    is_binary = family.name == "logistic"
 
     # Fit the observed (unpermuted) model to get the original
     # coefficients β̂.  These are the test statistics that will be
     # compared against the permutation null distribution.
-    if is_binary:
-        model = LogisticRegression(
-            penalty=None,
-            solver="lbfgs",
-            max_iter=5_000,
-            fit_intercept=fit_intercept,
-        )
-    else:
-        model = LinearRegression(fit_intercept=fit_intercept)
+    observed_model = family.fit(X.values.astype(float), y_values, fit_intercept)
+    model_coefs = family.coefs(observed_model)
 
-    model.fit(X, y_values)
-    model_coefs = model.coef_.flatten() if is_binary else np.ravel(model.coef_)
-
-    # Model diagnostics (R², AIC, BIC, etc.) from statsmodels.
-    # Wrapped in a warnings context and try/except because statsmodels
-    # can emit ConvergenceWarning / PerfectSeparationWarning (promoted
-    # to errors by filterwarnings="error" in tests) on degenerate data.
+    # Model diagnostics (R², AIC, BIC, etc.) via the family's
+    # statsmodels adapter.  Wrapped in try/except because statsmodels
+    # can raise on degenerate data (perfect separation, rank deficiency).
     try:
         with warnings.catch_warnings():
             warnings.filterwarnings("ignore", category=SmConvergenceWarning)
             warnings.filterwarnings("ignore", category=PerfectSeparationWarning)
-            diagnostics = _compute_diagnostics(X, y_values, is_binary, fit_intercept)
+            diagnostics = family.diagnostics(
+                X.values.astype(float), y_values, fit_intercept
+            )
     except Exception:
         # Degenerate data — return NaN placeholders.
-        n_obs = len(y_values)
-        n_features = X.shape[1]
-        if is_binary:
-            diagnostics = {
-                "n_observations": n_obs,
-                "n_features": n_features,
-                "pseudo_r_squared": float("nan"),
-                "log_likelihood": float("nan"),
-                "log_likelihood_null": float("nan"),
-                "llr_p_value": float("nan"),
-                "aic": float("nan"),
-                "bic": float("nan"),
-            }
-        else:
-            diagnostics = {
-                "n_observations": n_obs,
-                "n_features": n_features,
-                "r_squared": float("nan"),
-                "r_squared_adj": float("nan"),
-                "f_statistic": float("nan"),
-                "f_p_value": float("nan"),
-                "aic": float("nan"),
-                "bic": float("nan"),
-            }
+        # The key structure must match the family's diagnostics() output
+        # so that the display module can render the table correctly.
+        diagnostics = _compute_diagnostics(X, y_values, is_binary, fit_intercept)
 
     # Pre-generate unique permutation indices.  This is done once and
     # shared across all features/methods, ensuring consistency and
@@ -1127,7 +1100,7 @@ def permutation_test_regression(
             "p_value": p_value,
             "p_value_str": p_value_str,
             "metric_type": metric_type,
-            "model_type": "logistic" if is_binary else "linear",
+            "model_type": family.name,
             "features_tested": features_tested,
             "confounders": confounders,
             "p_value_threshold_one": p_value_threshold_one,
@@ -1193,7 +1166,7 @@ def permutation_test_regression(
         "p_value_threshold_two": p_value_threshold_two,
         "method": method,
         "confounders": confounders,
-        "model_type": "logistic" if is_binary else "linear",
+        "model_type": family.name,
         "diagnostics": diagnostics,
         "extended_diagnostics": extended_diagnostics,
     }
