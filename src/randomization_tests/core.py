@@ -93,8 +93,7 @@ import warnings
 import numpy as np
 import pandas as pd
 import statsmodels.api as sm
-from sklearn.linear_model import LinearRegression, LogisticRegression
-from sklearn.metrics import log_loss, mean_squared_error
+from sklearn.linear_model import LinearRegression
 from statsmodels.tools.sm_exceptions import (
     ConvergenceWarning as SmConvergenceWarning,
 )
@@ -603,10 +602,22 @@ def _kennedy_joint(
     y_values: np.ndarray,
     confounders: list[str],
     perm_indices: np.ndarray,
-    is_binary: bool,
+    family: ModelFamily,
     fit_intercept: bool = True,
 ) -> tuple[float, np.ndarray, str, list[str]]:
-    """Kennedy joint test.
+    """Family-generic Kennedy joint test.
+
+    Replaces the former ``is_binary``-branched implementation with a
+    single code path that delegates model-specific operations to the
+    ``ModelFamily`` protocol:
+
+    * ``family.fit()`` / ``family.predict()`` for reduced and full
+      model fits.
+    * ``family.fit_metric()`` for the goodness-of-fit measure (RSS
+      for linear, deviance for logistic).
+
+    The exposure model (X_target regressed on Z) is always linear
+    regardless of the outcome family.
 
     Returns:
         A ``(obs_improvement, perm_improvements, metric_type,
@@ -614,32 +625,8 @@ def _kennedy_joint(
     """
     features_to_test = [c for c in X.columns if c not in confounders]
 
-    # Choose the fit metric based on the outcome type.
-    # Linear: RSS = MSE × n (lower is better → reduction = improvement).
-    # Logistic: Deviance = 2 × total binary cross-entropy (lower is better).
-    if is_binary:
-
-        def model_cls() -> LogisticRegression:
-            return LogisticRegression(
-                penalty=None,
-                solver="lbfgs",
-                max_iter=5_000,
-                fit_intercept=fit_intercept,
-            )
-
-        def get_metric(y_true: np.ndarray, y_pred: np.ndarray) -> float:
-            return float(2 * log_loss(y_true, y_pred, normalize=False))
-
-        metric_type = "Deviance Reduction"
-    else:
-
-        def model_cls() -> LinearRegression:
-            return LinearRegression(fit_intercept=fit_intercept)
-
-        def get_metric(y_true: np.ndarray, y_pred: np.ndarray) -> float:
-            return float(mean_squared_error(y_true, y_pred) * len(y_true))
-
-        metric_type = "RSS Reduction"
+    # Metric label for display — derived from family name.
+    metric_type = "Deviance Reduction" if family.name == "logistic" else "RSS Reduction"
 
     n_perm, n = perm_indices.shape
     X_target = X[features_to_test].values
@@ -653,39 +640,24 @@ def _kennedy_joint(
     # Under H₀, the non-confounder predictors add nothing, so the
     # reduced model represents the best fit achievable without them.
     if Z.shape[1] > 0:
-        reduced = model_cls().fit(Z, y_values)
-        preds_reduced = reduced.predict_proba(Z) if is_binary else reduced.predict(Z)
+        reduced_model = family.fit(Z, y_values, fit_intercept)
+        preds_reduced = family.predict(reduced_model, Z)
     else:
-        # No confounders: the "reduced model" is just the intercept
-        # (the grand mean for linear, the base rate for logistic) when
-        # fit_intercept is True.  When fit_intercept is False, the
-        # reduced model predicts zero for all observations.
+        # No confounders: the "reduced model" is the intercept-only
+        # prediction (grand mean for linear, base rate for logistic).
         if fit_intercept:
-            if is_binary:
-                mean_y = np.mean(y_values)
-                preds_reduced = np.column_stack(
-                    [1 - mean_y * np.ones(n), mean_y * np.ones(n)]
-                )
-            else:
-                preds_reduced = np.full(n, np.mean(y_values), dtype=float)
+            preds_reduced = np.full(n, np.mean(y_values), dtype=float)
         else:
-            if is_binary:
-                preds_reduced = np.column_stack([0.5 * np.ones(n), 0.5 * np.ones(n)])
-            else:
-                preds_reduced = np.zeros(n, dtype=float)
+            preds_reduced = np.zeros(n, dtype=float)
 
-    base_metric = get_metric(y_values, preds_reduced)
+    base_metric = family.fit_metric(y_values, preds_reduced)
 
     # --- Full model (confounders + predictors of interest) ---
     # The observed improvement is how much better the full model fits.
     full_features = np.hstack([X_target, Z]) if Z.shape[1] > 0 else X_target
-    full_model = model_cls().fit(full_features, y_values)
-    preds_full = (
-        full_model.predict_proba(full_features)
-        if is_binary
-        else full_model.predict(full_features)
-    )
-    obs_improvement = base_metric - get_metric(y_values, preds_full)
+    full_model = family.fit(full_features, y_values, fit_intercept)
+    preds_full = family.predict(full_model, full_features)
+    obs_improvement = base_metric - family.fit_metric(y_values, preds_full)
 
     # --- Exposure model residuals ---
     # Regress X_target on Z to get X̂ = Z·Γ̂ and residuals E = X_target - X̂.
@@ -711,13 +683,9 @@ def _kennedy_joint(
         # identically, preserving inter-predictor correlation structure.
         x_star = x_hat + x_resids[perm_indices[i]]
         perm_features = np.hstack([x_star, Z]) if Z.shape[1] > 0 else x_star
-        perm_model = model_cls().fit(perm_features, y_values)
-        perm_preds = (
-            perm_model.predict_proba(perm_features)
-            if is_binary
-            else perm_model.predict(perm_features)
-        )
-        perm_improvements[i] = base_metric - get_metric(y_values, perm_preds)
+        perm_model = family.fit(perm_features, y_values, fit_intercept)
+        perm_preds = family.predict(perm_model, perm_features)
+        perm_improvements[i] = base_metric - family.fit_metric(y_values, perm_preds)
 
     return obs_improvement, perm_improvements, metric_type, features_to_test
 
@@ -886,7 +854,6 @@ def permutation_test_regression(
     # The family object encapsulates all model-specific operations so
     # that the dispatch below is family-agnostic wherever possible.
     resolved = resolve_family(family, y_values)
-    is_binary = resolved.name == "logistic"
 
     # Validate Y against the resolved family's constraints.
     # For "auto" this is a no-op (auto-detection already chose the
@@ -930,7 +897,7 @@ def permutation_test_regression(
     # ---- Dispatch to method-specific engine ----
 
     if method == "ter_braak":
-        if is_binary and X.shape[1] == 1:
+        if resolved.name == "logistic" and X.shape[1] == 1:
             raise ValueError(
                 "ter Braak method with logistic regression requires at least "
                 "2 features because the reduced model (dropping the single "
@@ -963,7 +930,7 @@ def permutation_test_regression(
                 y_values,
                 confounders,
                 perm_indices,
-                is_binary,
+                resolved,
                 fit_intercept,
             )
         )
