@@ -28,11 +28,15 @@ This ensures:
 
 Classical (asymptotic) p-values
 -------------------------------
-For comparison, classical p-values are computed via statsmodels using
-Wald-type tests.  For OLS these are t-distribution-based; for logistic
-regression they are z-distribution-based (from the MLE information
-matrix).  These p-values depend on distributional assumptions that the
-permutation test avoids.
+When a ``ModelFamily`` instance is supplied, classical p-values are
+delegated to ``family.classical_p_values()``, which internally uses
+statsmodels (``OLS`` for linear, ``Logit`` for logistic).  This avoids
+re-detecting the outcome type and re-fitting the model.
+
+When no family is supplied (backward-compatible call), the function
+falls back to auto-detecting binary vs. continuous Y and fitting
+statsmodels directly — this path is retained for standalone use and
+test convenience.
 
 Reference:
     Phipson, B. & Smyth, G. K. (2010). Permutation p-values should
@@ -41,7 +45,10 @@ Reference:
     Biology*, 9(1), Article 39.
 """
 
+from __future__ import annotations
+
 import warnings
+from typing import TYPE_CHECKING
 
 import numpy as np
 import statsmodels.api as sm
@@ -54,21 +61,27 @@ from statsmodels.tools.sm_exceptions import (
 
 from ._compat import DataFrameLike, _ensure_pandas_df
 
+if TYPE_CHECKING:
+    from .families import ModelFamily
+
 
 def calculate_p_values(
-    X: "DataFrameLike",
-    y: "DataFrameLike",
+    X: DataFrameLike,
+    y: DataFrameLike,
     permuted_coefs: np.ndarray,
     model_coefs: np.ndarray,
     precision: int = 3,
     p_value_threshold_one: float = 0.05,
     p_value_threshold_two: float = 0.01,
     fit_intercept: bool = True,
+    *,
+    family: ModelFamily | None = None,
 ) -> tuple[list[str], list[str], np.ndarray, np.ndarray]:
     """Calculate empirical (permutation) and classical (asymptotic) p-values.
 
-    Automatically detects binary vs. continuous outcomes and uses logistic
-    or linear regression for the classical asymptotic p-values.
+    When *family* is provided, classical p-values are delegated to
+    ``family.classical_p_values()``.  Otherwise, falls back to
+    auto-detecting binary vs. continuous outcomes.
 
     The empirical p-values use the Phipson & Smyth (2010) correction:
     ``p = (b + 1) / (B + 1)`` where *b* is the count of permuted
@@ -92,6 +105,10 @@ def calculate_p_values(
             element of the resulting p-value array is skipped.  When
             False, the raw design matrix is used directly and all
             returned p-values correspond to the features.
+        family: Optional ``ModelFamily`` instance.  When provided,
+            classical p-values are computed via
+            ``family.classical_p_values()`` instead of re-fitting
+            statsmodels internally.
 
     Returns:
         A four-element tuple
@@ -108,29 +125,20 @@ def calculate_p_values(
     model_coefs = np.asarray(model_coefs)
 
     y_values = np.ravel(y)
-    unique_y = np.unique(y_values)
-    is_binary = (len(unique_y) == 2) and np.all(np.isin(unique_y, [0, 1]))
 
-    # --- Classical asymptotic p-values via statsmodels ---
-    # When fit_intercept is True, statsmodels expects an explicit
-    # intercept column added via sm.add_constant().  The returned
-    # p-values include [intercept, x1, …, xp] and we skip index 0.
-    # When fit_intercept is False, the raw design matrix is used and
-    # all returned p-values correspond directly to features.
-    #
-    # The warnings context suppresses PerfectSeparationWarning and
-    # ConvergenceWarning that statsmodels emits on degenerate data
-    # (e.g. perfect separation, rank-deficient designs).  These
-    # are informational — the MLE may be unreliable, but the
-    # classical p-values are secondary to the permutation p-values.
-    X_sm = sm.add_constant(X) if fit_intercept else np.asarray(X)
-    with warnings.catch_warnings():
-        warnings.filterwarnings("ignore", category=SmConvergenceWarning)
-        warnings.filterwarnings("ignore", category=PerfectSeparationWarning)
-        if is_binary:
-            sm_model = sm.Logit(y_values, X_sm).fit(disp=0)
-        else:
-            sm_model = sm.OLS(y_values, X_sm).fit()
+    # --- Classical asymptotic p-values ---
+    # Prefer the family's classical_p_values() when available — it
+    # already encapsulates the correct statsmodels model and warning
+    # suppression.  Fall back to auto-detection for standalone calls
+    # (e.g. from tests that don't construct a family).
+    if family is not None:
+        raw_classic_p = family.classical_p_values(
+            np.asarray(X), y_values, fit_intercept
+        )
+    else:
+        raw_classic_p = _classical_p_values_fallback(
+            np.asarray(X), y_values, fit_intercept
+        )
 
     # --- Vectorised empirical p-values (Phipson & Smyth correction) ---
     # For each feature j, count how many of the B permuted |β*_j| values
@@ -164,11 +172,39 @@ def calculate_p_values(
         return f"{val} (ns)"
 
     permuted_p_values = [_fmt(p) for p in raw_p]
-    # When fit_intercept is True, sm_model.pvalues[0] is the intercept
-    # — skip it.  When False, all p-values correspond to features.
-    raw_classic_p = np.asarray(
-        sm_model.pvalues[1:] if fit_intercept else sm_model.pvalues
-    )
     classic_p_values = [_fmt(p) for p in raw_classic_p]
 
     return permuted_p_values, classic_p_values, raw_p, raw_classic_p
+
+
+# ------------------------------------------------------------------ #
+# Fallback: auto-detect binary vs. continuous and fit statsmodels
+# ------------------------------------------------------------------ #
+
+
+def _classical_p_values_fallback(
+    X: np.ndarray,
+    y_values: np.ndarray,
+    fit_intercept: bool,
+) -> np.ndarray:
+    """Compute classical p-values without a ``ModelFamily`` instance.
+
+    Auto-detects binary (logistic) vs. continuous (OLS) outcomes and
+    fits the appropriate statsmodels model.  Used when
+    ``calculate_p_values`` is called without a ``family`` argument
+    (e.g. from standalone tests).
+    """
+    unique_y = np.unique(y_values)
+    is_binary = (len(unique_y) == 2) and np.all(np.isin(unique_y, [0, 1]))
+
+    X_sm = sm.add_constant(X) if fit_intercept else np.asarray(X)
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", category=SmConvergenceWarning)
+        warnings.filterwarnings("ignore", category=PerfectSeparationWarning)
+        if is_binary:
+            sm_model = sm.Logit(y_values, X_sm).fit(disp=0)
+        else:
+            sm_model = sm.OLS(y_values, X_sm).fit()
+
+    pvals = sm_model.pvalues[1:] if fit_intercept else sm_model.pvalues
+    return np.asarray(pvals)

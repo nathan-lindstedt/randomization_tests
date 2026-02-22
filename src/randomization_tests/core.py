@@ -981,6 +981,7 @@ def permutation_test_regression(
             p_value_threshold_one,
             p_value_threshold_two,
             fit_intercept=fit_intercept,
+            family=resolved,
         )
     )
 
