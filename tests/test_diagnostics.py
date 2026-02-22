@@ -73,19 +73,19 @@ class TestStandardizedCoefs:
     def test_linear_shape_matches_input(self):
         X, y = _make_linear_data()
         coefs = np.array([2.0, -1.0, 0.0])
-        result = compute_standardized_coefs(X, y, coefs, is_binary=False)
+        result = compute_standardized_coefs(X, y, coefs, model_type="linear")
         assert result.shape == (3,)
 
     def test_logistic_shape_matches_input(self):
         X, y = _make_binary_data()
         coefs = np.array([2.0, 0.0])
-        result = compute_standardized_coefs(X, y, coefs, is_binary=True)
+        result = compute_standardized_coefs(X, y, coefs, model_type="logistic")
         assert result.shape == (2,)
 
     def test_linear_scales_by_sd_ratio(self):
         X, y = _make_linear_data()
         coefs = np.array([2.0, -1.0, 0.0])
-        result = compute_standardized_coefs(X, y, coefs, is_binary=False)
+        result = compute_standardized_coefs(X, y, coefs, model_type="linear")
         sd_x = np.std(X.values, axis=0, ddof=1)
         sd_y = np.std(y, ddof=1)
         expected = coefs * sd_x / sd_y
@@ -94,7 +94,7 @@ class TestStandardizedCoefs:
     def test_logistic_scales_by_sd_x_only(self):
         X, y = _make_binary_data()
         coefs = np.array([2.0, 0.0])
-        result = compute_standardized_coefs(X, y, coefs, is_binary=True)
+        result = compute_standardized_coefs(X, y, coefs, model_type="logistic")
         sd_x = np.std(X.values, axis=0, ddof=1)
         expected = coefs * sd_x
         np.testing.assert_allclose(result, expected)
@@ -104,7 +104,7 @@ class TestStandardizedCoefs:
         X = pd.DataFrame({"x1": [1.0, 2.0, 3.0]})
         y = np.array([5.0, 5.0, 5.0])
         coefs = np.array([1.0])
-        result = compute_standardized_coefs(X, y, coefs, is_binary=False)
+        result = compute_standardized_coefs(X, y, coefs, model_type="linear")
         np.testing.assert_allclose(result, [0.0])
 
 
@@ -226,7 +226,7 @@ class TestDevianceResiduals:
 class TestCooksDistance:
     def test_linear_returns_expected_keys(self):
         X, y = _make_linear_data()
-        result = compute_cooks_distance(X, y, is_binary=False)
+        result = compute_cooks_distance(X, y, model_type="linear")
         assert "cooks_d" in result
         assert "n_influential" in result
         assert "threshold" in result
@@ -235,13 +235,13 @@ class TestCooksDistance:
 
     def test_logistic_returns_expected_keys(self):
         X, y = _make_binary_data()
-        result = compute_cooks_distance(X, y, is_binary=True)
+        result = compute_cooks_distance(X, y, model_type="logistic")
         assert "cooks_d" in result
         assert len(result["cooks_d"]) == len(y)
 
     def test_threshold_is_four_over_n(self):
         X, y = _make_linear_data(n=100)
-        result = compute_cooks_distance(X, y, is_binary=False)
+        result = compute_cooks_distance(X, y, model_type="linear")
         assert result["threshold"] == pytest.approx(4.0 / 100)
 
 
@@ -290,7 +290,7 @@ class TestComputeAllDiagnostics:
             X,
             y,
             coefs,
-            is_binary=False,
+            model_type="linear",
             raw_empirical_p=raw_emp,
             raw_classic_p=raw_cls,
             n_permutations=1000,
@@ -314,7 +314,7 @@ class TestComputeAllDiagnostics:
             X,
             y,
             coefs,
-            is_binary=True,
+            model_type="logistic",
             raw_empirical_p=raw_emp,
             raw_classic_p=raw_cls,
             n_permutations=1000,
@@ -335,7 +335,7 @@ class TestComputeAllDiagnostics:
             X,
             y,
             coefs,
-            is_binary=False,
+            model_type="linear",
             raw_empirical_p=raw_emp,
             raw_classic_p=raw_cls,
             n_permutations=1000,
@@ -529,7 +529,7 @@ class TestExposureRSquared:
             X=X,
             y_values=y,
             model_coefs=coefs,
-            is_binary=False,
+            model_type="linear",
             raw_empirical_p=raw_p,
             raw_classic_p=raw_p,
             n_permutations=100,
@@ -554,7 +554,7 @@ class TestExposureRSquared:
             X=X,
             y_values=y,
             model_coefs=coefs,
-            is_binary=False,
+            model_type="linear",
             raw_empirical_p=raw_p,
             raw_classic_p=raw_p,
             n_permutations=100,
@@ -577,7 +577,7 @@ class TestExposureRSquared:
             X=X,
             y_values=y,
             model_coefs=coefs,
-            is_binary=False,
+            model_type="linear",
             raw_empirical_p=raw_p,
             raw_classic_p=raw_p,
             n_permutations=100,

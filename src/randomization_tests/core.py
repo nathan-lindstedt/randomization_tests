@@ -240,7 +240,7 @@ def _batch_ols_coefs(
 def _compute_diagnostics(
     X: pd.DataFrame,
     y_values: np.ndarray,
-    is_binary: bool,
+    model_type: str,
     fit_intercept: bool = True,
 ) -> dict:
     """Compute model diagnostics via statsmodels.
@@ -251,8 +251,9 @@ def _compute_diagnostics(
     Args:
         X: Feature matrix.
         y_values: Response vector.
-        is_binary: Whether the response is binary (logistic) or
-            continuous (OLS).
+        model_type: Model family name (e.g. ``"linear"``,
+            ``"logistic"``).  Controls which statsmodels estimator
+            is used.
         fit_intercept: Whether to include an intercept term.  When
             True (default), ``sm.add_constant(X)`` is used.  When
             False, the raw design matrix is passed directly.
@@ -266,7 +267,7 @@ def _compute_diagnostics(
     n_features = X.shape[1]
     X_sm = sm.add_constant(X) if fit_intercept else np.asarray(X)
 
-    if is_binary:
+    if model_type == "logistic":
         sm_model = sm.Logit(y_values, X_sm).fit(disp=0)
         return {
             "n_observations": n_obs,
@@ -1031,7 +1032,7 @@ def permutation_test_regression(
         # Degenerate data — return NaN placeholders.
         # The key structure must match the family's diagnostics() output
         # so that the display module can render the table correctly.
-        diagnostics = _compute_diagnostics(X, y_values, is_binary, fit_intercept)
+        diagnostics = _compute_diagnostics(X, y_values, resolved.name, fit_intercept)
 
     # Pre-generate unique permutation indices.  This is done once and
     # shared across all features/methods, ensuring consistency and
@@ -1166,7 +1167,7 @@ def permutation_test_regression(
         X=X,
         y_values=y_values,
         model_coefs=model_coefs,
-        is_binary=is_binary,
+        model_type=resolved.name,
         raw_empirical_p=raw_empirical_p,
         raw_classic_p=raw_classic_p,
         n_permutations=n_permutations,

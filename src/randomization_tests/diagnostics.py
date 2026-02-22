@@ -110,7 +110,7 @@ def compute_standardized_coefs(
     X: pd.DataFrame,
     y_values: np.ndarray,
     model_coefs: np.ndarray,
-    is_binary: bool,
+    model_type: str = "linear",
 ) -> np.ndarray:
     """Compute standardized (beta-weight) coefficients.
 
@@ -121,7 +121,8 @@ def compute_standardized_coefs(
         X: Feature matrix.
         y_values: Response vector.
         model_coefs: Raw coefficients, shape ``(n_features,)``.
-        is_binary: Whether the outcome is binary.
+        model_type: Model family name (e.g. ``"linear"``,
+            ``"logistic"``).  Controls the standardisation formula.
 
     Returns:
         Array of standardized coefficients, shape ``(n_features,)``.
@@ -130,7 +131,7 @@ def compute_standardized_coefs(
     # of each column of X.  Shape: (n_features,).
     sd_x = np.std(X.values, axis=0, ddof=1)
 
-    if is_binary:
+    if model_type == "logistic":
         # Logistic: β* = β · SD(X_j)
         # The coefficient β_j is in log-odds units; multiplying by
         # SD(X_j) gives the log-odds change per one-SD increase in
@@ -492,7 +493,7 @@ def _runs_test(binary_seq: np.ndarray) -> tuple[float, float]:
 def compute_cooks_distance(
     X: pd.DataFrame,
     y_values: np.ndarray,
-    is_binary: bool,
+    model_type: str = "linear",
 ) -> dict:
     """Compute Cook's distance and flag influential observations.
 
@@ -513,7 +514,9 @@ def compute_cooks_distance(
     Args:
         X: Feature matrix.
         y_values: Response vector.
-        is_binary: Whether the outcome is binary.
+        model_type: Model family name (e.g. ``"linear"``,
+            ``"logistic"``).  Controls whether OLS or GLM Cook's D
+            is computed.
 
     Returns:
         Dictionary with ``cooks_d`` (array), ``n_influential`` (count
@@ -534,7 +537,7 @@ def compute_cooks_distance(
     # trigger index-alignment broadcasts.
     y_values = np.asarray(y_values)
 
-    if is_binary:
+    if model_type == "logistic":
         # --- Logistic: GLM Cook's D via statsmodels ---
         #
         # We delegate to statsmodels GLMInfluence rather than computing
@@ -769,7 +772,8 @@ def compute_all_diagnostics(
     X: pd.DataFrame,
     y_values: np.ndarray,
     model_coefs: np.ndarray,
-    is_binary: bool,
+    model_type: str = "linear",
+    *,
     raw_empirical_p: np.ndarray,
     raw_classic_p: np.ndarray,
     n_permutations: int,
@@ -784,7 +788,9 @@ def compute_all_diagnostics(
         X: Feature matrix.
         y_values: Response vector.
         model_coefs: Raw coefficients, shape ``(n_features,)``.
-        is_binary: Whether the outcome is binary.
+        model_type: Model family name (e.g. ``"linear"``,
+            ``"logistic"``).  Replaces the former ``is_binary``
+            flag to support arbitrary family extensions.
         raw_empirical_p: Numeric empirical p-values.
         raw_classic_p: Numeric classical p-values.
         n_permutations: Number of permutations (B).
@@ -814,7 +820,7 @@ def compute_all_diagnostics(
         X,
         y_values,
         model_coefs,
-        is_binary,
+        model_type,
     ).tolist()
 
     result["vif"] = compute_vif(X).tolist()
@@ -832,7 +838,7 @@ def compute_all_diagnostics(
 
     # ---- Model-level diagnostics ----
     # These check global assumptions (exchangeability, influence) and
-    # report a single summary per model.  The branch on is_binary
+    # report a single summary per model.  The branch on model_type
     # selects Breusch-Pagan (linear) vs. deviance residuals (logistic).
     #
     # Each block is wrapped in try/except because statsmodels can fail
@@ -841,7 +847,7 @@ def compute_all_diagnostics(
     # succeeds in these cases — only the post-hoc diagnostics break.
     # Graceful degradation returns NaN-filled sentinel dicts so the
     # rest of the results pipeline is unaffected.
-    if is_binary:
+    if model_type == "logistic":
         try:
             with warnings.catch_warnings():
                 warnings.filterwarnings(
@@ -897,7 +903,7 @@ def compute_all_diagnostics(
                 "ignore",
                 category=PerfectSeparationWarning,
             )
-            result["cooks_distance"] = compute_cooks_distance(X, y_values, is_binary)
+            result["cooks_distance"] = compute_cooks_distance(X, y_values, model_type)
     except Exception as exc:
         logger.debug("Cook's distance diagnostics failed: %s", exc)
         n = len(y_values)
