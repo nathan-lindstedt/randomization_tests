@@ -322,6 +322,38 @@ class ModelFamily(Protocol):
 
 
 @dataclass(frozen=True)
+class _InterceptOnlyOLS:
+    """Lightweight stub for the intercept-only OLS model (0 features).
+
+    When the ter Braak engine drops the single column from a
+    one-feature dataset, the reduced design matrix has shape ``(n, 0)``.
+    sklearn's ``LinearRegression`` rejects that, so ``LinearFamily.fit``
+    returns this stub instead.
+
+    The stub exposes the same ``predict`` / ``coef_`` surface that
+    ``LinearFamily.predict``, ``LinearFamily.coefs``, and
+    ``LinearFamily.residuals`` rely on:
+
+    * ``predict(X)`` → constant vector of ``intercept_`` (or 0).
+    * ``coef_`` → empty 1-D array.
+    """
+
+    intercept_: float
+    coef_: np.ndarray  # always shape (0,)
+
+    def predict(self, X: np.ndarray) -> np.ndarray:  # noqa: ARG002
+        """Return a constant prediction vector (intercept only)."""
+        n = X.shape[0]
+        return np.full(n, self.intercept_)
+
+
+def _make_intercept_only_ols(y: np.ndarray, fit_intercept: bool) -> _InterceptOnlyOLS:
+    """Factory for the intercept-only OLS stub."""
+    intercept = float(np.mean(y)) if fit_intercept else 0.0
+    return _InterceptOnlyOLS(intercept_=intercept, coef_=np.empty(0))
+
+
+@dataclass(frozen=True)
 class LinearFamily:
     """OLS linear regression family.
 
@@ -381,7 +413,14 @@ class LinearFamily:
 
         Returns the fitted estimator object, which stores
         ``coef_`` (slopes) and ``intercept_`` internally.
+
+        When *X* has zero columns (intercept-only model, arising from
+        the ter Braak reduced fit on a single-feature dataset), a
+        lightweight stub is returned instead, since sklearn rejects
+        zero-feature arrays.
         """
+        if X.shape[1] == 0:
+            return _make_intercept_only_ols(y, fit_intercept)
         model = LinearRegression(fit_intercept=fit_intercept)
         model.fit(X, y)
         return model

@@ -137,14 +137,13 @@ from ._compat import DataFrameLike, _ensure_pandas_df
 # it into _jax.py keeps core.py focused on the permutation algorithms
 # and provides a clean extraction point for v0.3.0's _backends/ package.
 from ._jax import (
-    fit_logistic_batch_jax,
     fit_logistic_varying_X_jax,
 )
 from ._jax import (
     use_jax as _use_jax,
 )
 from .diagnostics import compute_all_diagnostics
-from .families import resolve_family
+from .families import ModelFamily, resolve_family
 from .permutations import generate_unique_permutations
 from .pvalues import calculate_p_values
 
@@ -326,22 +325,47 @@ def _compute_diagnostics(
 # full-model refits in a single matrix multiply via _batch_ols_coefs.
 
 
-def _ter_braak_linear(
+def _ter_braak_generic(
     X: pd.DataFrame,
     y_values: np.ndarray,
+    family: ModelFamily,
     perm_indices: np.ndarray,
     fit_intercept: bool = True,
 ) -> np.ndarray:
-    """Vectorised ter Braak for OLS.
+    """Family-generic ter Braak residual-permutation engine.
+
+    Replaces the former ``_ter_braak_linear`` and ``_ter_braak_logistic``
+    with a single code path that delegates all model-specific operations
+    to the ``ModelFamily`` protocol:
 
     For each feature *j*:
 
-    1. Fit reduced OLS model (drop column *j*) → predicted values +
-       residuals.
-    2. Build all *B* permuted Y vectors in one shot using fancy indexing.
-    3. Batch-compute full-model coefficients via pseudoinverse.
+    1. **Reduced model** — ``family.fit(X_{-j}, y)`` with column *j*
+       dropped.  Produces predictions via ``family.predict()`` and
+       residuals via ``family.residuals()``.
+
+    2. **Permute residuals** — fancy-index the residual vector with
+       ``perm_indices`` to obtain B permuted residual vectors at once.
+
+    3. **Reconstruct Y*** — ``family.reconstruct_y(preds, perm_resids, rng)``.
+       For linear families this is additive (Y* = ŷ + π(e)).
+       For logistic families it clips to [0.001, 0.999] then draws
+       Bernoulli(p*).
+
+    4. **Batch refit** — ``family.batch_fit(X, Y_perm, fit_intercept)``
+       computes all B full-model coefficient vectors in one call,
+       dispatching to the active backend (NumPy pseudoinverse for OLS,
+       JAX vmap'd Newton–Raphson for logistic).
+
+    This design means adding a new family (Poisson, ordinal, etc.)
+    requires zero changes here — only the family's protocol methods.
 
     Args:
+        X: Feature matrix as a pandas DataFrame.
+        y_values: Response vector of shape ``(n,)``.
+        family: Resolved ``ModelFamily`` instance.
+        perm_indices: Pre-generated permutation indices, shape
+            ``(B, n)``.
         fit_intercept: Whether to include an intercept in both the
             reduced and full model refits.  Must match the observed
             model so that coefficients are comparable.
@@ -354,124 +378,51 @@ def _ter_braak_linear(
     n_features = X_np.shape[1]
     result = np.zeros((n_perm, n_features))
 
-    for j in range(n_features):
-        # Step 1: Fit the reduced model Y ~ X_{-j}.
-        # Drop column j from the design matrix and compute OLS predictions.
-        # When fit_intercept is True, an intercept column is included so
-        # that the reduced-model coefficients live in the same parameter
-        # space as the sklearn observed coefficients.
-        X_red = np.delete(X_np, j, axis=1)
-        if fit_intercept:
-            X_red_aug = np.column_stack([np.ones(n), X_red])
-        else:
-            X_red_aug = X_red
-        pinv_red = np.linalg.pinv(X_red_aug)
-        preds_red = X_red_aug @ (pinv_red @ y_values)
-        resids_red = y_values - preds_red
-
-        # Step 2: Build all B permuted Y vectors simultaneously.
-        # perm_indices has shape (B, n); fancy-indexing resids_red
-        # gives a (B, n) matrix where each row is a permuted residual
-        # vector.  Adding the (unpermuted) reduced-model predictions
-        # yields Y* = ŷ_{-j} + π(e_{-j}) for all B permutations at once.
-        permuted_resids = resids_red[perm_indices]
-        Y_perm = preds_red[np.newaxis, :] + permuted_resids  # (B, n)
-
-        # Step 3: Batch OLS — compute β̂*_b = pinv(X) @ Y*_b for all b.
-        # _batch_ols_coefs returns shape (B, p); we extract column j.
-        all_coefs = _batch_ols_coefs(X_np, Y_perm, fit_intercept)  # (B, p)
-        result[:, j] = all_coefs[:, j]
-
-    return result
-
-
-def _ter_braak_logistic(
-    X: pd.DataFrame,
-    y_values: np.ndarray,
-    perm_indices: np.ndarray,
-    fit_intercept: bool = True,
-) -> np.ndarray:
-    """ter Braak for logistic regression.
-
-    Uses a GLM-faithful adaptation: the reduced model is logistic,
-    residuals on the probability scale are permuted, and Bernoulli
-    sampling converts permuted Y* back to binary.
-
-    When JAX is available the full-model refits are batched via
-    ``vmap``.  Otherwise falls back to an sklearn loop.
-    """
-    # The key challenge for logistic regression is that Y ∈ {0, 1}, not
-    # a continuous variable.  We cannot simply add permuted residuals to
-    # ŷ_{-j} and expect a valid binary outcome.  The adaptation works as
-    # follows:
-    #
-    #   1. Fit the reduced logistic model to get predicted probabilities
-    #      p̂_{-j} = P(Y=1 | X_{-j}).
-    #
-    #   2. Compute "probability-scale" residuals: e = Y - p̂_{-j}.
-    #      These range from (−1, 0) for Y=0 and (0, +1) for Y=1.
-    #
-    #   3. Permute the residuals and add them back:
-    #        p* = clip(p̂_{-j} + π(e), 0.001, 0.999)
-    #      The result is a continuous probability, not a binary outcome.
-    #
-    #   4. Generate Y* ~ Bernoulli(p*): draw independent coin flips with
-    #      probability p* to obtain a valid binary response.  This
-    #      preserves the probabilistic structure of the logistic model
-    #      while incorporating the permuted noise.
-    #
-    #   5. Refit the full logistic model on (X, Y*) to get β*.
-
-    X_np = X.values.astype(float)
-    n_perm, n = perm_indices.shape
-    n_features = X_np.shape[1]
-    result = np.zeros((n_perm, n_features))
-
-    # Derive a deterministic seed from the permutation indices so that
-    # the Bernoulli sampling is reproducible given the same permutations.
+    # Derive a deterministic RNG from the permutation indices so that
+    # any stochastic reconstruction step (e.g. Bernoulli sampling for
+    # logistic) is reproducible given the same permutations.
     rng = np.random.default_rng(int(perm_indices[0, 0]))
 
     for j in range(n_features):
-        # Step 1: Reduced logistic model — drop feature j.
+        # Step 1: Fit the reduced model Y ~ X_{-j}.
+        # Drop column j from the design matrix.  The family's fit()
+        # handles all model-specific details (solver, link function,
+        # regularisation, etc.).
         X_red = np.delete(X_np, j, axis=1)
-        model_red = LogisticRegression(
-            penalty=None,
-            solver="lbfgs",
-            max_iter=5_000,
-            fit_intercept=fit_intercept,
-        )
-        model_red.fit(X_red, y_values)
-        preds_red = model_red.predict_proba(X_red)[:, 1]  # P(Y=1 | X_{-j})
+        reduced_model = family.fit(X_red, y_values, fit_intercept)
 
-        # Step 2: Probability-scale residuals.
-        resids_red = y_values - preds_red
+        # Predictions and residuals from the reduced model.
+        # The residual type depends on the family:
+        #   - Linear: raw residuals e = Y - ŷ
+        #   - Logistic: probability-scale residuals e = Y - P̂(Y=1)
+        preds_red = family.predict(reduced_model, X_red)  # shape: (n,)
+        resids_red = family.residuals(reduced_model, X_red, y_values)  # (n,)
 
-        # Steps 3-4: Permute residuals, clip to valid probability range,
-        # then draw binary outcomes from Bernoulli(p*).
+        # Step 2: Build all B permuted residual vectors simultaneously.
+        # perm_indices has shape (B, n); fancy-indexing resids_red
+        # gives a (B, n) matrix where each row is a permuted residual
+        # vector.
         permuted_resids = resids_red[perm_indices]  # (B, n)
-        Y_perm_probs = np.clip(preds_red[np.newaxis, :] + permuted_resids, 0.001, 0.999)
-        Y_perm_binary = rng.binomial(1, Y_perm_probs)  # (B, n)
 
-        # Step 5: Refit the full logistic model for all B permutations.
-        if _use_jax():
-            # JAX path: batch all B logistic fits via vmap'd Newton solver.
-            all_coefs = fit_logistic_batch_jax(
-                X_np,
-                Y_perm_binary,
-                fit_intercept=fit_intercept,
-            )
-            result[:, j] = all_coefs[:, j]
-        else:
-            # Fallback: sklearn loop (slower but always available).
-            model_cls = LogisticRegression(
-                penalty=None,
-                solver="lbfgs",
-                max_iter=5_000,
-                fit_intercept=fit_intercept,
-            )
-            for p in range(n_perm):
-                model_cls.fit(X_np, Y_perm_binary[p])
-                result[p, j] = model_cls.coef_.flatten()[j]
+        # Step 3: Reconstruct permuted response vectors.
+        # The family's reconstruct_y() handles the model-specific
+        # transformation:
+        #   - Linear: Y* = ŷ_{-j} + π(e_{-j})  (deterministic)
+        #   - Logistic: Y* ~ Bernoulli(clip(ŷ + π(e)))  (stochastic)
+        # Broadcasting: preds_red is (n,), permuted_resids is (B, n);
+        # reconstruct_y produces (B, n).
+        Y_perm = family.reconstruct_y(
+            preds_red[np.newaxis, :],  # (1, n) for broadcasting
+            permuted_resids,  # (B, n)
+            rng,
+        )  # (B, n)
+
+        # Step 4: Batch-refit the full model on all B permuted Y vectors.
+        # family.batch_fit() dispatches to the active backend:
+        #   - Linear: NumPy pseudoinverse (single matrix multiply)
+        #   - Logistic: JAX vmap'd Newton solver or sklearn fallback
+        all_coefs = family.batch_fit(X_np, Y_perm, fit_intercept)  # (B, p)
+        result[:, j] = all_coefs[:, j]
 
     return result
 
@@ -1054,20 +1005,13 @@ def permutation_test_regression(
                 "feature) has 0 predictors.  Use method='kennedy' with "
                 "confounders, or add additional features."
             )
-        if is_binary:
-            permuted_coefs = _ter_braak_logistic(
-                X,
-                y_values,
-                perm_indices,
-                fit_intercept,
-            )
-        else:
-            permuted_coefs = _ter_braak_linear(
-                X,
-                y_values,
-                perm_indices,
-                fit_intercept,
-            )
+        permuted_coefs = _ter_braak_generic(
+            X,
+            y_values,
+            resolved,
+            perm_indices,
+            fit_intercept,
+        )
 
     elif method == "kennedy":
         if is_binary:
