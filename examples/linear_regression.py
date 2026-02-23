@@ -41,8 +41,21 @@ auto_family = resolve_family("auto", np.ravel(y))
 assert auto_family.name == "linear", f"Expected 'linear', got {auto_family.name!r}"
 print(f"resolve_family('auto', y) → {auto_family.name!r}")
 
+# ============================================================================# ter Braak (1992) \u2014 family="auto" (auto-detection)
 # ============================================================================
-# ter Braak (1992) — family="linear" (explicit)
+
+results_ter_braak_auto = permutation_test_regression(
+    X, y, method="ter_braak", family="auto"
+)
+assert results_ter_braak_auto["family"] == "linear"
+print_results_table(
+    results_ter_braak_auto,
+    feature_names=X.columns.tolist(),
+    target_name=y.columns[0],
+    title="ter Braak (1992) Permutation Test (family='auto' \u2192 linear)",
+)
+
+# ============================================================================# ter Braak (1992) — family="linear" (explicit)
 # ============================================================================
 
 results_ter_braak = permutation_test_regression(
