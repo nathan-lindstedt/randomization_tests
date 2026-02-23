@@ -532,3 +532,138 @@ class TestFamilyParameter:
             )
         assert result["model_type"] == "logistic"
         assert "observed_improvement" in result
+
+
+class TestNJobs:
+    """Tests for joblib-based parallel permutation fitting.
+
+    Forces the NumPy backend so that ``n_jobs`` actually exercises
+    joblib parallelism (the JAX backend uses vmap instead).
+    """
+
+    @pytest.fixture(autouse=True)
+    def _use_numpy_backend(self):
+        from randomization_tests import set_backend
+
+        set_backend("numpy")
+        yield
+        set_backend("auto")
+
+    def test_ter_braak_linear_n_jobs(self):
+        """ter Braak linear with n_jobs=2 matches n_jobs=1."""
+        X, y = _make_linear_data()
+        r1 = permutation_test_regression(
+            X,
+            y,
+            n_permutations=50,
+            method="ter_braak",
+            random_state=0,
+            n_jobs=1,
+        )
+        r2 = permutation_test_regression(
+            X,
+            y,
+            n_permutations=50,
+            method="ter_braak",
+            random_state=0,
+            n_jobs=2,
+        )
+        np.testing.assert_allclose(
+            r1["raw_empirical_p"],
+            r2["raw_empirical_p"],
+            rtol=1e-10,
+        )
+
+    def test_ter_braak_logistic_n_jobs(self):
+        """ter Braak logistic with n_jobs=2 matches n_jobs=1."""
+        X, y = _make_binary_data()
+        r1 = permutation_test_regression(
+            X,
+            y,
+            n_permutations=50,
+            method="ter_braak",
+            random_state=0,
+            n_jobs=1,
+        )
+        r2 = permutation_test_regression(
+            X,
+            y,
+            n_permutations=50,
+            method="ter_braak",
+            random_state=0,
+            n_jobs=2,
+        )
+        np.testing.assert_allclose(
+            r1["raw_empirical_p"],
+            r2["raw_empirical_p"],
+            rtol=1e-10,
+        )
+
+    def test_kennedy_linear_n_jobs(self):
+        """Kennedy individual linear with n_jobs=2 matches n_jobs=1."""
+        X, y = _make_linear_data()
+        # x3 is noise — use as a confounder
+        r1 = permutation_test_regression(
+            X,
+            y,
+            n_permutations=50,
+            method="kennedy",
+            confounders=["x3"],
+            random_state=0,
+            n_jobs=1,
+        )
+        r2 = permutation_test_regression(
+            X,
+            y,
+            n_permutations=50,
+            method="kennedy",
+            confounders=["x3"],
+            random_state=0,
+            n_jobs=2,
+        )
+        np.testing.assert_allclose(
+            r1["raw_empirical_p"],
+            r2["raw_empirical_p"],
+            rtol=1e-10,
+        )
+
+    def test_kennedy_joint_n_jobs(self):
+        """Kennedy joint with n_jobs=2 matches n_jobs=1."""
+        X, y = _make_linear_data()
+        r1 = permutation_test_regression(
+            X,
+            y,
+            n_permutations=50,
+            method="kennedy_joint",
+            confounders=["x3"],
+            random_state=0,
+            n_jobs=1,
+        )
+        r2 = permutation_test_regression(
+            X,
+            y,
+            n_permutations=50,
+            method="kennedy_joint",
+            confounders=["x3"],
+            random_state=0,
+            n_jobs=2,
+        )
+        np.testing.assert_allclose(
+            r1["observed_improvement"],
+            r2["observed_improvement"],
+            rtol=1e-10,
+        )
+        assert r1["p_value"] == r2["p_value"]
+
+    def test_n_jobs_minus_one_works(self):
+        """n_jobs=-1 (all cores) should run without error."""
+        X, y = _make_linear_data()
+        result = permutation_test_regression(
+            X,
+            y,
+            n_permutations=50,
+            method="ter_braak",
+            random_state=0,
+            n_jobs=-1,
+        )
+        assert "permuted_p_values" in result

@@ -612,10 +612,15 @@ class LinearFamily:
         current configuration.  The backend handles intercept
         augmentation, pseudoinverse computation, and coefficient
         extraction internally.
+
+        The ``batch_ols`` path is already fully vectorised (single
+        pseudoinverse multiply), so ``n_jobs`` is accepted for
+        interface consistency but has no effect here.
         """
         from ._backends import resolve_backend
 
         backend = kwargs.pop("backend", None)
+        kwargs.pop("n_jobs", None)  # OLS is vectorised; n_jobs unused
         if backend is None:
             backend = resolve_backend()
         return np.asarray(backend.batch_ols(X, Y_matrix, fit_intercept=fit_intercept))
@@ -631,13 +636,25 @@ class LinearFamily:
 
         Delegates to ``backend.batch_ols_varying_X()`` for the
         Kennedy individual path where column *j* of *X* differs
-        across permutations.
+        across permutations.  Forwards ``n_jobs`` to the NumPy
+        backend for parallel ``lstsq`` solves; the JAX backend
+        uses ``vmap`` and does not accept ``n_jobs``.
         """
         from ._backends import resolve_backend
 
         backend = kwargs.pop("backend", None)
+        n_jobs = kwargs.pop("n_jobs", 1)
         if backend is None:
             backend = resolve_backend()
+        if backend.name == "numpy":
+            return np.asarray(
+                backend.batch_ols_varying_X(
+                    X_batch,
+                    y,
+                    fit_intercept=fit_intercept,
+                    n_jobs=n_jobs,
+                )
+            )
         return np.asarray(
             backend.batch_ols_varying_X(X_batch, y, fit_intercept=fit_intercept)
         )
@@ -946,15 +963,33 @@ class LogisticFamily:
         """Batch logistic via the active backend.
 
         Delegates to ``backend.batch_logistic()`` for the shared-X
-        case (ter Braak: same X, many permuted Y vectors).
+        case (ter Braak: same X, many permuted Y vectors).  Forwards
+        ``n_jobs`` only to the NumPy backend; the JAX backend uses
+        ``vmap`` and does not accept ``n_jobs``.
         """
         from ._backends import resolve_backend
 
         backend = kwargs.pop("backend", None)
+        n_jobs = kwargs.pop("n_jobs", 1)
         if backend is None:
             backend = resolve_backend()
+        if backend.name == "numpy":
+            return np.asarray(
+                backend.batch_logistic(
+                    X,
+                    Y_matrix,
+                    fit_intercept=fit_intercept,
+                    n_jobs=n_jobs,
+                    **kwargs,
+                )
+            )
         return np.asarray(
-            backend.batch_logistic(X, Y_matrix, fit_intercept=fit_intercept, **kwargs)
+            backend.batch_logistic(
+                X,
+                Y_matrix,
+                fit_intercept=fit_intercept,
+                **kwargs,
+            )
         )
 
     def batch_fit_varying_X(
@@ -968,16 +1003,31 @@ class LogisticFamily:
 
         Delegates to ``backend.batch_logistic_varying_X()`` for the
         Kennedy individual path where column *j* of *X* differs
-        across permutations.
+        across permutations.  Forwards ``n_jobs`` only to the NumPy
+        backend.
         """
         from ._backends import resolve_backend
 
         backend = kwargs.pop("backend", None)
+        n_jobs = kwargs.pop("n_jobs", 1)
         if backend is None:
             backend = resolve_backend()
+        if backend.name == "numpy":
+            return np.asarray(
+                backend.batch_logistic_varying_X(
+                    X_batch,
+                    y,
+                    fit_intercept=fit_intercept,
+                    n_jobs=n_jobs,
+                    **kwargs,
+                )
+            )
         return np.asarray(
             backend.batch_logistic_varying_X(
-                X_batch, y, fit_intercept=fit_intercept, **kwargs
+                X_batch,
+                y,
+                fit_intercept=fit_intercept,
+                **kwargs,
             )
         )
 

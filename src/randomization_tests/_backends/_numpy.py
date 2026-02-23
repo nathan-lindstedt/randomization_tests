@@ -8,8 +8,10 @@ OLS uses a single pseudoinverse–multiply (``np.linalg.pinv``), which
 is the same vectorised approach that ``core.py`` used in v0.2.0.
 
 Logistic paths use a scikit-learn ``LogisticRegression`` loop — one
-``fit()`` call per permutation.  This is slower than the JAX vmap'd
-Newton–Raphson solver but is correct and always available.
+``fit()`` call per permutation.  When ``n_jobs != 1``, the loop is
+parallelised with ``joblib.Parallel(prefer="threads")`` so that
+sklearn's internal Cython/BLAS code releases the GIL and multiple
+permutations can overlap on multi-core hardware.
 """
 
 from __future__ import annotations
@@ -18,6 +20,7 @@ from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
+from joblib import Parallel, delayed
 from sklearn.linear_model import LogisticRegression
 
 
@@ -81,35 +84,46 @@ class NumpyBackend:
     ) -> np.ndarray:
         """Batch logistic regression via sklearn loop.
 
-        Fits ``LogisticRegression`` once per permutation.  Slower than
-        the JAX vmap path but always available and numerically robust.
+        Fits ``LogisticRegression`` once per permutation.  When
+        ``n_jobs != 1`` the loop is parallelised with joblib so that
+        sklearn's internal BLAS code (which releases the GIL) can
+        overlap across cores.
 
         Args:
             X: Design matrix ``(n, p)``.
             Y_matrix: Permuted binary responses ``(B, n)``.
             fit_intercept: Whether to include an intercept.
-            **kwargs: Forwarded to ``LogisticRegression`` (e.g.
-                ``max_iter``).
+            **kwargs: ``n_jobs`` (default 1), plus solver options
+                forwarded to ``LogisticRegression`` (e.g. ``max_iter``).
 
         Returns:
             Slope coefficients ``(B, p)`` (intercept excluded).
         """
+        n_jobs: int = kwargs.pop("n_jobs", 1)
         max_iter = kwargs.get("max_iter", 5_000)
         B, _ = Y_matrix.shape
-        p = X.shape[1]
-        result = np.empty((B, p))
 
-        model = LogisticRegression(
-            penalty=None,
-            solver="lbfgs",
-            max_iter=max_iter,
-            fit_intercept=fit_intercept,
+        def _fit_one(y_b: np.ndarray) -> np.ndarray:
+            m = LogisticRegression(
+                penalty=None,
+                solver="lbfgs",
+                max_iter=max_iter,
+                fit_intercept=fit_intercept,
+            )
+            m.fit(X, y_b)
+            return np.asarray(m.coef_.flatten())
+
+        if n_jobs == 1:
+            p = X.shape[1]
+            result = np.empty((B, p))
+            for b in range(B):
+                result[b] = _fit_one(Y_matrix[b])
+            return result
+
+        coefs_list = Parallel(n_jobs=n_jobs, prefer="threads")(
+            delayed(_fit_one)(Y_matrix[b]) for b in range(B)
         )
-        for b in range(B):
-            model.fit(X, Y_matrix[b])
-            result[b] = model.coef_.flatten()
-
-        return result
+        return np.asarray(np.vstack(coefs_list))
 
     # ---- Logistic (many X, shared y) -----------------------------------
 
@@ -130,27 +144,37 @@ class NumpyBackend:
             X_batch: Design matrices ``(B, n, p)``.
             y: Shared binary response ``(n,)``.
             fit_intercept: Whether to include an intercept.
-            **kwargs: Forwarded to ``LogisticRegression``.
+            **kwargs: ``n_jobs`` (default 1), plus solver options
+                forwarded to ``LogisticRegression``.
 
         Returns:
             Slope coefficients ``(B, p)`` (intercept excluded).
         """
+        n_jobs: int = kwargs.pop("n_jobs", 1)
         max_iter = kwargs.get("max_iter", 5_000)
         B = X_batch.shape[0]
-        p = X_batch.shape[2]
-        result = np.empty((B, p))
 
-        model = LogisticRegression(
-            penalty=None,
-            solver="lbfgs",
-            max_iter=max_iter,
-            fit_intercept=fit_intercept,
+        def _fit_one(X_b: np.ndarray) -> np.ndarray:
+            m = LogisticRegression(
+                penalty=None,
+                solver="lbfgs",
+                max_iter=max_iter,
+                fit_intercept=fit_intercept,
+            )
+            m.fit(X_b, y)
+            return np.asarray(m.coef_.flatten())
+
+        if n_jobs == 1:
+            p = X_batch.shape[2]
+            result = np.empty((B, p))
+            for b in range(B):
+                result[b] = _fit_one(X_batch[b])
+            return result
+
+        coefs_list = Parallel(n_jobs=n_jobs, prefer="threads")(
+            delayed(_fit_one)(X_batch[b]) for b in range(B)
         )
-        for b in range(B):
-            model.fit(X_batch[b], y)
-            result[b] = model.coef_.flatten()
-
-        return result
+        return np.asarray(np.vstack(coefs_list))
 
     # ---- OLS (many X, shared y) ----------------------------------------
 
@@ -159,6 +183,7 @@ class NumpyBackend:
         X_batch: np.ndarray,
         y: np.ndarray,
         fit_intercept: bool = True,
+        **kwargs: Any,
     ) -> np.ndarray:
         """Batch OLS with per-permutation design matrices.
 
@@ -167,26 +192,43 @@ class NumpyBackend:
         residuals), so a separate ``lstsq`` solve is needed per
         permutation.
 
+        When ``n_jobs != 1``, the per-permutation ``lstsq`` calls are
+        parallelised via joblib.  NumPy's ``lstsq`` calls LAPACK
+        (``dgelsd``), which releases the GIL, so ``prefer="threads"``
+        avoids serialisation overhead.
+
         Args:
             X_batch: Design matrices ``(B, n, p)`` — no intercept.
             y: Shared continuous response ``(n,)``.
             fit_intercept: Prepend intercept column.
+            **kwargs: ``n_jobs`` (default 1).
 
         Returns:
             Slope coefficients ``(B, p)`` (intercept excluded).
         """
+        n_jobs: int = kwargs.pop("n_jobs", 1)
         B, n, p = X_batch.shape
-        result = np.empty((B, p))
 
         if fit_intercept:
             ones_col = np.ones((n, 1))
-            for b in range(B):
-                X_aug = np.column_stack([ones_col, X_batch[b]])  # (n, p+1)
-                coefs, _, _, _ = np.linalg.lstsq(X_aug, y, rcond=None)
-                result[b] = coefs[1:]  # drop intercept
-        else:
-            for b in range(B):
-                coefs, _, _, _ = np.linalg.lstsq(X_batch[b], y, rcond=None)
-                result[b] = coefs
 
-        return result
+            def _solve(X_b: np.ndarray) -> np.ndarray:
+                X_aug = np.column_stack([ones_col, X_b])
+                coefs, _, _, _ = np.linalg.lstsq(X_aug, y, rcond=None)
+                return np.asarray(coefs[1:])  # drop intercept
+        else:
+
+            def _solve(X_b: np.ndarray) -> np.ndarray:
+                coefs, _, _, _ = np.linalg.lstsq(X_b, y, rcond=None)
+                return np.asarray(coefs)
+
+        if n_jobs == 1:
+            result = np.empty((B, p))
+            for b in range(B):
+                result[b] = _solve(X_batch[b])
+            return result
+
+        coefs_list = Parallel(n_jobs=n_jobs, prefer="threads")(
+            delayed(_solve)(X_batch[b]) for b in range(B)
+        )
+        return np.asarray(np.vstack(coefs_list))

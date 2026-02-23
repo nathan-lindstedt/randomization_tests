@@ -288,3 +288,40 @@ class TestFloat32Precision:
         )
         # x2's coefficient should be positive and substantial
         assert coefs[1] > 0, "x2 coefficient should be positive"
+
+
+# ------------------------------------------------------------------ #
+# 7. n_jobs warning: JAX backend should warn when n_jobs != 1
+# ------------------------------------------------------------------ #
+
+
+class TestNJobsJAXWarning:
+    """n_jobs != 1 should emit a UserWarning under the JAX backend."""
+
+    def test_warns_on_n_jobs_with_jax(self):
+        X, y = _make_logistic_data(n=60, seed=99)
+        with pytest.warns(UserWarning, match="n_jobs is ignored"):
+            permutation_test_regression(
+                X,
+                y,
+                n_permutations=20,
+                method="ter_braak",
+                random_state=0,
+                n_jobs=2,
+            )
+
+    def test_no_warning_on_n_jobs_1(self):
+        """n_jobs=1 should not trigger the JAX warning."""
+        X, y = _make_logistic_data(n=60, seed=99)
+        import warnings as _w
+
+        with _w.catch_warnings():
+            _w.simplefilter("error", UserWarning)
+            permutation_test_regression(
+                X,
+                y,
+                n_permutations=20,
+                method="ter_braak",
+                random_state=0,
+                n_jobs=1,
+            )

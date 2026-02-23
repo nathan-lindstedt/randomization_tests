@@ -324,6 +324,7 @@ def _ter_braak_generic(
     family: ModelFamily,
     perm_indices: np.ndarray,
     fit_intercept: bool = True,
+    n_jobs: int = 1,
 ) -> np.ndarray:
     """Family-generic ter Braak residual-permutation engine.
 
@@ -414,7 +415,9 @@ def _ter_braak_generic(
         # family.batch_fit() dispatches to the active backend:
         #   - Linear: NumPy pseudoinverse (single matrix multiply)
         #   - Logistic: JAX vmap'd Newton solver or sklearn fallback
-        all_coefs = family.batch_fit(X_np, Y_perm, fit_intercept)  # (B, p)
+        all_coefs = family.batch_fit(
+            X_np, Y_perm, fit_intercept, n_jobs=n_jobs
+        )  # (B, p)
         result[:, j] = all_coefs[:, j]
 
     return result
@@ -466,6 +469,7 @@ def _kennedy_individual_generic(
     perm_indices: np.ndarray,
     model_coefs: np.ndarray,
     fit_intercept: bool = True,
+    n_jobs: int = 1,
 ) -> np.ndarray:
     """Family-generic Kennedy individual exposure-residual permutation.
 
@@ -554,7 +558,9 @@ def _kennedy_individual_generic(
         # the appropriate backend:
         #   - Linear: numpy lstsq loop or JAX vmap'd lstsq
         #   - Logistic: JAX vmap'd Newton solver or sklearn loop
-        all_coefs = family.batch_fit_varying_X(X_perm_all, y_values, fit_intercept)
+        all_coefs = family.batch_fit_varying_X(
+            X_perm_all, y_values, fit_intercept, n_jobs=n_jobs
+        )
         result[:, feat_idx] = all_coefs[:, feat_idx]
 
     return result
@@ -604,6 +610,7 @@ def _kennedy_joint(
     perm_indices: np.ndarray,
     family: ModelFamily,
     fit_intercept: bool = True,
+    n_jobs: int = 1,
 ) -> tuple[float, np.ndarray, str, list[str]]:
     """Family-generic Kennedy joint test.
 
@@ -676,16 +683,26 @@ def _kennedy_joint(
     # For each permutation, apply the SAME index shuffle to all rows of
     # the residual matrix E, reconstruct X* = X̂ + shuffled(E), refit the
     # full model, and measure the improvement under H₀.
-    perm_improvements = np.zeros(n_perm)
 
-    for i in range(n_perm):
-        # Row-wise shuffle: perm_indices[i] reorders all columns of E
-        # identically, preserving inter-predictor correlation structure.
-        x_star = x_hat + x_resids[perm_indices[i]]
+    def _joint_one_perm(idx: np.ndarray) -> float:
+        x_star = x_hat + x_resids[idx]
         perm_features = np.hstack([x_star, Z]) if Z.shape[1] > 0 else x_star
         perm_model = family.fit(perm_features, y_values, fit_intercept)
         perm_preds = family.predict(perm_model, perm_features)
-        perm_improvements[i] = base_metric - family.fit_metric(y_values, perm_preds)
+        return float(base_metric - family.fit_metric(y_values, perm_preds))
+
+    if n_jobs == 1:
+        perm_improvements = np.zeros(n_perm)
+        for i in range(n_perm):
+            perm_improvements[i] = _joint_one_perm(perm_indices[i])
+    else:
+        from joblib import Parallel, delayed
+
+        perm_improvements = np.array(
+            Parallel(n_jobs=n_jobs, prefer="threads")(
+                delayed(_joint_one_perm)(perm_indices[i]) for i in range(n_perm)
+            )
+        )
 
     return obs_improvement, perm_improvements, metric_type, features_to_test
 
@@ -718,6 +735,7 @@ def permutation_test_regression(
     random_state: int | None = None,
     fit_intercept: bool = True,
     family: str = "auto",
+    n_jobs: int = 1,
 ) -> dict:
     """Run a permutation test for regression coefficients.
 
@@ -755,6 +773,14 @@ def permutation_test_regression(
             Explicit values (``"linear"``, ``"logistic"``) bypass
             auto-detection and are validated against the response
             via the family's ``validate_y()`` method.
+        n_jobs: Number of parallel jobs for the permutation batch-fit
+            loop.  ``1`` (default) means sequential execution.
+            ``-1`` uses all available CPU cores.  Values > 1 enable
+            ``joblib.Parallel(prefer="threads")``, which is effective
+            because the underlying BLAS/LAPACK routines and sklearn's
+            L-BFGS solver release the GIL.  Ignored when the JAX
+            backend is active (JAX uses its own ``vmap``
+            vectorisation).
 
     Returns:
         Dictionary containing coefficients, p-values, diagnostics, and
@@ -862,6 +888,24 @@ def permutation_test_regression(
     if family != "auto":
         resolved.validate_y(y_values)
 
+    # Warn and override n_jobs when the JAX backend is active.
+    # JAX uses vmap vectorisation for batch fits, so joblib-based
+    # parallelism has no effect.  Resetting to 1 avoids any
+    # unexpected behaviour downstream while keeping the user informed.
+    if n_jobs != 1:
+        from ._backends import resolve_backend
+
+        _backend = resolve_backend()
+        if _backend.name == "jax":
+            warnings.warn(
+                "n_jobs is ignored when the JAX backend is active because "
+                "JAX uses vmap vectorisation for batch fits.  Falling back "
+                "to n_jobs=1.",
+                UserWarning,
+                stacklevel=2,
+            )
+            n_jobs = 1
+
     # Fit the observed (unpermuted) model to get the original
     # coefficients β̂.  These are the test statistics that will be
     # compared against the permutation null distribution.
@@ -910,6 +954,7 @@ def permutation_test_regression(
             resolved,
             perm_indices,
             fit_intercept,
+            n_jobs=n_jobs,
         )
 
     elif method == "kennedy":
@@ -921,6 +966,7 @@ def permutation_test_regression(
             perm_indices,
             model_coefs,
             fit_intercept,
+            n_jobs=n_jobs,
         )
 
     elif method == "kennedy_joint":
@@ -932,6 +978,7 @@ def permutation_test_regression(
                 perm_indices,
                 resolved,
                 fit_intercept,
+                n_jobs=n_jobs,
             )
         )
 
@@ -952,6 +999,7 @@ def permutation_test_regression(
 
         return {
             "observed_improvement": obs_improvement,
+            "permuted_improvements": perm_improvements.tolist(),
             "p_value": p_value,
             "p_value_str": p_value_str,
             "metric_type": metric_type,
@@ -1014,6 +1062,7 @@ def permutation_test_regression(
 
     return {
         "model_coefs": model_coefs.tolist(),
+        "permuted_coefs": permuted_coefs.tolist(),
         "permuted_p_values": permuted_p_values,
         "classic_p_values": classic_p_values,
         "raw_empirical_p": raw_empirical_p,
