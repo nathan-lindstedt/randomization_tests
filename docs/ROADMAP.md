@@ -186,6 +186,11 @@ logistic paths to the new protocol.  New permutation methods and GLM
 families are then built on the stabilised abstractions, inheriting
 all existing methods from the start.
 
+**Progress:** Steps 1–5 complete (abstraction layer, core refactor,
+JAX improvements, parallelisation).  278 tests passing.  Remaining:
+confounder module update, Freedman–Lane, new GLM families (Poisson,
+negative binomial, ordinal, multinomial), and sign-flip test.
+
 ### Step 1 — `ModelFamily` protocol
 
 - [X] A `typing.Protocol` class defining the interface every family
@@ -215,14 +220,18 @@ all existing methods from the start.
 Depends on Steps 1–2.  Converts the existing engine from hard-coded
 `is_binary` branching to family-dispatched method calls.
 
-- [ ] Replace `is_binary` branching in `core.py` with family method
-  calls: generic `_ter_braak`, `_kennedy_individual`, and
-  `_kennedy_joint` functions dispatch to the active family.
-- [ ] `family=` parameter on `permutation_test_regression()`, with
+- [X] Replace `is_binary` branching in `core.py` with family method
+  calls: generic `_ter_braak_generic`, `_kennedy_individual_generic`,
+  and `_kennedy_joint` functions dispatch to the active family.
+- [X] `family=` parameter on `permutation_test_regression()`, with
   `"auto"` as the default.
-- [ ] Resolved family name included in the result dict.
-- [ ] `compute_all_diagnostics` accepts `model_type: str` instead of
+- [X] Resolved family name included in the result dict.
+- [X] `compute_all_diagnostics` accepts `model_type: str` instead of
   `is_binary: bool`.
+- [X] `calculate_p_values` accepts a `ModelFamily` instance and
+  delegates classical p-value computation to
+  `family.classical_p_values()`, removing the duplicate statsmodels
+  refit that was previously hard-coded in `pvalues.py`.
 - [ ] Confounder module updated: `family` parameter on
   `identify_confounders` and `mediation_analysis`, using the
   family-appropriate model for the b-path and total-effect equations.
@@ -284,12 +293,32 @@ Depends on Step 2 (`_backends/_jax.py`).
 
 Depends on Step 1 (`ModelFamily.batch_fit()`).
 
-- [ ] Parallelise the scikit-learn fallback loops via
-  `joblib.Parallel` inside `ModelFamily.batch_fit()`.  Add
-  `n_jobs: int = 1` parameter to `permutation_test_regression()`
-  (deferred from v0.2.0 — `batch_fit()` is the natural home for
-  this, avoiding throwaway code in internal functions that would be
-  deleted during the family refactor).
+- [X] Parallelise the scikit-learn fallback loops via
+  `joblib.Parallel(prefer="threads")` inside `NumpyBackend`:
+  `batch_logistic()`, `batch_logistic_varying_X()`, and
+  `batch_ols_varying_X()`.  Threads are effective because
+  BLAS/LAPACK routines and sklearn's L-BFGS solver release the GIL.
+- [X] `_kennedy_joint` per-permutation refit loop parallelised
+  directly via joblib when `n_jobs != 1`.
+- [X] `batch_ols()` is already fully vectorised (single pseudoinverse
+  multiply), so `n_jobs` has no effect there.
+- [X] Add `n_jobs: int = 1` parameter to
+  `permutation_test_regression()`.  `n_jobs=-1` uses all cores.
+- [X] Family layer strips `n_jobs` from kwargs and forwards it only
+  to `NumpyBackend` methods.  JAX backend methods never see
+  `n_jobs` — their signatures remain clean.
+- [X] When the JAX backend is active and `n_jobs != 1`, a
+  `UserWarning` is emitted and `n_jobs` resets to 1 (JAX uses
+  `vmap` vectorisation, so joblib parallelism is redundant).
+- [X] Null distributions exposed in result dicts: `"permuted_coefs"`
+  `(B, p)` array for ter Braak / Kennedy individual;
+  `"permuted_improvements"` length-B array for Kennedy joint.
+  Enables user-side density plots and custom p-value calculations.
+- [X] Example scripts rewritten to pass `family=` explicitly and
+  exercise the full `ModelFamily` protocol: `resolve_family`,
+  `validate_y`, `fit`, `predict`, `coefs`, `residuals`,
+  `reconstruct_y`, `fit_metric`, `batch_fit`, `diagnostics`, and
+  `classical_p_values`.
 
 ### Step 6 — Freedman–Lane permutation method
 
