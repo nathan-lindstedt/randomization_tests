@@ -667,3 +667,308 @@ class TestNJobs:
             n_jobs=-1,
         )
         assert "permuted_p_values" in result
+
+    def test_freedman_lane_linear_n_jobs(self):
+        """Freedman–Lane individual with n_jobs=2 matches n_jobs=1."""
+        X, y = _make_linear_data()
+        r1 = permutation_test_regression(
+            X,
+            y,
+            n_permutations=50,
+            method="freedman_lane",
+            confounders=["x3"],
+            random_state=0,
+            n_jobs=1,
+        )
+        r2 = permutation_test_regression(
+            X,
+            y,
+            n_permutations=50,
+            method="freedman_lane",
+            confounders=["x3"],
+            random_state=0,
+            n_jobs=2,
+        )
+        np.testing.assert_allclose(
+            r1["raw_empirical_p"],
+            r2["raw_empirical_p"],
+            rtol=1e-10,
+        )
+
+    def test_freedman_lane_joint_n_jobs(self):
+        """Freedman–Lane joint with n_jobs=2 matches n_jobs=1."""
+        X, y = _make_linear_data()
+        r1 = permutation_test_regression(
+            X,
+            y,
+            n_permutations=50,
+            method="freedman_lane_joint",
+            confounders=["x3"],
+            random_state=0,
+            n_jobs=1,
+        )
+        r2 = permutation_test_regression(
+            X,
+            y,
+            n_permutations=50,
+            method="freedman_lane_joint",
+            confounders=["x3"],
+            random_state=0,
+            n_jobs=2,
+        )
+        np.testing.assert_allclose(
+            r1["observed_improvement"],
+            r2["observed_improvement"],
+            rtol=1e-10,
+        )
+        assert r1["p_value"] == r2["p_value"]
+
+
+# ------------------------------------------------------------------ #
+# Freedman–Lane individual
+# ------------------------------------------------------------------ #
+
+
+class TestFreedmanLaneIndividual:
+    def test_linear_with_confounders(self):
+        """Freedman–Lane individual with confounders produces expected keys."""
+        X, y = _make_linear_data()
+        result = permutation_test_regression(
+            X,
+            y,
+            n_permutations=50,
+            method="freedman_lane",
+            confounders=["x3"],
+            random_state=42,
+        )
+        assert result["method"] == "freedman_lane"
+        assert result["model_type"] == "linear"
+        assert len(result["model_coefs"]) == 3
+        # x3 is a confounder — its p-value should be N/A
+        assert result["permuted_p_values"][2] == "N/A (confounder)"
+        assert result["classic_p_values"][2] == "N/A (confounder)"
+        assert np.isnan(result["raw_empirical_p"][2])
+
+    def test_linear_no_confounders_warns(self):
+        """Freedman–Lane without confounders issues a UserWarning."""
+        X, y = _make_linear_data()
+        with pytest.warns(UserWarning, match="without confounders"):
+            result = permutation_test_regression(
+                X,
+                y,
+                n_permutations=50,
+                method="freedman_lane",
+                confounders=[],
+                random_state=42,
+            )
+        assert result["method"] == "freedman_lane"
+        assert len(result["model_coefs"]) == 3
+
+    def test_logistic_with_confounders(self):
+        """Freedman–Lane individual with logistic family and confounders."""
+        X, y = _make_binary_data()
+        # Add a noise confounder column
+        rng = np.random.default_rng(99)
+        X = X.copy()
+        X["z1"] = rng.standard_normal(len(X))
+        result = permutation_test_regression(
+            X,
+            y,
+            n_permutations=50,
+            method="freedman_lane",
+            confounders=["z1"],
+            random_state=42,
+        )
+        assert result["model_type"] == "logistic"
+        assert result["method"] == "freedman_lane"
+        # z1 is a confounder
+        z1_idx = list(X.columns).index("z1")
+        assert result["permuted_p_values"][z1_idx] == "N/A (confounder)"
+
+    def test_logistic_no_confounders_warns(self):
+        """Freedman–Lane logistic without confounders warns."""
+        X, y = _make_binary_data()
+        with pytest.warns(UserWarning, match="without confounders"):
+            result = permutation_test_regression(
+                X,
+                y,
+                n_permutations=50,
+                method="freedman_lane",
+                confounders=[],
+                random_state=42,
+            )
+        assert result["model_type"] == "logistic"
+
+    def test_p_values_in_valid_range(self):
+        """All non-confounder p-values should be in (0, 1]."""
+        X, y = _make_linear_data()
+        result = permutation_test_regression(
+            X,
+            y,
+            n_permutations=50,
+            method="freedman_lane",
+            confounders=["x3"],
+            random_state=42,
+        )
+        for i, col in enumerate(X.columns):
+            if col != "x3":
+                p = result["raw_empirical_p"][i]
+                assert 0 < p <= 1.0, f"p-value for {col} = {p}"
+
+    def test_explicit_family_linear(self):
+        """Explicit family='linear' works with Freedman–Lane."""
+        X, y = _make_linear_data()
+        result = permutation_test_regression(
+            X,
+            y,
+            n_permutations=50,
+            method="freedman_lane",
+            confounders=["x3"],
+            random_state=42,
+            family="linear",
+        )
+        assert result["model_type"] == "linear"
+
+    def test_explicit_family_logistic(self):
+        """Explicit family='logistic' works with Freedman–Lane."""
+        X, y = _make_binary_data()
+        rng = np.random.default_rng(99)
+        X = X.copy()
+        X["z1"] = rng.standard_normal(len(X))
+        result = permutation_test_regression(
+            X,
+            y,
+            n_permutations=50,
+            method="freedman_lane",
+            confounders=["z1"],
+            random_state=42,
+            family="logistic",
+        )
+        assert result["model_type"] == "logistic"
+
+    def test_fit_intercept_false(self):
+        """Freedman–Lane with fit_intercept=False runs correctly."""
+        X, y = _make_linear_data()
+        result = permutation_test_regression(
+            X,
+            y,
+            n_permutations=50,
+            method="freedman_lane",
+            confounders=["x3"],
+            random_state=42,
+            fit_intercept=False,
+        )
+        assert result["method"] == "freedman_lane"
+        assert len(result["model_coefs"]) == 3
+
+    def test_permuted_coefs_in_result(self):
+        """Result dict should include permuted_coefs."""
+        X, y = _make_linear_data()
+        result = permutation_test_regression(
+            X,
+            y,
+            n_permutations=50,
+            method="freedman_lane",
+            confounders=["x3"],
+            random_state=42,
+        )
+        assert "permuted_coefs" in result
+        coefs = np.array(result["permuted_coefs"])
+        assert coefs.shape == (50, 3)
+
+
+# ------------------------------------------------------------------ #
+# Freedman–Lane joint
+# ------------------------------------------------------------------ #
+
+
+class TestFreedmanLaneJoint:
+    def test_linear_returns_expected_keys(self):
+        """Freedman–Lane joint linear returns all expected keys."""
+        X, y = _make_linear_data()
+        result = permutation_test_regression(
+            X,
+            y,
+            n_permutations=50,
+            method="freedman_lane_joint",
+            confounders=["x3"],
+            random_state=42,
+        )
+        assert "observed_improvement" in result
+        assert "permuted_improvements" in result
+        assert "p_value" in result
+        assert "p_value_str" in result
+        assert result["method"] == "freedman_lane_joint"
+        assert result["metric_type"] == "RSS Reduction"
+
+    def test_logistic_returns_expected_keys(self):
+        """Freedman–Lane joint logistic returns all expected keys."""
+        X, y = _make_binary_data()
+        rng = np.random.default_rng(99)
+        X = X.copy()
+        X["z1"] = rng.standard_normal(len(X))
+        result = permutation_test_regression(
+            X,
+            y,
+            n_permutations=50,
+            method="freedman_lane_joint",
+            confounders=["z1"],
+            random_state=42,
+        )
+        assert "observed_improvement" in result
+        assert result["model_type"] == "logistic"
+        assert result["metric_type"] == "Deviance Reduction"
+
+    def test_p_value_in_valid_range(self):
+        """Joint p-value should be in (0, 1]."""
+        X, y = _make_linear_data()
+        result = permutation_test_regression(
+            X,
+            y,
+            n_permutations=50,
+            method="freedman_lane_joint",
+            confounders=["x3"],
+            random_state=42,
+        )
+        assert 0 < result["p_value"] <= 1.0
+
+    def test_no_confounders_warns(self):
+        """Freedman–Lane joint without confounders warns."""
+        X, y = _make_linear_data()
+        with pytest.warns(UserWarning, match="without confounders"):
+            result = permutation_test_regression(
+                X,
+                y,
+                n_permutations=50,
+                method="freedman_lane_joint",
+                confounders=[],
+                random_state=42,
+            )
+        assert result["method"] == "freedman_lane_joint"
+
+    def test_features_tested(self):
+        """features_tested should list only non-confounder columns."""
+        X, y = _make_linear_data()
+        result = permutation_test_regression(
+            X,
+            y,
+            n_permutations=50,
+            method="freedman_lane_joint",
+            confounders=["x3"],
+            random_state=42,
+        )
+        assert result["features_tested"] == ["x1", "x2"]
+        assert result["confounders"] == ["x3"]
+
+    def test_permuted_improvements_length(self):
+        """permuted_improvements should have n_permutations entries."""
+        X, y = _make_linear_data()
+        result = permutation_test_regression(
+            X,
+            y,
+            n_permutations=50,
+            method="freedman_lane_joint",
+            confounders=["x3"],
+            random_state=42,
+        )
+        assert len(result["permuted_improvements"]) == 50

@@ -15,7 +15,7 @@ distribution (the **reference set**) and compare the observed β_j to
 it.  The fraction of null values at least as extreme as the observed
 one gives the p-value.
 
-This module implements three permutation strategies:
+This module implements five permutation strategies:
 
 1. **ter Braak (1992)** – Residual permutation under the reduced model.
    For each predictor X_j, fit the model *without* X_j to get
@@ -55,6 +55,36 @@ This module implements three permutation strategies:
    simultaneously, and residuals are permuted **row-wise** so that
    the correlation structure among the predictors is preserved.
 
+4. **Freedman–Lane (1983) individual** – Permute full-model residuals,
+   add to reduced-model fitted values.  For each non-confounder
+   predictor X_j:
+
+   a) Fit the **full** model Y ~ X + Z to get residuals from the
+      complete specification.
+   b) Fit the **reduced** model Y ~ Z (confounders only) to get
+      fitted values that capture only the confounder contribution.
+   c) Permute the full-model residuals and construct
+      Y* = ŷ_reduced + π(ê_full).
+   d) Refit the full model on (X, Y*) to get β*_j.
+
+   Intuition: By using full-model residuals (which have smaller
+   variance) rather than reduced-model residuals, the permutation
+   null distribution is tighter and the test has better power when
+   predictors are correlated (Anderson & Legendre 1999; Winkler
+   et al. 2014).  When ``confounders=[]`` the procedure reduces to
+   a special case where the reduced model is intercept-only; users
+   should prefer ``"ter_braak"`` for unconditional tests.
+
+5. **Freedman–Lane (1983) joint** – Test collective predictive
+   improvement using full-model residuals.  Same structure as
+   Kennedy joint but permuting Y (via full-model residuals) instead
+   of X (via exposure-model residuals):
+
+   a) Fit the full model and reduced model on observed data.
+   b) Permute full-model residuals, construct Y*.
+   c) Refit both reduced and full models on Y*.
+   d) Compute improvement = metric(reduced on Y*) − metric(full on Y*).
+
 Vectorisation strategy
 ~~~~~~~~~~~~~~~~~~~~~~
 * **OLS (linear)** paths use batch matrix algebra.  The pseudoinverse
@@ -81,6 +111,18 @@ References:
 
     Kennedy, P. E. (1995). Randomization tests in econometrics.
     *Journal of Business & Economic Statistics*, 13(1), 85–94.
+
+    Freedman, D. & Lane, D. (1983). A nonstochastic interpretation
+    of reported significance levels. *Journal of Business & Economic
+    Statistics*, 1(4), 292–298.
+
+    Anderson, M. J. & Legendre, P. (1999). An empirical comparison
+    of permutation methods for tests of partial regression
+    coefficients in a linear model. *Journal of Statistical
+    Computation and Simulation*, 62(3), 271–303.
+
+    Winkler, A. M. et al. (2014). Permutation inference for the
+    general linear model. *NeuroImage*, 92, 381–397.
 
     Phipson, B. & Smyth, G. K. (2010). Permutation p-values should
     never be zero. *Stat. Appl. Genet. Mol. Biol.*, 9(1), Article 39.
@@ -567,6 +609,295 @@ def _kennedy_individual_generic(
 
 
 # ------------------------------------------------------------------ #
+# Freedman–Lane (1983) individual — full-model residual permutation
+# ------------------------------------------------------------------ #
+#
+# The Freedman–Lane procedure permutes residuals from the FULL model
+# (the complete specification Y ~ X + Z) rather than the reduced model
+# (ter Braak) or the exposure model (Kennedy).  Because full-model
+# residuals have smaller variance (they condition on more predictors),
+# the resulting null distribution is tighter and the test has better
+# power when predictors are correlated.
+#
+# Algorithm:
+#
+#   1. Fit the **full model** Y ~ X + Z (all features including any
+#      confounders) to get predicted values ŷ_full and residuals
+#      ê_full = Y − ŷ_full.  This step is done once, outside any
+#      feature loop.
+#
+#   2. Fit the **reduced model** Y ~ Z (confounders only).  When
+#      confounders are specified, this is an actual model fit.  When
+#      confounders are empty, the reduced model is intercept-only
+#      (grand mean for linear, base rate for logistic).
+#
+#   3. For each permutation b = 1, …, B, randomly reorder ê_full to
+#      get π_b(ê_full), then construct:
+#
+#        Y*_b = ŷ_reduced + π_b(ê_full)
+#
+#      via ``family.reconstruct_y()``.  This preserves the confounder
+#      contribution while destroying any real association between Y
+#      and the non-confounder predictors.
+#
+#   4. Refit the full model Y*_b ~ X + Z and extract β*_{b,j} for
+#      each non-confounder feature j.
+#
+# The critical difference from Kennedy: Kennedy permutes X-residuals
+# (exposure model) while keeping Y fixed.  Freedman–Lane permutes
+# Y-residuals (from the full model) while keeping X fixed.  The
+# Freedman–Lane approach gives better power when the variable of
+# interest is correlated with confounders (Anderson & Legendre 1999;
+# Winkler et al. 2014).
+#
+# When confounders are empty, the reduced model is intercept-only and
+# the full model is Y ~ X, so the procedure tests predictors against
+# an intercept-only null.  In this case ``"ter_braak"`` is preferable
+# because it conditions on all other predictors individually.
+
+
+def _freedman_lane_individual_generic(
+    X: pd.DataFrame,
+    y_values: np.ndarray,
+    family: ModelFamily,
+    confounders: list[str],
+    perm_indices: np.ndarray,
+    model_coefs: np.ndarray,
+    fit_intercept: bool = True,
+    n_jobs: int = 1,
+) -> np.ndarray:
+    """Family-generic Freedman–Lane individual permutation engine.
+
+    Permutes full-model residuals and adds them to reduced-model fitted
+    values to construct Y*.  The full model is then refitted on each
+    Y* to obtain the null distribution of coefficients.
+
+    Unlike ter Braak (which uses a per-feature reduced model) and
+    Kennedy (which permutes exposure residuals), this procedure uses a
+    single reduced model (confounders only) and a single set of
+    permuted Y* vectors for all features.  This means the batch refit
+    is done once rather than once per feature.
+
+    Algorithm:
+
+    1. **Full model** — ``family.fit(X, y)`` on all features.
+       ``family.residuals()`` gives ê_full.
+    2. **Reduced model** — ``family.fit(Z, y)`` on confounders only.
+       ``family.predict()`` gives ŷ_reduced.
+    3. **Permute** — ê_full[perm_indices] gives B permuted residual
+       vectors.
+    4. **Reconstruct** — ``family.reconstruct_y(ŷ_reduced, π(ê_full), rng)``
+       yields Y* of shape ``(B, n)``.
+    5. **Batch refit** — ``family.batch_fit(X, Y*, fit_intercept)``
+       produces ``(B, n_features)`` permuted coefficients.
+
+    Args:
+        X: Feature matrix as a pandas DataFrame.
+        y_values: Response vector of shape ``(n,)``.
+        family: Resolved ``ModelFamily`` instance.
+        confounders: List of confounder column names.
+        perm_indices: Pre-generated permutation indices ``(B, n)``.
+        model_coefs: Observed model coefficients ``(p,)`` — used to
+            fill confounder slots (they are not being tested).
+        fit_intercept: Whether to include an intercept.
+        n_jobs: Number of parallel jobs for the batch-fit step.
+
+    Returns:
+        Array of shape ``(B, n_features)`` with permuted coefficients.
+        Confounder columns are filled with the observed coefficient
+        value so that their empirical p-values are always 1.0.
+    """
+    X_np = X.values.astype(float)
+    n_perm, n = perm_indices.shape
+
+    # Derive a deterministic RNG from the permutation indices so that
+    # any stochastic reconstruction step (e.g. Bernoulli sampling for
+    # logistic) is reproducible given the same permutations.
+    rng = np.random.default_rng(int(perm_indices[0, 0]))
+
+    # Step 1: Fit the FULL model Y ~ X (all features) and get residuals.
+    # The full model is the same model already fit for the observed
+    # coefficients, so we refit here for clean access to residuals.
+    full_model = family.fit(X_np, y_values, fit_intercept)
+    full_resids = family.residuals(full_model, X_np, y_values)  # (n,)
+
+    # Step 2: Fit the REDUCED model Y ~ Z (confounders only).
+    # This captures only the confounder contribution to Y.
+    if confounders:
+        conf_idx = [X.columns.get_loc(c) for c in confounders]
+        Z = X_np[:, conf_idx]
+        reduced_model = family.fit(Z, y_values, fit_intercept)
+        preds_reduced = family.predict(reduced_model, Z)  # (n,)
+    else:
+        # No confounders: reduced model is intercept-only.
+        if fit_intercept:
+            preds_reduced = np.full(n, np.mean(y_values), dtype=float)
+        else:
+            preds_reduced = np.zeros(n, dtype=float)
+
+    # Step 3: Permute full-model residuals.
+    permuted_resids = full_resids[perm_indices]  # (B, n)
+
+    # Step 4: Reconstruct Y* = ŷ_reduced + π(ê_full).
+    # family.reconstruct_y handles family-specific transformation:
+    #   - Linear: Y* = ŷ_reduced + π(ê_full)  (deterministic)
+    #   - Logistic: clip to [0.001, 0.999], then Bernoulli sample
+    Y_perm = family.reconstruct_y(
+        preds_reduced[np.newaxis, :],  # (1, n) for broadcasting
+        permuted_resids,  # (B, n)
+        rng,
+    )  # (B, n)
+
+    # Step 5: Batch-refit the full model on all B permuted Y vectors.
+    all_coefs = np.array(
+        family.batch_fit(X_np, Y_perm, fit_intercept, n_jobs=n_jobs)
+    )  # (B, n_features) — writable copy
+
+    # Fill confounder columns with the observed coefficient so their
+    # empirical p-values are trivially 1.0.  The dispatch logic will
+    # then mark them as "N/A (confounder)".
+    if confounders:
+        for i, col in enumerate(X.columns):
+            if col in confounders:
+                all_coefs[:, i] = model_coefs[i]
+
+    return all_coefs
+
+
+# ------------------------------------------------------------------ #
+# Freedman–Lane (1983) joint — collective predictive improvement test
+# ------------------------------------------------------------------ #
+#
+# Same idea as Kennedy joint, but permuting Y (via full-model
+# residuals) instead of X (via exposure-model residuals).
+#
+# Because Y* changes each permutation, both the reduced and full
+# models must be refit on every permuted Y*.  This is the key
+# structural difference from Kennedy joint, where the reduced model
+# metric is constant because Y is fixed.
+#
+# Algorithm:
+#   1. Fit full model Y ~ X + Z and reduced model Y ~ Z.
+#   2. Compute the observed improvement:
+#      T_obs = metric(reduced) − metric(full).
+#   3. Get full-model residuals ê = Y − ŷ_full.
+#   4. For each permutation b:
+#      a) Y*_b = ŷ_reduced + π_b(ê)
+#      b) Refit reduced model: metric_red = family.fit_metric(Y*_b, reduced_preds_on_Y*_b)
+#      c) Refit full model: metric_full = family.fit_metric(Y*_b, full_preds_on_Y*_b)
+#      d) T*_b = metric_red − metric_full
+#   5. p-value = (#{T*_b ≥ T_obs} + 1) / (B + 1)
+
+
+def _freedman_lane_joint(
+    X: pd.DataFrame,
+    y_values: np.ndarray,
+    confounders: list[str],
+    perm_indices: np.ndarray,
+    family: ModelFamily,
+    fit_intercept: bool = True,
+    n_jobs: int = 1,
+) -> tuple[float, np.ndarray, str, list[str]]:
+    """Family-generic Freedman–Lane joint test.
+
+    Tests whether non-confounder predictors collectively contribute
+    significant predictive information beyond confounders, using
+    full-model residuals to construct Y*.
+
+    Unlike Kennedy joint (which permutes exposure residuals and keeps
+    Y fixed), Freedman–Lane joint permutes Y-residuals and keeps X
+    fixed.  Because Y* changes, both reduced and full models are
+    refit for each permutation.
+
+    Returns:
+        A ``(obs_improvement, perm_improvements, metric_type,
+        features_tested)`` tuple.
+    """
+    features_to_test = [c for c in X.columns if c not in confounders]
+
+    # Metric label for display — derived from family name.
+    metric_type = "Deviance Reduction" if family.name == "logistic" else "RSS Reduction"
+
+    X_np = X.values.astype(float)
+    n_perm, n = perm_indices.shape
+
+    # Derive a deterministic RNG for stochastic Y* reconstruction.
+    rng = np.random.default_rng(int(perm_indices[0, 0]))
+
+    if confounders:
+        conf_idx = [X.columns.get_loc(c) for c in confounders]
+        Z = X_np[:, conf_idx]
+    else:
+        Z = np.zeros((n, 0))
+
+    # --- Observed reduced model (confounders only) ---
+    if Z.shape[1] > 0:
+        reduced_model = family.fit(Z, y_values, fit_intercept)
+        preds_reduced = family.predict(reduced_model, Z)
+    else:
+        if fit_intercept:
+            preds_reduced = np.full(n, np.mean(y_values), dtype=float)
+        else:
+            preds_reduced = np.zeros(n, dtype=float)
+
+    base_metric = family.fit_metric(y_values, preds_reduced)
+
+    # --- Observed full model (all features) ---
+    full_model = family.fit(X_np, y_values, fit_intercept)
+    preds_full = family.predict(full_model, X_np)
+    obs_improvement = base_metric - family.fit_metric(y_values, preds_full)
+
+    # --- Full-model residuals ---
+    full_resids = family.residuals(full_model, X_np, y_values)  # (n,)
+
+    # --- Permutation loop ---
+    # For each permutation, construct Y* from permuted full-model
+    # residuals, then refit BOTH reduced and full models on Y* and
+    # compute the improvement under H₀.
+
+    def _fl_joint_one_perm(idx: np.ndarray) -> float:
+        perm_resids = full_resids[idx]  # (n,)
+        y_star = family.reconstruct_y(
+            preds_reduced[np.newaxis, :],  # (1, n)
+            perm_resids[np.newaxis, :],  # (1, n)
+            rng,
+        ).ravel()  # (n,)
+
+        # Refit reduced model on Y*
+        if Z.shape[1] > 0:
+            red_model_star = family.fit(Z, y_star, fit_intercept)
+            red_preds_star = family.predict(red_model_star, Z)
+        else:
+            if fit_intercept:
+                red_preds_star = np.full(n, np.mean(y_star), dtype=float)
+            else:
+                red_preds_star = np.zeros(n, dtype=float)
+        metric_red = family.fit_metric(y_star, red_preds_star)
+
+        # Refit full model on Y*
+        full_model_star = family.fit(X_np, y_star, fit_intercept)
+        full_preds_star = family.predict(full_model_star, X_np)
+        metric_full = family.fit_metric(y_star, full_preds_star)
+
+        return float(metric_red - metric_full)
+
+    if n_jobs == 1:
+        perm_improvements = np.zeros(n_perm)
+        for i in range(n_perm):
+            perm_improvements[i] = _fl_joint_one_perm(perm_indices[i])
+    else:
+        from joblib import Parallel, delayed
+
+        perm_improvements = np.array(
+            Parallel(n_jobs=n_jobs, prefer="threads")(
+                delayed(_fl_joint_one_perm)(perm_indices[i]) for i in range(n_perm)
+            )
+        )
+
+    return obs_improvement, perm_improvements, metric_type, features_to_test
+
+
+# ------------------------------------------------------------------ #
 # Kennedy (1995) joint — collective predictive improvement test
 # ------------------------------------------------------------------ #
 #
@@ -755,10 +1086,11 @@ def permutation_test_regression(
         precision: Decimal places for reported p-values.
         p_value_threshold_one: First significance level.
         p_value_threshold_two: Second significance level.
-        method: One of ``'ter_braak'``, ``'kennedy'``, or
-            ``'kennedy_joint'``.
+        method: One of ``'ter_braak'``, ``'kennedy'``,
+            ``'kennedy_joint'``, ``'freedman_lane'``, or
+            ``'freedman_lane_joint'``.
         confounders: Column names of confounders (required for Kennedy
-            methods).
+            and Freedman–Lane methods).
         random_state: Seed for reproducibility.
         fit_intercept: Whether to include an intercept term in the
             model.  When ``True`` (default), an intercept is estimated
@@ -868,6 +1200,19 @@ def permutation_test_regression(
         warnings.warn(
             f"{method!r} method called without confounders — all features "
             "will be tested. Consider 'ter_braak' for unconditional tests.",
+            UserWarning,
+            stacklevel=2,
+        )
+
+    # Freedman–Lane without confounders is equivalent to testing against
+    # an intercept-only null.  ter Braak is more appropriate because it
+    # conditions on all other predictors individually.
+    if method in ("freedman_lane", "freedman_lane_joint") and not confounders:
+        warnings.warn(
+            f"{method!r} method called without confounders — the reduced "
+            "model is intercept-only, which yields less power than "
+            "conditioning on other predictors. Consider 'ter_braak' for "
+            "unconditional tests.",
             UserWarning,
             stacklevel=2,
         )
@@ -1012,9 +1357,62 @@ def permutation_test_regression(
             "diagnostics": diagnostics,
         }
 
+    elif method == "freedman_lane":
+        permuted_coefs = _freedman_lane_individual_generic(
+            X,
+            y_values,
+            resolved,
+            confounders,
+            perm_indices,
+            model_coefs,
+            fit_intercept,
+            n_jobs=n_jobs,
+        )
+
+    elif method == "freedman_lane_joint":
+        obs_improvement, perm_improvements, metric_type, features_tested = (
+            _freedman_lane_joint(
+                X,
+                y_values,
+                confounders,
+                perm_indices,
+                resolved,
+                fit_intercept,
+                n_jobs=n_jobs,
+            )
+        )
+
+        p_value = (np.sum(perm_improvements >= obs_improvement) + 1) / (
+            n_permutations + 1
+        )
+        rounded = np.round(p_value, precision)
+        val = f"{rounded:.{precision}f}"
+        if p_value < p_value_threshold_two:
+            p_value_str = f"{val} (**)"
+        elif p_value < p_value_threshold_one:
+            p_value_str = f"{val} (*)"
+        else:
+            p_value_str = f"{val} (ns)"
+
+        return {
+            "observed_improvement": obs_improvement,
+            "permuted_improvements": perm_improvements.tolist(),
+            "p_value": p_value,
+            "p_value_str": p_value_str,
+            "metric_type": metric_type,
+            "model_type": resolved.name,
+            "features_tested": features_tested,
+            "confounders": confounders,
+            "p_value_threshold_one": p_value_threshold_one,
+            "p_value_threshold_two": p_value_threshold_two,
+            "method": method,
+            "diagnostics": diagnostics,
+        }
+
     else:
         raise ValueError(
-            f"Invalid method '{method}'. Choose 'ter_braak', 'kennedy', or 'kennedy_joint'."
+            f"Invalid method '{method}'. Choose 'ter_braak', 'kennedy', "
+            "'kennedy_joint', 'freedman_lane', or 'freedman_lane_joint'."
         )
 
     # Compute empirical (permutation) and classical (asymptotic) p-values.
@@ -1033,11 +1431,11 @@ def permutation_test_regression(
         )
     )
 
-    # For Kennedy method with confounders, mark confounder p-values as
-    # N/A since they are controls (not hypotheses being tested).
-    # Their coefficients are held constant across permutations, so
-    # computing a p-value for them would be meaningless.
-    if method == "kennedy" and confounders:
+    # For Kennedy and Freedman–Lane methods with confounders, mark
+    # confounder p-values as N/A since they are controls (not hypotheses
+    # being tested).  Their coefficients are held constant across
+    # permutations, so computing a p-value for them would be meaningless.
+    if method in ("kennedy", "freedman_lane") and confounders:
         for i, col in enumerate(X.columns):
             if col in confounders:
                 permuted_p_values[i] = "N/A (confounder)"
