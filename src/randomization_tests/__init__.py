@@ -27,6 +27,7 @@ Public API:
         PoissonFamily
         resolve_family
         register_family
+        PermutationEngine
 """
 
 from ._config import get_backend, set_backend
@@ -43,6 +44,7 @@ from .display import (
     print_joint_results_table,
     print_results_table,
 )
+from .engine import PermutationEngine
 from .families import (
     LinearFamily,
     LogisticFamily,
@@ -81,6 +83,7 @@ __all__ = [
     "PoissonFamily",
     "resolve_family",
     "register_family",
+    "PermutationEngine",
 ]
 
 __version__ = "0.1.5"

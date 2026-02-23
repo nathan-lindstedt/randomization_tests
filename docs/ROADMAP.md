@@ -186,13 +186,13 @@ logistic paths to the new protocol.  New permutation methods and GLM
 families are then built on the stabilised abstractions, inheriting
 all existing methods from the start.
 
-**Progress:** Steps 1–6b and Step 7 (Poisson, NB, ordinal) complete.
-All five implemented families (linear, logistic, Poisson,
-negative binomial, ordinal) have JAX Newton–Raphson backends.
-~474 tests passing.  Remaining: confounder module update (Step 3),
-new GLM families (Step 7 continued: multinomial),
-sign-flip test (Step 8), `PermutationEngine` refactor (Step 9),
-and backend injection for testability (Step 10).
+**Progress:** Steps 1–7 complete (all six families: linear, logistic,
+Poisson, negative binomial, ordinal, multinomial).  All six have
+JAX Newton–Raphson backends.  Count auto-detection warning
+implemented.  ~524 tests passing.  Remaining: confounder module
+update (Step 3), `PermutationEngine` refactor (Step 9), and backend
+injection for testability (Step 10).  Sign-flip test deferred to
+v0.4.0 (different assumption domain — symmetry vs exchangeability).
 
 ### Step 1 — `ModelFamily` protocol
 
@@ -597,31 +597,7 @@ against statsmodels `MNLogit`:
 
 ### Step 8 — Sign-flip test
 
-Depends on Step 1 (`family.residuals()`, `family.reconstruct_y()`).
-
-Sign-flipping rests on the assumption of symmetric error
-distributions, which is strictly weaker than exchangeability but
-applies only to paired or within-subject designs where the
-difference scores are symmetric about zero under the null.  Because
-the assumption domain differs from that of permutation tests —
-symmetry governs within-unit comparisons, exchangeability governs
-between-unit comparisons — sign-flipping is exposed as a **separate
-public entry point** rather than as a `method` on
-`permutation_test_regression()`.
-
-- [ ] `sign_flip_test_regression()`: separate public function with
-  input validation requiring paired structure (two-column response or
-  pre-computed difference vector).
-- [ ] Resampling module `sign_flips.py` (parallel to `permutations.py`)
-  generating the 2ⁿ reference distribution of sign-flip assignments.
-- [ ] Integrates with `ModelFamily`: sign-flip the residuals returned
-  by `family.residuals()`, reconstruct via `family.reconstruct_y()`.
-  No family-specific code needed.
-- [ ] Documentation clearly distinguishes the symmetry assumption from
-  the exchangeability assumption, including when each is appropriate
-  and when each is violated.
-- [ ] Standard in neuroimaging (FSL PALM supports both permutation
-  and sign-flip).
+**Deferred to v0.4.0.** See the v0.4.0 section below.
 
 ### Step 9 — `PermutationEngine` class refactor
 
@@ -826,6 +802,35 @@ rendering).  v0.4.0 will move formatting responsibility into the
   `FutureWarning` in v0.4.0, removed in v0.5.0.
 - [ ] Unblocks user-defined families — a custom `ModelFamily` can
   control its own display output without modifying `display.py`.
+
+### Sign-flip test
+
+Deferred from v0.3.0 (Step 8).  Depends on Step 1
+(`family.residuals()`, `family.reconstruct_y()`).
+
+Sign-flipping rests on the assumption of symmetric error
+distributions, which is strictly weaker than exchangeability but
+applies only to paired or within-subject designs where the
+difference scores are symmetric about zero under the null.  Because
+the assumption domain differs from that of permutation tests —
+symmetry governs within-unit comparisons, exchangeability governs
+between-unit comparisons — sign-flipping is exposed as a **separate
+public entry point** rather than as a `method` on
+`permutation_test_regression()`.
+
+- [ ] `sign_flip_test_regression()`: separate public function with
+  input validation requiring paired structure (two-column response or
+  pre-computed difference vector).
+- [ ] Resampling module `sign_flips.py` (parallel to `permutations.py`)
+  generating the 2ⁿ reference distribution of sign-flip assignments.
+- [ ] Integrates with `ModelFamily`: sign-flip the residuals returned
+  by `family.residuals()`, reconstruct via `family.reconstruct_y()`.
+  No family-specific code needed.
+- [ ] Documentation clearly distinguishes the symmetry assumption from
+  the exchangeability assumption, including when each is appropriate
+  and when each is violated.
+- [ ] Standard in neuroimaging (FSL PALM supports both permutation
+  and sign-flip).
 
 ### Exchangeability cells
 
