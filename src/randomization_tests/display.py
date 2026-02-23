@@ -121,19 +121,20 @@ def print_results_table(
         print(f"{trunc_feat:<{fc}} {coef_str} {emp_p[i]:>18} {asy_p[i]:>18}")
 
     # ── Notes ──────────────────────────────────────────────────── #
-    # Kennedy without confounders is valid but unusual — surface a
-    # note so the user knows ter Braak may be more appropriate.
+    # Kennedy / Freedman–Lane without confounders is valid but unusual —
+    # surface a note so the user knows ter Braak may be more appropriate.
     method = results.get("method", "")
     confounders = results.get("confounders")
-    if method == "kennedy" and not confounders:
+    if method in ("kennedy", "freedman_lane") and not confounders:
+        method_label = "Freedman\u2013Lane" if method == "freedman_lane" else "Kennedy"
         print("-" * 80)
         print("Notes")
         print("-" * 80)
         print(
             _wrap(
-                "  [!] Kennedy method called without confounders — all features "
-                "will be tested unconditionally. Consider 'ter_braak' for "
-                "unconditional tests.",
+                f"  [!] {method_label} method called without confounders \u2014 all "
+                "features will be tested unconditionally. Consider 'ter_braak' "
+                "for unconditional tests.",
                 width=80,
                 indent=6,
             )
@@ -226,16 +227,20 @@ def print_joint_results_table(
     print(f"{'Joint p-Value:':<30} {results['p_value_str']:>12}")
 
     # ── Notes ──────────────────────────────────────────────────── #
+    method = results.get("method", "")
     confounders = results.get("confounders")
-    if not confounders:
+    if method in ("kennedy_joint", "freedman_lane_joint") and not confounders:
+        method_label = (
+            "Freedman\u2013Lane" if method == "freedman_lane_joint" else "Kennedy"
+        )
         print("-" * 80)
         print("Notes")
         print("-" * 80)
         print(
             _wrap(
-                "  [!] Kennedy method called without confounders — all features "
-                "will be tested unconditionally. Consider 'ter_braak' for "
-                "unconditional tests.",
+                f"  [!] {method_label} method called without confounders \u2014 all "
+                "features will be tested unconditionally. Consider 'ter_braak' "
+                "for unconditional tests.",
                 width=80,
                 indent=6,
             )
