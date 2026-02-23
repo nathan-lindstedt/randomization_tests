@@ -27,26 +27,32 @@ permutation_test_regression(
     confounders: list[str] | None = None,
     random_state: int | None = None,
     fit_intercept: bool = True,
-) -> dict
+    family: str = "auto",
+    n_jobs: int = 1,
+) -> IndividualTestResult | JointTestResult
 ```
 
 Run a permutation test for regression coefficients.
 
-Automatically detects binary vs. continuous outcomes and uses logistic or
-linear regression accordingly.
+By default (`family="auto"`), detects binary vs. continuous outcomes and
+uses logistic or linear regression accordingly.  Pass an explicit family
+string (`"linear"`, `"logistic"`, `"poisson"`, `"negative_binomial"`) to
+override auto‑detection.
 
 | Parameter | Description |
 |---|---|
 | `X` | Feature matrix, shape `(n_samples, n_features)`. Accepts pandas or Polars DataFrames. |
-| `y` | Target values, shape `(n_samples,)`. Binary targets (`{0, 1}`) trigger logistic regression; otherwise linear regression is used. |
+| `y` | Target values, shape `(n_samples,)`. When `family="auto"`, binary targets (`{0, 1}`) trigger logistic regression; otherwise linear regression is used. |
 | `n_permutations` | Number of unique permutations to generate. |
 | `precision` | Decimal places for reported p‑values. |
 | `p_value_threshold_one` | First significance level (marked `*`). |
 | `p_value_threshold_two` | Second significance level (marked `**`). |
-| `method` | `"ter_braak"`, `"kennedy"`, or `"kennedy_joint"`. |
-| `confounders` | Column names of confounders (required for Kennedy methods). |
+| `method` | `"ter_braak"`, `"kennedy"`, `"kennedy_joint"`, `"freedman_lane"`, or `"freedman_lane_joint"`. |
+| `confounders` | Column names of confounders (required for Kennedy and Freedman–Lane methods). |
 | `random_state` | Seed for reproducibility. |
 | `fit_intercept` | Whether to include an intercept in the regression model. Set to `False` for through‑origin regression. |
+| `family` | Model family string. `"auto"` (default) detects binary `{0, 1}` targets → logistic, otherwise linear. Explicit values (`"linear"`, `"logistic"`, `"poisson"`, `"negative_binomial"`) bypass auto‑detection. |
+| `n_jobs` | Number of parallel jobs for the permutation batch‑fit loop. `1` (default) is sequential; `-1` uses all CPU cores. Ignored when the JAX backend is active. |
 
 **Returns:** A dictionary containing model coefficients, empirical
 (permutation) and classical (asymptotic) p‑values, extended diagnostics,
@@ -82,7 +88,7 @@ Runtime‑checkable protocol that every family class must satisfy.
 
 | Property / Method | Description |
 |---|---|
-| `name: str` | Short label, e.g. `"linear"`, `"logistic"`, `"poisson"`. |
+| `name: str` | Short label, e.g. `"linear"`, `"logistic"`, `"poisson"`, `"negative_binomial"`. |
 | `residual_type: str` | Residual flavour (`"raw"`, `"probability"`, `"response"`). |
 | `direct_permutation: bool` | `True` when the family supports direct Y‑permutation (ter Braak shortcut). |
 | `metric_label: str` | Human‑readable label for the joint‑test metric (e.g. `"RSS Reduction"`). |
@@ -129,6 +135,52 @@ Poisson GLM for non‑negative integer count outcomes.
   draws `Y* ~ Poisson(μ*)`.
 - `batch_fit` uses a joblib‑parallelised statsmodels loop.
 
+### `NegativeBinomialFamily`
+
+```python
+NegativeBinomialFamily(alpha: float | None = None)
+```
+
+NB2 GLM for overdispersed count outcomes (`Var(Y) = μ + α·μ²`).
+
+- `residual_type = "response"` — response‑scale residuals `y − μ̂`.
+- `direct_permutation = False`.
+- `metric_label = "Deviance Reduction"`.
+- `alpha` — the NB dispersion parameter.  `None` means uncalibrated
+  (must call `calibrate()` before fitting).
+- `reconstruct_y` clips fitted values, then draws
+  `Y* ~ NB(n=1/α, p=1/(1+α·μ*))`.
+- `batch_fit` uses a joblib‑parallelised statsmodels loop with fixed α.
+
+#### `calibrate`
+
+```python
+NegativeBinomialFamily.calibrate(
+    X: np.ndarray,
+    y: np.ndarray,
+    fit_intercept: bool = True,
+) -> NegativeBinomialFamily
+```
+
+Estimate the NB dispersion parameter α from the data via MLE
+(`statsmodels.discrete.NegativeBinomial`).  Returns a **new frozen
+instance** with `alpha` set.  Idempotent: calling on an
+already‑calibrated instance returns `self`.
+
+This method is **not** part of the `ModelFamily` protocol — it is
+duck‑typed and called via `hasattr` guard in the permutation engine.
+Only families with nuisance parameters need implement it.
+
+| Parameter | Description |
+|---|---|
+| `X` | Feature matrix, shape `(n, p)`. |
+| `y` | Response vector, shape `(n,)`. |
+| `fit_intercept` | Whether to include an intercept column. |
+
+**Returns:** A new `NegativeBinomialFamily` instance with `alpha` set.
+
+**Raises:** `RuntimeError` if MLE estimation fails to converge.
+
 ### `resolve_family`
 
 ```python
@@ -143,6 +195,7 @@ Resolve a family string to a `ModelFamily` instance.
 | `"linear"` | `LinearFamily()`. |
 | `"logistic"` | `LogisticFamily()`. |
 | `"poisson"` | `PoissonFamily()`. |
+| `"negative_binomial"` | `NegativeBinomialFamily()` (uncalibrated; α estimated during calibration). |
 
 **Raises:** `ValueError` for unrecognised family strings.
 

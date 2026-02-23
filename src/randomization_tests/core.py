@@ -1048,6 +1048,14 @@ def permutation_test_regression(
     # that the dispatch below is family-agnostic wherever possible.
     resolved = resolve_family(family, y_values)
 
+    # Calibrate the family instance — estimate any nuisance parameters
+    # (e.g. negative binomial α) from the observed data.  Only families
+    # with nuisance parameters implement calibrate(); others skip this.
+    if hasattr(resolved, "calibrate"):
+        resolved = resolved.calibrate(
+            X.to_numpy().astype(float), y_values, fit_intercept
+        )
+
     # Validate Y against the resolved family's constraints.
     # For "auto" this is a no-op (auto-detection already chose the
     # right family).  For explicit families it catches mismatches

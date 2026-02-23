@@ -186,20 +186,23 @@ logistic paths to the new protocol.  New permutation methods and GLM
 families are then built on the stabilised abstractions, inheriting
 all existing methods from the start.
 
-**Progress:** Steps 1–6b complete (abstraction layer, core refactor,
-JAX improvements, parallelisation, Freedman–Lane, stabilisation).
-337 tests passing (300 original + 37 integration/regression).
-Remaining: confounder module update (Step 3), new GLM families
-(Step 7: Poisson, negative binomial, ordinal, multinomial),
+**Progress:** Steps 1–6b and Step 7 (Poisson, NB) complete.
+~420 tests passing.  Remaining: confounder module update (Step 3),
+new GLM families (Step 7 continued: ordinal, multinomial),
 sign-flip test (Step 8), `PermutationEngine` refactor (Step 9),
 and backend injection for testability (Step 10).
 
 ### Step 1 — `ModelFamily` protocol
 
 - [X] A `typing.Protocol` class defining the interface every family
-  must implement: `fit`, `predict`, `coefs`, `residuals`,
-  `reconstruct_y`, `fit_metric`, `diagnostics`, `classical_p_values`,
-  and a `batch_fit` method that delegates to the active backend.
+  must implement:
+  - **Properties:** `name`, `residual_type`, `direct_permutation`,
+    `metric_label`.
+  - **Methods:** `validate_y`, `fit`, `predict`, `coefs`, `residuals`,
+    `reconstruct_y`, `fit_metric`, `diagnostics`, `classical_p_values`,
+    `exchangeability_cells`, `batch_fit`, `batch_fit_varying_X`.
+  - **Duck-typed (not in protocol):** `calibrate()` — only implemented
+    by families with nuisance parameters (see §Design Notes).
 - [X] `LinearFamily` and `LogisticFamily` implementations refactored
   from existing `core.py` logic.
 - [X] `resolve_family()` dispatch: `"auto"` resolves to `"linear"` or
@@ -371,9 +374,10 @@ type safety, dead-code removal, and test coverage.
 
 - [X] `exchangeability_cells(X, y) -> np.ndarray | None` added to
   the `ModelFamily` protocol with full docstring.  Returns `None`
-  (global exchangeability) on both `LinearFamily` and
-  `LogisticFamily`.  v0.4.0 will implement non-trivial cell
-  structures for clustered and multilevel designs.
+  (global exchangeability) on all four current families
+  (`LinearFamily`, `LogisticFamily`, `PoissonFamily`,
+  `NegativeBinomialFamily`).  v0.4.0 will implement non-trivial
+  cell structures for clustered and multilevel designs.
 
 #### Dead code removal
 
@@ -421,20 +425,30 @@ permutation methods and both backends from the start.
 
 #### Poisson regression
 
-- [ ] Permutation tests for count outcomes with an exponential mean
-  function.  The ter Braak residual-permutation approach generalises
-  naturally: fit the reduced Poisson model, extract deviance residuals,
-  permute, and refit the full model.
-- [ ] Diagnostics: deviance, Pearson chi-squared, AIC/BIC,
-  overdispersion test.
+- [X] Permutation tests for count outcomes with an exponential mean
+  function.  Response-scale residuals (`e = y − μ̂`) used for
+  Freedman–Lane / ter Braak compatibility with `reconstruct_y`;
+  reconstruction samples from `Poisson(μ*)` where `μ* = clip(μ̂ + π(e))`.
+- [X] Diagnostics: deviance, Pearson chi-squared, dispersion,
+  log-likelihood, AIC/BIC.
+- [X] Overdispersion note in diagnostics table when dispersion > 1.5
+  with guidance to consider `family='negative_binomial'`.
+- [X] 40 tests covering protocol conformance, validation, single-model,
+  reconstruction, deviance metric, diagnostics, batch fitting, and
+  registry.
 
 #### Negative binomial regression
 
-- [ ] Handles overdispersed count data where the Poisson assumption
-  fails.
-- [ ] Requires estimation of the dispersion parameter once on the
-  observed data, held fixed throughout the permutation loop.
-- [ ] Diagnostics: deviance, AIC/BIC, alpha (dispersion) estimate.
+- [X] Handles overdispersed count data (NB2 parameterisation:
+  `Var(Y) = μ + α·μ²`) where the Poisson assumption fails.
+- [X] Dispersion α estimated once on observed data via
+  `sm.NegativeBinomial` MLE, held fixed for all permutation refits.
+- [X] **`calibrate()` design pattern** — see §Design Notes below.
+- [X] Response-scale residuals, NB-sampled reconstruction
+  (`n = 1/α, p = 1/(1 + α·μ*)`), and NB deviance metric.
+- [X] Diagnostics: deviance, Pearson χ², dispersion, α, AIC/BIC.
+- [X] ~40 tests including calibration idempotency and uncalibrated
+  guards.
 
 #### Ordinal logistic regression
 
@@ -494,6 +508,16 @@ compiler (which dispatches to the engine per equation).
 - [ ] `PermutationEngine` accepts a `ModelFamily`, backend, and
   permutation configuration (method, n_permutations, n_jobs,
   seed) at construction time.
+- [ ] Widen the public `family` parameter from `str` to
+  `str | ModelFamily` so users can pass pre-configured family
+  instances (e.g. `NegativeBinomialFamily(alpha=2.0)`) directly
+  to `permutation_test_regression()`.  When a `ModelFamily`
+  instance is passed, `resolve_family()` is skipped and the
+  instance is used as-is (with `calibrate()` still called via
+  `hasattr` guard for uncalibrated instances).
+- [ ] The engine constructor calls `calibrate()` (via `hasattr`
+  guard) on the family instance, yielding a fully-resolved family
+  for the loop — see §Design Notes under Step 10.
 - [ ] The engine exposes a `permute_hook()` extension point that
   v0.4.0 can override with exchangeability-constrained permutations.
 - [ ] `permutation_test_regression()` becomes a thin public wrapper
@@ -514,6 +538,53 @@ construction time).
   monkeypatching global state.
 - [ ] Document the pattern for writing tests with mock backends.
 
+### Design Notes — `calibrate()` pattern for nuisance parameters
+
+Some GLM families have nuisance parameters that must be estimated
+from the observed data before the permutation loop begins (e.g.
+the negative binomial's dispersion α).  Three design options were
+evaluated:
+
+**Option A (chosen): duck-typed `calibrate()` method.**
+Families that need nuisance-parameter estimation implement a
+`calibrate(X, y, fit_intercept) -> ModelFamily` method that
+returns a **new frozen** instance with the nuisance parameter(s)
+baked in.  Families without nuisance parameters (linear, logistic,
+Poisson) simply do not implement `calibrate()`.  The engine calls
+`calibrate()` via `hasattr` guard — no protocol change required,
+no dead stubs on families that will never use it.
+
+The method is **idempotent**: calling it on an already-calibrated
+instance returns `self`.  This makes it safe for the v0.4.0
+`PermutationEngine.__init__` to call unconditionally without
+checking prior state.
+
+**Option B (rejected): α required at construction.**
+A standalone `estimate_nb_alpha(X, y)` helper would estimate α,
+requiring the user (or engine) to pass it explicitly:
+`NegativeBinomialFamily(alpha=estimate_nb_alpha(X, y))`.
+This forces the engine to know which families need pre-estimation
+and which don't — leaking family-specific knowledge into generic
+code.
+
+**Option C (rejected): mutable dataclass with lazy caching.**
+The family object mutates itself on first `fit()`, caching α as
+an instance attribute.  This violates the frozen-dataclass
+invariant used by all other families, makes the object
+non-hashable, and introduces hidden state that complicates
+parallelisation (shared mutable state across threads).
+
+**v0.4.0 implications:**
+- `calibrate()` becomes the natural hook for
+  `PermutationEngine.__init__`: the engine calls it once during
+  construction, yielding a fully-resolved family for the loop.
+- `calibrate()` is orthogonal to `exchangeability_cells()` — they
+  solve different problems (nuisance estimation vs. permutation
+  constraints) and compose independently.
+- Future families with nuisance parameters (e.g. zero-inflated
+  models with π, Gamma with shape k) adopt the same pattern
+  without protocol changes.
+
 ---
 
 ## v0.4.0 — Exchangeability & Multilevel Frameworks
@@ -527,7 +598,12 @@ permutation test specification for any single-equation model.
 **Forward-compatibility note:** the `exchangeability_cells()` method
 was added to the `ModelFamily` protocol in v0.3.0 Step 6b
 (stabilisation) as a no-op stub returning `None` (global
-exchangeability).  This release fills it in with real cell structures.
+exchangeability) on all four families (linear, logistic, Poisson,
+negative binomial).  This release fills it in with real cell
+structures.  Similarly, `calibrate()` (v0.3.0 Step 7, NB) is
+currently called via `hasattr` in `core.py`; the
+`PermutationEngine` (Step 9) will formalise this as a constructor
+hook.
 
 ### `fit_reduced()` on `ModelFamily`
 

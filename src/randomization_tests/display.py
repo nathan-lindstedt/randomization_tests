@@ -89,7 +89,7 @@ def print_results_table(
         f_p = diag.get("f_p_value", None)
         f_p_str = f"{f_p:.4e}" if f_p is not None else "N/A"
         print(f"{'':<{col1}}{'Prob (F-stat):':>{col2 - 11}} {f_p_str:>10}")
-    elif model_type == "poisson":
+    elif model_type in ("poisson", "negative_binomial"):
         print(
             f"{'Deviance:':<16}{diag.get('deviance', 'N/A'):<{col1 - 16}}"
             f"{'BIC:':>{col2 - 11}} {diag.get('bic', 'N/A'):>10}"
@@ -100,9 +100,17 @@ def print_results_table(
         )
         pearson = diag.get("pearson_chi2", None)
         pearson_str = f"{pearson:.4f}" if pearson is not None else "N/A"
-        print(
-            f"{'':<{col1}}{chr(0x03C7) + chr(0x00B2) + ' (Pearson):':>{col2 - 11}} {pearson_str:>10}"
-        )
+        alpha_disp = diag.get("alpha", None)
+        if model_type == "negative_binomial" and alpha_disp is not None:
+            print(
+                f"{'Alpha (NB):':>{col1}}"
+                f"{chr(0x03C7) + chr(0x00B2) + ' (Pearson):':>{col2 - 11}} {pearson_str:>10}"
+            )
+        else:
+            print(
+                f"{'':<{col1}}"
+                f"{chr(0x03C7) + chr(0x00B2) + ' (Pearson):':>{col2 - 11}} {pearson_str:>10}"
+            )
     else:
         print(
             f"{'Pseudo R-sq:':<16}{diag.get('pseudo_r_squared', 'N/A'):<{col1 - 16}}"
@@ -214,7 +222,7 @@ def print_joint_results_table(
         f_p = diag.get("f_p_value", None)
         f_p_str = f"{f_p:.4e}" if f_p is not None else "N/A"
         print(f"{'':<{col1}}{'Prob (F-stat):':>{col2 - 11}} {f_p_str:>10}")
-    elif model_type == "poisson":
+    elif model_type in ("poisson", "negative_binomial"):
         print(
             f"{'Deviance:':<16}{diag.get('deviance', 'N/A'):<{col1 - 16}}"
             f"{'BIC:':>{col2 - 11}} {diag.get('bic', 'N/A'):>10}"
@@ -225,9 +233,17 @@ def print_joint_results_table(
         )
         pearson = diag.get("pearson_chi2", None)
         pearson_str = f"{pearson:.4f}" if pearson is not None else "N/A"
-        print(
-            f"{'':<{col1}}{chr(0x03C7) + chr(0x00B2) + ' (Pearson):':>{col2 - 11}} {pearson_str:>10}"
-        )
+        alpha_disp = diag.get("alpha", None)
+        if model_type == "negative_binomial" and alpha_disp is not None:
+            print(
+                f"{'Alpha (NB):':>{col1}}"
+                f"{chr(0x03C7) + chr(0x00B2) + ' (Pearson):':>{col2 - 11}} {pearson_str:>10}"
+            )
+        else:
+            print(
+                f"{'':<{col1}}"
+                f"{chr(0x03C7) + chr(0x00B2) + ' (Pearson):':>{col2 - 11}} {pearson_str:>10}"
+            )
     else:
         print(
             f"{'Pseudo R-sq:':<16}{diag.get('pseudo_r_squared', 'N/A'):<{col1 - 16}}"
@@ -519,6 +535,26 @@ def print_diagnostics_table(
                     f"Dispersion = {disp_str}: overdispersion "
                     f"detected (> 1.5). Consider using "
                     f"family='negative_binomial'."
+                )
+    elif model_type == "negative_binomial":
+        gof = ext.get("nb_gof", {})
+        if gof:
+            print(
+                f"{'  Pearson ' + chr(0x03C7) + chr(0x00B2) + ':':<{lw}}"
+                f"{gof.get('pearson_chi2', 'N/A'):>10}"
+            )
+            print(f"{'  Deviance:':<{lw}}{gof.get('deviance', 'N/A'):>10}")
+            disp = gof.get("dispersion", None)
+            disp_str = f"{disp:.4f}" if disp is not None else "N/A"
+            print(f"{'  Dispersion:':<{lw}}{disp_str:>10}")
+            alpha_val = gof.get("alpha", None)
+            alpha_str = f"{alpha_val:.4f}" if alpha_val is not None else "N/A"
+            alpha_label = "  \u03b1 (NB Dispersion):"
+            print(f"{alpha_label:<{lw}}{alpha_str:>10}")
+            if gof.get("overdispersed", False):
+                notes.append(
+                    f"Dispersion = {disp_str}: residual "
+                    f"overdispersion detected after NB fit."
                 )
     else:
         dr = ext.get("deviance_residuals", {})

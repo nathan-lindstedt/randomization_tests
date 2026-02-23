@@ -1529,6 +1529,444 @@ class PoissonFamily:
 
 
 # ------------------------------------------------------------------ #
+# NegativeBinomialFamily
+# ------------------------------------------------------------------ #
+#
+# Negative binomial regression models overdispersed count outcomes
+# Y ∈ {0, 1, 2, …} via the log link function:
+#
+#   E[Y | X] = μ = exp(Xβ)
+#   Var(Y | X) = μ + α·μ²       (NB2 parameterisation)
+#
+# where α > 0 is the dispersion parameter.  When α = 0 the model
+# reduces to Poisson.  The NB2 parameterisation is the statsmodels
+# default and the most common in applied work.
+#
+# **Key design decision** (from the v0.3.0 plan):
+# Estimate α ONCE on the observed (unpermuted) data using
+# ``sm.NegativeBinomial(y, X).fit()``, which jointly estimates β and
+# α via maximum likelihood.  Hold α fixed for all permutation refits
+# by passing it to ``sm.GLM(family=NegativeBinomial(alpha=α_hat))``.
+# This avoids re-estimating α B times (expensive, unnecessary under
+# H₀, and can cause convergence failures on extreme permuted Ys).
+#
+# **Residuals** are response-scale: ``e = y − μ̂``.  This follows
+# the same rationale as PoissonFamily — response-scale residuals
+# are scale-compatible with ``reconstruct_y``, which operates on the
+# response scale.
+#
+# **Reconstruction** uses negative binomial sampling:
+#   1. μ* = clip(μ̂ + π(e), 1e-10, 1e8)
+#   2. Convert to NB parameters: n = 1/α, p = 1/(1 + α·μ*)
+#   3. Draw Y* ~ NegBin(n, p)
+#
+# **Joint-test metric** is NB deviance:
+#   D = 2 Σ[y·log(y/μ̂) − (y + 1/α)·log((1 + α·y)/(1 + α·μ̂))]
+#
+# with the convention that 0·log(0/·) = 0.
+#
+# **Batch fitting** uses the same joblib-parallelised statsmodels
+# loop as PoissonFamily, but with ``sm.families.NegativeBinomial``
+# and a fixed α.
+
+
+@dataclass(frozen=True)
+class NegativeBinomialFamily:
+    """Negative binomial regression family for overdispersed count outcomes.
+
+    Implements the ``ModelFamily`` protocol for non-negative integer
+    outcomes where the variance exceeds the mean (overdispersion).
+    Uses the NB2 parameterisation: ``Var(Y) = μ + α·μ²``.
+
+    The dispersion parameter α is estimated once on the observed data
+    via :meth:`calibrate` (which calls ``sm.NegativeBinomial`` MLE)
+    and returns a **new frozen instance** with α baked in.  All
+    subsequent calls to ``fit``, ``batch_fit``, ``reconstruct_y``,
+    and ``fit_metric`` use the fixed α without re-estimating.
+
+    Users may also supply α directly at construction time, in which
+    case :meth:`calibrate` is a no-op (idempotent).
+
+    Parameters
+    ----------
+    alpha : float or None
+        Dispersion parameter.  If ``None`` (default), must be
+        resolved via :meth:`calibrate` before fitting.
+    """
+
+    alpha: float | None = None
+
+    @property
+    def name(self) -> str:
+        return "negative_binomial"
+
+    @property
+    def residual_type(self) -> str:
+        return "response"
+
+    @property
+    def direct_permutation(self) -> bool:
+        return False
+
+    @property
+    def metric_label(self) -> str:
+        return "Deviance Reduction"
+
+    # ---- Internal helpers ------------------------------------------
+
+    def _nb_family(self, alpha: float) -> sm.families.NegativeBinomial:
+        """Create a statsmodels NB2 family object with fixed α."""
+        return sm.families.NegativeBinomial(alpha=alpha)
+
+    def _require_alpha(self, method: str) -> float:
+        """Return α or raise if uncalibrated."""
+        if self.alpha is None:
+            msg = (
+                f"NegativeBinomialFamily.{method} requires α to be "
+                "estimated first.  Call calibrate() on the observed data "
+                "before running permutations."
+            )
+            raise RuntimeError(msg)
+        return self.alpha
+
+    # ---- Calibration (nuisance-parameter estimation) ---------------
+
+    def calibrate(
+        self,
+        X: np.ndarray,
+        y: np.ndarray,
+        fit_intercept: bool = True,
+    ) -> ModelFamily:
+        """Estimate dispersion α from the observed data.
+
+        Uses ``sm.NegativeBinomial(y, X).fit()`` which jointly
+        estimates β and ln(α) via MLE, then extracts
+        ``α = exp(ln_alpha)``.
+
+        Returns a **new** ``NegativeBinomialFamily(alpha=α_hat)``
+        instance.  If ``self.alpha`` is already set (either by
+        construction or a prior call), returns ``self`` — making
+        this method **idempotent**.
+
+        In v0.4.0+ this hook will be called by
+        ``PermutationEngine.__init__`` before the permutation loop,
+        keeping nuisance-parameter estimation orthogonal to
+        ``exchangeability_cells()``.
+
+        Args:
+            X: Design matrix ``(n, p)`` — no intercept column.
+            y: Response vector ``(n,)``.
+            fit_intercept: Whether the model includes an intercept.
+
+        Returns:
+            A calibrated ``NegativeBinomialFamily`` with α resolved.
+        """
+        if self.alpha is not None:
+            return self
+        X_sm = sm.add_constant(X) if fit_intercept else np.asarray(X)
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", category=SmConvergenceWarning)
+            warnings.filterwarnings("ignore", category=RuntimeWarning)
+            nb_model = sm.NegativeBinomial(y, X_sm).fit(disp=0, maxiter=200)
+        alpha_hat = float(np.exp(nb_model.lnalpha))
+        return NegativeBinomialFamily(alpha=alpha_hat)
+
+    # ---- Validation ------------------------------------------------
+
+    def validate_y(self, y: np.ndarray) -> None:
+        """Check that *y* contains non-negative integer-valued data."""
+        if not np.issubdtype(y.dtype, np.number):
+            msg = "NegativeBinomialFamily requires numeric Y values."
+            raise ValueError(msg)
+        if np.any(np.isnan(y)):
+            msg = "NegativeBinomialFamily does not accept NaN values in Y."
+            raise ValueError(msg)
+        if np.any(y < 0):
+            msg = "NegativeBinomialFamily requires non-negative Y values."
+            raise ValueError(msg)
+        if not np.allclose(y, np.round(y)):
+            msg = (
+                "NegativeBinomialFamily requires integer-valued Y. "
+                "Got non-integer values."
+            )
+            raise ValueError(msg)
+
+    # ---- Single-model operations -----------------------------------
+
+    def fit(
+        self,
+        X: np.ndarray,
+        y: np.ndarray,
+        fit_intercept: bool = True,
+    ) -> Any:
+        """Fit a negative binomial GLM with fixed α.
+
+        Requires :meth:`calibrate` to have been called first (or α
+        supplied at construction).  Raises ``RuntimeError`` if α is
+        not yet resolved.
+        """
+        alpha = self._require_alpha("fit")
+        X_sm = sm.add_constant(X) if fit_intercept else np.asarray(X)
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", category=SmConvergenceWarning)
+            warnings.filterwarnings("ignore", category=RuntimeWarning)
+            model = sm.GLM(y, X_sm, family=self._nb_family(alpha)).fit(disp=0)
+        return model
+
+    def predict(self, model: Any, X: np.ndarray) -> np.ndarray:  # noqa: ARG002
+        """Return predicted mean μ̂ on the response scale."""
+        return np.asarray(model.fittedvalues)
+
+    def coefs(self, model: Any) -> np.ndarray:
+        """Extract slope coefficients (intercept excluded)."""
+        params = np.asarray(model.params)
+        if model.k_constant:
+            return params[1:]
+        return params
+
+    def residuals(self, model: Any, X: np.ndarray, y: np.ndarray) -> np.ndarray:  # noqa: ARG002
+        """Response-scale residuals: ``e = y − μ̂``.
+
+        Same rationale as PoissonFamily — response-scale residuals are
+        compatible with ``reconstruct_y`` which operates on the
+        response scale.
+        """
+        return np.asarray(y - model.fittedvalues)
+
+    # ---- Permutation helpers ---------------------------------------
+
+    def reconstruct_y(
+        self,
+        predictions: np.ndarray,
+        permuted_residuals: np.ndarray,
+        rng: np.random.Generator,
+    ) -> np.ndarray:
+        """Negative-binomial-sampled reconstruction from permuted residuals.
+
+        Steps:
+          1. ``μ* = clip(μ̂ + π(e), 1e-10, 1e8)``
+          2. Convert to NB parameters: ``n = 1/α``, ``p = 1/(1 + α·μ*)``
+          3. ``Y* ~ NegBin(n, p)``
+
+        The NB2 parameterisation implies:
+          ``E[Y*] = μ*`` and ``Var(Y*) = μ* + α·μ*²``
+
+        which preserves the overdispersion structure of the observed
+        data in the permuted samples.
+        """
+        alpha = self._require_alpha("reconstruct_y")
+        mu_star = predictions + permuted_residuals
+        mu_star = np.clip(mu_star, 1e-10, 1e8)
+        # NB2 parameterisation: n = 1/α, p = 1/(1 + α·μ)
+        n_param = 1.0 / alpha
+        p_param = 1.0 / (1.0 + alpha * mu_star)
+        return np.asarray(rng.negative_binomial(n=n_param, p=p_param))
+
+    def fit_metric(
+        self,
+        y_true: np.ndarray,
+        y_pred: np.ndarray,
+    ) -> float:
+        """Negative binomial deviance.
+
+        D = 2 Σ[y·log(y/μ̂) − (y + 1/α)·log((1 + α·y)/(1 + α·μ̂))]
+
+        Uses mask-and-index to avoid log(0) warnings, following the
+        same pattern as PoissonFamily.
+        """
+        alpha = self._require_alpha("fit_metric")
+        mu = np.maximum(y_pred, 1e-10)
+        inv_a = 1.0 / alpha
+
+        # Term 1: y · log(y / μ̂), with 0·log(0/·) = 0 by convention.
+        pos = y_true > 0
+        term1 = np.zeros_like(y_true, dtype=float)
+        term1[pos] = y_true[pos] * np.log(y_true[pos] / mu[pos])
+
+        # Term 2: (y + 1/α) · log((1 + α·y) / (1 + α·μ̂))
+        term2 = (y_true + inv_a) * np.log((1.0 + alpha * y_true) / (1.0 + alpha * mu))
+
+        return float(2.0 * np.sum(term1 - term2))
+
+    # ---- Diagnostics & classical inference -------------------------
+
+    def diagnostics(
+        self,
+        X: np.ndarray,
+        y: np.ndarray,
+        fit_intercept: bool = True,
+    ) -> dict[str, Any]:
+        """NB GLM diagnostics (deviance, Pearson χ², dispersion, α, AIC, BIC)."""
+        alpha = self._require_alpha("diagnostics")
+        X_sm = sm.add_constant(X) if fit_intercept else np.asarray(X)
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", category=SmConvergenceWarning)
+            warnings.filterwarnings("ignore", category=RuntimeWarning)
+            sm_model = sm.GLM(y, X_sm, family=self._nb_family(alpha)).fit(disp=0)
+        pearson_chi2 = float(sm_model.pearson_chi2)
+        df_resid = float(sm_model.df_resid)
+        dispersion = pearson_chi2 / df_resid if df_resid > 0 else float("nan")
+        return {
+            "n_observations": len(y),
+            "n_features": X.shape[1],
+            "deviance": np.round(float(sm_model.deviance), 4),
+            "pearson_chi2": np.round(pearson_chi2, 4),
+            "dispersion": np.round(dispersion, 4),
+            "alpha": np.round(alpha, 4),
+            "log_likelihood": np.round(float(sm_model.llf), 4),
+            "aic": np.round(float(sm_model.aic), 4),
+            "bic": np.round(float(sm_model.bic_llf), 4),
+        }
+
+    def classical_p_values(
+        self,
+        X: np.ndarray,
+        y: np.ndarray,
+        fit_intercept: bool = True,
+    ) -> np.ndarray:
+        """Asymptotic Wald z-test p-values via statsmodels NB GLM.
+
+        Returns one p-value per slope coefficient (intercept excluded).
+        """
+        alpha = self._require_alpha("classical_p_values")
+        X_sm = sm.add_constant(X) if fit_intercept else np.asarray(X)
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", category=SmConvergenceWarning)
+            warnings.filterwarnings("ignore", category=RuntimeWarning)
+            sm_model = sm.GLM(y, X_sm, family=self._nb_family(alpha)).fit(disp=0)
+        pvals = sm_model.pvalues[1:] if fit_intercept else sm_model.pvalues
+        return np.asarray(pvals)
+
+    # ---- Exchangeability (v0.4.0 forward-compat) -------------------
+
+    def exchangeability_cells(
+        self,
+        X: np.ndarray,  # noqa: ARG002
+        y: np.ndarray,  # noqa: ARG002
+    ) -> np.ndarray | None:
+        """NB models assume globally exchangeable residuals."""
+        return None
+
+    # ---- Batch fitting (hot loop) ----------------------------------
+
+    def batch_fit(
+        self,
+        X: np.ndarray,
+        Y_matrix: np.ndarray,
+        fit_intercept: bool,
+        **kwargs: Any,
+    ) -> np.ndarray:
+        """Batch NB GLM via joblib-parallelised statsmodels loop.
+
+        Each row of *Y_matrix* is a permuted response vector.  The
+        dispersion α is held fixed at the value estimated from the
+        observed data.  Returns ``(B, p)`` coefficient matrix with
+        intercept excluded.
+        """
+        alpha = self._require_alpha("batch_fit")
+
+        kwargs.pop("backend", None)
+        n_jobs = kwargs.pop("n_jobs", 1)
+
+        X_sm = sm.add_constant(X) if fit_intercept else np.asarray(X)
+        n_params = X.shape[1]
+        B = Y_matrix.shape[0]
+        nb_family = self._nb_family(alpha)
+
+        def _fit_one(y_b: np.ndarray) -> np.ndarray:
+            try:
+                with warnings.catch_warnings():
+                    warnings.filterwarnings("ignore", category=SmConvergenceWarning)
+                    warnings.filterwarnings("ignore", category=RuntimeWarning)
+                    model = sm.GLM(y_b, X_sm, family=nb_family).fit(disp=0, maxiter=100)
+                params = np.asarray(model.params)
+                return params[1:] if fit_intercept else params
+            except Exception:  # noqa: BLE001
+                return np.full(n_params, np.nan)
+
+        if n_jobs == 1:
+            results = [_fit_one(Y_matrix[i]) for i in range(B)]
+        else:
+            from joblib import Parallel, delayed
+
+            results = Parallel(n_jobs=n_jobs, prefer="threads")(
+                delayed(_fit_one)(Y_matrix[i]) for i in range(B)
+            )
+
+        coef_matrix = np.array(results)
+
+        n_failed = int(np.sum(np.any(np.isnan(coef_matrix), axis=1)))
+        if n_failed > 0:
+            pct = 100.0 * n_failed / B
+            warnings.warn(
+                f"{n_failed} of {B} NB fits did not converge "
+                f"({pct:.1f}%). Consider checking for zero-inflation "
+                f"or model mis-specification.",
+                UserWarning,
+                stacklevel=2,
+            )
+
+        return coef_matrix
+
+    def batch_fit_varying_X(
+        self,
+        X_batch: np.ndarray,
+        y: np.ndarray,
+        fit_intercept: bool,
+        **kwargs: Any,
+    ) -> np.ndarray:
+        """Batch NB with per-permutation design matrices.
+
+        Used by the Kennedy individual path where column *j* of *X*
+        differs across permutations while Y stays the same.
+        """
+        alpha = self._require_alpha("batch_fit_varying_X")
+
+        kwargs.pop("backend", None)
+        n_jobs = kwargs.pop("n_jobs", 1)
+
+        B, _n, p = X_batch.shape
+        n_params = p
+        nb_family = self._nb_family(alpha)
+
+        def _fit_one(X_b: np.ndarray) -> np.ndarray:
+            X_sm = sm.add_constant(X_b) if fit_intercept else np.asarray(X_b)
+            try:
+                with warnings.catch_warnings():
+                    warnings.filterwarnings("ignore", category=SmConvergenceWarning)
+                    warnings.filterwarnings("ignore", category=RuntimeWarning)
+                    model = sm.GLM(y, X_sm, family=nb_family).fit(disp=0, maxiter=100)
+                params = np.asarray(model.params)
+                return params[1:] if fit_intercept else params
+            except Exception:  # noqa: BLE001
+                return np.full(n_params, np.nan)
+
+        if n_jobs == 1:
+            results = [_fit_one(X_batch[i]) for i in range(B)]
+        else:
+            from joblib import Parallel, delayed
+
+            results = Parallel(n_jobs=n_jobs, prefer="threads")(
+                delayed(_fit_one)(X_batch[i]) for i in range(B)
+            )
+
+        coef_matrix = np.array(results)
+
+        n_failed = int(np.sum(np.any(np.isnan(coef_matrix), axis=1)))
+        if n_failed > 0:
+            pct = 100.0 * n_failed / B
+            warnings.warn(
+                f"{n_failed} of {B} NB fits did not converge "
+                f"({pct:.1f}%). Consider checking for zero-inflation "
+                f"or model mis-specification.",
+                UserWarning,
+                stacklevel=2,
+            )
+
+        return coef_matrix
+
+
+# ------------------------------------------------------------------ #
 # Family resolution
 # ------------------------------------------------------------------ #
 #
@@ -1613,3 +2051,4 @@ def resolve_family(family: str, y: np.ndarray) -> ModelFamily:
 register_family("linear", LinearFamily)
 register_family("logistic", LogisticFamily)
 register_family("poisson", PoissonFamily)
+register_family("negative_binomial", NegativeBinomialFamily)

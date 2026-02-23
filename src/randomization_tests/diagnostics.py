@@ -902,6 +902,39 @@ def compute_all_diagnostics(
                 "overdispersed": False,
                 "warning": f"Diagnostics unavailable: {exc}",
             }
+    elif model_type == "negative_binomial":
+        try:
+            with warnings.catch_warnings():
+                warnings.filterwarnings("ignore", category=RuntimeWarning)
+                warnings.filterwarnings("ignore", category=SmConvergenceWarning)
+                X_sm = sm.add_constant(X) if fit_intercept else np.asarray(X)
+                # Estimate α via MLE, then fit GLM with fixed α.
+                nb_mle = sm.NegativeBinomial(y_values, X_sm).fit(disp=0, maxiter=200)
+                alpha_hat = float(np.exp(nb_mle.lnalpha))
+                nb_model = sm.GLM(
+                    y_values,
+                    X_sm,
+                    family=sm.families.NegativeBinomial(alpha=alpha_hat),
+                ).fit(disp=0)
+                pearson_chi2 = float(nb_model.pearson_chi2)
+                df_resid = float(nb_model.df_resid)
+                dispersion = pearson_chi2 / df_resid if df_resid > 0 else float("nan")
+                result["nb_gof"] = {
+                    "deviance": float(nb_model.deviance),
+                    "pearson_chi2": pearson_chi2,
+                    "dispersion": dispersion,
+                    "alpha": alpha_hat,
+                    "overdispersed": dispersion > 1.5,
+                }
+        except Exception as exc:
+            logger.debug("NB GoF diagnostics failed: %s", exc)
+            result["nb_gof"] = {
+                "deviance": float("nan"),
+                "pearson_chi2": float("nan"),
+                "dispersion": float("nan"),
+                "alpha": float("nan"),
+                "warning": f"Diagnostics unavailable: {exc}",
+            }
     else:
         try:
             result["breusch_pagan"] = compute_breusch_pagan(X, y_values)

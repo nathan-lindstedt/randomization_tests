@@ -21,6 +21,7 @@ Public API:
         ModelFamily
         LinearFamily
         LogisticFamily
+        NegativeBinomialFamily
         PoissonFamily
         resolve_family
         register_family
@@ -44,6 +45,7 @@ from .families import (
     LinearFamily,
     LogisticFamily,
     ModelFamily,
+    NegativeBinomialFamily,
     PoissonFamily,
     register_family,
     resolve_family,
@@ -69,6 +71,7 @@ __all__ = [
     "ModelFamily",
     "LinearFamily",
     "LogisticFamily",
+    "NegativeBinomialFamily",
     "PoissonFamily",
     "resolve_family",
     "register_family",
