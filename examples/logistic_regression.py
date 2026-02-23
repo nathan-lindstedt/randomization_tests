@@ -4,7 +4,7 @@ Breast Cancer Wisconsin (Diagnostic) dataset (UCI ML Repository ID=17)
 
 Demonstrates:
 - ``family="logistic"`` — explicit family selection via ``resolve_family``
-- All three permutation methods routed through ``LogisticFamily``
+- All five permutation methods routed through ``LogisticFamily``
 - Direct ``ModelFamily`` protocol usage (fit / predict / residuals /
   reconstruct_y / fit_metric / diagnostics / classical_p_values /
   batch_fit)
@@ -101,6 +101,42 @@ print_joint_results_table(
     results_kennedy_joint_bc,
     target_name=y_bc.columns[0],
     title="Kennedy (1995) Joint Permutation Test (family='logistic')",
+)
+
+# ============================================================================
+# Freedman–Lane (1983) individual — family="logistic"
+# ============================================================================
+
+with warnings.catch_warnings():
+    warnings.filterwarnings("ignore", message=".*without confounders.*")
+    results_fl_bc = permutation_test_regression(
+        X_bc, y_bc, method="freedman_lane", confounders=[], family="logistic"
+    )
+print_results_table(
+    results_fl_bc,
+    feature_names=X_bc.columns.tolist(),
+    target_name=y_bc.columns[0],
+    title="Freedman–Lane (1983) Individual Permutation Test (family='logistic')",
+)
+print_diagnostics_table(
+    results_fl_bc,
+    feature_names=X_bc.columns.tolist(),
+    title="Freedman–Lane (1983) Individual Diagnostics (family='logistic')",
+)
+
+# ============================================================================
+# Freedman–Lane (1983) joint — family="logistic"
+# ============================================================================
+
+with warnings.catch_warnings():
+    warnings.filterwarnings("ignore", message=".*without confounders.*")
+    results_fl_joint_bc = permutation_test_regression(
+        X_bc, y_bc, method="freedman_lane_joint", confounders=[], family="logistic"
+    )
+print_joint_results_table(
+    results_fl_joint_bc,
+    target_name=y_bc.columns[0],
+    title="Freedman–Lane (1983) Joint Permutation Test (family='logistic')",
 )
 
 # ============================================================================

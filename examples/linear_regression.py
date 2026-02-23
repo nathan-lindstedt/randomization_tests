@@ -4,11 +4,13 @@ Real Estate Valuation dataset (UCI ML Repository ID=477)
 
 Demonstrates:
 - ``family="linear"`` — explicit family selection via ``resolve_family``
-- All three permutation methods routed through ``LinearFamily``
+- All five permutation methods routed through ``LinearFamily``
 - Direct ``ModelFamily`` protocol usage (fit / predict / residuals /
   reconstruct_y / fit_metric / diagnostics / classical_p_values /
   batch_fit)
 """
+
+import warnings
 
 import numpy as np
 from ucimlrepo import fetch_ucirepo
@@ -89,6 +91,42 @@ print_joint_results_table(
     results_kennedy_joint,
     target_name=y.columns[0],
     title="Kennedy (1995) Joint Permutation Test (family='linear')",
+)
+
+# ============================================================================
+# Freedman–Lane (1983) individual — family="linear"
+# ============================================================================
+
+with warnings.catch_warnings():
+    warnings.filterwarnings("ignore", message=".*without confounders.*")
+    results_fl = permutation_test_regression(
+        X, y, method="freedman_lane", confounders=[], family="linear"
+    )
+print_results_table(
+    results_fl,
+    feature_names=X.columns.tolist(),
+    target_name=y.columns[0],
+    title="Freedman–Lane (1983) Individual Permutation Test (family='linear')",
+)
+print_diagnostics_table(
+    results_fl,
+    feature_names=X.columns.tolist(),
+    title="Freedman–Lane (1983) Individual Diagnostics (family='linear')",
+)
+
+# ============================================================================
+# Freedman–Lane (1983) joint — family="linear"
+# ============================================================================
+
+with warnings.catch_warnings():
+    warnings.filterwarnings("ignore", message=".*without confounders.*")
+    results_fl_joint = permutation_test_regression(
+        X, y, method="freedman_lane_joint", confounders=[], family="linear"
+    )
+print_joint_results_table(
+    results_fl_joint,
+    target_name=y.columns[0],
+    title="Freedman–Lane (1983) Joint Permutation Test (family='linear')",
 )
 
 # ============================================================================
