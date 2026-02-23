@@ -234,6 +234,17 @@ def _ter_braak_generic(
     X_np = X.values.astype(float)
     n_perm, n = perm_indices.shape
     n_features = X_np.shape[1]
+
+    # --- Direct Y permutation path (Manly 1997) ---
+    # For families where residuals are not well-defined (e.g. ordinal),
+    # permute Y directly rather than going through the residual
+    # pipeline.  This produces a single batch_fit call for all features
+    # at once — no per-feature reduced-model loop needed.
+    if family.direct_permutation:
+        Y_perm = y_values[perm_indices]  # (B, n)
+        return family.batch_fit(X_np, Y_perm, fit_intercept, n_jobs=n_jobs)
+
+    # --- Standard residual-permutation path ---
     result = np.zeros((n_perm, n_features))
 
     # Derive a deterministic RNG from the permutation indices so that
@@ -796,28 +807,50 @@ def _kennedy_joint(
     else:
         Z = np.zeros((n, 0))
 
+    # --- Fit-metric dispatch ---
+    # Most families compute the metric from predictions via
+    # fit_metric(y, preds).  Families whose metric requires the fitted
+    # model object (e.g. ordinal deviance = −2·llf) instead provide
+    # model_fit_metric(model) and null_fit_metric(model), detected
+    # via hasattr() — the same duck-typing pattern used for
+    # calibrate() on NegativeBinomialFamily.
+    _uses_model_metric = hasattr(family, "model_fit_metric")
+
     # --- Reduced model (confounders only) ---
     # Under H₀, the non-confounder predictors add nothing, so the
     # reduced model represents the best fit achievable without them.
     if Z.shape[1] > 0:
         reduced_model = family.fit(Z, y_values, fit_intercept)
-        preds_reduced = family.predict(reduced_model, Z)
+        if _uses_model_metric:
+            base_metric = family.model_fit_metric(reduced_model)  # type: ignore[attr-defined]
+        else:
+            preds_reduced = family.predict(reduced_model, Z)
+            base_metric = family.fit_metric(y_values, preds_reduced)
     else:
         # No confounders: the "reduced model" is the intercept-only
         # prediction (grand mean for linear, base rate for logistic).
-        if fit_intercept:
-            preds_reduced = np.full(n, np.mean(y_values), dtype=float)
-        else:
-            preds_reduced = np.zeros(n, dtype=float)
-
-    base_metric = family.fit_metric(y_values, preds_reduced)
+        # For model-metric families, base_metric is deferred until
+        # after the full model is fit (null_fit_metric needs a model).
+        if not _uses_model_metric:
+            if fit_intercept:
+                preds_reduced = np.full(n, np.mean(y_values), dtype=float)
+            else:
+                preds_reduced = np.zeros(n, dtype=float)
+            base_metric = family.fit_metric(y_values, preds_reduced)
 
     # --- Full model (confounders + predictors of interest) ---
     # The observed improvement is how much better the full model fits.
     full_features = np.hstack([X_target, Z]) if Z.shape[1] > 0 else X_target
     full_model = family.fit(full_features, y_values, fit_intercept)
-    preds_full = family.predict(full_model, full_features)
-    obs_improvement = base_metric - family.fit_metric(y_values, preds_full)
+
+    if _uses_model_metric:
+        if Z.shape[1] == 0:
+            # Null deviance from a fitted model (thresholds-only for ordinal).
+            base_metric = family.null_fit_metric(full_model)  # type: ignore[attr-defined]
+        obs_improvement = base_metric - family.model_fit_metric(full_model)  # type: ignore[attr-defined]
+    else:
+        preds_full = family.predict(full_model, full_features)
+        obs_improvement = base_metric - family.fit_metric(y_values, preds_full)
 
     # --- Exposure model residuals ---
     # Regress X_target on Z to get X̂ = Z·Γ̂ and residuals E = X_target - X̂.
@@ -841,6 +874,8 @@ def _kennedy_joint(
         x_star = x_hat + x_resids[idx]
         perm_features = np.hstack([x_star, Z]) if Z.shape[1] > 0 else x_star
         perm_model = family.fit(perm_features, y_values, fit_intercept)
+        if _uses_model_metric:
+            return float(base_metric - family.model_fit_metric(perm_model))  # type: ignore[attr-defined]
         perm_preds = family.predict(perm_model, perm_features)
         return float(base_metric - family.fit_metric(y_values, perm_preds))
 
@@ -1062,6 +1097,26 @@ def permutation_test_regression(
     # early — e.g. passing continuous Y with family="logistic".
     if family != "auto":
         resolved.validate_y(y_values)
+
+    # Reject Freedman-Lane for families with direct_permutation.
+    # FL requires meaningful residuals for the partial regression
+    # approach (residuals → permute → reconstruct Y*).  Families
+    # whose residuals are ill-defined (e.g. ordinal) use direct Y
+    # permutation instead, which is incompatible with FL.
+    if resolved.direct_permutation and method in (
+        "freedman_lane",
+        "freedman_lane_joint",
+    ):
+        msg = (
+            f"Freedman-Lane method is not supported for "
+            f"family='{resolved.name}' because residuals are not "
+            f"well-defined for this model type.  The ter Braak method "
+            f"uses direct Y permutation (equivalent to Manly 1997), "
+            f"and the Kennedy methods permute exposure-model residuals "
+            f"(always linear OLS).  Supported methods: 'ter_braak', "
+            f"'kennedy', 'kennedy_joint'."
+        )
+        raise ValueError(msg)
 
     # Resolve the active backend once — used for the n_jobs/JAX check
     # below and included in every result dict for provenance.

@@ -151,6 +151,133 @@ class BackendProtocol(Protocol):
         """
         ...
 
+    def batch_poisson(
+        self,
+        X: np.ndarray,
+        Y_matrix: np.ndarray,
+        fit_intercept: bool = True,
+        **kwargs: Any,
+    ) -> np.ndarray:
+        """Batch Poisson GLM: shared *X*, many count *Y* vectors.
+
+        Args:
+            X: Design matrix ``(n, p)`` — no intercept column.
+            Y_matrix: Permuted count responses ``(B, n)``.
+            fit_intercept: Prepend intercept column.
+            **kwargs: Solver options (``max_iter``, ``tol``).
+
+        Returns:
+            Slope coefficients ``(B, p)`` (intercept excluded).
+        """
+        ...
+
+    def batch_poisson_varying_X(
+        self,
+        X_batch: np.ndarray,
+        y: np.ndarray,
+        fit_intercept: bool = True,
+        **kwargs: Any,
+    ) -> np.ndarray:
+        """Batch Poisson GLM: many *X* matrices, shared count *y*.
+
+        Args:
+            X_batch: Design matrices ``(B, n, p)`` — no intercept.
+            y: Shared count response ``(n,)``.
+            fit_intercept: Prepend intercept column.
+            **kwargs: Solver options.
+
+        Returns:
+            Slope coefficients ``(B, p)`` (intercept excluded).
+        """
+        ...
+
+    def batch_negbin(
+        self,
+        X: np.ndarray,
+        Y_matrix: np.ndarray,
+        fit_intercept: bool = True,
+        **kwargs: Any,
+    ) -> np.ndarray:
+        """Batch NB2 GLM: shared *X*, many count *Y* vectors.
+
+        Requires ``alpha`` in kwargs (dispersion, estimated once
+        from observed data).
+
+        Args:
+            X: Design matrix ``(n, p)`` — no intercept column.
+            Y_matrix: Permuted count responses ``(B, n)``.
+            fit_intercept: Prepend intercept column.
+            **kwargs: ``alpha`` (required), solver options.
+
+        Returns:
+            Slope coefficients ``(B, p)`` (intercept excluded).
+        """
+        ...
+
+    def batch_negbin_varying_X(
+        self,
+        X_batch: np.ndarray,
+        y: np.ndarray,
+        fit_intercept: bool = True,
+        **kwargs: Any,
+    ) -> np.ndarray:
+        """Batch NB2 GLM: many *X* matrices, shared count *y*.
+
+        Args:
+            X_batch: Design matrices ``(B, n, p)`` — no intercept.
+            y: Shared count response ``(n,)``.
+            fit_intercept: Prepend intercept column.
+            **kwargs: ``alpha`` (required), solver options.
+
+        Returns:
+            Slope coefficients ``(B, p)`` (intercept excluded).
+        """
+        ...
+
+    def batch_ordinal(
+        self,
+        X: np.ndarray,
+        Y_matrix: np.ndarray,
+        fit_intercept: bool = True,
+        **kwargs: Any,
+    ) -> np.ndarray:
+        """Batch ordinal: shared *X*, many ordinal *Y* vectors.
+
+        Requires ``K`` in kwargs (number of categories).
+        ``fit_intercept`` is accepted but ignored (thresholds
+        serve as intercepts).
+
+        Args:
+            X: Design matrix ``(n, p)`` — no intercept column.
+            Y_matrix: Permuted ordinal responses ``(B, n)``.
+            fit_intercept: Accepted but ignored.
+            **kwargs: ``K`` (required), solver options.
+
+        Returns:
+            Slope coefficients ``(B, p)`` (thresholds excluded).
+        """
+        ...
+
+    def batch_ordinal_varying_X(
+        self,
+        X_batch: np.ndarray,
+        y: np.ndarray,
+        fit_intercept: bool = True,
+        **kwargs: Any,
+    ) -> np.ndarray:
+        """Batch ordinal: many *X* matrices, shared ordinal *y*.
+
+        Args:
+            X_batch: Design matrices ``(B, n, p)`` — no intercept.
+            y: Shared ordinal response ``(n,)``.
+            fit_intercept: Accepted but ignored.
+            **kwargs: ``K`` (required), solver options.
+
+        Returns:
+            Slope coefficients ``(B, p)`` (thresholds excluded).
+        """
+        ...
+
 
 # ------------------------------------------------------------------ #
 # Backend resolution

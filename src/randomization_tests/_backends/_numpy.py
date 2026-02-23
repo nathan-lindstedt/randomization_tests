@@ -12,16 +12,26 @@ Logistic paths use a scikit-learn ``LogisticRegression`` loop — one
 parallelised with ``joblib.Parallel(prefer="threads")`` so that
 sklearn's internal Cython/BLAS code releases the GIL and multiple
 permutations can overlap on multi-core hardware.
+
+Poisson, negative binomial, and ordinal paths use statsmodels loops.
 """
 
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
+import statsmodels.api as sm
 from joblib import Parallel, delayed
 from sklearn.linear_model import LogisticRegression
+from statsmodels.tools.sm_exceptions import (
+    ConvergenceWarning as SmConvergenceWarning,
+)
+from statsmodels.tools.sm_exceptions import (
+    HessianInversionWarning,
+)
 
 
 @dataclass(frozen=True)
@@ -230,5 +240,306 @@ class NumpyBackend:
 
         coefs_list = Parallel(n_jobs=n_jobs, prefer="threads")(
             delayed(_solve)(X_batch[b]) for b in range(B)
+        )
+        return np.asarray(np.vstack(coefs_list))
+
+    # ---- Poisson (shared X, many Y) ----------------------------------
+
+    def batch_poisson(
+        self,
+        X: np.ndarray,
+        Y_matrix: np.ndarray,
+        fit_intercept: bool = True,
+        **kwargs: Any,
+    ) -> np.ndarray:
+        """Batch Poisson GLM via statsmodels IRLS loop.
+
+        Args:
+            X: Design matrix ``(n, p)``.
+            Y_matrix: Permuted count responses ``(B, n)``.
+            fit_intercept: Whether to include an intercept.
+            **kwargs: ``n_jobs`` (default 1).
+
+        Returns:
+            Slope coefficients ``(B, p)`` (intercept excluded).
+        """
+        n_jobs: int = kwargs.pop("n_jobs", 1)
+        X_sm = sm.add_constant(X) if fit_intercept else np.asarray(X)
+        n_params = X.shape[1]
+        B = Y_matrix.shape[0]
+
+        def _fit_one(y_b: np.ndarray) -> np.ndarray:
+            try:
+                with warnings.catch_warnings():
+                    warnings.filterwarnings("ignore", category=SmConvergenceWarning)
+                    warnings.filterwarnings("ignore", category=RuntimeWarning)
+                    model = sm.GLM(y_b, X_sm, family=sm.families.Poisson()).fit(
+                        disp=0, maxiter=100
+                    )
+                params = np.asarray(model.params)
+                return params[1:] if fit_intercept else params
+            except Exception:  # noqa: BLE001
+                return np.full(n_params, np.nan)
+
+        if n_jobs == 1:
+            result = np.empty((B, n_params))
+            for b in range(B):
+                result[b] = _fit_one(Y_matrix[b])
+            return result
+
+        coefs_list = Parallel(n_jobs=n_jobs, prefer="threads")(
+            delayed(_fit_one)(Y_matrix[b]) for b in range(B)
+        )
+        return np.asarray(np.vstack(coefs_list))
+
+    # ---- Poisson (many X, shared y) ----------------------------------
+
+    def batch_poisson_varying_X(
+        self,
+        X_batch: np.ndarray,
+        y: np.ndarray,
+        fit_intercept: bool = True,
+        **kwargs: Any,
+    ) -> np.ndarray:
+        """Batch Poisson with per-permutation design matrices.
+
+        Args:
+            X_batch: Design matrices ``(B, n, p)``.
+            y: Shared count response ``(n,)``.
+            fit_intercept: Whether to include an intercept.
+            **kwargs: ``n_jobs`` (default 1).
+
+        Returns:
+            Slope coefficients ``(B, p)`` (intercept excluded).
+        """
+        n_jobs: int = kwargs.pop("n_jobs", 1)
+        B, _n, p = X_batch.shape
+
+        def _fit_one(X_b: np.ndarray) -> np.ndarray:
+            X_sm = sm.add_constant(X_b) if fit_intercept else np.asarray(X_b)
+            try:
+                with warnings.catch_warnings():
+                    warnings.filterwarnings("ignore", category=SmConvergenceWarning)
+                    warnings.filterwarnings("ignore", category=RuntimeWarning)
+                    model = sm.GLM(y, X_sm, family=sm.families.Poisson()).fit(
+                        disp=0, maxiter=100
+                    )
+                params = np.asarray(model.params)
+                return params[1:] if fit_intercept else params
+            except Exception:  # noqa: BLE001
+                return np.full(p, np.nan)
+
+        if n_jobs == 1:
+            result = np.empty((B, p))
+            for b in range(B):
+                result[b] = _fit_one(X_batch[b])
+            return result
+
+        coefs_list = Parallel(n_jobs=n_jobs, prefer="threads")(
+            delayed(_fit_one)(X_batch[b]) for b in range(B)
+        )
+        return np.asarray(np.vstack(coefs_list))
+
+    # ---- Negative binomial (shared X, many Y) -------------------------
+
+    def batch_negbin(
+        self,
+        X: np.ndarray,
+        Y_matrix: np.ndarray,
+        fit_intercept: bool = True,
+        **kwargs: Any,
+    ) -> np.ndarray:
+        """Batch NB2 GLM via statsmodels IRLS loop with fixed α.
+
+        Args:
+            X: Design matrix ``(n, p)``.
+            Y_matrix: Permuted count responses ``(B, n)``.
+            fit_intercept: Whether to include an intercept.
+            **kwargs: ``alpha`` (required), ``n_jobs`` (default 1).
+
+        Returns:
+            Slope coefficients ``(B, p)`` (intercept excluded).
+        """
+        alpha: float = kwargs.pop("alpha")
+        n_jobs: int = kwargs.pop("n_jobs", 1)
+        X_sm = sm.add_constant(X) if fit_intercept else np.asarray(X)
+        n_params = X.shape[1]
+        B = Y_matrix.shape[0]
+        nb_family = sm.families.NegativeBinomial(alpha=alpha)
+
+        def _fit_one(y_b: np.ndarray) -> np.ndarray:
+            try:
+                with warnings.catch_warnings():
+                    warnings.filterwarnings("ignore", category=SmConvergenceWarning)
+                    warnings.filterwarnings("ignore", category=RuntimeWarning)
+                    model = sm.GLM(y_b, X_sm, family=nb_family).fit(disp=0, maxiter=100)
+                params = np.asarray(model.params)
+                return params[1:] if fit_intercept else params
+            except Exception:  # noqa: BLE001
+                return np.full(n_params, np.nan)
+
+        if n_jobs == 1:
+            result = np.empty((B, n_params))
+            for b in range(B):
+                result[b] = _fit_one(Y_matrix[b])
+            return result
+
+        coefs_list = Parallel(n_jobs=n_jobs, prefer="threads")(
+            delayed(_fit_one)(Y_matrix[b]) for b in range(B)
+        )
+        return np.asarray(np.vstack(coefs_list))
+
+    # ---- Negative binomial (many X, shared y) -------------------------
+
+    def batch_negbin_varying_X(
+        self,
+        X_batch: np.ndarray,
+        y: np.ndarray,
+        fit_intercept: bool = True,
+        **kwargs: Any,
+    ) -> np.ndarray:
+        """Batch NB2 with per-permutation design matrices.
+
+        Args:
+            X_batch: Design matrices ``(B, n, p)``.
+            y: Shared count response ``(n,)``.
+            fit_intercept: Whether to include an intercept.
+            **kwargs: ``alpha`` (required), ``n_jobs`` (default 1).
+
+        Returns:
+            Slope coefficients ``(B, p)`` (intercept excluded).
+        """
+        alpha: float = kwargs.pop("alpha")
+        n_jobs: int = kwargs.pop("n_jobs", 1)
+        B, _n, p = X_batch.shape
+        nb_family = sm.families.NegativeBinomial(alpha=alpha)
+
+        def _fit_one(X_b: np.ndarray) -> np.ndarray:
+            X_sm = sm.add_constant(X_b) if fit_intercept else np.asarray(X_b)
+            try:
+                with warnings.catch_warnings():
+                    warnings.filterwarnings("ignore", category=SmConvergenceWarning)
+                    warnings.filterwarnings("ignore", category=RuntimeWarning)
+                    model = sm.GLM(y, X_sm, family=nb_family).fit(disp=0, maxiter=100)
+                params = np.asarray(model.params)
+                return params[1:] if fit_intercept else params
+            except Exception:  # noqa: BLE001
+                return np.full(p, np.nan)
+
+        if n_jobs == 1:
+            result = np.empty((B, p))
+            for b in range(B):
+                result[b] = _fit_one(X_batch[b])
+            return result
+
+        coefs_list = Parallel(n_jobs=n_jobs, prefer="threads")(
+            delayed(_fit_one)(X_batch[b]) for b in range(B)
+        )
+        return np.asarray(np.vstack(coefs_list))
+
+    # ---- Ordinal (shared X, many Y) ----------------------------------
+
+    def batch_ordinal(
+        self,
+        X: np.ndarray,
+        Y_matrix: np.ndarray,
+        fit_intercept: bool = True,
+        **kwargs: Any,
+    ) -> np.ndarray:
+        """Batch ordinal via statsmodels OrderedModel loop.
+
+        ``fit_intercept`` is accepted for protocol compatibility but
+        ignored — thresholds always serve as intercepts.
+
+        Args:
+            X: Design matrix ``(n, p)``.
+            Y_matrix: Permuted ordinal responses ``(B, n)``.
+            fit_intercept: Accepted but ignored.
+            **kwargs: ``n_jobs`` (default 1).
+
+        Returns:
+            Slope coefficients ``(B, p)`` (thresholds excluded).
+        """
+        from statsmodels.miscmodels.ordinal_model import OrderedModel
+
+        n_jobs: int = kwargs.pop("n_jobs", 1)
+        kwargs.pop("K", None)  # Not needed for statsmodels path
+        X_arr = np.asarray(X, dtype=float)
+        n_params = X_arr.shape[1]
+        B = Y_matrix.shape[0]
+
+        def _fit_one(y_b: np.ndarray) -> np.ndarray:
+            try:
+                with warnings.catch_warnings():
+                    warnings.filterwarnings("ignore", category=SmConvergenceWarning)
+                    warnings.filterwarnings("ignore", category=HessianInversionWarning)
+                    warnings.filterwarnings("ignore", category=RuntimeWarning)
+                    model = OrderedModel(y_b, X_arr, distr="logit").fit(
+                        disp=0, method="powell", maxiter=200
+                    )
+                return np.asarray(model.params[:n_params])
+            except Exception:  # noqa: BLE001
+                return np.full(n_params, np.nan)
+
+        if n_jobs == 1:
+            result = np.empty((B, n_params))
+            for b in range(B):
+                result[b] = _fit_one(Y_matrix[b])
+            return result
+
+        coefs_list = Parallel(n_jobs=n_jobs, prefer="threads")(
+            delayed(_fit_one)(Y_matrix[b]) for b in range(B)
+        )
+        return np.asarray(np.vstack(coefs_list))
+
+    # ---- Ordinal (many X, shared y) ----------------------------------
+
+    def batch_ordinal_varying_X(
+        self,
+        X_batch: np.ndarray,
+        y: np.ndarray,
+        fit_intercept: bool = True,
+        **kwargs: Any,
+    ) -> np.ndarray:
+        """Batch ordinal with per-permutation design matrices.
+
+        Args:
+            X_batch: Design matrices ``(B, n, p)``.
+            y: Shared ordinal response ``(n,)``.
+            fit_intercept: Accepted but ignored.
+            **kwargs: ``n_jobs`` (default 1).
+
+        Returns:
+            Slope coefficients ``(B, p)`` (thresholds excluded).
+        """
+        from statsmodels.miscmodels.ordinal_model import OrderedModel
+
+        n_jobs: int = kwargs.pop("n_jobs", 1)
+        kwargs.pop("K", None)  # Not needed for statsmodels path
+        B, _n, p = X_batch.shape
+        y_arr = np.asarray(y)
+
+        def _fit_one(X_b: np.ndarray) -> np.ndarray:
+            X_arr = np.asarray(X_b, dtype=float)
+            try:
+                with warnings.catch_warnings():
+                    warnings.filterwarnings("ignore", category=SmConvergenceWarning)
+                    warnings.filterwarnings("ignore", category=HessianInversionWarning)
+                    warnings.filterwarnings("ignore", category=RuntimeWarning)
+                    model = OrderedModel(y_arr, X_arr, distr="logit").fit(
+                        disp=0, method="powell", maxiter=200
+                    )
+                return np.asarray(model.params[:p])
+            except Exception:  # noqa: BLE001
+                return np.full(p, np.nan)
+
+        if n_jobs == 1:
+            result = np.empty((B, p))
+            for b in range(B):
+                result[b] = _fit_one(X_batch[b])
+            return result
+
+        coefs_list = Parallel(n_jobs=n_jobs, prefer="threads")(
+            delayed(_fit_one)(X_batch[b]) for b in range(B)
         )
         return np.asarray(np.vstack(coefs_list))

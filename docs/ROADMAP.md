@@ -186,9 +186,11 @@ logistic paths to the new protocol.  New permutation methods and GLM
 families are then built on the stabilised abstractions, inheriting
 all existing methods from the start.
 
-**Progress:** Steps 1–6b and Step 7 (Poisson, NB) complete.
-~420 tests passing.  Remaining: confounder module update (Step 3),
-new GLM families (Step 7 continued: ordinal, multinomial),
+**Progress:** Steps 1–6b and Step 7 (Poisson, NB, ordinal) complete.
+All five implemented families (linear, logistic, Poisson,
+negative binomial, ordinal) have JAX Newton–Raphson backends.
+~474 tests passing.  Remaining: confounder module update (Step 3),
+new GLM families (Step 7 continued: multinomial),
 sign-flip test (Step 8), `PermutationEngine` refactor (Step 9),
 and backend injection for testability (Step 10).
 
@@ -213,9 +215,15 @@ and backend injection for testability (Step 10).
 
 - [X] Promote v0.2.0's `_jax.py` module into a `_backends/` package
   with a `BackendProtocol` defining `batch_ols`, `batch_logistic`,
-  `batch_poisson`, `batch_negbin`, and `batch_ordinal` methods.
-- [X] `_backends/_numpy.py`: NumPy/sklearn fallback (always available).
+  `batch_poisson`, `batch_negbin`, and `batch_ordinal` methods
+  (plus `_varying_X` variants for each).
+- [X] `_backends/_numpy.py`: NumPy/sklearn/statsmodels fallback
+  (always available).
 - [X] `_backends/_jax.py`: JAX accelerated path (optional dependency).
+  **Every batch method in `BackendProtocol` has a JAX
+  implementation** — the NumPy backend is a fallback, not the
+  primary path.  This is a hard architectural constraint: new
+  families must ship with both JAX and NumPy backends from day one.
 - [X] `resolve_backend()` reads `_config.get_backend()` and returns the
   appropriate backend object.  Future accelerators (CuPy, etc.) slot
   in as additional modules implementing `BackendProtocol` with no
@@ -278,6 +286,25 @@ Depends on Step 2 (`_backends/_jax.py`).
   pseudoinverse multiply and gain little from JAX, but all families
   should provide a JAX path for consistency and to prefer autodiff
   over manual gradient implementations wherever possible.
+- [X] **JAX Newton–Raphson solvers for all GLM families:**
+  Poisson, negative binomial, and ordinal now have dedicated
+  `vmap`'d Newton–Raphson solvers in `_backends/_jax.py`, matching
+  the pattern established by the logistic solver.  Each solver uses
+  `jax.lax.while_loop` for dynamic early exit, damped Hessian
+  regularisation, and the same triple convergence criteria.
+  - **Poisson / NegBin:** hand-coded gradient and Hessian (IRLS
+    equivalent), log-link warm start via OLS on `log(y + 0.5)` to
+    avoid overflow when the true intercept is far from zero.
+    NegBin uses factory functions with α captured as a closure
+    constant.
+  - **Ordinal:** `jax.grad` and `jax.hessian` autodiff on the
+    cumulative-logit NLL.  Category count K captured as a closure
+    constant to avoid JAX tracing errors with dynamic shapes;
+    category probabilities computed via a padding + diff approach.
+    Evenly-spaced threshold initialisation in [−1, 1].
+  - Validated against statsmodels baselines: machine-precision
+    agreement for Poisson, <1e-6 for NegBin, <3e-3 for ordinal
+    (all within tolerance for rank-based permutation tests).
 
 ### Step 4 Quickfix — Display & result-dict improvements
 
@@ -433,6 +460,9 @@ permutation methods and both backends from the start.
   log-likelihood, AIC/BIC.
 - [X] Overdispersion note in diagnostics table when dispersion > 1.5
   with guidance to consider `family='negative_binomial'`.
+- [X] JAX backend: `vmap`'d Newton–Raphson with hand-coded gradient
+  and Hessian (IRLS equivalent), log-link warm start.  NumPy
+  fallback via statsmodels `sm.GLM(Poisson())` IRLS loop.
 - [X] 40 tests covering protocol conformance, validation, single-model,
   reconstruction, deviance metric, diagnostics, batch fitting, and
   registry.
@@ -447,15 +477,38 @@ permutation methods and both backends from the start.
 - [X] Response-scale residuals, NB-sampled reconstruction
   (`n = 1/α, p = 1/(1 + α·μ*)`), and NB deviance metric.
 - [X] Diagnostics: deviance, Pearson χ², dispersion, α, AIC/BIC.
+- [X] JAX backend: `vmap`'d Newton–Raphson with factory-generated
+  NLL/gradient/Hessian (α captured as closure constant), log-link
+  warm start.  NumPy fallback via statsmodels
+  `sm.GLM(NegativeBinomial(alpha=α))` IRLS loop.
 - [X] ~40 tests including calibration idempotency and uncalibrated
   guards.
 
 #### Ordinal logistic regression
 
-- [ ] Proportional-odds model for ordered categorical outcomes.
-- [ ] Direct permutation of the ordinal response (residuals are not
-  well-defined for ordinal); threshold parameters re-estimated on each
-  permutation.
+- [X] Proportional-odds model for ordered categorical outcomes (≥ 3
+  levels, integer-coded 0, 1, …, K−1).
+- [X] `direct_permutation = True` — first family to use direct Y
+  permutation (Manly 1997) in the ter Braak path.
+- [X] Freedman-Lane rejected with informative `ValueError` (ordinal
+  residuals are ill-defined).
+- [X] Kennedy methods supported via linear exposure-model residuals.
+- [X] Duck-typed `model_fit_metric(model)` and `null_fit_metric(model)`
+  for Kennedy joint test deviance (−2·llf), detected via `hasattr()`.
+- [X] `fit_intercept` accepted but ignored — thresholds always serve as
+  category-specific intercepts.
+- [X] `method="bfgs"` for reliable convergence on the single observed
+  model (default Newton often fails for ordinal).
+- [X] JAX backend: `vmap`'d Newton–Raphson using `jax.grad` and
+  `jax.hessian` autodiff on the cumulative-logit NLL.  Category
+  count K captured as closure constant; evenly-spaced threshold
+  initialisation.  NumPy fallback via statsmodels `OrderedModel`
+  with Powell optimizer.
+- [X] Diagnostics: pseudo-R², log-likelihood, AIC, BIC, LLR p-value,
+  threshold estimates, number of categories.
+- [X] 43 tests covering protocol conformance, validation, model
+  operations, NotImplementedError guards, duck-typed metrics,
+  diagnostics, batch fitting, and registry.
 
 #### Multinomial logistic regression
 
@@ -465,6 +518,11 @@ permutation methods and both backends from the start.
   reduced to a scalar via the log-likelihood ratio or deviance.
 - [ ] Table output should support both a stacked all-contrasts view and
   individual per-contrast tables.
+- [ ] JAX backend required: `batch_multinomial` and
+  `batch_multinomial_varying_X` must have JAX Newton–Raphson
+  implementations (autodiff or hand-coded) from day one, with
+  NumPy/statsmodels fallback.  This is a hard constraint — see
+  §Design Notes below.
 
 ### Step 8 — Sign-flip test
 
@@ -537,6 +595,57 @@ construction time).
   This enables tests to inject a mock or stub backend without
   monkeypatching global state.
 - [ ] Document the pattern for writing tests with mock backends.
+
+### Design Notes — JAX backend requirement for all families
+
+**Hard constraint:** every `ModelFamily` that implements `batch_fit`
+must have a corresponding JAX Newton–Raphson solver in
+`_backends/_jax.py`.  The NumPy/statsmodels/sklearn path in
+`_backends/_numpy.py` is a **fallback** for environments where JAX
+is not installed — it is not the primary implementation.
+
+**Rationale:**
+
+1. **Autodiff and vectorisation are architectural requirements.**
+   The JAX backend uses `jax.vmap` over `jax.lax.while_loop`
+   Newton–Raphson solvers, giving automatic batch vectorisation
+   and (for ordinal) automatic differentiation via `jax.grad` /
+   `jax.hessian`.  This eliminates hand-coded Python loops over
+   B permutations that dominate runtime in the NumPy fallback.
+
+2. **Consistency across families.**  Users who set
+   `set_backend("jax")` expect all families to accelerate.  A
+   family that silently falls back to statsmodels loops would
+   violate that contract and produce unpredictable performance
+   cliffs.
+
+3. **Solver design principles:**
+   - **Log-link families** (Poisson, NegBin): hand-coded gradient
+     and Hessian (IRLS equivalent), log-link warm start via OLS on
+     `log(y + 0.5)` to place the initial β in the basin of
+     convergence when the true intercept is far from zero.
+   - **Logit-link families** (logistic): hand-coded gradient and
+     Hessian, zero initialisation (bounded µ ∈ (0,1) makes β=0 a
+     safe starting point).
+   - **Cumulative-logit families** (ordinal): `jax.grad` /
+     `jax.hessian` autodiff on the NLL, evenly-spaced threshold
+     initialisation in [−1, 1].
+   - **All solvers:** float64, damped Hessian (`1e-8 · I`), triple
+     convergence criteria (gradient norm, step size, relative NLL
+     change), `jax.lax.while_loop` for dynamic early exit.
+   - **Warm starts must match the distribution's link function.**
+     Log-link families need `log(y + 0.5)` because β=0 implies
+     µ=1 for all observations, which causes overflow when the true
+     mean is far from 1.  Logit-link families can start at β=0
+     because the logistic function naturally bounds µ.
+
+4. **Enforcement going forward:**  When implementing a new family
+   (e.g. multinomial), the JAX solver must be implemented and
+   validated against the statsmodels baseline *before* the family
+   is considered complete.  The validation criterion is that
+   coefficient differences are within tolerance for rank-based
+   permutation tests (exact agreement not required — only the
+   rank ordering of test statistics matters for p-values).
 
 ### Design Notes — `calibrate()` pattern for nuisance parameters
 

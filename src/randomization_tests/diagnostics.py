@@ -935,6 +935,35 @@ def compute_all_diagnostics(
                 "alpha": float("nan"),
                 "warning": f"Diagnostics unavailable: {exc}",
             }
+    elif model_type == "ordinal":
+        try:
+            from statsmodels.miscmodels.ordinal_model import OrderedModel
+
+            with warnings.catch_warnings():
+                warnings.filterwarnings("ignore", category=RuntimeWarning)
+                warnings.filterwarnings("ignore", category=SmConvergenceWarning)
+                X_arr = np.asarray(X, dtype=float)
+                ord_model = OrderedModel(y_values, X_arr, distr="logit").fit(
+                    disp=0, method="bfgs"
+                )
+            llf = float(ord_model.llf)
+            llnull = float(ord_model.llnull)
+            pseudo_r2 = 1.0 - llf / llnull if llnull != 0.0 else float("nan")
+            result["ordinal_gof"] = {
+                "pseudo_r_squared": pseudo_r2,
+                "log_likelihood": llf,
+                "log_likelihood_null": llnull,
+                "n_categories": len(np.unique(y_values)),
+            }
+        except Exception as exc:
+            logger.debug("Ordinal GoF diagnostics failed: %s", exc)
+            result["ordinal_gof"] = {
+                "pseudo_r_squared": float("nan"),
+                "log_likelihood": float("nan"),
+                "log_likelihood_null": float("nan"),
+                "n_categories": len(np.unique(y_values)),
+                "warning": f"Diagnostics unavailable: {exc}",
+            }
     else:
         try:
             result["breusch_pagan"] = compute_breusch_pagan(X, y_values)

@@ -111,6 +111,23 @@ def print_results_table(
                 f"{'':<{col1}}"
                 f"{chr(0x03C7) + chr(0x00B2) + ' (Pearson):':>{col2 - 11}} {pearson_str:>10}"
             )
+    elif model_type == "ordinal":
+        print(
+            f"{'Pseudo R-sq:':<16}{diag.get('pseudo_r_squared', 'N/A'):<{col1 - 16}}"
+            f"{'BIC:':>{col2 - 11}} {diag.get('bic', 'N/A'):>10}"
+        )
+        print(
+            f"{'Log-Likelihood:':<16}{diag.get('log_likelihood', 'N/A'):<{col1 - 16}}"
+            f"{'LL-Null:':>{col2 - 11}} {diag.get('log_likelihood_null', 'N/A'):>10}"
+        )
+        n_cats = diag.get("n_categories", None)
+        n_cats_str = str(n_cats) if n_cats is not None else "N/A"
+        llr_p = diag.get("llr_p_value", None)
+        llr_p_str = f"{llr_p:.4e}" if llr_p is not None else "N/A"
+        print(
+            f"{'Categories:':<16}{n_cats_str:<{col1 - 16}}"
+            f"{'LLR p-value:':>{col2 - 11}} {llr_p_str:>10}"
+        )
     else:
         print(
             f"{'Pseudo R-sq:':<16}{diag.get('pseudo_r_squared', 'N/A'):<{col1 - 16}}"
@@ -244,6 +261,23 @@ def print_joint_results_table(
                 f"{'':<{col1}}"
                 f"{chr(0x03C7) + chr(0x00B2) + ' (Pearson):':>{col2 - 11}} {pearson_str:>10}"
             )
+    elif model_type == "ordinal":
+        print(
+            f"{'Pseudo R-sq:':<16}{diag.get('pseudo_r_squared', 'N/A'):<{col1 - 16}}"
+            f"{'BIC:':>{col2 - 11}} {diag.get('bic', 'N/A'):>10}"
+        )
+        print(
+            f"{'Log-Likelihood:':<16}{diag.get('log_likelihood', 'N/A'):<{col1 - 16}}"
+            f"{'LL-Null:':>{col2 - 11}} {diag.get('log_likelihood_null', 'N/A'):>10}"
+        )
+        n_cats = diag.get("n_categories", None)
+        n_cats_str = str(n_cats) if n_cats is not None else "N/A"
+        llr_p = diag.get("llr_p_value", None)
+        llr_p_str = f"{llr_p:.4e}" if llr_p is not None else "N/A"
+        print(
+            f"{'Categories:':<16}{n_cats_str:<{col1 - 16}}"
+            f"{'LLR p-value:':>{col2 - 11}} {llr_p_str:>10}"
+        )
     else:
         print(
             f"{'Pseudo R-sq:':<16}{diag.get('pseudo_r_squared', 'N/A'):<{col1 - 16}}"
@@ -556,6 +590,18 @@ def print_diagnostics_table(
                     f"Dispersion = {disp_str}: residual "
                     f"overdispersion detected after NB fit."
                 )
+    elif model_type == "ordinal":
+        gof = ext.get("ordinal_gof", {})
+        if gof:
+            pr2 = gof.get("pseudo_r_squared", None)
+            pr2_str = f"{pr2:.4f}" if pr2 is not None else "N/A"
+            print(f"{'  Pseudo R-sq:':<{lw}}{pr2_str:>10}")
+            ll = gof.get("log_likelihood", None)
+            ll_str = f"{ll:.4f}" if ll is not None else "N/A"
+            print(f"{'  Log-Likelihood:':<{lw}}{ll_str:>10}")
+            n_cats = gof.get("n_categories", None)
+            n_cats_str = str(n_cats) if n_cats is not None else "N/A"
+            print(f"{'  Categories:':<{lw}}{n_cats_str:>10}")
     else:
         dr = ext.get("deviance_residuals", {})
         if dr:

@@ -181,6 +181,44 @@ Only families with nuisance parameters need implement it.
 
 **Raises:** `RuntimeError` if MLE estimation fails to converge.
 
+### `OrdinalFamily`
+
+Proportional‑odds logistic regression for ordered categorical outcomes
+with ≥ 3 levels (integer‑coded 0, 1, …, K−1).
+
+- `residual_type = "none"` — ordinal residuals are ill‑defined.
+- `direct_permutation = True` — first family to use direct Y permutation.
+- `metric_label = "Deviance Reduction"`.
+- `fit` uses `statsmodels.miscmodels.ordinal_model.OrderedModel` with
+  `distr="logit"` and `method="bfgs"` for reliable convergence.
+- `fit_intercept` is accepted but ignored — thresholds serve as
+  category‑specific intercepts.
+- `residuals`, `reconstruct_y`, `fit_metric` raise `NotImplementedError`.
+- `batch_fit` uses a joblib‑parallelised OrderedModel loop.
+
+**Supported methods:** `ter_braak`, `kennedy`, `kennedy_joint`.
+
+**Rejected methods:** `freedman_lane`, `freedman_lane_joint` raise
+`ValueError` because ordinal residuals are not well‑defined.
+
+#### `model_fit_metric` (duck‑typed)
+
+```python
+OrdinalFamily.model_fit_metric(model: Any) -> float
+```
+
+Returns `−2 × log‑likelihood` from the fitted ordinal model.  Used by
+the Kennedy joint engine (detected via `hasattr`).
+
+#### `null_fit_metric` (duck‑typed)
+
+```python
+OrdinalFamily.null_fit_metric(model: Any) -> float
+```
+
+Returns null deviance `−2 × llnull` (thresholds‑only model).  Used by
+the Kennedy joint engine when there are no confounders.
+
 ### `resolve_family`
 
 ```python
@@ -196,6 +234,7 @@ Resolve a family string to a `ModelFamily` instance.
 | `"logistic"` | `LogisticFamily()`. |
 | `"poisson"` | `PoissonFamily()`. |
 | `"negative_binomial"` | `NegativeBinomialFamily()` (uncalibrated; α estimated during calibration). |
+| `"ordinal"` | `OrdinalFamily()`. Requires ≥ 3 categories; supports ter Braak, Kennedy only. |
 
 **Raises:** `ValueError` for unrecognised family strings.
 

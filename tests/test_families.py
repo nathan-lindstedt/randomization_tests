@@ -1,5 +1,5 @@
 """Tests for the ModelFamily protocol, LinearFamily, LogisticFamily,
-PoissonFamily, and NegativeBinomialFamily.
+PoissonFamily, NegativeBinomialFamily, and OrdinalFamily.
 """
 
 import numpy as np
@@ -10,6 +10,7 @@ from randomization_tests.families import (
     LogisticFamily,
     ModelFamily,
     NegativeBinomialFamily,
+    OrdinalFamily,
     PoissonFamily,
     register_family,
     resolve_family,
@@ -1364,3 +1365,339 @@ class TestNBRegistry:
     def test_frozen_dataclass(self, nb_family):
         with pytest.raises(AttributeError):
             nb_family.name = "other"  # type: ignore[misc]
+
+
+# ================================================================== #
+# OrdinalFamily
+# ================================================================== #
+
+# ------------------------------------------------------------------ #
+# Fixtures
+# ------------------------------------------------------------------ #
+
+
+@pytest.fixture()
+def ordinal_data(rng):
+    """Ordinal outcome with 4 ordered categories (0, 1, 2, 3)."""
+    n, p = 120, 3
+    X = rng.standard_normal((n, p))
+    z = X @ np.array([0.6, -0.3, 0.2]) + rng.standard_normal(n) * 0.8
+    y = np.digitize(z, bins=np.quantile(z, [0.25, 0.5, 0.75])).astype(float)
+    return X, y
+
+
+@pytest.fixture()
+def ordinal_family():
+    return OrdinalFamily()
+
+
+# ------------------------------------------------------------------ #
+# Protocol conformance
+# ------------------------------------------------------------------ #
+
+
+class TestOrdinalProtocolConformance:
+    def test_isinstance_check(self, ordinal_family):
+        assert isinstance(ordinal_family, ModelFamily)
+
+    def test_name(self, ordinal_family):
+        assert ordinal_family.name == "ordinal"
+
+    def test_residual_type(self, ordinal_family):
+        assert ordinal_family.residual_type == "none"
+
+    def test_direct_permutation(self, ordinal_family):
+        assert ordinal_family.direct_permutation is True
+
+    def test_metric_label(self, ordinal_family):
+        assert ordinal_family.metric_label == "Deviance Reduction"
+
+
+# ------------------------------------------------------------------ #
+# validate_y
+# ------------------------------------------------------------------ #
+
+
+class TestOrdinalValidateY:
+    def test_valid_ordinal(self, ordinal_family):
+        """Integer-coded ordinal with ≥ 3 levels should pass."""
+        ordinal_family.validate_y(np.array([0, 1, 2, 3, 1, 2], dtype=float))
+
+    def test_valid_int_dtype(self, ordinal_family):
+        """Integer dtypes should pass."""
+        ordinal_family.validate_y(np.array([0, 1, 2, 0, 1, 2], dtype=int))
+
+    def test_float_whole_numbers(self, ordinal_family):
+        """Whole-number floats (0.0, 1.0, etc.) should pass."""
+        ordinal_family.validate_y(np.array([0.0, 1.0, 2.0, 3.0, 1.0]))
+
+    def test_rejects_non_numeric(self, ordinal_family):
+        with pytest.raises(ValueError, match="numeric"):
+            ordinal_family.validate_y(np.array(["a", "b", "c"]))
+
+    def test_rejects_nan(self, ordinal_family):
+        with pytest.raises(ValueError, match="NaN"):
+            ordinal_family.validate_y(np.array([0.0, 1.0, float("nan"), 2.0]))
+
+    def test_rejects_non_integer(self, ordinal_family):
+        with pytest.raises(ValueError, match="integer"):
+            ordinal_family.validate_y(np.array([0.0, 0.5, 1.0, 1.5, 2.0]))
+
+    def test_rejects_binary(self, ordinal_family):
+        """Fewer than 3 levels should be rejected."""
+        with pytest.raises(ValueError, match="3"):
+            ordinal_family.validate_y(np.array([0, 1, 0, 1, 0], dtype=float))
+
+    def test_rejects_single_level(self, ordinal_family):
+        with pytest.raises(ValueError, match="3"):
+            ordinal_family.validate_y(np.array([2, 2, 2, 2], dtype=float))
+
+
+# ------------------------------------------------------------------ #
+# Single-model operations
+# ------------------------------------------------------------------ #
+
+
+class TestOrdinalSingleModel:
+    def test_fit_returns_model(self, ordinal_family, ordinal_data):
+        X, y = ordinal_data
+        model = ordinal_family.fit(X, y)
+        assert model is not None
+        assert hasattr(model, "params")
+
+    def test_coefs_shape(self, ordinal_family, ordinal_data):
+        X, y = ordinal_data
+        model = ordinal_family.fit(X, y)
+        coefs = ordinal_family.coefs(model)
+        assert coefs.shape == (X.shape[1],)
+
+    def test_predict_shape(self, ordinal_family, ordinal_data):
+        X, y = ordinal_data
+        model = ordinal_family.fit(X, y)
+        preds = ordinal_family.predict(model, X)
+        assert preds.shape == (X.shape[0],)
+
+    def test_predict_expected_range(self, ordinal_family, ordinal_data):
+        """E[Y|X] should be within [0, K-1]."""
+        X, y = ordinal_data
+        model = ordinal_family.fit(X, y)
+        preds = ordinal_family.predict(model, X)
+        n_levels = len(np.unique(y))
+        assert np.all(preds >= 0)
+        assert np.all(preds <= n_levels - 1)
+
+    def test_fit_intercept_ignored(self, ordinal_family, ordinal_data):
+        """fit_intercept should be accepted but have no effect."""
+        X, y = ordinal_data
+        model_true = ordinal_family.fit(X, y, fit_intercept=True)
+        model_false = ordinal_family.fit(X, y, fit_intercept=False)
+        # Both should produce identical coefficients
+        np.testing.assert_allclose(
+            ordinal_family.coefs(model_true),
+            ordinal_family.coefs(model_false),
+            rtol=1e-4,
+        )
+
+
+# ------------------------------------------------------------------ #
+# Residuals / reconstruct_y / fit_metric — all raise
+# ------------------------------------------------------------------ #
+
+
+class TestOrdinalNotImplemented:
+    def test_residuals_raises(self, ordinal_family, ordinal_data):
+        X, y = ordinal_data
+        model = ordinal_family.fit(X, y)
+        with pytest.raises(NotImplementedError, match="not well-defined"):
+            ordinal_family.residuals(model, X, y)
+
+    def test_reconstruct_y_raises(self, ordinal_family):
+        rng = np.random.default_rng(0)
+        with pytest.raises(NotImplementedError, match="direct_permutation"):
+            ordinal_family.reconstruct_y(np.zeros((1, 5)), np.zeros((1, 5)), rng)
+
+    def test_fit_metric_raises(self, ordinal_family):
+        with pytest.raises(NotImplementedError, match="model_fit_metric"):
+            ordinal_family.fit_metric(np.zeros(5), np.zeros(5))
+
+
+# ------------------------------------------------------------------ #
+# Model-based fit metric (duck-typed)
+# ------------------------------------------------------------------ #
+
+
+class TestOrdinalModelFitMetric:
+    def test_model_fit_metric_positive(self, ordinal_family, ordinal_data):
+        X, y = ordinal_data
+        model = ordinal_family.fit(X, y)
+        metric = ordinal_family.model_fit_metric(model)
+        assert metric > 0  # -2*llf should be positive
+
+    def test_null_fit_metric_positive(self, ordinal_family, ordinal_data):
+        X, y = ordinal_data
+        model = ordinal_family.fit(X, y)
+        null_metric = ordinal_family.null_fit_metric(model)
+        assert null_metric > 0
+
+    def test_null_metric_greater_than_full(self, ordinal_family, ordinal_data):
+        """Null model deviance should be >= full model deviance."""
+        X, y = ordinal_data
+        model = ordinal_family.fit(X, y)
+        full = ordinal_family.model_fit_metric(model)
+        null = ordinal_family.null_fit_metric(model)
+        assert null >= full
+
+    def test_hasattr_duck_typing(self, ordinal_family):
+        """Duck-type detection should find model_fit_metric."""
+        assert hasattr(ordinal_family, "model_fit_metric")
+        assert hasattr(ordinal_family, "null_fit_metric")
+
+    def test_other_families_lack_model_fit_metric(self):
+        """Other families should NOT have model_fit_metric."""
+        assert not hasattr(LinearFamily(), "model_fit_metric")
+        assert not hasattr(LogisticFamily(), "model_fit_metric")
+        assert not hasattr(PoissonFamily(), "model_fit_metric")
+
+
+# ------------------------------------------------------------------ #
+# Diagnostics
+# ------------------------------------------------------------------ #
+
+
+class TestOrdinalDiagnostics:
+    def test_diagnostics_keys(self, ordinal_family, ordinal_data):
+        X, y = ordinal_data
+        diag = ordinal_family.diagnostics(X, y)
+        expected = {
+            "n_observations",
+            "n_features",
+            "n_categories",
+            "pseudo_r_squared",
+            "log_likelihood",
+            "log_likelihood_null",
+            "aic",
+            "bic",
+            "llr_p_value",
+            "thresholds",
+        }
+        assert expected.issubset(diag.keys())
+
+    def test_n_observations(self, ordinal_family, ordinal_data):
+        X, y = ordinal_data
+        diag = ordinal_family.diagnostics(X, y)
+        assert diag["n_observations"] == len(y)
+
+    def test_n_features(self, ordinal_family, ordinal_data):
+        X, y = ordinal_data
+        diag = ordinal_family.diagnostics(X, y)
+        assert diag["n_features"] == X.shape[1]
+
+    def test_n_categories(self, ordinal_family, ordinal_data):
+        X, y = ordinal_data
+        diag = ordinal_family.diagnostics(X, y)
+        assert diag["n_categories"] == len(np.unique(y))
+
+    def test_pseudo_r_squared_range(self, ordinal_family, ordinal_data):
+        X, y = ordinal_data
+        diag = ordinal_family.diagnostics(X, y)
+        assert 0 <= diag["pseudo_r_squared"] <= 1
+
+    def test_thresholds_count(self, ordinal_family, ordinal_data):
+        X, y = ordinal_data
+        diag = ordinal_family.diagnostics(X, y)
+        n_cats = len(np.unique(y))
+        assert len(diag["thresholds"]) == n_cats - 1
+
+    def test_log_likelihood_negative(self, ordinal_family, ordinal_data):
+        X, y = ordinal_data
+        diag = ordinal_family.diagnostics(X, y)
+        assert diag["log_likelihood"] < 0
+
+    def test_aic_bic_positive(self, ordinal_family, ordinal_data):
+        X, y = ordinal_data
+        diag = ordinal_family.diagnostics(X, y)
+        assert diag["aic"] > 0
+        assert diag["bic"] > 0
+
+
+# ------------------------------------------------------------------ #
+# Classical p-values
+# ------------------------------------------------------------------ #
+
+
+class TestOrdinalClassicalPValues:
+    def test_shape(self, ordinal_family, ordinal_data):
+        X, y = ordinal_data
+        pvals = ordinal_family.classical_p_values(X, y)
+        assert pvals.shape == (X.shape[1],)
+
+    def test_range(self, ordinal_family, ordinal_data):
+        X, y = ordinal_data
+        pvals = ordinal_family.classical_p_values(X, y)
+        assert np.all(pvals >= 0)
+        assert np.all(pvals <= 1)
+
+
+# ------------------------------------------------------------------ #
+# Exchangeability cells
+# ------------------------------------------------------------------ #
+
+
+class TestOrdinalExchangeabilityCells:
+    def test_returns_none(self, ordinal_family, ordinal_data):
+        X, y = ordinal_data
+        assert ordinal_family.exchangeability_cells(X, y) is None
+
+
+# ------------------------------------------------------------------ #
+# Batch fitting
+# ------------------------------------------------------------------ #
+
+
+class TestOrdinalBatchFit:
+    def test_shape(self, ordinal_family, ordinal_data, rng):
+        X, y = ordinal_data
+        B = 5
+        Y_matrix = np.array([y[rng.permutation(len(y))] for _ in range(B)])
+        coefs = ordinal_family.batch_fit(X, Y_matrix, fit_intercept=True)
+        assert coefs.shape == (B, X.shape[1])
+
+    def test_no_all_nan(self, ordinal_family, ordinal_data, rng):
+        """Most permutations should converge."""
+        X, y = ordinal_data
+        B = 10
+        Y_matrix = np.array([y[rng.permutation(len(y))] for _ in range(B)])
+        coefs = ordinal_family.batch_fit(X, Y_matrix, fit_intercept=True)
+        n_valid = np.sum(~np.any(np.isnan(coefs), axis=1))
+        assert n_valid >= B // 2  # at least half should converge
+
+
+class TestOrdinalBatchFitVaryingX:
+    def test_shape(self, ordinal_family, ordinal_data, rng):
+        X, y = ordinal_data
+        n = len(y)
+        B = 5
+        X_batch = np.array([X[rng.permutation(n)] for _ in range(B)])
+        coefs = ordinal_family.batch_fit_varying_X(X_batch, y, fit_intercept=True)
+        assert coefs.shape == (B, X.shape[1])
+
+
+# ------------------------------------------------------------------ #
+# Registry
+# ------------------------------------------------------------------ #
+
+
+class TestOrdinalRegistry:
+    def test_ordinal_registered(self):
+        fam = resolve_family("ordinal", np.array([0.0, 1.0, 2.0]))
+        assert isinstance(fam, OrdinalFamily)
+
+    def test_auto_does_not_resolve_ordinal(self):
+        """Auto-detection should not select ordinal."""
+        y = np.array([0, 1, 2, 3, 1, 2, 0, 3], dtype=float)
+        fam = resolve_family("auto", y)
+        assert isinstance(fam, LinearFamily)
+
+    def test_frozen_dataclass(self, ordinal_family):
+        with pytest.raises(AttributeError):
+            ordinal_family.name = "other"  # type: ignore[misc]

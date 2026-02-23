@@ -44,6 +44,7 @@ from statsmodels.tools.sm_exceptions import (
     ConvergenceWarning as SmConvergenceWarning,
 )
 from statsmodels.tools.sm_exceptions import (
+    HessianInversionWarning,
     PerfectSeparationWarning,
 )
 
@@ -1138,11 +1139,12 @@ class LogisticFamily:
 #
 # with the convention that 0·log(0/μ̂) = 0 (L'Hôpital).
 #
-# **Batch fitting** is a joblib-parallelised statsmodels IRLS loop —
-# there is no closed-form solution or JAX Poisson solver, so each of
-# the B permutations requires an independent GLM fit.  Convergence
-# failures on individual permuted Y vectors produce NaN coefficient
-# rows; an aggregated warning is emitted after the loop.
+# **Batch fitting** delegates to the active backend via
+# ``resolve_backend()``.  The JAX backend uses vmap'd
+# Newton–Raphson with log-link warm start; the NumPy backend
+# falls back to a joblib-parallelised statsmodels IRLS loop.
+# Convergence failures produce NaN coefficient rows; an
+# aggregated warning is emitted after the loop.
 
 
 @dataclass(frozen=True)
@@ -1155,8 +1157,8 @@ class PoissonFamily:
     response scale, and the joint-test metric is deviance.
 
     The class is stateless — all data flows through method arguments.
-    ``batch_fit`` uses a joblib-parallelised statsmodels loop (no
-    backend delegation — no JAX Poisson solver exists yet).
+    ``batch_fit`` delegates to the active backend (JAX or NumPy)
+    via ``resolve_backend()``.
     """
 
     @property
@@ -1402,14 +1404,10 @@ class PoissonFamily:
 
     # ---- Batch fitting (hot loop) ----------------------------------
     #
-    # Unlike OLS (pseudoinverse) or logistic (JAX vmap), Poisson batch
-    # fitting requires B independent IRLS solves via statsmodels.
-    # There is no closed-form shortcut and no JAX Poisson solver.
-    #
-    # The loop is parallelised via joblib when n_jobs != 1.  Individual
-    # fit failures (convergence issues on extreme permuted Y vectors)
-    # produce NaN coefficient rows; an aggregated warning is emitted
-    # after the loop.
+    # Delegates to the active backend (JAX or NumPy) via
+    # ``resolve_backend()``.  The JAX backend uses vmap'd
+    # Newton–Raphson; the NumPy backend falls back to a
+    # joblib-parallelised statsmodels IRLS loop.
 
     def batch_fit(
         self,
@@ -1418,57 +1416,36 @@ class PoissonFamily:
         fit_intercept: bool,
         **kwargs: Any,
     ) -> np.ndarray:
-        """Batch Poisson GLM via joblib-parallelised statsmodels loop.
+        """Batch Poisson GLM via the active backend.
 
-        Each row of *Y_matrix* is a permuted response vector.  Returns
-        ``(B, p)`` coefficient matrix with intercept excluded.
-        Convergence failures produce NaN rows and a single aggregated
-        warning.
+        Delegates to ``backend.batch_poisson()`` resolved from the
+        current configuration.  Forwards ``n_jobs`` only to the
+        NumPy backend.
         """
-        kwargs.pop("backend", None)
+        from ._backends import resolve_backend
+
+        backend = kwargs.pop("backend", None)
         n_jobs = kwargs.pop("n_jobs", 1)
-
-        X_sm = sm.add_constant(X) if fit_intercept else np.asarray(X)
-        n_params = X.shape[1]
-        B = Y_matrix.shape[0]
-
-        def _fit_one(y_b: np.ndarray) -> np.ndarray:
-            try:
-                with warnings.catch_warnings():
-                    warnings.filterwarnings("ignore", category=SmConvergenceWarning)
-                    warnings.filterwarnings("ignore", category=RuntimeWarning)
-                    model = sm.GLM(y_b, X_sm, family=sm.families.Poisson()).fit(
-                        disp=0, maxiter=100
-                    )
-                params = np.asarray(model.params)
-                return params[1:] if fit_intercept else params
-            except Exception:  # noqa: BLE001
-                return np.full(n_params, np.nan)
-
-        if n_jobs == 1:
-            results = [_fit_one(Y_matrix[i]) for i in range(B)]
-        else:
-            from joblib import Parallel, delayed
-
-            results = Parallel(n_jobs=n_jobs, prefer="threads")(
-                delayed(_fit_one)(Y_matrix[i]) for i in range(B)
+        if backend is None:
+            backend = resolve_backend()
+        if backend.name == "numpy":
+            return np.asarray(
+                backend.batch_poisson(
+                    X,
+                    Y_matrix,
+                    fit_intercept=fit_intercept,
+                    n_jobs=n_jobs,
+                    **kwargs,
+                )
             )
-
-        coef_matrix = np.array(results)
-
-        # Aggregated convergence warning.
-        n_failed = int(np.sum(np.any(np.isnan(coef_matrix), axis=1)))
-        if n_failed > 0:
-            pct = 100.0 * n_failed / B
-            warnings.warn(
-                f"{n_failed} of {B} Poisson fits did not converge "
-                f"({pct:.1f}%). Consider checking for overdispersion "
-                f"or zero-inflation.",
-                UserWarning,
-                stacklevel=2,
+        return np.asarray(
+            backend.batch_poisson(
+                X,
+                Y_matrix,
+                fit_intercept=fit_intercept,
+                **kwargs,
             )
-
-        return coef_matrix
+        )
 
     def batch_fit_varying_X(
         self,
@@ -1479,53 +1456,34 @@ class PoissonFamily:
     ) -> np.ndarray:
         """Batch Poisson with per-permutation design matrices.
 
-        Used by the Kennedy individual path where column *j* of *X*
-        differs across permutations while Y stays the same.  Same
-        joblib-parallelised statsmodels loop as ``batch_fit``.
+        Delegates to ``backend.batch_poisson_varying_X()`` for the
+        Kennedy individual path.  Forwards ``n_jobs`` only to the
+        NumPy backend.
         """
-        kwargs.pop("backend", None)
+        from ._backends import resolve_backend
+
+        backend = kwargs.pop("backend", None)
         n_jobs = kwargs.pop("n_jobs", 1)
-
-        B, _n, p = X_batch.shape
-        n_params = p
-
-        def _fit_one(X_b: np.ndarray) -> np.ndarray:
-            X_sm = sm.add_constant(X_b) if fit_intercept else np.asarray(X_b)
-            try:
-                with warnings.catch_warnings():
-                    warnings.filterwarnings("ignore", category=SmConvergenceWarning)
-                    warnings.filterwarnings("ignore", category=RuntimeWarning)
-                    model = sm.GLM(y, X_sm, family=sm.families.Poisson()).fit(
-                        disp=0, maxiter=100
-                    )
-                params = np.asarray(model.params)
-                return params[1:] if fit_intercept else params
-            except Exception:  # noqa: BLE001
-                return np.full(n_params, np.nan)
-
-        if n_jobs == 1:
-            results = [_fit_one(X_batch[i]) for i in range(B)]
-        else:
-            from joblib import Parallel, delayed
-
-            results = Parallel(n_jobs=n_jobs, prefer="threads")(
-                delayed(_fit_one)(X_batch[i]) for i in range(B)
+        if backend is None:
+            backend = resolve_backend()
+        if backend.name == "numpy":
+            return np.asarray(
+                backend.batch_poisson_varying_X(
+                    X_batch,
+                    y,
+                    fit_intercept=fit_intercept,
+                    n_jobs=n_jobs,
+                    **kwargs,
+                )
             )
-
-        coef_matrix = np.array(results)
-
-        n_failed = int(np.sum(np.any(np.isnan(coef_matrix), axis=1)))
-        if n_failed > 0:
-            pct = 100.0 * n_failed / B
-            warnings.warn(
-                f"{n_failed} of {B} Poisson fits did not converge "
-                f"({pct:.1f}%). Consider checking for overdispersion "
-                f"or zero-inflation.",
-                UserWarning,
-                stacklevel=2,
+        return np.asarray(
+            backend.batch_poisson_varying_X(
+                X_batch,
+                y,
+                fit_intercept=fit_intercept,
+                **kwargs,
             )
-
-        return coef_matrix
+        )
 
 
 # ------------------------------------------------------------------ #
@@ -1565,9 +1523,11 @@ class PoissonFamily:
 #
 # with the convention that 0·log(0/·) = 0.
 #
-# **Batch fitting** uses the same joblib-parallelised statsmodels
-# loop as PoissonFamily, but with ``sm.families.NegativeBinomial``
-# and a fixed α.
+# **Batch fitting** delegates to the active backend via
+# ``resolve_backend()``.  The JAX backend uses vmap'd
+# Newton–Raphson with fixed α and log-link warm start; the NumPy
+# backend falls back to a joblib-parallelised statsmodels loop
+# with ``sm.families.NegativeBinomial`` and fixed α.
 
 
 @dataclass(frozen=True)
@@ -1848,6 +1808,11 @@ class NegativeBinomialFamily:
         return None
 
     # ---- Batch fitting (hot loop) ----------------------------------
+    #
+    # Delegates to the active backend (JAX or NumPy) via
+    # ``resolve_backend()``.  The JAX backend uses vmap'd
+    # Newton–Raphson with fixed α; the NumPy backend falls
+    # back to a joblib-parallelised statsmodels IRLS loop.
 
     def batch_fit(
         self,
@@ -1856,57 +1821,40 @@ class NegativeBinomialFamily:
         fit_intercept: bool,
         **kwargs: Any,
     ) -> np.ndarray:
-        """Batch NB GLM via joblib-parallelised statsmodels loop.
+        """Batch NB GLM via the active backend.
 
-        Each row of *Y_matrix* is a permuted response vector.  The
-        dispersion α is held fixed at the value estimated from the
-        observed data.  Returns ``(B, p)`` coefficient matrix with
-        intercept excluded.
+        Delegates to ``backend.batch_negbin()`` resolved from the
+        current configuration.  The dispersion α (estimated once
+        from observed data) is forwarded to the backend.
         """
         alpha = self._require_alpha("batch_fit")
 
-        kwargs.pop("backend", None)
+        from ._backends import resolve_backend
+
+        backend = kwargs.pop("backend", None)
         n_jobs = kwargs.pop("n_jobs", 1)
-
-        X_sm = sm.add_constant(X) if fit_intercept else np.asarray(X)
-        n_params = X.shape[1]
-        B = Y_matrix.shape[0]
-        nb_family = self._nb_family(alpha)
-
-        def _fit_one(y_b: np.ndarray) -> np.ndarray:
-            try:
-                with warnings.catch_warnings():
-                    warnings.filterwarnings("ignore", category=SmConvergenceWarning)
-                    warnings.filterwarnings("ignore", category=RuntimeWarning)
-                    model = sm.GLM(y_b, X_sm, family=nb_family).fit(disp=0, maxiter=100)
-                params = np.asarray(model.params)
-                return params[1:] if fit_intercept else params
-            except Exception:  # noqa: BLE001
-                return np.full(n_params, np.nan)
-
-        if n_jobs == 1:
-            results = [_fit_one(Y_matrix[i]) for i in range(B)]
-        else:
-            from joblib import Parallel, delayed
-
-            results = Parallel(n_jobs=n_jobs, prefer="threads")(
-                delayed(_fit_one)(Y_matrix[i]) for i in range(B)
+        if backend is None:
+            backend = resolve_backend()
+        if backend.name == "numpy":
+            return np.asarray(
+                backend.batch_negbin(
+                    X,
+                    Y_matrix,
+                    fit_intercept=fit_intercept,
+                    alpha=alpha,
+                    n_jobs=n_jobs,
+                    **kwargs,
+                )
             )
-
-        coef_matrix = np.array(results)
-
-        n_failed = int(np.sum(np.any(np.isnan(coef_matrix), axis=1)))
-        if n_failed > 0:
-            pct = 100.0 * n_failed / B
-            warnings.warn(
-                f"{n_failed} of {B} NB fits did not converge "
-                f"({pct:.1f}%). Consider checking for zero-inflation "
-                f"or model mis-specification.",
-                UserWarning,
-                stacklevel=2,
+        return np.asarray(
+            backend.batch_negbin(
+                X,
+                Y_matrix,
+                fit_intercept=fit_intercept,
+                alpha=alpha,
+                **kwargs,
             )
-
-        return coef_matrix
+        )
 
     def batch_fit_varying_X(
         self,
@@ -1917,53 +1865,447 @@ class NegativeBinomialFamily:
     ) -> np.ndarray:
         """Batch NB with per-permutation design matrices.
 
-        Used by the Kennedy individual path where column *j* of *X*
-        differs across permutations while Y stays the same.
+        Delegates to ``backend.batch_negbin_varying_X()`` for the
+        Kennedy individual path.  Forwards ``n_jobs`` only to the
+        NumPy backend.
         """
         alpha = self._require_alpha("batch_fit_varying_X")
 
-        kwargs.pop("backend", None)
+        from ._backends import resolve_backend
+
+        backend = kwargs.pop("backend", None)
         n_jobs = kwargs.pop("n_jobs", 1)
-
-        B, _n, p = X_batch.shape
-        n_params = p
-        nb_family = self._nb_family(alpha)
-
-        def _fit_one(X_b: np.ndarray) -> np.ndarray:
-            X_sm = sm.add_constant(X_b) if fit_intercept else np.asarray(X_b)
-            try:
-                with warnings.catch_warnings():
-                    warnings.filterwarnings("ignore", category=SmConvergenceWarning)
-                    warnings.filterwarnings("ignore", category=RuntimeWarning)
-                    model = sm.GLM(y, X_sm, family=nb_family).fit(disp=0, maxiter=100)
-                params = np.asarray(model.params)
-                return params[1:] if fit_intercept else params
-            except Exception:  # noqa: BLE001
-                return np.full(n_params, np.nan)
-
-        if n_jobs == 1:
-            results = [_fit_one(X_batch[i]) for i in range(B)]
-        else:
-            from joblib import Parallel, delayed
-
-            results = Parallel(n_jobs=n_jobs, prefer="threads")(
-                delayed(_fit_one)(X_batch[i]) for i in range(B)
+        if backend is None:
+            backend = resolve_backend()
+        if backend.name == "numpy":
+            return np.asarray(
+                backend.batch_negbin_varying_X(
+                    X_batch,
+                    y,
+                    fit_intercept=fit_intercept,
+                    alpha=alpha,
+                    n_jobs=n_jobs,
+                    **kwargs,
+                )
             )
-
-        coef_matrix = np.array(results)
-
-        n_failed = int(np.sum(np.any(np.isnan(coef_matrix), axis=1)))
-        if n_failed > 0:
-            pct = 100.0 * n_failed / B
-            warnings.warn(
-                f"{n_failed} of {B} NB fits did not converge "
-                f"({pct:.1f}%). Consider checking for zero-inflation "
-                f"or model mis-specification.",
-                UserWarning,
-                stacklevel=2,
+        return np.asarray(
+            backend.batch_negbin_varying_X(
+                X_batch,
+                y,
+                fit_intercept=fit_intercept,
+                alpha=alpha,
+                **kwargs,
             )
+        )
 
-        return coef_matrix
+
+# ------------------------------------------------------------------ #
+# OrdinalFamily
+# ------------------------------------------------------------------ #
+#
+# Ordinal regression (proportional-odds logistic regression) models
+# ordered categorical outcomes Y ∈ {0, 1, …, K−1} via the cumulative
+# logit link:
+#
+#   logit(P(Y ≤ k | X)) = α_k − Xβ    for k = 0, …, K−2
+#
+# where α_k are threshold (cutpoint) parameters and β are shared
+# slope coefficients.  The model assumes proportional odds: the
+# effect of each predictor is constant across cutpoints.
+#
+# **Key design decisions** (from the v0.3.0 plan):
+#
+# 1. **direct_permutation = True** — Ordinal residuals are not well-
+#    defined, so the residual→permute→reconstruct pipeline is replaced
+#    by direct Y permutation (Manly 1997).  The ter Braak engine path
+#    detects this flag and permutes Y rows directly.
+#
+# 2. **Freedman-Lane rejection** — FL requires meaningful residuals
+#    for the reduced-model partial regression approach.  Since ordinal
+#    residuals are ill-defined, FL raises ValueError with guidance to
+#    use ter_braak or kennedy methods instead.
+#
+# 3. **model_fit_metric** — The joint test metric is deviance
+#    (−2 × log-likelihood), computed from the fitted model object
+#    rather than from predictions.  This is a duck-typed method
+#    (not on the ModelFamily protocol) detected via hasattr().
+#
+# 4. **fit_intercept is ignored** — OrderedModel always estimates
+#    threshold parameters, which serve as category-specific intercepts.
+#    The fit_intercept parameter is accepted but has no effect.
+#
+# 5. **method='bfgs'** — The default Newton optimizer often fails
+#    to converge for ordinal models.  BFGS converges reliably.
+
+
+@dataclass(frozen=True)
+class OrdinalFamily:
+    """Ordinal regression (proportional-odds logistic) family.
+
+    Implements the ``ModelFamily`` protocol for ordered categorical
+    outcomes with ≥ 3 levels (integer-coded 0, 1, …, K−1).
+
+    Uses ``statsmodels.miscmodels.ordinal_model.OrderedModel`` with
+    the logit link (proportional-odds assumption).
+
+    **Permutation method restrictions**: Only ``ter_braak``,
+    ``kennedy``, and ``kennedy_joint`` are supported.  Freedman-Lane
+    methods raise ``ValueError`` because ordinal residuals are not
+    meaningfully defined.
+
+    The ter Braak path uses direct Y permutation (equivalent to
+    Manly 1997) rather than the residual-based approach used by
+    continuous/binary families.
+
+    **Optimizer strategy**: The single-model ``fit()`` (used for
+    reported coefficients and diagnostics) uses BFGS for exact
+    optima.  The batch fitting methods delegate to the active
+    backend via ``resolve_backend()``.  The JAX backend uses
+    vmap'd Newton–Raphson with ``jax.grad``/``jax.hessian``
+    autodiff; the NumPy backend falls back to statsmodels
+    ``OrderedModel`` with the Powell optimizer.
+    """
+
+    @property
+    def name(self) -> str:
+        return "ordinal"
+
+    @property
+    def residual_type(self) -> str:
+        return "none"
+
+    @property
+    def direct_permutation(self) -> bool:
+        return True
+
+    @property
+    def metric_label(self) -> str:
+        return "Deviance Reduction"
+
+    # ---- Validation ------------------------------------------------
+
+    def validate_y(self, y: np.ndarray) -> None:
+        """Check that *y* contains ordered categorical integer data with ≥ 3 levels."""
+        if not np.issubdtype(y.dtype, np.number):
+            msg = "OrdinalFamily requires numeric Y values."
+            raise ValueError(msg)
+        if np.any(np.isnan(y)):
+            msg = "OrdinalFamily does not accept NaN values in Y."
+            raise ValueError(msg)
+        if not np.allclose(y, np.round(y)):
+            msg = (
+                "OrdinalFamily requires integer-coded Y values "
+                "(e.g. 0, 1, 2, …, K−1). Got non-integer values."
+            )
+            raise ValueError(msg)
+        n_levels = len(np.unique(y))
+        if n_levels < 3:
+            msg = (
+                f"OrdinalFamily requires ≥ 3 ordered categories, "
+                f"got {n_levels}. For binary outcomes, use "
+                f"family='logistic' instead."
+            )
+            raise ValueError(msg)
+
+    # ---- Single-model operations -----------------------------------
+
+    def fit(
+        self,
+        X: np.ndarray,
+        y: np.ndarray,
+        fit_intercept: bool = True,  # noqa: ARG002
+    ) -> Any:
+        """Fit a proportional-odds logistic regression via BFGS.
+
+        BFGS provides exact optima for the coefficients and
+        diagnostics displayed to the user.  Batch permutation fits
+        use the faster Powell method instead — see ``batch_fit``.
+
+        ``fit_intercept`` is accepted for protocol compatibility but
+        ignored — thresholds (cutpoints) always serve as
+        category-specific intercepts in ordinal models.
+
+        Returns the fitted ``OrderedResults`` object.
+        """
+        from statsmodels.miscmodels.ordinal_model import OrderedModel
+
+        X_arr = np.asarray(X, dtype=float)
+        y_arr = np.asarray(y)
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", category=SmConvergenceWarning)
+            warnings.filterwarnings("ignore", category=HessianInversionWarning)
+            warnings.filterwarnings("ignore", category=RuntimeWarning)
+            model = OrderedModel(y_arr, X_arr, distr="logit").fit(disp=0, method="bfgs")
+        return model
+
+    def predict(self, model: Any, X: np.ndarray) -> np.ndarray:  # noqa: ARG002
+        """Return expected value E[Y|X] = Σ k·P(Y=k|X).
+
+        The returned vector has shape ``(n,)`` rather than a
+        probability matrix, keeping the interface consistent with
+        other families (all return a 1-D prediction).
+        """
+        prob_matrix = np.asarray(model.predict())  # (n, K)
+        levels = np.arange(prob_matrix.shape[1])
+        return np.asarray(prob_matrix @ levels)  # (n,)
+
+    def coefs(self, model: Any) -> np.ndarray:
+        """Extract slope coefficients (thresholds excluded).
+
+        ``model.params[:p]`` are the β coefficients;
+        ``model.params[p:]`` are the K−1 threshold parameters.
+        """
+        n_features = model.model.exog.shape[1]
+        return np.asarray(model.params[:n_features])
+
+    def residuals(
+        self,
+        model: Any,  # noqa: ARG002
+        X: np.ndarray,  # noqa: ARG002
+        y: np.ndarray,  # noqa: ARG002
+    ) -> np.ndarray:
+        """Not implemented — ordinal residuals are ill-defined.
+
+        Raises:
+            NotImplementedError: Always.
+        """
+        msg = (
+            "Ordinal residuals are not well-defined. "
+            "OrdinalFamily uses direct_permutation=True, which "
+            "bypasses the residual pipeline entirely."
+        )
+        raise NotImplementedError(msg)
+
+    # ---- Permutation helpers ---------------------------------------
+
+    def reconstruct_y(
+        self,
+        predictions: np.ndarray,  # noqa: ARG002
+        permuted_residuals: np.ndarray,  # noqa: ARG002
+        rng: np.random.Generator,  # noqa: ARG002
+    ) -> np.ndarray:
+        """Not implemented — ordinal Y-reconstruction is ill-defined.
+
+        Raises:
+            NotImplementedError: Always.
+        """
+        msg = (
+            "Ordinal Y-reconstruction from residuals is not supported. "
+            "OrdinalFamily uses direct_permutation=True; the engine "
+            "permutes Y directly instead of reconstructing."
+        )
+        raise NotImplementedError(msg)
+
+    def fit_metric(
+        self,
+        y_true: np.ndarray,  # noqa: ARG002
+        y_pred: np.ndarray,  # noqa: ARG002
+    ) -> float:
+        """Not implemented — use model_fit_metric() instead.
+
+        Ordinal deviance requires the fitted model object (for
+        log-likelihood), not just predicted values.
+
+        Raises:
+            NotImplementedError: Always.
+        """
+        msg = (
+            "OrdinalFamily.fit_metric() is not available because ordinal "
+            "deviance requires the fitted model object.  Use "
+            "model_fit_metric(model) instead (detected via hasattr)."
+        )
+        raise NotImplementedError(msg)
+
+    # ---- Model-based fit metric (duck-typed) -----------------------
+    #
+    # These methods are NOT on the ModelFamily protocol.  The Kennedy
+    # joint engine detects them via hasattr() — the same pattern used
+    # for calibrate() on NegativeBinomialFamily.
+
+    def model_fit_metric(self, model: Any) -> float:
+        """Deviance (−2 × log-likelihood) from a fitted ordinal model.
+
+        Lower is better, so the joint test statistic
+        ``D_reduced − D_full`` is positive when the features of
+        interest improve fit.
+        """
+        return -2.0 * float(model.llf)
+
+    def null_fit_metric(self, model: Any) -> float:
+        """Null deviance (−2 × null log-likelihood).
+
+        The null model is the thresholds-only model (no predictors),
+        equivalent to the intercept-only model for continuous families.
+        Used by the Kennedy joint engine when there are no confounders.
+        """
+        return -2.0 * float(model.llnull)
+
+    # ---- Diagnostics & classical inference -------------------------
+
+    def diagnostics(
+        self,
+        X: np.ndarray,
+        y: np.ndarray,
+        fit_intercept: bool = True,
+    ) -> dict[str, Any]:
+        """Ordinal model diagnostics.
+
+        Returns log-likelihood, null log-likelihood, pseudo-R²,
+        AIC, BIC, LLR p-value, threshold estimates, and number of
+        categories.
+        """
+        model = self.fit(X, y, fit_intercept)
+        llf = float(model.llf)
+        llnull = float(model.llnull)
+        pseudo_r2 = 1.0 - llf / llnull if llnull != 0.0 else float("nan")
+
+        # Threshold parameters (cutpoints)
+        n_features = X.shape[1]
+        thresholds = np.asarray(model.params[n_features:])
+
+        # Log-likelihood ratio test p-value
+        try:
+            llr_p = float(model.llr_pvalue)
+        except (AttributeError, TypeError):
+            llr_p = float("nan")
+
+        return {
+            "n_observations": len(y),
+            "n_features": n_features,
+            "n_categories": len(np.unique(y)),
+            "pseudo_r_squared": np.round(pseudo_r2, 4),
+            "log_likelihood": np.round(llf, 4),
+            "log_likelihood_null": np.round(llnull, 4),
+            "aic": np.round(float(model.aic), 4),
+            "bic": np.round(float(model.bic), 4),
+            "llr_p_value": np.round(llr_p, 6),
+            "thresholds": np.round(thresholds, 4).tolist(),
+        }
+
+    def classical_p_values(
+        self,
+        X: np.ndarray,
+        y: np.ndarray,
+        fit_intercept: bool = True,
+    ) -> np.ndarray:
+        """Asymptotic Wald z-test p-values for slope coefficients.
+
+        Returns one p-value per slope coefficient (thresholds excluded).
+        """
+        model = self.fit(X, y, fit_intercept)
+        n_features = X.shape[1]
+        return np.asarray(model.pvalues[:n_features])
+
+    # ---- Exchangeability (v0.4.0 forward-compat) -------------------
+
+    def exchangeability_cells(
+        self,
+        X: np.ndarray,  # noqa: ARG002
+        y: np.ndarray,  # noqa: ARG002
+    ) -> np.ndarray | None:
+        """Ordinal models assume globally exchangeable responses."""
+        return None
+
+    # ---- Batch fitting (hot loop) ----------------------------------
+    #
+    # Delegates to the active backend (JAX or NumPy) via
+    # ``resolve_backend()``.  The JAX backend uses vmap'd
+    # Newton–Raphson with autodiff; the NumPy backend falls
+    # back to a joblib-parallelised statsmodels OrderedModel loop.
+
+    def batch_fit(
+        self,
+        X: np.ndarray,
+        Y_matrix: np.ndarray,
+        fit_intercept: bool,
+        **kwargs: Any,
+    ) -> np.ndarray:
+        """Batch ordinal fitting via the active backend.
+
+        Delegates to ``backend.batch_ordinal()`` resolved from the
+        current configuration.  The number of categories K is
+        computed from the union of unique values across all
+        permuted Y vectors and forwarded to the backend.
+
+        ``fit_intercept`` is accepted for protocol compatibility but
+        ignored — ordinal thresholds always serve as intercepts.
+        """
+        from ._backends import resolve_backend
+
+        backend = kwargs.pop("backend", None)
+        n_jobs = kwargs.pop("n_jobs", 1)
+        if backend is None:
+            backend = resolve_backend()
+
+        # Compute K from observed categories across all permutations.
+        K = int(len(np.unique(Y_matrix)))
+
+        if backend.name == "numpy":
+            return np.asarray(
+                backend.batch_ordinal(
+                    X,
+                    Y_matrix,
+                    fit_intercept=fit_intercept,
+                    K=K,
+                    n_jobs=n_jobs,
+                    **kwargs,
+                )
+            )
+        return np.asarray(
+            backend.batch_ordinal(
+                X,
+                Y_matrix,
+                fit_intercept=fit_intercept,
+                K=K,
+                **kwargs,
+            )
+        )
+
+    def batch_fit_varying_X(
+        self,
+        X_batch: np.ndarray,
+        y: np.ndarray,
+        fit_intercept: bool,
+        **kwargs: Any,
+    ) -> np.ndarray:
+        """Batch ordinal with per-permutation design matrices.
+
+        Delegates to ``backend.batch_ordinal_varying_X()`` for the
+        Kennedy individual path.  Forwards ``n_jobs`` only to the
+        NumPy backend.
+
+        ``fit_intercept`` is accepted for protocol compatibility but
+        ignored — ordinal thresholds always serve as intercepts.
+        """
+        from ._backends import resolve_backend
+
+        backend = kwargs.pop("backend", None)
+        n_jobs = kwargs.pop("n_jobs", 1)
+        if backend is None:
+            backend = resolve_backend()
+
+        K = int(len(np.unique(y)))
+
+        if backend.name == "numpy":
+            return np.asarray(
+                backend.batch_ordinal_varying_X(
+                    X_batch,
+                    y,
+                    fit_intercept=fit_intercept,
+                    K=K,
+                    n_jobs=n_jobs,
+                    **kwargs,
+                )
+            )
+        return np.asarray(
+            backend.batch_ordinal_varying_X(
+                X_batch,
+                y,
+                fit_intercept=fit_intercept,
+                K=K,
+                **kwargs,
+            )
+        )
 
 
 # ------------------------------------------------------------------ #
@@ -2052,3 +2394,4 @@ register_family("linear", LinearFamily)
 register_family("logistic", LogisticFamily)
 register_family("poisson", PoissonFamily)
 register_family("negative_binomial", NegativeBinomialFamily)
+register_family("ordinal", OrdinalFamily)
