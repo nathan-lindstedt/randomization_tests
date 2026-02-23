@@ -21,6 +21,7 @@ Public API:
 """
 
 from ._config import get_backend, set_backend
+from ._results import IndividualTestResult, JointTestResult
 from .confounders import (
     identify_confounders,
     mediation_analysis,
@@ -37,6 +38,8 @@ from .permutations import generate_unique_permutations
 from .pvalues import calculate_p_values
 
 __all__ = [
+    "IndividualTestResult",
+    "JointTestResult",
     "permutation_test_regression",
     "identify_confounders",
     "mediation_analysis",

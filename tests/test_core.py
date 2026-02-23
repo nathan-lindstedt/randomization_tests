@@ -550,7 +550,7 @@ class TestNJobs:
         set_backend("auto")
 
     def test_ter_braak_linear_n_jobs(self):
-        """ter Braak linear with n_jobs=2 matches n_jobs=1."""
+        """ter Braak linear with n_jobs=2 warns and falls back to n_jobs=1."""
         X, y = _make_linear_data()
         r1 = permutation_test_regression(
             X,
@@ -560,14 +560,15 @@ class TestNJobs:
             random_state=0,
             n_jobs=1,
         )
-        r2 = permutation_test_regression(
-            X,
-            y,
-            n_permutations=50,
-            method="ter_braak",
-            random_state=0,
-            n_jobs=2,
-        )
+        with pytest.warns(UserWarning, match="n_jobs has no effect"):
+            r2 = permutation_test_regression(
+                X,
+                y,
+                n_permutations=50,
+                method="ter_braak",
+                random_state=0,
+                n_jobs=2,
+            )
         np.testing.assert_allclose(
             r1["raw_empirical_p"],
             r2["raw_empirical_p"],
@@ -658,18 +659,19 @@ class TestNJobs:
     def test_n_jobs_minus_one_works(self):
         """n_jobs=-1 (all cores) should run without error."""
         X, y = _make_linear_data()
-        result = permutation_test_regression(
-            X,
-            y,
-            n_permutations=50,
-            method="ter_braak",
-            random_state=0,
-            n_jobs=-1,
-        )
+        with pytest.warns(UserWarning, match="n_jobs has no effect"):
+            result = permutation_test_regression(
+                X,
+                y,
+                n_permutations=50,
+                method="ter_braak",
+                random_state=0,
+                n_jobs=-1,
+            )
         assert "permuted_p_values" in result
 
     def test_freedman_lane_linear_n_jobs(self):
-        """Freedman–Lane individual with n_jobs=2 matches n_jobs=1."""
+        """Freedman–Lane individual with n_jobs=2 warns and falls back."""
         X, y = _make_linear_data()
         r1 = permutation_test_regression(
             X,
@@ -680,15 +682,16 @@ class TestNJobs:
             random_state=0,
             n_jobs=1,
         )
-        r2 = permutation_test_regression(
-            X,
-            y,
-            n_permutations=50,
-            method="freedman_lane",
-            confounders=["x3"],
-            random_state=0,
-            n_jobs=2,
-        )
+        with pytest.warns(UserWarning, match="n_jobs has no effect"):
+            r2 = permutation_test_regression(
+                X,
+                y,
+                n_permutations=50,
+                method="freedman_lane",
+                confounders=["x3"],
+                random_state=0,
+                n_jobs=2,
+            )
         np.testing.assert_allclose(
             r1["raw_empirical_p"],
             r2["raw_empirical_p"],

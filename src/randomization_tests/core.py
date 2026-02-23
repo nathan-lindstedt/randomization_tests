@@ -134,7 +134,6 @@ import warnings
 
 import numpy as np
 import pandas as pd
-import statsmodels.api as sm
 from sklearn.linear_model import LinearRegression
 from statsmodels.tools.sm_exceptions import (
     ConvergenceWarning as SmConvergenceWarning,
@@ -144,188 +143,11 @@ from statsmodels.tools.sm_exceptions import (
 )
 
 from ._compat import DataFrameLike, _ensure_pandas_df
-
-# ------------------------------------------------------------------ #
-# JAX-accelerated logistic regression
-# ------------------------------------------------------------------ #
-#
-# Logistic regression permutation paths have no closed-form solution
-# and require iterative fitting (Newton–Raphson) for each of the B
-# permutations.  JAX dramatically accelerates this via:
-#
-#   1. **Automatic differentiation** — jax.grad computes exact
-#      gradients of the logistic negative log-likelihood.  No hand-
-#      coded gradient formulas, and numerically stable by construction.
-#
-#   2. **vmap (vectorised map)** — transforms a single-permutation
-#      solver into a batched solver that processes all B permutations
-#      in one XLA kernel launch.  Combined with jit compilation, this
-#      eliminates Python-level dispatch overhead entirely.
-#
-# If JAX is not installed, the code below still imports successfully —
-# _jax.py handles the try/except internally and the two fit functions
-# simply won't be called (they only execute behind ``if _use_jax()``
-# guards).  The sklearn LogisticRegression loop serves as a correct
-# but slower fallback.
-#
-# The decision of whether to USE JAX is made at call time via
-# ``_use_jax()``, which combines two checks:
-#   - Is JAX importable?  (determined once at module load)
-#   - Does the runtime policy say "jax"?  (get_backend() resolution;
-#     see _config.py for the programmatic / env-var / auto cascade)
-#
-# Prior to v0.2.0, all JAX code lived inline in this file.  Extracting
-# it into _jax.py keeps core.py focused on the permutation algorithms
-# and provides a clean extraction point for v0.3.0's _backends/ package.
+from ._results import IndividualTestResult, JointTestResult
 from .diagnostics import compute_all_diagnostics
 from .families import ModelFamily, resolve_family
 from .permutations import generate_unique_permutations
 from .pvalues import calculate_p_values
-
-# ------------------------------------------------------------------ #
-# Batch OLS via pseudoinverse (numpy)
-# ------------------------------------------------------------------ #
-#
-# The OLS estimator for a single Y vector is:
-#
-#   β̂ = (X'X)⁻¹ X'Y = pinv(X) @ Y
-#
-# where pinv(X) = (X'X)⁻¹X' is the Moore-Penrose pseudoinverse.
-# Crucially, pinv(X) depends only on X, which is the SAME across all
-# B permutations (we permute Y, not X, in the ter Braak method).
-#
-# By stacking all B permuted Y vectors into a matrix Y_matrix of
-# shape (B, n), we compute ALL B coefficient vectors in one shot:
-#
-#   coefs = pinv(X) @ Y_matrix'   →  shape (p, B)
-#   coefs.T                        →  shape (B, p)
-#
-# This replaces B separate lstsq calls with a single (p × n) @ (n × B)
-# matrix multiply — a dramatic speedup for typical permutation counts
-# (B = 5 000) because BLAS-level matrix multiplication is highly
-# optimised for modern CPUs (cache-blocking, SIMD, multi-threading).
-
-
-def _batch_ols_coefs(
-    X: np.ndarray,
-    Y_matrix: np.ndarray,
-    fit_intercept: bool = True,
-) -> np.ndarray:
-    """Compute OLS coefficients for many Y vectors via one matrix multiply.
-
-    When *fit_intercept* is True (default), an intercept column is
-    prepended automatically so that the returned slope coefficients
-    match what sklearn's ``LinearRegression(fit_intercept=True)``
-    produces.  The intercept coefficients are stripped before
-    returning.
-
-    When *fit_intercept* is False, the raw design matrix is used and
-    no intercept is estimated (matching ``fit_intercept=False``).
-
-    Args:
-        X: Design matrix of shape ``(n, p)`` — **without** an
-            intercept column.
-        Y_matrix: Matrix of shape ``(B, n)`` where each row is a
-            permuted response vector.
-        fit_intercept: Whether to include an intercept term.
-
-    Returns:
-        Coefficient matrix of shape ``(B, p)`` where
-        ``coefs[b]`` contains the slope coefficients (intercept
-        excluded when *fit_intercept* is True) for Y_matrix[b].
-    """
-    if fit_intercept:
-        # Prepend a column of ones so the pseudoinverse yields both an
-        # intercept term (column 0) and p slope terms (columns 1:).
-        X_aug = np.column_stack([np.ones(X.shape[0]), X])  # (n, p+1)
-        pinv = np.linalg.pinv(X_aug)  # (p+1, n)
-        result: np.ndarray = (pinv @ Y_matrix.T).T  # (B, p+1)
-        return result[:, 1:]  # drop intercept column
-    else:
-        pinv = np.linalg.pinv(X)  # (p, n)
-        result = (pinv @ Y_matrix.T).T  # (B, p)
-        return result
-
-
-# ------------------------------------------------------------------ #
-# Diagnostics (statsmodels)
-# ------------------------------------------------------------------ #
-#
-# Model diagnostics provide context for interpreting the permutation
-# results.  They are computed once on the *observed* (unpermuted) data
-# via statsmodels, which provides a rich set of summary statistics.
-#
-# Key metrics:
-#   Linear:
-#     R²      — fraction of Y variance explained by X.
-#     Adj. R² — R² penalised for model complexity.
-#     F-stat  — joint test that all coefficients are zero.
-#     AIC/BIC — information criteria for model comparison:
-#       AIC = -2ℓ + 2k          (Akaike, 1974)
-#       BIC = -2ℓ + k·ln(n)     (Schwarz, 1978)
-#       where ℓ is log-likelihood and k the number of parameters.
-#
-#   Logistic:
-#     Pseudo R² — McFadden's R² = 1 - ℓ(model)/ℓ(null).
-#     Log-likelihood — ℓ(model) and ℓ(null) for the intercept-only.
-#     LLR p-value — likelihood-ratio test for the full model.
-
-
-def _compute_diagnostics(
-    X: pd.DataFrame,
-    y_values: np.ndarray,
-    model_type: str,
-    fit_intercept: bool = True,
-) -> dict:
-    """Compute model diagnostics via statsmodels.
-
-    Fits the full model (with all features) using statsmodels and
-    extracts summary statistics for display in the results table.
-
-    Args:
-        X: Feature matrix.
-        y_values: Response vector.
-        model_type: Model family name (e.g. ``"linear"``,
-            ``"logistic"``).  Controls which statsmodels estimator
-            is used.
-        fit_intercept: Whether to include an intercept term.  When
-            True (default), ``sm.add_constant(X)`` is used.  When
-            False, the raw design matrix is passed directly.
-
-    Returns:
-        Dictionary of diagnostic statistics.  Keys differ by model
-        type (e.g. ``r_squared`` for OLS, ``pseudo_r_squared`` for
-        logistic).
-    """
-    n_obs = len(y_values)
-    n_features = X.shape[1]
-    X_sm = sm.add_constant(X) if fit_intercept else np.asarray(X)
-
-    if model_type == "logistic":
-        sm_model = sm.Logit(y_values, X_sm).fit(disp=0)
-        return {
-            "n_observations": n_obs,
-            "n_features": n_features,
-            "pseudo_r_squared": np.round(sm_model.prsquared, 4),
-            "log_likelihood": np.round(sm_model.llf, 4),
-            "log_likelihood_null": np.round(sm_model.llnull, 4),
-            "llr_p_value": sm_model.llr_pvalue,
-            "aic": np.round(sm_model.aic, 4),
-            "bic": np.round(sm_model.bic, 4),
-        }
-    else:
-        sm_model = sm.OLS(y_values, X_sm).fit()
-        return {
-            "n_observations": n_obs,
-            "n_features": n_features,
-            "r_squared": np.round(sm_model.rsquared, 4),
-            "r_squared_adj": np.round(sm_model.rsquared_adj, 4),
-            "f_statistic": np.round(sm_model.fvalue, 4),
-            "f_p_value": sm_model.f_pvalue,
-            "aic": np.round(sm_model.aic, 4),
-            "bic": np.round(sm_model.bic, 4),
-        }
-
 
 # ------------------------------------------------------------------ #
 # ter Braak (1992) — Residual permutation under the reduced model
@@ -1067,7 +889,7 @@ def permutation_test_regression(
     fit_intercept: bool = True,
     family: str = "auto",
     n_jobs: int = 1,
-) -> dict:
+) -> IndividualTestResult | JointTestResult:
     """Run a permutation test for regression coefficients.
 
     By default (``family="auto"``), detects binary vs. continuous
@@ -1254,6 +1076,28 @@ def permutation_test_regression(
         )
         n_jobs = 1
 
+    # Warn when n_jobs has no effect on vectorised OLS paths.
+    # The ter_braak and freedman_lane individual methods use batch_ols,
+    # which is a single pinv @ Y.T BLAS multiply — there is no loop to
+    # parallelise.  Kennedy individual, both joint methods, and all
+    # logistic paths DO benefit from n_jobs.
+    if (
+        n_jobs != 1
+        and backend_name == "numpy"
+        and resolved.name == "linear"
+        and method in ("ter_braak", "freedman_lane")
+    ):
+        warnings.warn(
+            "n_jobs has no effect for linear ter_braak/freedman_lane "
+            "because OLS batch fitting is already a single vectorised "
+            "BLAS operation (pinv @ Y.T).  Falling back to n_jobs=1.  "
+            "n_jobs provides genuine parallelism for logistic families, "
+            "Kennedy individual, and joint methods.",
+            UserWarning,
+            stacklevel=2,
+        )
+        n_jobs = 1
+
     # Fit the observed (unpermuted) model to get the original
     # coefficients β̂.  These are the test statistics that will be
     # compared against the permutation null distribution.
@@ -1274,7 +1118,10 @@ def permutation_test_regression(
         # Degenerate data — return NaN placeholders.
         # The key structure must match the family's diagnostics() output
         # so that the display module can render the table correctly.
-        diagnostics = _compute_diagnostics(X, y_values, resolved.name, fit_intercept)
+        diagnostics = {
+            "n_observations": len(y_values),
+            "n_features": X.shape[1],
+        }
 
     # Pre-generate unique permutation indices.  This is done once and
     # shared across all features/methods, ensuring consistency and
@@ -1330,11 +1177,8 @@ def permutation_test_regression(
             )
         )
 
-        # Phipson & Smyth (2010) corrected p-value for the joint test:
-        # Count how many permuted improvements >= the observed one, then
-        # add 1 to both numerator and denominator.
-        p_value = (np.sum(perm_improvements >= obs_improvement) + 1) / (
-            n_permutations + 1
+        p_value = float(
+            (np.sum(perm_improvements >= obs_improvement) + 1) / (n_permutations + 1)
         )
         rounded = np.round(p_value, precision)
         val = f"{rounded:.{precision}f}"
@@ -1345,22 +1189,22 @@ def permutation_test_regression(
         else:
             p_value_str = f"{val} (ns)"
 
-        return {
-            "observed_improvement": obs_improvement,
-            "permuted_improvements": perm_improvements.tolist(),
-            "p_value": p_value,
-            "p_value_str": p_value_str,
-            "metric_type": metric_type,
-            "model_type": resolved.name,
-            "family": resolved.name,
-            "backend": backend_name,
-            "features_tested": features_tested,
-            "confounders": confounders,
-            "p_value_threshold_one": p_value_threshold_one,
-            "p_value_threshold_two": p_value_threshold_two,
-            "method": method,
-            "diagnostics": diagnostics,
-        }
+        return JointTestResult(
+            observed_improvement=obs_improvement,
+            permuted_improvements=perm_improvements.tolist(),
+            p_value=p_value,
+            p_value_str=p_value_str,
+            metric_type=metric_type,
+            model_type=resolved.name,
+            family=resolved.name,
+            backend=backend_name,
+            features_tested=features_tested,
+            confounders=confounders or [],
+            p_value_threshold_one=p_value_threshold_one,
+            p_value_threshold_two=p_value_threshold_two,
+            method=method,
+            diagnostics=diagnostics,
+        )
 
     elif method == "freedman_lane":
         permuted_coefs = _freedman_lane_individual_generic(
@@ -1387,8 +1231,8 @@ def permutation_test_regression(
             )
         )
 
-        p_value = (np.sum(perm_improvements >= obs_improvement) + 1) / (
-            n_permutations + 1
+        p_value = float(
+            (np.sum(perm_improvements >= obs_improvement) + 1) / (n_permutations + 1)
         )
         rounded = np.round(p_value, precision)
         val = f"{rounded:.{precision}f}"
@@ -1399,22 +1243,22 @@ def permutation_test_regression(
         else:
             p_value_str = f"{val} (ns)"
 
-        return {
-            "observed_improvement": obs_improvement,
-            "permuted_improvements": perm_improvements.tolist(),
-            "p_value": p_value,
-            "p_value_str": p_value_str,
-            "metric_type": metric_type,
-            "model_type": resolved.name,
-            "family": resolved.name,
-            "backend": backend_name,
-            "features_tested": features_tested,
-            "confounders": confounders,
-            "p_value_threshold_one": p_value_threshold_one,
-            "p_value_threshold_two": p_value_threshold_two,
-            "method": method,
-            "diagnostics": diagnostics,
-        }
+        return JointTestResult(
+            observed_improvement=obs_improvement,
+            permuted_improvements=perm_improvements.tolist(),
+            p_value=p_value,
+            p_value_str=p_value_str,
+            metric_type=metric_type,
+            model_type=resolved.name,
+            family=resolved.name,
+            backend=backend_name,
+            features_tested=features_tested,
+            confounders=confounders or [],
+            p_value_threshold_one=p_value_threshold_one,
+            p_value_threshold_two=p_value_threshold_two,
+            method=method,
+            diagnostics=diagnostics,
+        )
 
     else:
         raise ValueError(
@@ -1465,20 +1309,20 @@ def permutation_test_regression(
         fit_intercept=fit_intercept,
     )
 
-    return {
-        "model_coefs": model_coefs.tolist(),
-        "permuted_coefs": permuted_coefs.tolist(),
-        "permuted_p_values": permuted_p_values,
-        "classic_p_values": classic_p_values,
-        "raw_empirical_p": raw_empirical_p,
-        "raw_classic_p": raw_classic_p,
-        "p_value_threshold_one": p_value_threshold_one,
-        "p_value_threshold_two": p_value_threshold_two,
-        "method": method,
-        "confounders": confounders,
-        "model_type": resolved.name,
-        "family": resolved.name,
-        "backend": backend_name,
-        "diagnostics": diagnostics,
-        "extended_diagnostics": extended_diagnostics,
-    }
+    return IndividualTestResult(
+        model_coefs=model_coefs.tolist(),
+        permuted_coefs=permuted_coefs.tolist(),
+        permuted_p_values=permuted_p_values,
+        classic_p_values=classic_p_values,
+        raw_empirical_p=raw_empirical_p,
+        raw_classic_p=raw_classic_p,
+        p_value_threshold_one=p_value_threshold_one,
+        p_value_threshold_two=p_value_threshold_two,
+        method=method,
+        confounders=confounders or [],
+        model_type=resolved.name,
+        family=resolved.name,
+        backend=backend_name,
+        diagnostics=diagnostics,
+        extended_diagnostics=extended_diagnostics,
+    )

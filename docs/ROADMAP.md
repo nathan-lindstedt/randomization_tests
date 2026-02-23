@@ -186,10 +186,13 @@ logistic paths to the new protocol.  New permutation methods and GLM
 families are then built on the stabilised abstractions, inheriting
 all existing methods from the start.
 
-**Progress:** Steps 1–5 complete (abstraction layer, core refactor,
-JAX improvements, parallelisation).  278 tests passing.  Remaining:
-confounder module update, Freedman–Lane, new GLM families (Poisson,
-negative binomial, ordinal, multinomial), and sign-flip test.
+**Progress:** Steps 1–6b complete (abstraction layer, core refactor,
+JAX improvements, parallelisation, Freedman–Lane, stabilisation).
+337 tests passing (300 original + 37 integration/regression).
+Remaining: confounder module update (Step 3), new GLM families
+(Step 7: Poisson, negative binomial, ordinal, multinomial),
+sign-flip test (Step 8), `PermutationEngine` refactor (Step 9),
+and backend injection for testability (Step 10).
 
 ### Step 1 — `ModelFamily` protocol
 
@@ -341,6 +344,76 @@ for all existing families.
 - [X] Result dicts carry `"family"` and `"backend"` provenance keys
   alongside the existing `"model_type"` key (Step 17).
 
+### Step 6b — Stabilisation
+
+Addresses structural issues identified in an exhaustive codebase
+audit.  No new statistical capabilities — pure architecture,
+type safety, dead-code removal, and test coverage.
+
+#### Typed result objects (pulled forward from v0.6.0)
+
+- [X] `IndividualTestResult` frozen dataclass for per-coefficient
+  tests (ter Braak, Kennedy individual, Freedman–Lane individual).
+- [X] `JointTestResult` frozen dataclass for group-level improvement
+  tests (Kennedy joint, Freedman–Lane joint).
+- [X] `_DictAccessMixin` providing backward-compatible dict-like
+  access (`result["key"]`, `result.get("key")`, `"key" in result`)
+  so all existing consumers (display functions, tests, user scripts)
+  work without changes.
+- [X] `.to_dict()` method with recursive NumPy-to-Python conversion
+  for JSON-serialisable output matching the pre-v0.3.17.5 format.
+- [X] `permutation_test_regression()` return type annotation updated
+  from `-> dict` to `-> IndividualTestResult | JointTestResult`.
+- [X] `IndividualTestResult` and `JointTestResult` exported from
+  `__init__.py` and added to `__all__`.
+
+#### Protocol forward-compatibility (v0.4.0 stub)
+
+- [X] `exchangeability_cells(X, y) -> np.ndarray | None` added to
+  the `ModelFamily` protocol with full docstring.  Returns `None`
+  (global exchangeability) on both `LinearFamily` and
+  `LogisticFamily`.  v0.4.0 will implement non-trivial cell
+  structures for clustered and multilevel designs.
+
+#### Dead code removal
+
+- [X] Deleted `_batch_ols_coefs()` from `core.py` — superseded by
+  `NumpyBackend.batch_ols()` in v0.3.0 Step 2.
+- [X] Deleted `_compute_diagnostics()` from `core.py` — superseded
+  by `family.diagnostics()` in v0.3.0 Step 1.  Diagnostics fallback
+  on degenerate data now returns a minimal `{"n_observations": …,
+  "n_features": …}` dict instead of calling the deleted function.
+- [X] Deleted top-level `_jax.py` backward-compatibility shim —
+  superseded by `_backends/_jax.py` in v0.3.0 Step 2.  Confirmed
+  zero live imports from any source file.
+- [X] Removed stale `import statsmodels.api as sm` and 25-line JAX
+  comment block from `core.py` imports.
+
+#### Parallelisation honesty
+
+- [X] `UserWarning` emitted when `n_jobs != 1` on linear
+  `ter_braak` / `freedman_lane` paths, where OLS batch fitting is
+  already a single vectorised BLAS operation (`pinv @ Y.T`) with no
+  loop to parallelise.  `n_jobs` resets to 1 on these paths.
+  All other paths (logistic families, Kennedy individual, both
+  joint methods) genuinely parallelise via joblib.
+
+#### Integration and regression test suite
+
+- [X] `tests/test_integration.py` (37 tests) covering:
+  - Result type verification (`isinstance` checks for all 7 methods)
+  - Dict-access backward compatibility (`__getitem__`, `.get()`,
+    `__contains__`, `KeyError`, frozen immutability)
+  - `.to_dict()` JSON-serialisation roundtrip
+  - `exchangeability_cells()` protocol stub
+  - Schema validation (all expected fields present)
+  - Display function integration (print functions accept typed results)
+  - Pinned-seed numerical determinism (4 methods × 2 families)
+  - `confounders` field normalisation (`[]` not `None`)
+  - Cross-method metadata consistency
+  - `n_jobs` warning emission and suppression (7 tests)
+  - Parallel-vs-serial result equivalence
+
 ### Step 7 — New GLM families
 
 Depends on Steps 1–3 and 6.  Each new family inherits all five
@@ -407,6 +480,40 @@ public entry point** rather than as a `method` on
 - [ ] Standard in neuroimaging (FSL PALM supports both permutation
   and sign-flip).
 
+### Step 9 — `PermutationEngine` class refactor
+
+Refactors `core.py` from a flat function module into a
+`PermutationEngine` class that owns the fit → permute → refit loop.
+This is the prerequisite for v0.4.0 exchangeability cells (which
+need a hook point in the permutation loop) and v0.5.0's graph
+compiler (which dispatches to the engine per equation).
+
+- [ ] Extract the permutation loop from
+  `permutation_test_regression()` into a `PermutationEngine` class
+  with a `run()` method.
+- [ ] `PermutationEngine` accepts a `ModelFamily`, backend, and
+  permutation configuration (method, n_permutations, n_jobs,
+  seed) at construction time.
+- [ ] The engine exposes a `permute_hook()` extension point that
+  v0.4.0 can override with exchangeability-constrained permutations.
+- [ ] `permutation_test_regression()` becomes a thin public wrapper
+  that constructs a `PermutationEngine` and calls `run()`.
+- [ ] All existing tests pass without modification (the public API
+  surface is unchanged).
+
+### Step 10 — Backend injection for testability
+
+Depends on Step 9 (`PermutationEngine` accepts a backend at
+construction time).
+
+- [ ] Add an optional `backend=` parameter to
+  `permutation_test_regression()` (default: `None` → auto-resolve
+  via `resolve_backend()`).
+- [ ] When a backend is supplied explicitly, skip auto-resolution.
+  This enables tests to inject a mock or stub backend without
+  monkeypatching global state.
+- [ ] Document the pattern for writing tests with mock backends.
+
 ---
 
 ## v0.4.0 — Exchangeability & Multilevel Frameworks
@@ -416,6 +523,26 @@ exchangeable with which, under what constraints.  These
 exchangeability cells are the permutation-side complement to the
 model-side `ModelFamily` protocol — together they define a complete
 permutation test specification for any single-equation model.
+
+**Forward-compatibility note:** the `exchangeability_cells()` method
+was added to the `ModelFamily` protocol in v0.3.0 Step 6b
+(stabilisation) as a no-op stub returning `None` (global
+exchangeability).  This release fills it in with real cell structures.
+
+### `fit_reduced()` on `ModelFamily`
+
+Deferred from v0.3.0 audit.  Factors out the duplicated
+reduced-model fitting logic that currently lives inline in
+`_kennedy_individual_generic`, `_kennedy_joint`,
+`_freedman_lane_individual`, and `_freedman_lane_joint`.
+
+- [ ] Add `fit_reduced(X, y, exposure_idx, confounders)` to the
+  `ModelFamily` protocol, returning the reduced-model residuals and
+  fitted values in a single call.
+- [ ] Refactor all four methods to delegate to `family.fit_reduced()`.
+- [ ] Performance: the reduced model is fitted once and cached,
+  avoiding redundant refits when the same reduced model applies to
+  multiple exposure variables.
 
 ### Exchangeability cells
 
@@ -586,30 +713,57 @@ exchangeability cells built in v0.4.0.
 ## v0.6.0 — Structured Results & Dual API
 
 With the graph specification and all statistical machinery finalised,
-this release redesigns the output interface to expose graph-structured
-results for both academic reporting and programmatic pipeline usage.
+this release extends the result interface for graph-structured models
+and adds academic output formats.
 
-### `PermutationTestResult` dataclass
+**Note:** The core result dataclasses (`IndividualTestResult`,
+`JointTestResult`) and their backward-compatible dict-access layer
+(`_DictAccessMixin`, `.to_dict()`) were pulled forward into v0.3.0
+Step 6b (stabilisation).  This release builds on that foundation
+rather than starting from scratch.
 
-- [ ] Replaces plain-dictionary return values with typed dataclasses:
-  - `PermutationTestResult` — single-equation individual-coefficient
-    tests (backward-compatible with current usage).
-  - `JointPermutationTestResult` — single-equation joint tests.
-  - `GraphTestResult` — multi-equation results from the graph
-    specification layer, containing per-equation results, per-edge
-    p-values, per-hyperedge p-values, and per-path indirect effects.
-- [ ] Direct attribute access: `.coefs`, `.p_values`,
-  `.permuted_p_values`, `.classic_p_values`, `.diagnostics`,
-  `.method`, `.family`.
-- [ ] Academic output: `.summary()` prints the ASCII table (current
-  behaviour).  `.to_latex()` produces a publication-ready LaTeX
-  table.  `.to_html()` renders in Jupyter notebooks.
-  `.to_markdown()` generates a Markdown table for inclusion in
+### Extended result types
+
+- [X] `IndividualTestResult` — per-coefficient tests (pulled forward
+  to v0.3.0 Step 6b).
+- [X] `JointTestResult` — group-level improvement tests (pulled
+  forward to v0.3.0 Step 6b).
+- [X] `.to_dict()` with full JSON serialisability (pulled forward).
+- [ ] `GraphTestResult` — multi-equation results from the graph
+  specification layer (v0.5.0), containing per-equation results,
+  per-edge p-values, per-hyperedge p-values, and per-path indirect
+  effects.
+- [ ] Direct attribute access for graph results: `.equations`,
+  `.edge_p_values`, `.hyperedge_p_values`, `.indirect_effects`.
+
+### Academic output formats
+
+- [ ] `.summary()` prints the ASCII table (current behaviour,
+  already functional via display functions).
+- [ ] `.to_latex()` produces a publication-ready LaTeX table.
+- [ ] `.to_html()` renders in Jupyter notebooks.
+- [ ] `.to_markdown()` generates a Markdown table for inclusion in
   reports or documentation.
-- [ ] Programmatic access: `.to_dataframe()` returns a tidy pandas
-  DataFrame of coefficients, standard errors, and p-values.
-  `.to_dict()` preserves backward compatibility with the current
-  dictionary interface.
+
+### Display decoupling
+
+Deferred from v0.3.0 audit.  The display functions in `display.py`
+currently reach into result dicts by string key.  With typed result
+objects now in place (Step 6b), display functions should accept the
+typed objects directly and use attribute access.
+
+- [ ] `print_results_table()` and `print_joint_results_table()` accept
+  `IndividualTestResult` / `JointTestResult` natively (dict input
+  remains supported via `_DictAccessMixin` for backward compatibility).
+- [ ] Type annotations on all display function signatures updated to
+  reflect the typed inputs.
+- [ ] Remove internal string-key assumptions that would break if
+  result schema changes.
+
+### Programmatic access
+
+- [ ] `.to_dataframe()` returns a tidy pandas DataFrame of
+  coefficients, standard errors, and p-values.
 - [ ] Graph-level summary: `.graph_summary()` showing per-edge and
   per-path results in a single view.
 
@@ -736,3 +890,9 @@ continuously.
   Dependabot or similar tooling.
 - [ ] **Documentation:** keep the API reference, quickstart guide, and
   changelog in sync with every release.
+- [ ] **Property-based tests:** add Hypothesis-based property tests for
+  core invariants (p-values in [0, 1], permuted arrays are true
+  permutations, result schema completeness, determinism under fixed
+  seed, commutativity of confounder ordering).  Not tied to a
+  specific release — expand incrementally as new families and methods
+  are added.

@@ -259,6 +259,34 @@ class ModelFamily(Protocol):
         """
         ...
 
+    # ---- Exchangeability (v0.4.0 forward-compat) -------------------
+
+    def exchangeability_cells(
+        self,
+        X: np.ndarray,
+        y: np.ndarray,
+    ) -> np.ndarray | None:
+        """Return group labels defining exchangeability cells, or ``None``.
+
+        Under v0.4.0 the permutation engine will restrict permutations
+        to within-cell shuffles when this returns a non-``None`` array.
+        Families that assume global exchangeability (linear, logistic)
+        return ``None``; families with structured residuals (e.g.
+        mixed-effects) may return cluster labels.
+
+        This method exists on the protocol now so that v0.4.0 can
+        call it on any family without a protocol-breaking change.
+
+        Args:
+            X: Design matrix ``(n, p)``.
+            y: Response vector ``(n,)``.
+
+        Returns:
+            Integer label array ``(n,)`` or ``None`` for global
+            exchangeability.
+        """
+        ...
+
     def batch_fit(
         self,
         X: np.ndarray,
@@ -584,6 +612,16 @@ class LinearFamily:
         # of returning only slope p-values.
         pvals = sm_model.pvalues[1:] if fit_intercept else sm_model.pvalues
         return np.asarray(pvals)  # shape: (p,)
+
+    # ---- Exchangeability (v0.4.0 forward-compat) -------------------
+
+    def exchangeability_cells(
+        self,
+        X: np.ndarray,  # noqa: ARG002
+        y: np.ndarray,  # noqa: ARG002
+    ) -> np.ndarray | None:
+        """Linear models assume globally exchangeable residuals."""
+        return None
 
     # ---- Batch fitting (hot loop) ----------------------------------
     #
@@ -936,6 +974,16 @@ class LogisticFamily:
         # fit_intercept is True; strip it to match the protocol contract.
         pvals = sm_model.pvalues[1:] if fit_intercept else sm_model.pvalues
         return np.asarray(pvals)  # shape: (p,)
+
+    # ---- Exchangeability (v0.4.0 forward-compat) -------------------
+
+    def exchangeability_cells(
+        self,
+        X: np.ndarray,  # noqa: ARG002
+        y: np.ndarray,  # noqa: ARG002
+    ) -> np.ndarray | None:
+        """Logistic models assume globally exchangeable residuals."""
+        return None
 
     # ---- Batch fitting (hot loop) ----------------------------------
     #
