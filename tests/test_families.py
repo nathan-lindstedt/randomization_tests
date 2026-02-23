@@ -264,6 +264,81 @@ class TestRegistry:
             family.name = "other"  # type: ignore[misc]
 
 
+# ------------------------------------------------------------------ #
+# Count auto-detection (Step 22)
+# ------------------------------------------------------------------ #
+
+
+class TestCountAutoDetection:
+    """Verify count auto-detection warning in resolve_family (Step 22)."""
+
+    def test_warns_for_count_data(self):
+        """Non-negative integers with > 2 unique values trigger warning."""
+        y = np.array([0, 1, 2, 3, 5, 10, 7, 4], dtype=float)
+        with pytest.warns(UserWarning, match="looks like count data"):
+            fam = resolve_family("auto", y)
+        assert isinstance(fam, LinearFamily)
+
+    def test_no_warning_for_continuous(self, rng):
+        """Continuous floats do not trigger warning."""
+        y = rng.standard_normal(50)
+        import warnings
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            fam = resolve_family("auto", y)
+        assert isinstance(fam, LinearFamily)
+
+    def test_no_warning_for_binary(self):
+        """Binary {0, 1} does not trigger warning (resolved as logistic)."""
+        y = np.array([0, 1, 0, 1, 1, 0], dtype=float)
+        import warnings
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            fam = resolve_family("auto", y)
+        assert isinstance(fam, LogisticFamily)
+
+    def test_no_warning_for_two_unique_nonneg_integers(self):
+        """Non-negative integers with exactly 2 unique values (not {0,1})."""
+        y = np.array([2, 5, 2, 5, 2, 5], dtype=float)
+        import warnings
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            fam = resolve_family("auto", y)
+        assert isinstance(fam, LinearFamily)
+
+    def test_no_warning_for_negative_integers(self):
+        """Negative integers do not trigger warning."""
+        y = np.array([-1, 0, 1, 2, 3, 4], dtype=float)
+        import warnings
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            fam = resolve_family("auto", y)
+        assert isinstance(fam, LinearFamily)
+
+    def test_warning_message_content(self):
+        """Warning message contains the unique value count and suggestions."""
+        y = np.array([0, 1, 2, 3, 4], dtype=float)
+        with pytest.warns(
+            UserWarning,
+            match=r"5 unique values.*family='poisson'.*family='negative_binomial'",
+        ):
+            resolve_family("auto", y)
+
+    def test_no_warning_for_explicit_family(self):
+        """Explicit family string skips auto-detection entirely."""
+        y = np.array([0, 1, 2, 3, 5, 10], dtype=float)
+        import warnings
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            fam = resolve_family("linear", y)
+        assert isinstance(fam, LinearFamily)
+
+
 # ================================================================== #
 # LogisticFamily tests
 # ================================================================== #
@@ -884,9 +959,10 @@ class TestPoissonRegistry:
         assert isinstance(fam, PoissonFamily)
 
     def test_auto_does_not_resolve_poisson(self):
-        """Count auto-detection is not yet implemented (Step 22)."""
+        """Count auto-detection warns but does not select Poisson (Step 22)."""
         y = np.array([0, 1, 2, 5, 10, 3, 7, 4], dtype=float)
-        fam = resolve_family("auto", y)
+        with pytest.warns(UserWarning, match="looks like count data"):
+            fam = resolve_family("auto", y)
         # Should fall through to linear, not poisson.
         assert isinstance(fam, LinearFamily)
 
@@ -1358,9 +1434,10 @@ class TestNBRegistry:
         assert isinstance(fam, NegativeBinomialFamily)
 
     def test_auto_does_not_resolve_nb(self):
-        """Count auto-detection does not select NB."""
+        """Count auto-detection warns but does not select NB."""
         y = np.array([0, 1, 5, 10, 20, 3, 7, 4], dtype=float)
-        fam = resolve_family("auto", y)
+        with pytest.warns(UserWarning, match="looks like count data"):
+            fam = resolve_family("auto", y)
         assert isinstance(fam, LinearFamily)
 
     def test_frozen_dataclass(self, nb_family):
@@ -1694,9 +1771,10 @@ class TestOrdinalRegistry:
         assert isinstance(fam, OrdinalFamily)
 
     def test_auto_does_not_resolve_ordinal(self):
-        """Auto-detection should not select ordinal."""
+        """Auto-detection warns but does not select ordinal."""
         y = np.array([0, 1, 2, 3, 1, 2, 0, 3], dtype=float)
-        fam = resolve_family("auto", y)
+        with pytest.warns(UserWarning, match="looks like count data"):
+            fam = resolve_family("auto", y)
         assert isinstance(fam, LinearFamily)
 
     def test_frozen_dataclass(self, ordinal_family):
@@ -2044,7 +2122,8 @@ class TestMultinomialRegistry:
         assert isinstance(fam, MultinomialFamily)
 
     def test_auto_does_not_resolve_multinomial(self):
-        """Auto-detection should not select multinomial."""
+        """Auto-detection warns but does not select multinomial."""
         y = np.array([0, 1, 2, 0, 1, 2, 0, 1], dtype=float)
-        fam = resolve_family("auto", y)
+        with pytest.warns(UserWarning, match="looks like count data"):
+            fam = resolve_family("auto", y)
         assert isinstance(fam, LinearFamily)

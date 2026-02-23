@@ -2803,7 +2803,25 @@ def resolve_family(family: str, y: np.ndarray) -> ModelFamily:
     if family == "auto":
         unique_y = np.unique(y)
         is_binary = bool(len(unique_y) == 2 and np.all(np.isin(unique_y, [0, 1])))
-        family = "logistic" if is_binary else "linear"
+        if is_binary:
+            family = "logistic"
+        else:
+            family = "linear"
+            # Warn if Y looks like count data (non-negative integers,
+            # > 2 unique values) — the user may want a count model.
+            _is_integer = np.all(np.equal(np.mod(y, 1), 0))
+            _is_nonneg = bool(np.all(y >= 0))
+            if _is_integer and _is_nonneg and len(unique_y) > 2:
+                import warnings
+
+                warnings.warn(
+                    "Y looks like count data (non-negative integers with "
+                    f"{len(unique_y)} unique values). Consider specifying "
+                    "family='poisson' or family='negative_binomial' "
+                    "explicitly.",
+                    UserWarning,
+                    stacklevel=2,
+                )
 
     if family not in _FAMILIES:
         available = ", ".join(sorted(_FAMILIES)) or "(none registered)"
