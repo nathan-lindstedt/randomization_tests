@@ -18,6 +18,12 @@ Public API:
         generate_unique_permutations
         get_backend
         set_backend
+        ModelFamily
+        LinearFamily
+        LogisticFamily
+        PoissonFamily
+        resolve_family
+        register_family
 """
 
 from ._config import get_backend, set_backend
@@ -33,6 +39,14 @@ from .display import (
     print_diagnostics_table,
     print_joint_results_table,
     print_results_table,
+)
+from .families import (
+    LinearFamily,
+    LogisticFamily,
+    ModelFamily,
+    PoissonFamily,
+    register_family,
+    resolve_family,
 )
 from .permutations import generate_unique_permutations
 from .pvalues import calculate_p_values
@@ -52,6 +66,12 @@ __all__ = [
     "generate_unique_permutations",
     "get_backend",
     "set_backend",
+    "ModelFamily",
+    "LinearFamily",
+    "LogisticFamily",
+    "PoissonFamily",
+    "resolve_family",
+    "register_family",
 ]
 
 __version__ = "0.1.5"

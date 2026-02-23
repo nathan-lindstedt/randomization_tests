@@ -16,14 +16,15 @@ import numpy as np
 from ucimlrepo import fetch_ucirepo
 
 from randomization_tests import (
+    LinearFamily,
     identify_confounders,
     permutation_test_regression,
     print_confounder_table,
     print_diagnostics_table,
     print_joint_results_table,
     print_results_table,
+    resolve_family,
 )
-from randomization_tests.families import LinearFamily, resolve_family
 
 # ============================================================================
 # Load data

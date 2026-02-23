@@ -69,6 +69,96 @@ options.
 
 ---
 
+## Families
+
+Model‑family abstraction layer.  Each family encapsulates all
+model‑specific operations (fitting, prediction, residuals,
+reconstruction, diagnostics) behind a common protocol so that the
+permutation engine is family‑agnostic.
+
+### `ModelFamily` (Protocol)
+
+Runtime‑checkable protocol that every family class must satisfy.
+
+| Property / Method | Description |
+|---|---|
+| `name: str` | Short label, e.g. `"linear"`, `"logistic"`, `"poisson"`. |
+| `residual_type: str` | Residual flavour (`"raw"`, `"probability"`, `"response"`). |
+| `direct_permutation: bool` | `True` when the family supports direct Y‑permutation (ter Braak shortcut). |
+| `metric_label: str` | Human‑readable label for the joint‑test metric (e.g. `"RSS Reduction"`). |
+| `validate_y(y)` | Raise `ValueError` if *y* is incompatible with the family. |
+| `fit(X, y, fit_intercept)` | Fit the model; returns a fitted‑model object. |
+| `predict(model, X)` | Predicted values on the response scale. |
+| `coefs(model)` | Slope coefficients (intercept excluded). |
+| `residuals(model, X, y)` | Residuals appropriate for the family. |
+| `reconstruct_y(predictions, permuted_residuals, rng)` | Build permuted response vectors. |
+| `fit_metric(y_true, y_pred)` | Scalar goodness‑of‑fit metric (e.g. RSS, deviance). |
+| `diagnostics(X, y, fit_intercept)` | Dict of model‑level diagnostics. |
+| `classical_p_values(X, y, fit_intercept)` | Asymptotic p‑values (t‑ or z‑test). |
+| `exchangeability_cells(X, y)` | Exchangeability cell labels (or `None` for global). |
+| `batch_fit(X, Y_matrix, fit_intercept, **kw)` | Fit B models with varying Y; shape `(B, p)`. |
+| `batch_fit_varying_X(X_batch, y, fit_intercept, **kw)` | Fit B models with varying X; shape `(B, p)`. |
+
+### `LinearFamily`
+
+OLS regression for continuous outcomes.
+
+- `residual_type = "raw"` — raw residuals `y − ŷ`.
+- `direct_permutation = True` — ter Braak shortcut via pseudoinverse.
+- `metric_label = "RSS Reduction"`.
+- `batch_fit` uses NumPy pseudoinverse (single matrix multiply).
+
+### `LogisticFamily`
+
+Logistic regression for binary `{0, 1}` outcomes.
+
+- `residual_type = "probability"` — probability‑scale residuals `y − P̂(Y=1)`.
+- `direct_permutation = False`.
+- `metric_label = "Deviance Reduction"`.
+- `reconstruct_y` clips then draws Bernoulli.
+- `batch_fit` uses JAX vmap or sklearn fallback.
+
+### `PoissonFamily`
+
+Poisson GLM for non‑negative integer count outcomes.
+
+- `residual_type = "response"` — response‑scale residuals `y − μ̂`.
+- `direct_permutation = False`.
+- `metric_label = "Deviance Reduction"`.
+- `reconstruct_y` adds permuted residuals on the response scale, then
+  draws `Y* ~ Poisson(μ*)`.
+- `batch_fit` uses a joblib‑parallelised statsmodels loop.
+
+### `resolve_family`
+
+```python
+resolve_family(family: str, y: np.ndarray) -> ModelFamily
+```
+
+Resolve a family string to a `ModelFamily` instance.
+
+| Value | Behaviour |
+|---|---|
+| `"auto"` | Binary `{0, 1}` → `LogisticFamily`; otherwise `LinearFamily`. |
+| `"linear"` | `LinearFamily()`. |
+| `"logistic"` | `LogisticFamily()`. |
+| `"poisson"` | `PoissonFamily()`. |
+
+**Raises:** `ValueError` for unrecognised family strings.
+
+### `register_family`
+
+```python
+register_family(name: str, cls: type) -> None
+```
+
+Register a custom `ModelFamily` implementation under a string key.
+The class must satisfy the `ModelFamily` protocol.
+
+**Raises:** `TypeError` if *cls* does not implement the protocol.
+
+---
+
 ## Permutations
 
 ### `generate_unique_permutations`

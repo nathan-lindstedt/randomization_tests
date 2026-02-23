@@ -637,8 +637,8 @@ def _freedman_lane_joint(
     """
     features_to_test = [c for c in X.columns if c not in confounders]
 
-    # Metric label for display — derived from family name.
-    metric_type = "Deviance Reduction" if family.name == "logistic" else "RSS Reduction"
+    # Metric label for display — derived from the family protocol.
+    metric_type = family.metric_label
 
     X_np = X.values.astype(float)
     n_perm, n = perm_indices.shape
@@ -785,8 +785,8 @@ def _kennedy_joint(
     """
     features_to_test = [c for c in X.columns if c not in confounders]
 
-    # Metric label for display — derived from family name.
-    metric_type = "Deviance Reduction" if family.name == "logistic" else "RSS Reduction"
+    # Metric label for display — derived from the family protocol.
+    metric_type = family.metric_label
 
     n_perm, n = perm_indices.shape
     X_target = X[features_to_test].values

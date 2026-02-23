@@ -875,6 +875,33 @@ def compute_all_diagnostics(
                 "runs_test_p": float("nan"),
                 "warning": f"Diagnostics unavailable: {exc}",
             }
+    elif model_type == "poisson":
+        try:
+            with warnings.catch_warnings():
+                warnings.filterwarnings("ignore", category=RuntimeWarning)
+                warnings.filterwarnings("ignore", category=SmConvergenceWarning)
+                X_sm = sm.add_constant(X) if fit_intercept else np.asarray(X)
+                pois_model = sm.GLM(y_values, X_sm, family=sm.families.Poisson()).fit(
+                    disp=0
+                )
+                pearson_chi2 = float(pois_model.pearson_chi2)
+                df_resid = float(pois_model.df_resid)
+                dispersion = pearson_chi2 / df_resid if df_resid > 0 else float("nan")
+                result["poisson_gof"] = {
+                    "deviance": float(pois_model.deviance),
+                    "pearson_chi2": pearson_chi2,
+                    "dispersion": dispersion,
+                    "overdispersed": dispersion > 1.5,
+                }
+        except Exception as exc:
+            logger.debug("Poisson GoF diagnostics failed: %s", exc)
+            result["poisson_gof"] = {
+                "deviance": float("nan"),
+                "pearson_chi2": float("nan"),
+                "dispersion": float("nan"),
+                "overdispersed": False,
+                "warning": f"Diagnostics unavailable: {exc}",
+            }
     else:
         try:
             result["breusch_pagan"] = compute_breusch_pagan(X, y_values)

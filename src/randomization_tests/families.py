@@ -74,6 +74,8 @@ class ModelFamily(Protocol):
             ``True``; the permutation engine then skips the
             ``residuals → permute → reconstruct_y`` pipeline and
             permutes Y rows instead.
+        metric_label: Human-readable label for the joint-test fit
+            metric (e.g. ``"RSS Reduction"``, ``"Deviance Reduction"``).
     """
 
     @property
@@ -84,6 +86,17 @@ class ModelFamily(Protocol):
 
     @property
     def direct_permutation(self) -> bool: ...
+
+    @property
+    def metric_label(self) -> str:
+        """Human-readable label for the joint-test fit metric.
+
+        Displayed in result dicts and table output to identify which
+        goodness-of-fit measure underlies the joint test statistic.
+        Examples: ``"RSS Reduction"`` (linear), ``"Deviance Reduction"``
+        (logistic, Poisson, negative binomial).
+        """
+        ...
 
     # ---- Validation ------------------------------------------------
 
@@ -431,6 +444,10 @@ class LinearFamily:
     def direct_permutation(self) -> bool:
         return False
 
+    @property
+    def metric_label(self) -> str:
+        return "RSS Reduction"
+
     # ---- Validation ------------------------------------------------
     #
     # Catch two common data errors early:
@@ -767,6 +784,10 @@ class LogisticFamily:
     def direct_permutation(self) -> bool:
         return False
 
+    @property
+    def metric_label(self) -> str:
+        return "Deviance Reduction"
+
     # ---- Validation ------------------------------------------------
     #
     # Logistic regression requires exactly two classes, coded as 0/1.
@@ -1081,6 +1102,433 @@ class LogisticFamily:
 
 
 # ------------------------------------------------------------------ #
+# PoissonFamily
+# ------------------------------------------------------------------ #
+#
+# Poisson regression models count outcomes Y ∈ {0, 1, 2, …} via the
+# log link function:
+#
+#   E[Y | X] = μ = exp(Xβ)
+#
+# The canonical family for equi-dispersed count data.  Fitting uses
+# statsmodels GLM with IRLS (iteratively reweighted least squares).
+#
+# **Residuals** are deviance residuals:
+#   d_i = sign(y_i − μ̂_i) × √(2 [y_i log(y_i/μ̂_i) − (y_i − μ̂_i)])
+#
+# Deviance residuals have approximate unit variance when the Poisson
+# assumption holds and μ̂ is moderately large (> 5).  For small counts,
+# they are noticeably right-skewed — this does NOT invalidate the
+# permutation test (exchangeability under H₀ is what matters, not
+# normality), but it explains why Poisson permutation p-values may
+# differ more from classical p-values than linear ones do.
+#
+# **Reconstruction** uses Poisson sampling:
+#   1. Transform predictions to log-link scale: η = log(μ̂)
+#   2. Add permuted deviance residuals: η* = η + π(d)
+#   3. Back-transform: μ* = exp(η*)
+#   4. Draw Y* ~ Poisson(max(μ*, 1e-10))
+#
+# This mirrors the logistic family's Bernoulli sampling — both
+# reconstruct valid responses from the family's natural distribution
+# rather than rounding or truncating continuous values.
+#
+# **Joint-test metric** is Poisson deviance:
+#   D = 2 Σ[y_i log(y_i/μ̂_i) − (y_i − μ̂_i)]
+#
+# with the convention that 0·log(0/μ̂) = 0 (L'Hôpital).
+#
+# **Batch fitting** is a joblib-parallelised statsmodels IRLS loop —
+# there is no closed-form solution or JAX Poisson solver, so each of
+# the B permutations requires an independent GLM fit.  Convergence
+# failures on individual permuted Y vectors produce NaN coefficient
+# rows; an aggregated warning is emitted after the loop.
+
+
+@dataclass(frozen=True)
+class PoissonFamily:
+    """Poisson regression family for count outcomes.
+
+    Implements the ``ModelFamily`` protocol for non-negative integer
+    outcomes using the Poisson log-link GLM.  Residuals are response-
+    scale (y − μ̂), reconstruction uses Poisson sampling on the
+    response scale, and the joint-test metric is deviance.
+
+    The class is stateless — all data flows through method arguments.
+    ``batch_fit`` uses a joblib-parallelised statsmodels loop (no
+    backend delegation — no JAX Poisson solver exists yet).
+    """
+
+    @property
+    def name(self) -> str:
+        return "poisson"
+
+    @property
+    def residual_type(self) -> str:
+        return "response"
+
+    @property
+    def direct_permutation(self) -> bool:
+        return False
+
+    @property
+    def metric_label(self) -> str:
+        return "Deviance Reduction"
+
+    # ---- Validation ------------------------------------------------
+    #
+    # Poisson requires non-negative values.  We accept floats that are
+    # non-negative whole numbers (statsmodels does too), but reject
+    # negative values, NaN, and non-integer floats.
+
+    def validate_y(self, y: np.ndarray) -> None:
+        """Check that *y* contains non-negative integer-valued data."""
+        if not np.issubdtype(y.dtype, np.number):
+            msg = "PoissonFamily requires numeric Y values."
+            raise ValueError(msg)
+        if np.any(np.isnan(y)):
+            msg = "PoissonFamily does not accept NaN values in Y."
+            raise ValueError(msg)
+        if np.any(y < 0):
+            msg = "PoissonFamily requires non-negative Y values."
+            raise ValueError(msg)
+        # Allow floats that happen to be whole numbers (e.g. 3.0),
+        # but reject genuinely fractional values like 3.5.
+        if not np.allclose(y, np.round(y)):
+            msg = "PoissonFamily requires integer-valued Y. Got non-integer values."
+            raise ValueError(msg)
+
+    # ---- Single-model operations -----------------------------------
+    #
+    # These methods wrap statsmodels GLM with a Poisson family.
+    # ``disp=0`` suppresses the iteration log.
+
+    def fit(
+        self,
+        X: np.ndarray,
+        y: np.ndarray,
+        fit_intercept: bool = True,
+    ) -> Any:
+        """Fit a Poisson GLM via statsmodels IRLS.
+
+        Returns the fitted ``GLMResultsWrapper`` object.  Convergence
+        and runtime warnings are suppressed — the permutation p-value
+        is the primary inference tool.
+        """
+        X_sm = sm.add_constant(X) if fit_intercept else np.asarray(X)
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", category=SmConvergenceWarning)
+            warnings.filterwarnings("ignore", category=RuntimeWarning)
+            model = sm.GLM(y, X_sm, family=sm.families.Poisson()).fit(disp=0)
+        return model
+
+    def predict(self, model: Any, X: np.ndarray) -> np.ndarray:
+        """Return predicted mean μ̂ on the response scale.
+
+        ``model.predict()`` applies the inverse log link
+        (exponentiation) automatically, so the returned values are
+        non-negative counts (not log-counts).
+        """
+        # Use fittedvalues when X matches the training data (avoids
+        # re-applying add_constant).  Fall back to model.predict()
+        # with explicit X when shapes differ (e.g. reduced model).
+        return np.asarray(model.fittedvalues)
+
+    def coefs(self, model: Any) -> np.ndarray:
+        """Extract slope coefficients (intercept excluded).
+
+        ``model.params`` includes the intercept at index 0 when the
+        model was fit with a constant column; strip it.
+        """
+        # GLM models always include the constant in params when
+        # add_constant was used.  The model's df_model tells us the
+        # number of slope parameters, but it's simpler to check
+        # whether the first column is the constant by convention.
+        # We follow the same pattern as LogisticFamily: always strip
+        # index 0 when the model has more params than the original X.
+        params = np.asarray(model.params)
+        # If the model has an intercept, the number of params exceeds
+        # the model's df_model by 1 (for the constant).
+        if model.k_constant:
+            return params[1:]
+        return params
+
+    def residuals(self, model: Any, X: np.ndarray, y: np.ndarray) -> np.ndarray:
+        """Response-scale residuals: ``e = y − μ̂``.
+
+        These are the direct analogue of the linear family's raw
+        residuals and the logistic family's probability-scale
+        residuals.  The permutation engine permutes these and then
+        ``reconstruct_y`` adds them back on the response scale:
+        μ* = μ̂ + π(e), Y* ~ Poisson(μ*).
+
+        Using response-scale residuals (rather than deviance residuals)
+        is critical because ``reconstruct_y`` operates on the response
+        scale — deviance residuals are approximately N(0, 1) and adding
+        them to μ̂ (which is on the count scale) produces wildly
+        inflated/deflated rates.
+        """
+        return np.asarray(y - model.fittedvalues)
+
+    # ---- Permutation helpers ---------------------------------------
+    #
+    # ``reconstruct_y`` uses Poisson sampling (not rounding) to
+    # produce valid count responses from permuted response-scale
+    # residuals.  This mirrors LogisticFamily's Bernoulli sampling —
+    # both reconstruct on the response scale and sample from the
+    # family's natural distribution.
+
+    def reconstruct_y(
+        self,
+        predictions: np.ndarray,
+        permuted_residuals: np.ndarray,
+        rng: np.random.Generator,
+    ) -> np.ndarray:
+        """Poisson-sampled reconstruction from permuted residuals.
+
+        Steps:
+          1. ``μ* = clip(μ̂ + π(e), 1e-10, 1e8)``
+          2. ``Y* ~ Poisson(μ*)``
+
+        The residuals are on the response scale (y − μ̂), matching
+        the logistic family's Bernoulli reconstruction from
+        probability-scale residuals (y − p̂).  Working on the
+        response scale (instead of the link scale) ensures that
+        the reconstructed rates μ* stay in a realistic range.
+
+        *rng* is required — like the logistic family, Poisson
+        reconstruction is stochastic.
+        """
+        # Response-scale reconstruction: μ̂ + π(y − μ̂).
+        mu_star = predictions + permuted_residuals
+        # Clamp to avoid negative or extreme λ values that would
+        # cause Poisson sampling to fail or consume excessive memory.
+        mu_star = np.clip(mu_star, 1e-10, 1e8)
+        # Poisson draw.
+        return np.asarray(rng.poisson(lam=mu_star))
+
+    def fit_metric(
+        self,
+        y_true: np.ndarray,
+        y_pred: np.ndarray,
+    ) -> float:
+        """Poisson deviance: 2 Σ[y log(y/μ̂) − (y − μ̂)].
+
+        The convention 0·log(0/μ̂) = 0 is applied via ``np.where``
+        to avoid NaN from 0 × −inf in floating point.  The metric is
+        lower-is-better, so the joint test statistic
+        D_reduced − D_full is positive when the features improve fit.
+        """
+        mu = np.maximum(y_pred, 1e-10)
+        # 0 * log(0/μ̂) = 0 by convention (L'Hôpital).
+        # Use mask-and-index to avoid evaluating log(0) (np.where
+        # evaluates both branches eagerly, producing RuntimeWarnings).
+        pos = y_true > 0
+        contrib = np.zeros_like(y_true, dtype=float)
+        contrib[pos] = y_true[pos] * np.log(y_true[pos] / mu[pos])
+        deviance_i = contrib - (y_true - mu)
+        return float(2.0 * np.sum(deviance_i))
+
+    # ---- Diagnostics & classical inference -------------------------
+    #
+    # Poisson diagnostics use statsmodels GLM, which provides:
+    #
+    #   Deviance    — 2[ℓ(saturated) − ℓ(model)].
+    #   Pearson χ²  — Σ(y − μ̂)²/μ̂.
+    #   Dispersion  — Pearson χ² / df_resid.  Values > 1 indicate
+    #                 overdispersion (violation of the equi-dispersion
+    #                 assumption).
+    #   AIC / BIC   — information criteria.
+    #
+    # Classical p-values come from the Wald z-test:
+    #   z_j = β̂_j / SE(β̂_j),   p = 2·P(|Z| > |z_j|)
+    # where SE is derived from the Fisher information matrix.
+
+    def diagnostics(
+        self,
+        X: np.ndarray,
+        y: np.ndarray,
+        fit_intercept: bool = True,
+    ) -> dict[str, Any]:
+        """Poisson GLM diagnostics (deviance, Pearson χ², dispersion, AIC, BIC)."""
+        X_sm = sm.add_constant(X) if fit_intercept else np.asarray(X)
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", category=SmConvergenceWarning)
+            warnings.filterwarnings("ignore", category=RuntimeWarning)
+            sm_model = sm.GLM(y, X_sm, family=sm.families.Poisson()).fit(disp=0)
+        pearson_chi2 = float(sm_model.pearson_chi2)
+        df_resid = float(sm_model.df_resid)
+        dispersion = pearson_chi2 / df_resid if df_resid > 0 else float("nan")
+        return {
+            "n_observations": len(y),
+            "n_features": X.shape[1],
+            "deviance": np.round(float(sm_model.deviance), 4),
+            "pearson_chi2": np.round(pearson_chi2, 4),
+            "dispersion": np.round(dispersion, 4),
+            "log_likelihood": np.round(float(sm_model.llf), 4),
+            "aic": np.round(float(sm_model.aic), 4),
+            "bic": np.round(float(sm_model.bic_llf), 4),
+        }
+
+    def classical_p_values(
+        self,
+        X: np.ndarray,
+        y: np.ndarray,
+        fit_intercept: bool = True,
+    ) -> np.ndarray:
+        """Asymptotic Wald z-test p-values via statsmodels Poisson GLM.
+
+        Returns one p-value per slope coefficient (intercept excluded).
+        Convergence warnings are suppressed — the permutation p-value
+        is the primary inference tool.
+        """
+        X_sm = sm.add_constant(X) if fit_intercept else np.asarray(X)
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", category=SmConvergenceWarning)
+            warnings.filterwarnings("ignore", category=RuntimeWarning)
+            sm_model = sm.GLM(y, X_sm, family=sm.families.Poisson()).fit(disp=0)
+        pvals = sm_model.pvalues[1:] if fit_intercept else sm_model.pvalues
+        return np.asarray(pvals)
+
+    # ---- Exchangeability (v0.4.0 forward-compat) -------------------
+
+    def exchangeability_cells(
+        self,
+        X: np.ndarray,  # noqa: ARG002
+        y: np.ndarray,  # noqa: ARG002
+    ) -> np.ndarray | None:
+        """Poisson models assume globally exchangeable residuals."""
+        return None
+
+    # ---- Batch fitting (hot loop) ----------------------------------
+    #
+    # Unlike OLS (pseudoinverse) or logistic (JAX vmap), Poisson batch
+    # fitting requires B independent IRLS solves via statsmodels.
+    # There is no closed-form shortcut and no JAX Poisson solver.
+    #
+    # The loop is parallelised via joblib when n_jobs != 1.  Individual
+    # fit failures (convergence issues on extreme permuted Y vectors)
+    # produce NaN coefficient rows; an aggregated warning is emitted
+    # after the loop.
+
+    def batch_fit(
+        self,
+        X: np.ndarray,
+        Y_matrix: np.ndarray,
+        fit_intercept: bool,
+        **kwargs: Any,
+    ) -> np.ndarray:
+        """Batch Poisson GLM via joblib-parallelised statsmodels loop.
+
+        Each row of *Y_matrix* is a permuted response vector.  Returns
+        ``(B, p)`` coefficient matrix with intercept excluded.
+        Convergence failures produce NaN rows and a single aggregated
+        warning.
+        """
+        kwargs.pop("backend", None)
+        n_jobs = kwargs.pop("n_jobs", 1)
+
+        X_sm = sm.add_constant(X) if fit_intercept else np.asarray(X)
+        n_params = X.shape[1]
+        B = Y_matrix.shape[0]
+
+        def _fit_one(y_b: np.ndarray) -> np.ndarray:
+            try:
+                with warnings.catch_warnings():
+                    warnings.filterwarnings("ignore", category=SmConvergenceWarning)
+                    warnings.filterwarnings("ignore", category=RuntimeWarning)
+                    model = sm.GLM(y_b, X_sm, family=sm.families.Poisson()).fit(
+                        disp=0, maxiter=100
+                    )
+                params = np.asarray(model.params)
+                return params[1:] if fit_intercept else params
+            except Exception:  # noqa: BLE001
+                return np.full(n_params, np.nan)
+
+        if n_jobs == 1:
+            results = [_fit_one(Y_matrix[i]) for i in range(B)]
+        else:
+            from joblib import Parallel, delayed
+
+            results = Parallel(n_jobs=n_jobs, prefer="threads")(
+                delayed(_fit_one)(Y_matrix[i]) for i in range(B)
+            )
+
+        coef_matrix = np.array(results)
+
+        # Aggregated convergence warning.
+        n_failed = int(np.sum(np.any(np.isnan(coef_matrix), axis=1)))
+        if n_failed > 0:
+            pct = 100.0 * n_failed / B
+            warnings.warn(
+                f"{n_failed} of {B} Poisson fits did not converge "
+                f"({pct:.1f}%). Consider checking for overdispersion "
+                f"or zero-inflation.",
+                UserWarning,
+                stacklevel=2,
+            )
+
+        return coef_matrix
+
+    def batch_fit_varying_X(
+        self,
+        X_batch: np.ndarray,
+        y: np.ndarray,
+        fit_intercept: bool,
+        **kwargs: Any,
+    ) -> np.ndarray:
+        """Batch Poisson with per-permutation design matrices.
+
+        Used by the Kennedy individual path where column *j* of *X*
+        differs across permutations while Y stays the same.  Same
+        joblib-parallelised statsmodels loop as ``batch_fit``.
+        """
+        kwargs.pop("backend", None)
+        n_jobs = kwargs.pop("n_jobs", 1)
+
+        B, _n, p = X_batch.shape
+        n_params = p
+
+        def _fit_one(X_b: np.ndarray) -> np.ndarray:
+            X_sm = sm.add_constant(X_b) if fit_intercept else np.asarray(X_b)
+            try:
+                with warnings.catch_warnings():
+                    warnings.filterwarnings("ignore", category=SmConvergenceWarning)
+                    warnings.filterwarnings("ignore", category=RuntimeWarning)
+                    model = sm.GLM(y, X_sm, family=sm.families.Poisson()).fit(
+                        disp=0, maxiter=100
+                    )
+                params = np.asarray(model.params)
+                return params[1:] if fit_intercept else params
+            except Exception:  # noqa: BLE001
+                return np.full(n_params, np.nan)
+
+        if n_jobs == 1:
+            results = [_fit_one(X_batch[i]) for i in range(B)]
+        else:
+            from joblib import Parallel, delayed
+
+            results = Parallel(n_jobs=n_jobs, prefer="threads")(
+                delayed(_fit_one)(X_batch[i]) for i in range(B)
+            )
+
+        coef_matrix = np.array(results)
+
+        n_failed = int(np.sum(np.any(np.isnan(coef_matrix), axis=1)))
+        if n_failed > 0:
+            pct = 100.0 * n_failed / B
+            warnings.warn(
+                f"{n_failed} of {B} Poisson fits did not converge "
+                f"({pct:.1f}%). Consider checking for overdispersion "
+                f"or zero-inflation.",
+                UserWarning,
+                stacklevel=2,
+            )
+
+        return coef_matrix
+
+
+# ------------------------------------------------------------------ #
 # Family resolution
 # ------------------------------------------------------------------ #
 #
@@ -1164,3 +1612,4 @@ def resolve_family(family: str, y: np.ndarray) -> ModelFamily:
 
 register_family("linear", LinearFamily)
 register_family("logistic", LogisticFamily)
+register_family("poisson", PoissonFamily)
