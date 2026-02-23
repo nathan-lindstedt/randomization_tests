@@ -1233,23 +1233,26 @@ def permutation_test_regression(
     if family != "auto":
         resolved.validate_y(y_values)
 
+    # Resolve the active backend once — used for the n_jobs/JAX check
+    # below and included in every result dict for provenance.
+    from ._backends import resolve_backend
+
+    _backend = resolve_backend()
+    backend_name = _backend.name
+
     # Warn and override n_jobs when the JAX backend is active.
     # JAX uses vmap vectorisation for batch fits, so joblib-based
     # parallelism has no effect.  Resetting to 1 avoids any
     # unexpected behaviour downstream while keeping the user informed.
-    if n_jobs != 1:
-        from ._backends import resolve_backend
-
-        _backend = resolve_backend()
-        if _backend.name == "jax":
-            warnings.warn(
-                "n_jobs is ignored when the JAX backend is active because "
-                "JAX uses vmap vectorisation for batch fits.  Falling back "
-                "to n_jobs=1.",
-                UserWarning,
-                stacklevel=2,
-            )
-            n_jobs = 1
+    if n_jobs != 1 and backend_name == "jax":
+        warnings.warn(
+            "n_jobs is ignored when the JAX backend is active because "
+            "JAX uses vmap vectorisation for batch fits.  Falling back "
+            "to n_jobs=1.",
+            UserWarning,
+            stacklevel=2,
+        )
+        n_jobs = 1
 
     # Fit the observed (unpermuted) model to get the original
     # coefficients β̂.  These are the test statistics that will be
@@ -1349,6 +1352,8 @@ def permutation_test_regression(
             "p_value_str": p_value_str,
             "metric_type": metric_type,
             "model_type": resolved.name,
+            "family": resolved.name,
+            "backend": backend_name,
             "features_tested": features_tested,
             "confounders": confounders,
             "p_value_threshold_one": p_value_threshold_one,
@@ -1401,6 +1406,8 @@ def permutation_test_regression(
             "p_value_str": p_value_str,
             "metric_type": metric_type,
             "model_type": resolved.name,
+            "family": resolved.name,
+            "backend": backend_name,
             "features_tested": features_tested,
             "confounders": confounders,
             "p_value_threshold_one": p_value_threshold_one,
@@ -1470,6 +1477,8 @@ def permutation_test_regression(
         "method": method,
         "confounders": confounders,
         "model_type": resolved.name,
+        "family": resolved.name,
+        "backend": backend_name,
         "diagnostics": diagnostics,
         "extended_diagnostics": extended_diagnostics,
     }

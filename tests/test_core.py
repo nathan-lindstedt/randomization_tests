@@ -972,3 +972,75 @@ class TestFreedmanLaneJoint:
             random_state=42,
         )
         assert len(result["permuted_improvements"]) == 50
+
+
+class TestResultDictProvenance:
+    """Every result dict must carry 'family' and 'backend' provenance keys."""
+
+    @pytest.fixture(autouse=True)
+    def _use_numpy_backend(self):
+        from randomization_tests import set_backend
+
+        set_backend("numpy")
+        yield
+        set_backend("auto")
+
+    def test_ter_braak_has_family_and_backend(self):
+        X, y = _make_linear_data()
+        result = permutation_test_regression(
+            X, y, n_permutations=20, method="ter_braak", random_state=0
+        )
+        assert result["family"] == "linear"
+        assert result["backend"] == "numpy"
+
+    def test_kennedy_has_family_and_backend(self):
+        X, y = _make_binary_data()
+        result = permutation_test_regression(
+            X,
+            y,
+            n_permutations=20,
+            method="kennedy",
+            confounders=["x2"],
+            random_state=0,
+        )
+        assert result["family"] == "logistic"
+        assert result["backend"] == "numpy"
+
+    def test_kennedy_joint_has_family_and_backend(self):
+        X, y = _make_linear_data()
+        result = permutation_test_regression(
+            X,
+            y,
+            n_permutations=20,
+            method="kennedy_joint",
+            confounders=["x3"],
+            random_state=0,
+        )
+        assert result["family"] == "linear"
+        assert result["backend"] == "numpy"
+
+    def test_freedman_lane_has_family_and_backend(self):
+        X, y = _make_linear_data()
+        result = permutation_test_regression(
+            X,
+            y,
+            n_permutations=20,
+            method="freedman_lane",
+            confounders=["x3"],
+            random_state=0,
+        )
+        assert result["family"] == "linear"
+        assert result["backend"] == "numpy"
+
+    def test_freedman_lane_joint_has_family_and_backend(self):
+        X, y = _make_binary_data()
+        result = permutation_test_regression(
+            X,
+            y,
+            n_permutations=20,
+            method="freedman_lane_joint",
+            confounders=["x2"],
+            random_state=0,
+        )
+        assert result["family"] == "logistic"
+        assert result["backend"] == "numpy"
