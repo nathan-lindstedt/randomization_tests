@@ -13,7 +13,8 @@ parallelised with ``joblib.Parallel(prefer="threads")`` so that
 sklearn's internal Cython/BLAS code releases the GIL and multiple
 permutations can overlap on multi-core hardware.
 
-Poisson, negative binomial, and ordinal paths use statsmodels loops.
+Poisson, negative binomial, ordinal, and multinomial paths use
+statsmodels loops.
 """
 
 from __future__ import annotations
@@ -543,3 +544,173 @@ class NumpyBackend:
             delayed(_fit_one)(X_batch[b]) for b in range(B)
         )
         return np.asarray(np.vstack(coefs_list))
+
+    # ---- Multinomial (shared X, many Y) --------------------------------
+
+    def batch_multinomial(
+        self,
+        X: np.ndarray,
+        Y_matrix: np.ndarray,
+        fit_intercept: bool = True,
+        **kwargs: Any,
+    ) -> np.ndarray:
+        """Batch multinomial via statsmodels MNLogit loop.
+
+        Returns per-predictor Wald χ² statistics (not raw
+        coefficients), since the permutation engine requires a
+        scalar test statistic per predictor.
+
+        Args:
+            X: Design matrix ``(n, p)``.
+            Y_matrix: Permuted nominal responses ``(B, n)``.
+            fit_intercept: Prepend intercept column.
+            **kwargs: ``n_jobs`` (default 1).
+
+        Returns:
+            Wald χ² statistics ``(B, p)`` — one per slope
+            predictor per permutation (intercept excluded).
+        """
+        from statsmodels.discrete.discrete_model import MNLogit
+
+        n_jobs: int = kwargs.pop("n_jobs", 1)
+        kwargs.pop("K", None)  # Not needed — MNLogit infers K
+
+        if fit_intercept:
+            X_aug = np.column_stack([np.ones(X.shape[0]), X])
+        else:
+            X_aug = np.asarray(X, dtype=float)
+
+        p_aug = X_aug.shape[1]
+        p_slopes = X.shape[1]  # slopes only (intercept excluded)
+        B = Y_matrix.shape[0]
+
+        def _fit_one(y_b: np.ndarray) -> np.ndarray:
+            try:
+                with warnings.catch_warnings():
+                    warnings.filterwarnings("ignore", category=SmConvergenceWarning)
+                    warnings.filterwarnings("ignore", category=HessianInversionWarning)
+                    warnings.filterwarnings("ignore", category=RuntimeWarning)
+                    model = MNLogit(y_b, X_aug).fit(disp=0, maxiter=200)
+                return _wald_chi2_from_mnlogit(model, p_aug, fit_intercept)
+            except Exception:  # noqa: BLE001
+                return np.full(p_slopes, np.nan)
+
+        if n_jobs == 1:
+            result = np.empty((B, p_slopes))
+            for b in range(B):
+                result[b] = _fit_one(Y_matrix[b])
+            return result
+
+        coefs_list = Parallel(n_jobs=n_jobs, prefer="threads")(
+            delayed(_fit_one)(Y_matrix[b]) for b in range(B)
+        )
+        return np.asarray(np.vstack(coefs_list))
+
+    # ---- Multinomial (many X, shared y) --------------------------------
+
+    def batch_multinomial_varying_X(
+        self,
+        X_batch: np.ndarray,
+        y: np.ndarray,
+        fit_intercept: bool = True,
+        **kwargs: Any,
+    ) -> np.ndarray:
+        """Batch multinomial with per-permutation design matrices.
+
+        Args:
+            X_batch: Design matrices ``(B, n, p)``.
+            y: Shared nominal response ``(n,)``.
+            fit_intercept: Prepend intercept column.
+            **kwargs: ``n_jobs`` (default 1).
+
+        Returns:
+            Wald χ² statistics ``(B, p)`` — one per slope
+            predictor per permutation (intercept excluded).
+        """
+        from statsmodels.discrete.discrete_model import MNLogit
+
+        n_jobs: int = kwargs.pop("n_jobs", 1)
+        kwargs.pop("K", None)  # Not needed
+        B, _n, p = X_batch.shape
+        y_arr = np.asarray(y)
+
+        def _fit_one(X_b: np.ndarray) -> np.ndarray:
+            if fit_intercept:
+                X_aug = np.column_stack([np.ones(X_b.shape[0]), X_b])
+            else:
+                X_aug = np.asarray(X_b, dtype=float)
+            p_aug = X_aug.shape[1]
+            try:
+                with warnings.catch_warnings():
+                    warnings.filterwarnings("ignore", category=SmConvergenceWarning)
+                    warnings.filterwarnings("ignore", category=HessianInversionWarning)
+                    warnings.filterwarnings("ignore", category=RuntimeWarning)
+                    model = MNLogit(y_arr, X_aug).fit(disp=0, maxiter=200)
+                return _wald_chi2_from_mnlogit(model, p_aug, fit_intercept)
+            except Exception:  # noqa: BLE001
+                return np.full(p, np.nan)
+
+        if n_jobs == 1:
+            result = np.empty((B, p))
+            for b in range(B):
+                result[b] = _fit_one(X_batch[b])
+            return result
+
+        coefs_list = Parallel(n_jobs=n_jobs, prefer="threads")(
+            delayed(_fit_one)(X_batch[b]) for b in range(B)
+        )
+        return np.asarray(np.vstack(coefs_list))
+
+
+# ------------------------------------------------------------------ #
+# Multinomial Wald helper
+# ------------------------------------------------------------------ #
+
+
+def _wald_chi2_from_mnlogit(
+    model: Any,
+    p_aug: int,
+    has_intercept: bool,
+) -> np.ndarray:
+    """Extract per-predictor Wald χ² from a fitted MNLogit model.
+
+    Statsmodels MNLogit stores ``model.params`` as ``(p_aug, K-1)``
+    and ``model.cov_params()`` as ``((K-1)*p_aug, (K-1)*p_aug)``
+    (ordered by equation first, then parameter within equation).
+
+    For each slope predictor *j*, the K-1 coefficients and their
+    covariance sub-block are extracted and the Wald statistic is
+    computed as:
+
+        χ²_j = β_j^T [Var(β_j)]^{-1} β_j
+
+    Args:
+        model: Fitted ``MNLogitResults``.
+        p_aug: Number of augmented predictors (with intercept).
+        has_intercept: Whether column 0 is an intercept.
+
+    Returns:
+        Wald χ² statistics ``(p_slopes,)`` — one per slope.
+    """
+    params = np.asarray(model.params)  # (p_aug, K-1)
+    cov = np.asarray(model.cov_params())  # ((K-1)*p_aug, (K-1)*p_aug)
+    Km1 = params.shape[1]
+    start = 1 if has_intercept else 0
+    p_slopes = p_aug - start
+
+    wald = np.empty(p_slopes)
+    for j_slope in range(p_slopes):
+        j = j_slope + start  # column index in X_aug
+        # β_j across K-1 equations
+        beta_j = params[j, :]  # (K-1,)
+        # Covariance indices: statsmodels orders by equation first
+        # Equation k has params at cov rows/cols [k*p_aug : (k+1)*p_aug]
+        # Parameter j within equation k is at index k*p_aug + j
+        idx = np.array([k * p_aug + j for k in range(Km1)])
+        cov_j = cov[np.ix_(idx, idx)]  # (K-1, K-1)
+        # Wald χ² = β' V^{-1} β
+        try:
+            wald[j_slope] = float(beta_j @ np.linalg.solve(cov_j, beta_j))
+        except np.linalg.LinAlgError:
+            wald[j_slope] = np.nan
+    return wald

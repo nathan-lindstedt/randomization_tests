@@ -278,6 +278,60 @@ class BackendProtocol(Protocol):
         """
         ...
 
+    def batch_multinomial(
+        self,
+        X: np.ndarray,
+        Y_matrix: np.ndarray,
+        fit_intercept: bool = True,
+        **kwargs: Any,
+    ) -> np.ndarray:
+        """Batch multinomial: shared *X*, many nominal *Y* vectors.
+
+        Returns per-predictor Wald χ² test statistics rather than
+        raw coefficients, since each predictor has K−1 coefficients
+        in the multinomial model and the permutation engine requires
+        a scalar per predictor.
+
+        Requires ``K`` in kwargs (number of categories).
+
+        Args:
+            X: Design matrix ``(n, p)`` — no intercept column.
+            Y_matrix: Permuted nominal responses ``(B, n)``,
+                integer-coded 0 … K-1.
+            fit_intercept: Prepend intercept column.
+            **kwargs: ``K`` (required), solver options.
+
+        Returns:
+            Wald χ² statistics ``(B, p)`` — one scalar per predictor
+            per permutation (intercept excluded).
+        """
+        ...
+
+    def batch_multinomial_varying_X(
+        self,
+        X_batch: np.ndarray,
+        y: np.ndarray,
+        fit_intercept: bool = True,
+        **kwargs: Any,
+    ) -> np.ndarray:
+        """Batch multinomial: many *X* matrices, shared nominal *y*.
+
+        Kennedy individual multinomial path — each permutation has
+        its own design matrix.
+
+        Args:
+            X_batch: Design matrices ``(B, n, p)`` — no intercept.
+            y: Shared nominal response ``(n,)``, integer-coded
+                0 … K-1.
+            fit_intercept: Prepend intercept column.
+            **kwargs: ``K`` (required), solver options.
+
+        Returns:
+            Wald χ² statistics ``(B, p)`` — one scalar per predictor
+            per permutation (intercept excluded).
+        """
+        ...
+
 
 # ------------------------------------------------------------------ #
 # Backend resolution
