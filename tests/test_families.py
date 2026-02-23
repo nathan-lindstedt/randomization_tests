@@ -1,5 +1,5 @@
 """Tests for the ModelFamily protocol, LinearFamily, LogisticFamily,
-PoissonFamily, NegativeBinomialFamily, and OrdinalFamily.
+PoissonFamily, NegativeBinomialFamily, OrdinalFamily, and MultinomialFamily.
 """
 
 import numpy as np
@@ -9,6 +9,7 @@ from randomization_tests.families import (
     LinearFamily,
     LogisticFamily,
     ModelFamily,
+    MultinomialFamily,
     NegativeBinomialFamily,
     OrdinalFamily,
     PoissonFamily,
@@ -1701,3 +1702,349 @@ class TestOrdinalRegistry:
     def test_frozen_dataclass(self, ordinal_family):
         with pytest.raises(AttributeError):
             ordinal_family.name = "other"  # type: ignore[misc]
+
+
+# ================================================================== #
+# MultinomialFamily
+# ================================================================== #
+
+# ------------------------------------------------------------------ #
+# Fixtures
+# ------------------------------------------------------------------ #
+
+
+@pytest.fixture()
+def multinomial_data(rng):
+    """Multinomial outcome with 3 unordered categories (0, 1, 2)."""
+    n, p = 150, 3
+    X = rng.standard_normal((n, p))
+    # Generate class probabilities via softmax of linear predictor
+    logits = np.column_stack(
+        [
+            np.zeros(n),  # reference class 0
+            X @ np.array([0.8, -0.4, 0.2]),  # class 1
+            X @ np.array([-0.3, 0.6, -0.5]),  # class 2
+        ]
+    )
+    probs = np.exp(logits) / np.exp(logits).sum(axis=1, keepdims=True)
+    y = np.array([rng.choice(3, p=probs[i]) for i in range(n)], dtype=float)
+    return X, y
+
+
+@pytest.fixture()
+def multinomial_family():
+    return MultinomialFamily()
+
+
+# ------------------------------------------------------------------ #
+# Protocol conformance
+# ------------------------------------------------------------------ #
+
+
+class TestMultinomialProtocolConformance:
+    def test_isinstance_check(self, multinomial_family):
+        assert isinstance(multinomial_family, ModelFamily)
+
+    def test_name(self, multinomial_family):
+        assert multinomial_family.name == "multinomial"
+
+    def test_residual_type(self, multinomial_family):
+        assert multinomial_family.residual_type == "none"
+
+    def test_direct_permutation(self, multinomial_family):
+        assert multinomial_family.direct_permutation is True
+
+    def test_metric_label(self, multinomial_family):
+        assert multinomial_family.metric_label == "Deviance Reduction"
+
+
+# ------------------------------------------------------------------ #
+# validate_y
+# ------------------------------------------------------------------ #
+
+
+class TestMultinomialValidateY:
+    def test_valid_multinomial(self, multinomial_family):
+        """Integer-coded nominal with ≥ 3 levels should pass."""
+        multinomial_family.validate_y(np.array([0, 1, 2, 0, 1, 2], dtype=float))
+
+    def test_valid_int_dtype(self, multinomial_family):
+        """Integer dtypes should pass."""
+        multinomial_family.validate_y(np.array([0, 1, 2, 0, 1, 2], dtype=int))
+
+    def test_float_whole_numbers(self, multinomial_family):
+        """Whole-number floats (0.0, 1.0, etc.) should pass."""
+        multinomial_family.validate_y(np.array([0.0, 1.0, 2.0, 0.0, 1.0]))
+
+    def test_rejects_non_numeric(self, multinomial_family):
+        with pytest.raises(ValueError, match="numeric"):
+            multinomial_family.validate_y(np.array(["a", "b", "c"]))
+
+    def test_rejects_nan(self, multinomial_family):
+        with pytest.raises(ValueError, match="NaN"):
+            multinomial_family.validate_y(np.array([0.0, 1.0, float("nan"), 2.0]))
+
+    def test_rejects_non_integer(self, multinomial_family):
+        with pytest.raises(ValueError, match="integer"):
+            multinomial_family.validate_y(np.array([0.0, 0.5, 1.0, 1.5, 2.0]))
+
+    def test_rejects_binary(self, multinomial_family):
+        """Fewer than 3 levels should be rejected."""
+        with pytest.raises(ValueError, match="3"):
+            multinomial_family.validate_y(np.array([0, 1, 0, 1, 0], dtype=float))
+
+    def test_rejects_single_level(self, multinomial_family):
+        with pytest.raises(ValueError, match="3"):
+            multinomial_family.validate_y(np.array([2, 2, 2, 2], dtype=float))
+
+
+# ------------------------------------------------------------------ #
+# Single-model operations
+# ------------------------------------------------------------------ #
+
+
+class TestMultinomialSingleModel:
+    def test_fit_returns_model(self, multinomial_family, multinomial_data):
+        X, y = multinomial_data
+        model = multinomial_family.fit(X, y)
+        assert model is not None
+        assert hasattr(model, "params")
+
+    def test_coefs_shape(self, multinomial_family, multinomial_data):
+        """coefs() returns Wald χ² per predictor — shape (p,)."""
+        X, y = multinomial_data
+        model = multinomial_family.fit(X, y)
+        coefs = multinomial_family.coefs(model)
+        assert coefs.shape == (X.shape[1],)
+
+    def test_coefs_nonnegative(self, multinomial_family, multinomial_data):
+        """Wald χ² statistics should be non-negative."""
+        X, y = multinomial_data
+        model = multinomial_family.fit(X, y)
+        coefs = multinomial_family.coefs(model)
+        assert np.all(coefs >= 0)
+
+    def test_category_coefs_shape(self, multinomial_family, multinomial_data):
+        """category_coefs() should return (p, K-1) raw coefficients."""
+        X, y = multinomial_data
+        model = multinomial_family.fit(X, y)
+        cat_coefs = multinomial_family.category_coefs(model)
+        K = len(np.unique(y))
+        assert cat_coefs.shape == (X.shape[1], K - 1)
+
+    def test_predict_shape(self, multinomial_family, multinomial_data):
+        X, y = multinomial_data
+        model = multinomial_family.fit(X, y)
+        preds = multinomial_family.predict(model, X)
+        assert preds.shape == (X.shape[0],)
+
+    def test_predict_expected_range(self, multinomial_family, multinomial_data):
+        """E[Y|X] should be within [0, K-1]."""
+        X, y = multinomial_data
+        model = multinomial_family.fit(X, y)
+        preds = multinomial_family.predict(model, X)
+        n_levels = len(np.unique(y))
+        assert np.all(preds >= 0)
+        assert np.all(preds <= n_levels - 1)
+
+
+# ------------------------------------------------------------------ #
+# Residuals / reconstruct_y / fit_metric — all raise
+# ------------------------------------------------------------------ #
+
+
+class TestMultinomialNotImplemented:
+    def test_residuals_raises(self, multinomial_family, multinomial_data):
+        X, y = multinomial_data
+        model = multinomial_family.fit(X, y)
+        with pytest.raises(NotImplementedError, match="not supported"):
+            multinomial_family.residuals(model, X, y)
+
+    def test_reconstruct_y_raises(self, multinomial_family):
+        rng = np.random.default_rng(0)
+        with pytest.raises(NotImplementedError, match="direct_permutation"):
+            multinomial_family.reconstruct_y(np.zeros((1, 5)), np.zeros((1, 5)), rng)
+
+    def test_fit_metric_raises(self, multinomial_family):
+        with pytest.raises(NotImplementedError, match="model_fit_metric"):
+            multinomial_family.fit_metric(np.zeros(5), np.zeros(5))
+
+
+# ------------------------------------------------------------------ #
+# Model-based fit metric (duck-typed)
+# ------------------------------------------------------------------ #
+
+
+class TestMultinomialModelFitMetric:
+    def test_model_fit_metric_positive(self, multinomial_family, multinomial_data):
+        X, y = multinomial_data
+        model = multinomial_family.fit(X, y)
+        metric = multinomial_family.model_fit_metric(model)
+        assert metric > 0  # -2*llf should be positive
+
+    def test_null_fit_metric_positive(self, multinomial_family, multinomial_data):
+        X, y = multinomial_data
+        model = multinomial_family.fit(X, y)
+        null_metric = multinomial_family.null_fit_metric(model)
+        assert null_metric > 0
+
+    def test_null_metric_greater_than_full(self, multinomial_family, multinomial_data):
+        """Null model deviance should be >= full model deviance."""
+        X, y = multinomial_data
+        model = multinomial_family.fit(X, y)
+        full = multinomial_family.model_fit_metric(model)
+        null = multinomial_family.null_fit_metric(model)
+        assert null >= full
+
+    def test_hasattr_duck_typing(self, multinomial_family):
+        """Duck-type detection should find model_fit_metric."""
+        assert hasattr(multinomial_family, "model_fit_metric")
+        assert hasattr(multinomial_family, "null_fit_metric")
+
+
+# ------------------------------------------------------------------ #
+# Diagnostics
+# ------------------------------------------------------------------ #
+
+
+class TestMultinomialDiagnostics:
+    def test_diagnostics_keys(self, multinomial_family, multinomial_data):
+        X, y = multinomial_data
+        diag = multinomial_family.diagnostics(X, y)
+        expected = {
+            "n_observations",
+            "n_features",
+            "n_categories",
+            "category_counts",
+            "pseudo_r_squared",
+            "log_likelihood",
+            "log_likelihood_null",
+            "aic",
+            "bic",
+            "llr_p_value",
+        }
+        assert expected.issubset(diag.keys())
+
+    def test_n_observations(self, multinomial_family, multinomial_data):
+        X, y = multinomial_data
+        diag = multinomial_family.diagnostics(X, y)
+        assert diag["n_observations"] == len(y)
+
+    def test_n_features(self, multinomial_family, multinomial_data):
+        X, y = multinomial_data
+        diag = multinomial_family.diagnostics(X, y)
+        assert diag["n_features"] == X.shape[1]
+
+    def test_n_categories(self, multinomial_family, multinomial_data):
+        X, y = multinomial_data
+        diag = multinomial_family.diagnostics(X, y)
+        assert diag["n_categories"] == len(np.unique(y))
+
+    def test_category_counts_sum(self, multinomial_family, multinomial_data):
+        X, y = multinomial_data
+        diag = multinomial_family.diagnostics(X, y)
+        assert sum(diag["category_counts"].values()) == len(y)
+
+    def test_pseudo_r_squared_range(self, multinomial_family, multinomial_data):
+        X, y = multinomial_data
+        diag = multinomial_family.diagnostics(X, y)
+        assert 0 <= diag["pseudo_r_squared"] <= 1
+
+    def test_log_likelihood_negative(self, multinomial_family, multinomial_data):
+        X, y = multinomial_data
+        diag = multinomial_family.diagnostics(X, y)
+        assert diag["log_likelihood"] < 0
+
+    def test_aic_bic_positive(self, multinomial_family, multinomial_data):
+        X, y = multinomial_data
+        diag = multinomial_family.diagnostics(X, y)
+        assert diag["aic"] > 0
+        assert diag["bic"] > 0
+
+
+# ------------------------------------------------------------------ #
+# Classical p-values
+# ------------------------------------------------------------------ #
+
+
+class TestMultinomialClassicalPValues:
+    def test_shape(self, multinomial_family, multinomial_data):
+        X, y = multinomial_data
+        pvals = multinomial_family.classical_p_values(X, y)
+        assert pvals.shape == (X.shape[1],)
+
+    def test_range(self, multinomial_family, multinomial_data):
+        X, y = multinomial_data
+        pvals = multinomial_family.classical_p_values(X, y)
+        assert np.all(pvals >= 0)
+        assert np.all(pvals <= 1)
+
+
+# ------------------------------------------------------------------ #
+# Exchangeability cells
+# ------------------------------------------------------------------ #
+
+
+class TestMultinomialExchangeabilityCells:
+    def test_returns_none(self, multinomial_family, multinomial_data):
+        X, y = multinomial_data
+        assert multinomial_family.exchangeability_cells(X, y) is None
+
+
+# ------------------------------------------------------------------ #
+# Batch fitting
+# ------------------------------------------------------------------ #
+
+
+class TestMultinomialBatchFit:
+    def test_shape(self, multinomial_family, multinomial_data, rng):
+        X, y = multinomial_data
+        B = 5
+        Y_matrix = np.array([y[rng.permutation(len(y))] for _ in range(B)])
+        coefs = multinomial_family.batch_fit(X, Y_matrix, fit_intercept=True)
+        assert coefs.shape == (B, X.shape[1])
+
+    def test_nonnegative(self, multinomial_family, multinomial_data, rng):
+        """Wald χ² should be non-negative."""
+        X, y = multinomial_data
+        B = 5
+        Y_matrix = np.array([y[rng.permutation(len(y))] for _ in range(B)])
+        coefs = multinomial_family.batch_fit(X, Y_matrix, fit_intercept=True)
+        valid = ~np.isnan(coefs)
+        assert np.all(coefs[valid] >= 0)
+
+    def test_no_all_nan(self, multinomial_family, multinomial_data, rng):
+        """Most permutations should converge."""
+        X, y = multinomial_data
+        B = 10
+        Y_matrix = np.array([y[rng.permutation(len(y))] for _ in range(B)])
+        coefs = multinomial_family.batch_fit(X, Y_matrix, fit_intercept=True)
+        n_valid = np.sum(~np.any(np.isnan(coefs), axis=1))
+        assert n_valid >= B // 2  # at least half should converge
+
+
+class TestMultinomialBatchFitVaryingX:
+    def test_shape(self, multinomial_family, multinomial_data, rng):
+        X, y = multinomial_data
+        n = len(y)
+        B = 5
+        X_batch = np.array([X[rng.permutation(n)] for _ in range(B)])
+        coefs = multinomial_family.batch_fit_varying_X(X_batch, y, fit_intercept=True)
+        assert coefs.shape == (B, X.shape[1])
+
+
+# ------------------------------------------------------------------ #
+# Registry
+# ------------------------------------------------------------------ #
+
+
+class TestMultinomialRegistry:
+    def test_multinomial_registered(self):
+        fam = resolve_family("multinomial", np.array([0.0, 1.0, 2.0]))
+        assert isinstance(fam, MultinomialFamily)
+
+    def test_auto_does_not_resolve_multinomial(self):
+        """Auto-detection should not select multinomial."""
+        y = np.array([0, 1, 2, 0, 1, 2, 0, 1], dtype=float)
+        fam = resolve_family("auto", y)
+        assert isinstance(fam, LinearFamily)

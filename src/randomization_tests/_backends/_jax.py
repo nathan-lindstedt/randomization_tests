@@ -636,6 +636,162 @@ if _CAN_IMPORT_JAX:
         )
         return params_final, converged
 
+    # ---- Multinomial (softmax) helpers -----------------------------
+
+    def _make_multinomial_nll(K: int) -> Callable[..., Any]:
+        """Return JIT-compiled multinomial (softmax) NLL.
+
+        Parameters are packed as a flat vector of length
+        ``(K-1) × p_aug``, reshaped internally to ``(K-1, p_aug)``.
+        Each row corresponds to class k = 1, …, K-1 (vs reference
+        class 0).  K is a compile-time constant captured in the
+        closure.
+
+        The NLL uses ``jax.nn.log_softmax`` for numerical stability
+        (log-sum-exp trick avoids overflow in exp(η)).
+        """
+        Km1 = K - 1
+
+        @jit
+        def _multinomial_nll(
+            params_flat: jnp.ndarray,
+            X: jnp.ndarray,
+            y: jnp.ndarray,
+        ) -> jnp.ndarray:
+            p_aug = X.shape[1]
+            # Reshape flat params → (K-1, p_aug), one row per non-ref class
+            B_mat = params_flat.reshape(Km1, p_aug)  # (K-1, p_aug)
+            # Linear predictors: η_k = X @ β_k for k=1..K-1
+            # Prepend a zero column for reference class 0
+            logits = jnp.concatenate(
+                [jnp.zeros((X.shape[0], 1), dtype=jnp.float64), X @ B_mat.T],
+                axis=1,
+            )  # (n, K)
+            log_probs = jax.nn.log_softmax(logits, axis=1)  # (n, K)
+            y_int = y.astype(jnp.int32)
+            return -jnp.sum(log_probs[jnp.arange(X.shape[0]), y_int])
+
+        return _multinomial_nll
+
+    def _make_multinomial_solver(
+        X: jnp.ndarray,
+        y: jnp.ndarray,
+        K: int,
+        max_iter: int,
+        tol: float,
+        min_damping: float = _MIN_DAMPING,
+    ) -> tuple[jnp.ndarray, jnp.ndarray]:
+        """Newton–Raphson multinomial solve using autodiff.
+
+        Uses ``jax.grad`` and ``jax.hessian`` for exact derivatives
+        of the softmax NLL.  Parameters are a flat vector of length
+        ``(K-1) × p_aug``.
+
+        Returns (params_flat, converged).
+        """
+        p_aug = X.shape[1]
+        n_params = (K - 1) * p_aug
+
+        _nll = _make_multinomial_nll(K)
+        _grad_fn = jit(grad(_nll))
+        _hess_fn = jit(jax.hessian(_nll))
+
+        damping_matrix = min_damping * jnp.eye(n_params, dtype=jnp.float64)
+
+        # Zero initialisation — safe for softmax (uniform probs 1/K)
+        init_params = jnp.zeros(n_params, dtype=jnp.float64)
+
+        init_state = (
+            jnp.array(0),
+            init_params,
+            jnp.array(jnp.inf, dtype=jnp.float64),
+            jnp.array(False),
+        )
+
+        def cond(
+            state: tuple[jax.Array, jax.Array, jax.Array, jax.Array],
+        ) -> jax.Array:
+            i, _params, _nll_val, converged = state
+            return (i < max_iter) & (~converged)
+
+        def body(
+            state: tuple[jax.Array, jax.Array, jax.Array, jax.Array],
+        ) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
+            i, params, nll_prev, _ = state
+
+            g = _grad_fn(params, X, y)
+            H = _hess_fn(params, X, y)
+            H_damped = H + damping_matrix
+            params_new = params - jnp.linalg.solve(H_damped, g)
+
+            nll_new = _nll(params_new, X, y)
+
+            grad_small = jnp.max(jnp.abs(g)) < tol
+            step_small = jnp.max(jnp.abs(params_new - params)) < tol
+            nll_rel = jnp.abs(nll_new - nll_prev) / jnp.maximum(
+                jnp.maximum(jnp.abs(nll_prev), jnp.abs(nll_new)),
+                1.0,
+            )
+            func_small = nll_rel < tol
+
+            converged = (grad_small | step_small | func_small) & jnp.all(
+                jnp.isfinite(params_new)
+            )
+            return (i + 1, params_new, nll_new, converged)
+
+        _, params_final, _nll_final, converged = jax.lax.while_loop(
+            cond, body, init_state
+        )
+        return params_final, converged
+
+    def _make_multinomial_wald_chi2(
+        K: int,
+        p_aug: int,
+        has_intercept: bool,
+    ) -> Callable[..., Any]:
+        """Return a JIT-compiled Wald χ² extractor for multinomial params.
+
+        K, p_aug, and has_intercept are captured as compile-time
+        constants in the closure, avoiding JAX tracing issues with
+        ``jnp.arange`` requiring concrete values.
+
+        The returned function signature is:
+            ``(params_flat, cov) -> wald_chi2``
+
+        For each slope predictor j (intercept excluded), extracts the
+        (K-1)-vector of coefficients across categories and the
+        corresponding (K-1, K-1) covariance sub-block, then computes:
+
+            χ²_j = β_j^T [Var(β_j)]^{-1} β_j
+
+        Returns:
+            A JIT-compiled function ``(params_flat, cov) -> (p_slopes,)``.
+        """
+        Km1 = K - 1
+        start = 1 if has_intercept else 0
+        p_slopes = p_aug - start
+
+        @jit
+        def _wald_chi2(
+            params_flat: jnp.ndarray,
+            cov: jnp.ndarray,
+        ) -> jnp.ndarray:
+            def _wald_one(j_slope: jnp.ndarray) -> jnp.ndarray:
+                j = j_slope + start  # column index in X_aug
+                # Flat indices for this predictor across all K-1 categories
+                idx = jnp.arange(Km1) * p_aug + j
+                beta_j = params_flat[idx]  # (K-1,)
+                cov_j = cov[jnp.ix_(idx, idx)]  # (K-1, K-1)
+                # Wald = β' V^{-1} β
+                return beta_j @ jnp.linalg.solve(  # type: ignore[no-any-return]
+                    cov_j + _MIN_DAMPING * jnp.eye(Km1, dtype=jnp.float64),
+                    beta_j,
+                )
+
+            return vmap(_wald_one)(jnp.arange(p_slopes))  # type: ignore[no-any-return]
+
+        return _wald_chi2
+
 
 def _check_convergence(converged: np.ndarray, max_iter: int) -> None:
     """Emit a single summary warning if any solves did not converge.
@@ -1147,3 +1303,143 @@ class JaxBackend:
         _check_convergence(np.asarray(all_converged), max_iter)
         all_coefs = np.asarray(all_params)[:, :n_features]
         return all_coefs
+
+    # ---- Multinomial (shared X, many Y) --------------------------------
+
+    def batch_multinomial(
+        self,
+        X: np.ndarray,
+        Y_matrix: np.ndarray,
+        fit_intercept: bool = True,
+        **kwargs: Any,
+    ) -> np.ndarray:
+        """Batch multinomial via vmap'd Newton–Raphson with autodiff.
+
+        Shared design matrix *X*, multiple nominal response vectors
+        *Y* (ter Braak direct-permutation path).  Returns per-predictor
+        Wald χ² test statistics rather than raw coefficients.
+
+        Args:
+            X: Design matrix ``(n, p)`` — no intercept column.
+            Y_matrix: Permuted nominal responses ``(B, n)``,
+                integer-coded 0 … K-1.
+            fit_intercept: Prepend intercept column.
+            **kwargs: ``K`` (number of categories, required),
+                ``max_iter`` (default 100), ``tol`` (default
+                :data:`_DEFAULT_TOL`), ``min_damping`` (default
+                :data:`_MIN_DAMPING`).
+
+        Returns:
+            Wald χ² statistics ``(B, p)`` — one scalar per slope
+            predictor per permutation (intercept excluded).
+        """
+        K: int = kwargs["K"]
+        max_iter: int = kwargs.get("max_iter", 100)
+        tol: float = kwargs.get("tol", _DEFAULT_TOL)
+        min_damping: float = kwargs.get("min_damping", _MIN_DAMPING)
+
+        if fit_intercept:
+            ones = np.ones((X.shape[0], 1), dtype=X.dtype)
+            X_aug = np.hstack([ones, X])
+        else:
+            X_aug = X
+
+        X_j = jnp.array(X_aug, dtype=jnp.float64)
+        Y_j = jnp.array(Y_matrix, dtype=jnp.float64)
+        p_aug = X_aug.shape[1]
+        n_params = (K - 1) * p_aug
+
+        _nll = _make_multinomial_nll(K)
+        _hess_fn = jit(jax.hessian(_nll))
+        _wald_fn = _make_multinomial_wald_chi2(K, p_aug, fit_intercept)
+
+        def _solve_one(
+            y_vec: jax.Array,
+        ) -> tuple[jax.Array, jax.Array]:
+            return _make_multinomial_solver(X_j, y_vec, K, max_iter, tol, min_damping)
+
+        all_params, all_converged = jit(vmap(_solve_one))(Y_j)
+        _check_convergence(np.asarray(all_converged), max_iter)
+
+        # Compute Wald χ² per predictor for each permutation.
+        # Each permutation needs its own Hessian (evaluated at its MLE
+        # with its own y vector) to compute the covariance matrix.
+        def _wald_with_y(params_flat: jax.Array, y_vec: jax.Array) -> jax.Array:
+            H = _hess_fn(params_flat, X_j, y_vec)
+            cov = jnp.linalg.inv(
+                H + _MIN_DAMPING * jnp.eye(n_params, dtype=jnp.float64)
+            )
+            return _wald_fn(params_flat, cov)  # type: ignore[no-any-return]
+
+        all_wald = jit(vmap(_wald_with_y))(all_params, Y_j)
+        return np.asarray(all_wald)
+
+    # ---- Multinomial (many X, shared y) --------------------------------
+
+    def batch_multinomial_varying_X(
+        self,
+        X_batch: np.ndarray,
+        y: np.ndarray,
+        fit_intercept: bool = True,
+        **kwargs: Any,
+    ) -> np.ndarray:
+        """Batch multinomial with per-permutation design matrices.
+
+        Kennedy individual multinomial path — each permutation replaces
+        one column of *X* with permuted exposure residuals.
+
+        Args:
+            X_batch: Design matrices ``(B, n, p)`` — no intercept.
+            y: Shared nominal response ``(n,)``, integer-coded
+                0 … K-1.
+            fit_intercept: Prepend intercept column.
+            **kwargs: ``K`` (number of categories, required),
+                ``max_iter`` (default 100), ``tol`` (default
+                :data:`_DEFAULT_TOL`), ``min_damping`` (default
+                :data:`_MIN_DAMPING`).
+
+        Returns:
+            Wald χ² statistics ``(B, p)`` — one scalar per slope
+            predictor per permutation (intercept excluded).
+        """
+        K: int = kwargs["K"]
+        max_iter: int = kwargs.get("max_iter", 100)
+        tol: float = kwargs.get("tol", _DEFAULT_TOL)
+        min_damping: float = kwargs.get("min_damping", _MIN_DAMPING)
+
+        if fit_intercept:
+            B, n, _ = X_batch.shape
+            ones = np.ones((B, n, 1), dtype=X_batch.dtype)
+            X_aug = np.concatenate([ones, X_batch], axis=2)
+        else:
+            X_aug = X_batch
+
+        X_j = jnp.array(X_aug, dtype=jnp.float64)
+        y_j = jnp.array(y, dtype=jnp.float64)
+        p_aug = X_aug.shape[2]
+        n_params = (K - 1) * p_aug
+
+        _nll = _make_multinomial_nll(K)
+        _hess_fn = jit(jax.hessian(_nll))
+        _wald_fn = _make_multinomial_wald_chi2(K, p_aug, fit_intercept)
+
+        def _solve_one(
+            X_single: jax.Array,
+        ) -> tuple[jax.Array, jax.Array]:
+            return _make_multinomial_solver(
+                X_single, y_j, K, max_iter, tol, min_damping
+            )
+
+        all_params, all_converged = jit(vmap(_solve_one))(X_j)
+        _check_convergence(np.asarray(all_converged), max_iter)
+
+        # Compute Wald χ² per predictor — each permutation has its own X
+        def _wald_with_X(params_flat: jax.Array, X_single: jax.Array) -> jax.Array:
+            H = _hess_fn(params_flat, X_single, y_j)
+            cov = jnp.linalg.inv(
+                H + _MIN_DAMPING * jnp.eye(n_params, dtype=jnp.float64)
+            )
+            return _wald_fn(params_flat, cov)  # type: ignore[no-any-return]
+
+        all_wald = jit(vmap(_wald_with_X))(all_params, X_j)
+        return np.asarray(all_wald)

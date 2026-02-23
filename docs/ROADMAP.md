@@ -513,16 +513,87 @@ permutation methods and both backends from the start.
 #### Multinomial logistic regression
 
 - [ ] Extends binary logistic to unordered categorical outcomes with
-  *K* classes, producing *K* − 1 coefficient vectors.
-- [ ] The test statistic becomes a vector (one per contrast) or can be
-  reduced to a scalar via the log-likelihood ratio or deviance.
-- [ ] Table output should support both a stacked all-contrasts view and
-  individual per-contrast tables.
+  *K* classes via a softmax link, producing *K* − 1 coefficient
+  vectors (one per contrast against the reference class, class 0).
+
+##### Test statistic design (Option A — scalar per predictor)
+
+The `ModelFamily` protocol contract requires `coefs()` to return a
+1-D array of shape `(p,)` and `batch_fit()` to return `(B, p)`.
+Rather than breaking this contract for a single family, multinomial
+aggregates its per-category coefficients to a **scalar test statistic
+per predictor** — the likelihood-ratio test (LRT) chi-squared for
+dropping that predictor from the full model.
+
+Rationale:
+
+1. **The hypothesis being tested is scalar.**  Permutation tests
+   answer "does predictor *j* affect the outcome?" — a single
+   question per predictor.  The LRT is the standard, universally
+   accepted reduction (Agresti 2013) that answers exactly this.
+2. **Protocol stability.**  `core.py`, `pvalues.py`, `diagnostics.py`,
+   `IndividualTestResult`, and `JointTestResult` all assume `(p,)`
+   coefficients.  Generalising to `(p, K−1)` would require changes
+   across 4+ modules for one family, violating the Interface
+   Segregation Principle.
+3. **Avoids multiple comparisons.**  Testing *p* × (*K*−1) individual
+   contrast coefficients creates a multiplicity burden the
+   permutation framework is not designed to handle.
+4. **Escape hatch.**  Users who need per-category coefficients can
+   call `family.fit()` and inspect the `MNLogit` result object, or
+   use the convenience method `family.category_coefs(model)` →
+   `(p, K−1)`.
+
+The alternative (Option B — generalise the protocol to multi-equation
+coefficients) was rejected.  It would require ~800+ lines of changes
+across every module that touches coefficients, for a capability that
+serves exactly one family.  If future multi-equation families (e.g.
+multivariate regression, competing risks) emerge, the protocol can
+be revisited at that time under YAGNI.
+
+##### Implementation plan
+
+- [ ] `validate_y`: check unordered categorical (integer-coded, ≥ 3
+  classes).
+- [ ] `fit`: delegates to `statsmodels.MNLogit`; returns fitted result.
+- [ ] `coefs`: LRT chi-squared per predictor (scalar per predictor,
+  shape `(p,)`).
+- [ ] `category_coefs(model)`: convenience method returning the full
+  `(p, K−1)` slope matrix for detailed post-hoc inspection.
+- [ ] `residuals`: deviance residual per observation,
+  `−log p̂(y_i)`, consistent with logistic/count families.
+- [ ] `reconstruct_y`: multinomial sampling from permuted probability
+  vectors via `np.random.choice(K, p=softmax(...))`.
+- [ ] `fit_metric`: deviance (−2 × log-likelihood), scalar, for joint
+  tests.  Same pattern as logistic/Poisson/NegBin.
+- [ ] `direct_permutation = False`: probability-scale residuals are
+  well-defined.  ter Braak permutes Y (class labels) directly;
+  Kennedy/Freedman–Lane permute exposure residuals as usual.
+- [ ] `diagnostics`: log-likelihood, AIC, BIC, pseudo-R², per-class
+  accuracy.
+- [ ] `classical_p_values`: LRT p-values per predictor (matching
+  `coefs()` reduction).
 - [ ] JAX backend required: `batch_multinomial` and
   `batch_multinomial_varying_X` must have JAX Newton–Raphson
-  implementations (autodiff or hand-coded) from day one, with
-  NumPy/statsmodels fallback.  This is a hard constraint — see
-  §Design Notes below.
+  implementations (autodiff via `jax.grad`/`jax.hessian` on softmax
+  cross-entropy NLL) from day one, with NumPy/statsmodels fallback.
+  Zero initialisation is safe (softmax bounds µ).  *K* captured as
+  closure constant (same pattern as ordinal).
+- [ ] NumPy fallback: joblib-parallelised `statsmodels.MNLogit` loop.
+- [ ] Table output: one row per predictor with LRT statistic and
+  permutation p-value.  Per-contrast detail available via
+  `category_coefs()`.
+
+##### Validated prototype results
+
+JAX `jax.grad`/`jax.hessian` autodiff Newton–Raphson solver tested
+against statsmodels `MNLogit`:
+
+- Exact parameter match (max abs difference = 0.0, NLL difference =
+  0.0) for *n*=50, *p*=2, *K*=3.
+- Converges in 5 iterations from zero initialisation.
+- Batch performance: 1,000 permutations in 0.26 s (3,788 perms/sec)
+  for *n*=100, *p*=3, *K*=4 via `jax.vmap`.
 
 ### Step 8 — Sign-flip test
 
@@ -630,6 +701,10 @@ is not installed — it is not the primary implementation.
    - **Cumulative-logit families** (ordinal): `jax.grad` /
      `jax.hessian` autodiff on the NLL, evenly-spaced threshold
      initialisation in [−1, 1].
+   - **Softmax-link families** (multinomial): `jax.grad` /
+     `jax.hessian` autodiff on the cross-entropy NLL, zero
+     initialisation (softmax bounds µ, so β=0 is safe).
+     K captured as closure constant (same pattern as ordinal).
    - **All solvers:** float64, damped Hessian (`1e-8 · I`), triple
      convergence criteria (gradient norm, step size, relative NLL
      change), `jax.lax.while_loop` for dynamic early exit.
@@ -728,6 +803,29 @@ reduced-model fitting logic that currently lives inline in
 - [ ] Performance: the reduced model is fitted once and cached,
   avoiding redundant refits when the same reduced model applies to
   multiple exposure variables.
+
+### Display refactor — family-driven formatting
+
+The current `display.py` uses `if/elif` chains on `model_type`
+strings to format headers and diagnostics tables.  This scales
+poorly — each new family adds branches in three locations
+(`print_results_table`, `print_joint_results_table`, diagnostics
+rendering).  v0.4.0 will move formatting responsibility into the
+`ModelFamily` protocol:
+
+- [ ] `ModelFamily.display_header(diagnostics: dict) -> list[str]` —
+  returns pre-formatted lines for the results table header (R²,
+  deviance, AIC, etc.).
+- [ ] `ModelFamily.display_diagnostics(diagnostics: dict) ->
+  list[tuple[str, str]]` — returns label/value pairs for the
+  extended diagnostics table.
+- [ ] `display.py` becomes family-agnostic: calls the protocol
+  methods and renders whatever the family returns.  No `model_type`
+  branching.
+- [ ] **Deprecation:** `model_type` string-based branches emit
+  `FutureWarning` in v0.4.0, removed in v0.5.0.
+- [ ] Unblocks user-defined families — a custom `ModelFamily` can
+  control its own display output without modifying `display.py`.
 
 ### Exchangeability cells
 
