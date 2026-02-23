@@ -325,19 +325,21 @@ Depends on Step 1 (`ModelFamily.batch_fit()`).
 Depends on Step 3 (family-dispatched core).  New permutation method
 for all existing families.
 
-- [ ] `method="freedman_lane"` (individual) and
+- [X] `method="freedman_lane"` (individual) and
   `method="freedman_lane_joint"` — permutes residuals from the
   **full** model and adds them to fitted values from the **reduced**
   model.  Better power than Kennedy when predictors are correlated
   (Anderson & Legendre 1999; Winkler et al. 2014).  The default
   permutation method in FSL PALM, AFNI, and FreeSurfer.
-- [ ] Shares >90% of the Kennedy codepath — only the residual source
+- [X] Shares >90% of the Kennedy codepath — only the residual source
   and fitted-value base differ.  Reuses `family.residuals()`,
   `family.reconstruct_y()`, and `family.batch_fit()` pipeline.
-- [ ] When `confounders=[]`, Freedman–Lane reduces to ter Braak;
+- [X] When `confounders=[]`, Freedman–Lane reduces to ter Braak;
   a `UserWarning` guides users to the simpler method.
-- [ ] All five methods (ter Braak, Kennedy individual/joint,
+- [X] All five methods (ter Braak, Kennedy individual/joint,
   Freedman–Lane individual/joint) available for every family.
+- [X] Result dicts carry `"family"` and `"backend"` provenance keys
+  alongside the existing `"model_type"` key (Step 17).
 
 ### Step 7 — New GLM families
 
