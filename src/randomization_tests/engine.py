@@ -26,12 +26,6 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
-from statsmodels.tools.sm_exceptions import (
-    ConvergenceWarning as SmConvergenceWarning,
-)
-from statsmodels.tools.sm_exceptions import (
-    PerfectSeparationWarning,
-)
 
 from .families import ModelFamily, resolve_family
 from .permutations import generate_unique_permutations
@@ -141,13 +135,12 @@ class PermutationEngine:
         self.model_coefs: np.ndarray = self.family.coefs(observed_model)
 
         # Model diagnostics — wrapped in try/except for degenerate data.
+        # Each family's diagnostics() method handles its own warning
+        # suppression internally (Step 7a).
         try:
-            with warnings.catch_warnings():
-                warnings.filterwarnings("ignore", category=SmConvergenceWarning)
-                warnings.filterwarnings("ignore", category=PerfectSeparationWarning)
-                self.diagnostics: dict[str, Any] = self.family.diagnostics(
-                    X_np, y_values, fit_intercept
-                )
+            self.diagnostics: dict[str, Any] = self.family.diagnostics(
+                X_np, y_values, fit_intercept
+            )
         except Exception:
             self.diagnostics = {
                 "n_observations": len(y_values),

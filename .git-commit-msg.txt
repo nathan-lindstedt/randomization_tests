@@ -1,17 +1,24 @@
-Step 6: Zero model_type + ModelFamily on results + self-contained display
+Step 7 + 7a: Delete _classical_p_values_fallback, family warning hygiene
 
-- Delete model_type field from IndividualTestResult and JointTestResult
-- Change family field from str to ModelFamily instance on both result classes
-- Add _SERIALIZERS ClassVar registry to _DictAccessMixin; to_dict()
-  composes serializers (family -> family.name) with _numpy_to_python()
-- Add 5 new fields to both result classes: feature_names, target_name,
-  n_permutations, groups, permutation_strategy
-- Make display functions self-contained: print_results_table(results, *,
-  title=...) extracts family/feature_names/target_name from result object
-- Same for print_joint_results_table and print_diagnostics_table
-- compute_standardized_coefs and compute_cooks_distance take
-  family: ModelFamily instead of model_type: str
-- print_confounder_table family param: ModelFamily | None (drop str)
-- Update all 7 test files, 6 example files, API.md, QUICKSTART.md
-- Zero model_type references in src/, tests/, examples/
-- 648 passed, mypy clean, ruff clean
+Step 7 - pvalues.py dead-code removal:
+- Delete _classical_p_values_fallback() (was dead for 4 newer families)
+- Make family parameter required on calculate_p_values()
+- Remove sm, SmConvergenceWarning, PerfectSeparationWarning imports
+- Update module/function docstrings (no more falls-back language)
+- Update test_pvalues.py and test_compat.py to pass family instances
+
+Step 7a - family warning hygiene + engine band-aid removal:
+- LinearFamily.diagnostics(): add RuntimeWarning suppression
+- LogisticFamily.diagnostics(): add SmConvergenceWarning,
+  PerfectSeparationWarning, RuntimeWarning suppression
+- PoissonFamily: add PerfectSeparationWarning to diagnostics(),
+  classical_p_values(), fit()
+- NegativeBinomialFamily: add PerfectSeparationWarning to
+  diagnostics(), classical_p_values(), fit()
+- OrdinalFamily.fit(): add PerfectSeparationWarning
+- MultinomialFamily.fit(): add PerfectSeparationWarning
+- engine.py: remove warnings.catch_warnings() wrapper around
+  family.diagnostics() and dead warning imports
+
+Every family is now self-contained for warning suppression.
+648 tests pass, mypy + ruff clean.

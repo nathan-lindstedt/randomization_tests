@@ -28,15 +28,10 @@ This ensures:
 
 Classical (asymptotic) p-values
 -------------------------------
-When a ``ModelFamily`` instance is supplied, classical p-values are
-delegated to ``family.classical_p_values()``, which internally uses
-statsmodels (``OLS`` for linear, ``Logit`` for logistic).  This avoids
-re-detecting the outcome type and re-fitting the model.
-
-When no family is supplied (backward-compatible call), the function
-falls back to auto-detecting binary vs. continuous Y and fitting
-statsmodels directly — this path is retained for standalone use and
-test convenience.
+Classical p-values are delegated to ``family.classical_p_values()``,
+which internally uses statsmodels (``OLS`` for linear, ``Logit`` for
+logistic, etc.).  This avoids re-detecting the outcome type and
+re-fitting the model.
 
 Reference:
     Phipson, B. & Smyth, G. K. (2010). Permutation p-values should
@@ -47,17 +42,9 @@ Reference:
 
 from __future__ import annotations
 
-import warnings
 from typing import TYPE_CHECKING
 
 import numpy as np
-import statsmodels.api as sm
-from statsmodels.tools.sm_exceptions import (
-    ConvergenceWarning as SmConvergenceWarning,
-)
-from statsmodels.tools.sm_exceptions import (
-    PerfectSeparationWarning,
-)
 
 from ._compat import DataFrameLike, _ensure_pandas_df
 
@@ -75,13 +62,11 @@ def calculate_p_values(
     p_value_threshold_two: float = 0.01,
     fit_intercept: bool = True,
     *,
-    family: ModelFamily | None = None,
+    family: ModelFamily,
 ) -> tuple[list[str], list[str], np.ndarray, np.ndarray]:
     """Calculate empirical (permutation) and classical (asymptotic) p-values.
 
-    When *family* is provided, classical p-values are delegated to
-    ``family.classical_p_values()``.  Otherwise, falls back to
-    auto-detecting binary vs. continuous outcomes.
+    Classical p-values are delegated to ``family.classical_p_values()``.
 
     The empirical p-values use the Phipson & Smyth (2010) correction:
     ``p = (b + 1) / (B + 1)`` where *b* is the count of permuted
@@ -105,10 +90,8 @@ def calculate_p_values(
             element of the resulting p-value array is skipped.  When
             False, the raw design matrix is used directly and all
             returned p-values correspond to the features.
-        family: Optional ``ModelFamily`` instance.  When provided,
-            classical p-values are computed via
-            ``family.classical_p_values()`` instead of re-fitting
-            statsmodels internally.
+        family: ``ModelFamily`` instance used to compute classical
+            p-values via ``family.classical_p_values()``.
 
     Returns:
         A four-element tuple
@@ -127,18 +110,9 @@ def calculate_p_values(
     y_values = np.ravel(y)
 
     # --- Classical asymptotic p-values ---
-    # Prefer the family's classical_p_values() when available — it
-    # already encapsulates the correct statsmodels model and warning
-    # suppression.  Fall back to auto-detection for standalone calls
-    # (e.g. from tests that don't construct a family).
-    if family is not None:
-        raw_classic_p = family.classical_p_values(
-            np.asarray(X), y_values, fit_intercept
-        )
-    else:
-        raw_classic_p = _classical_p_values_fallback(
-            np.asarray(X), y_values, fit_intercept
-        )
+    # Delegate to the family's classical_p_values() method, which
+    # encapsulates the correct statsmodels model and warning suppression.
+    raw_classic_p = family.classical_p_values(np.asarray(X), y_values, fit_intercept)
 
     # --- Vectorised empirical p-values (Phipson & Smyth correction) ---
     # For each feature j, count how many of the B permuted |β*_j| values
@@ -175,42 +149,3 @@ def calculate_p_values(
     classic_p_values = [_fmt(p) for p in raw_classic_p]
 
     return permuted_p_values, classic_p_values, raw_p, raw_classic_p
-
-
-# ------------------------------------------------------------------ #
-# Fallback: auto-detect binary vs. continuous and fit statsmodels
-# ------------------------------------------------------------------ #
-
-
-def _classical_p_values_fallback(
-    X: np.ndarray,
-    y_values: np.ndarray,
-    fit_intercept: bool,
-) -> np.ndarray:
-    """Compute classical p-values without a ``ModelFamily`` instance.
-
-    Auto-detects binary (logistic) vs. continuous (OLS) outcomes and
-    fits the appropriate statsmodels model.  Used when
-    ``calculate_p_values`` is called without a ``family`` argument
-    (e.g. from standalone tests).
-    """
-    unique_y = np.unique(y_values)  # sorted distinct response values
-    is_binary = (len(unique_y) == 2) and np.all(
-        np.isin(unique_y, [0, 1])
-    )  # True iff y ∈ {0, 1}
-
-    X_sm = (
-        sm.add_constant(X) if fit_intercept else np.asarray(X)
-    )  # design matrix with optional intercept
-    with warnings.catch_warnings():
-        warnings.filterwarnings("ignore", category=SmConvergenceWarning)
-        warnings.filterwarnings("ignore", category=PerfectSeparationWarning)
-        if is_binary:
-            sm_model = sm.Logit(y_values, X_sm).fit(disp=0)  # MLE logistic regression
-        else:
-            sm_model = sm.OLS(y_values, X_sm).fit()  # OLS linear regression
-
-    # Strip the intercept p-value (index 0) when an intercept is present,
-    # so the returned array has shape (p,) matching the feature columns.
-    pvals = sm_model.pvalues[1:] if fit_intercept else sm_model.pvalues  # shape (p,)
-    return np.asarray(pvals)

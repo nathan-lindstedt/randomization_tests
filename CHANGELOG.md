@@ -9,6 +9,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`_classical_p_values_fallback` removal + family warning hygiene (Step 7 + 7a):**
+  Deleted the dead `_classical_p_values_fallback()` function from
+  `pvalues.py`.  `family` parameter on `calculate_p_values()` changed
+  from `ModelFamily | None = None` to required `ModelFamily`.
+  Removed `statsmodels` imports (`sm`, `SmConvergenceWarning`,
+  `PerfectSeparationWarning`) that were only used by the fallback.
+  Updated module and function docstrings to remove "backward-compatible
+  call" / "falls back" language.
+- **Family warning hygiene (7a rider):**  Normalised
+  `warnings.catch_warnings()` suppression across all 6 families'
+  `diagnostics()`, `classical_p_values()`, and `fit()` methods.
+  `LinearFamily.diagnostics()` now suppresses `RuntimeWarning`;
+  `LogisticFamily.diagnostics()` now suppresses
+  `SmConvergenceWarning`, `PerfectSeparationWarning`, `RuntimeWarning`;
+  `PoissonFamily` and `NegativeBinomialFamily` methods now suppress
+  `PerfectSeparationWarning` in addition to existing warnings;
+  `OrdinalFamily.fit()` and `MultinomialFamily.fit()` now suppress
+  `PerfectSeparationWarning` in addition to existing warnings.
+  Removed the belt-and-suspenders `warnings.catch_warnings()` block
+  from `engine.py` (wrapping `self.family.diagnostics()`), along with
+  the `SmConvergenceWarning`/`PerfectSeparationWarning` imports.
+  Every family is now self-contained for warning suppression.
 - **`model_type` removal + self-contained display (Step 6):**
   `model_type` field deleted from both `IndividualTestResult` and
   `JointTestResult`.  `family` field changed from `str` to

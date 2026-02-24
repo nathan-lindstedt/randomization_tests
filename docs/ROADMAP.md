@@ -427,6 +427,16 @@ type safety, dead-code removal, and test coverage.
   zero live imports from any source file.
 - [X] Removed stale `import statsmodels.api as sm` and 25-line JAX
   comment block from `core.py` imports.
+- [X] Deleted `_classical_p_values_fallback()` from `pvalues.py` —
+  all callers now pass a `ModelFamily` instance.  `family` parameter
+  on `calculate_p_values()` changed from optional to required.
+  Removed dead `sm`, `SmConvergenceWarning`, and
+  `PerfectSeparationWarning` imports.
+- [X] Normalised warning suppression across all 6 families'
+  `diagnostics()`, `classical_p_values()`, and `fit()` methods.
+  Removed belt-and-suspenders `warnings.catch_warnings()` block
+  from `engine.py` and its `SmConvergenceWarning`/
+  `PerfectSeparationWarning` imports.
 
 #### Parallelisation honesty
 

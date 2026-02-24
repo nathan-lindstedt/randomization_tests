@@ -949,7 +949,11 @@ class LinearFamily:
         """
         # statsmodels requires an explicit intercept column.
         X_sm = sm.add_constant(X) if fit_intercept else np.asarray(X)
-        sm_model = sm.OLS(y, X_sm).fit()
+        with warnings.catch_warnings():
+            # Near-singular X'X can trigger floating-point warnings;
+            # suppress because the user relies on permutation p-values.
+            warnings.filterwarnings("ignore", category=RuntimeWarning)
+            sm_model = sm.OLS(y, X_sm).fit()
         return {
             "n_observations": len(y),
             "n_features": X.shape[1],
@@ -1458,9 +1462,16 @@ class LogisticFamily:
         sklearn's ``LogisticRegression(fit_intercept=True)``.
         """
         X_sm = sm.add_constant(X) if fit_intercept else np.asarray(X)
-        # disp=0 suppresses the iteration log that statsmodels prints
-        # by default for iterative MLE solvers.
-        sm_model = sm.Logit(y, X_sm).fit(disp=0)
+        with warnings.catch_warnings():
+            # Quasi-complete separation can trigger convergence and
+            # separation warnings; suppress because the user relies
+            # on permutation p-values, not asymptotic diagnostics.
+            warnings.filterwarnings("ignore", category=SmConvergenceWarning)
+            warnings.filterwarnings("ignore", category=PerfectSeparationWarning)
+            warnings.filterwarnings("ignore", category=RuntimeWarning)
+            # disp=0 suppresses the iteration log that statsmodels
+            # prints by default for iterative MLE solvers.
+            sm_model = sm.Logit(y, X_sm).fit(disp=0)
         return {
             "n_observations": len(y),
             "n_features": X.shape[1],
@@ -1820,6 +1831,7 @@ class PoissonFamily:
         X_sm = sm.add_constant(X) if fit_intercept else np.asarray(X)
         with warnings.catch_warnings():
             warnings.filterwarnings("ignore", category=SmConvergenceWarning)
+            warnings.filterwarnings("ignore", category=PerfectSeparationWarning)
             warnings.filterwarnings("ignore", category=RuntimeWarning)
             model = sm.GLM(y, X_sm, family=sm.families.Poisson()).fit(disp=0)
         return model
@@ -2009,6 +2021,7 @@ class PoissonFamily:
         X_sm = sm.add_constant(X) if fit_intercept else np.asarray(X)
         with warnings.catch_warnings():
             warnings.filterwarnings("ignore", category=SmConvergenceWarning)
+            warnings.filterwarnings("ignore", category=PerfectSeparationWarning)
             warnings.filterwarnings("ignore", category=RuntimeWarning)
             sm_model = sm.GLM(y, X_sm, family=sm.families.Poisson()).fit(disp=0)
         pearson_chi2 = float(sm_model.pearson_chi2)  # Σ (yᵢ − μ̂ᵢ)² / μ̂ᵢ
@@ -2042,6 +2055,7 @@ class PoissonFamily:
         X_sm = sm.add_constant(X) if fit_intercept else np.asarray(X)
         with warnings.catch_warnings():
             warnings.filterwarnings("ignore", category=SmConvergenceWarning)
+            warnings.filterwarnings("ignore", category=PerfectSeparationWarning)
             warnings.filterwarnings("ignore", category=RuntimeWarning)
             sm_model = sm.GLM(y, X_sm, family=sm.families.Poisson()).fit(disp=0)
         pvals = sm_model.pvalues[1:] if fit_intercept else sm_model.pvalues
@@ -2437,6 +2451,7 @@ class NegativeBinomialFamily:
         X_sm = sm.add_constant(X) if fit_intercept else np.asarray(X)
         with warnings.catch_warnings():
             warnings.filterwarnings("ignore", category=SmConvergenceWarning)
+            warnings.filterwarnings("ignore", category=PerfectSeparationWarning)
             warnings.filterwarnings("ignore", category=RuntimeWarning)
             model = sm.GLM(y, X_sm, family=self._nb_family(alpha)).fit(disp=0)
         return model
@@ -2573,6 +2588,7 @@ class NegativeBinomialFamily:
         X_sm = sm.add_constant(X) if fit_intercept else np.asarray(X)
         with warnings.catch_warnings():
             warnings.filterwarnings("ignore", category=SmConvergenceWarning)
+            warnings.filterwarnings("ignore", category=PerfectSeparationWarning)
             warnings.filterwarnings("ignore", category=RuntimeWarning)
             sm_model = sm.GLM(y, X_sm, family=self._nb_family(alpha)).fit(disp=0)
         pearson_chi2 = float(sm_model.pearson_chi2)  # Σ (yᵢ − μ̂ᵢ)² / Var(μ̂ᵢ)
@@ -2606,6 +2622,7 @@ class NegativeBinomialFamily:
         X_sm = sm.add_constant(X) if fit_intercept else np.asarray(X)
         with warnings.catch_warnings():
             warnings.filterwarnings("ignore", category=SmConvergenceWarning)
+            warnings.filterwarnings("ignore", category=PerfectSeparationWarning)
             warnings.filterwarnings("ignore", category=RuntimeWarning)
             sm_model = sm.GLM(y, X_sm, family=self._nb_family(alpha)).fit(disp=0)
         pvals = sm_model.pvalues[1:] if fit_intercept else sm_model.pvalues
@@ -2967,6 +2984,7 @@ class OrdinalFamily:
         y_arr = np.asarray(y)
         with warnings.catch_warnings():
             warnings.filterwarnings("ignore", category=SmConvergenceWarning)
+            warnings.filterwarnings("ignore", category=PerfectSeparationWarning)
             warnings.filterwarnings("ignore", category=HessianInversionWarning)
             warnings.filterwarnings("ignore", category=RuntimeWarning)
             model = OrderedModel(y_arr, X_arr, distr="logit").fit(disp=0, method="bfgs")
@@ -3538,6 +3556,7 @@ class MultinomialFamily:
         y_arr = np.asarray(y)
         with warnings.catch_warnings():
             warnings.filterwarnings("ignore", category=SmConvergenceWarning)
+            warnings.filterwarnings("ignore", category=PerfectSeparationWarning)
             warnings.filterwarnings("ignore", category=HessianInversionWarning)
             warnings.filterwarnings("ignore", category=RuntimeWarning)
             model = MNLogit(y_arr, X_sm).fit(disp=0, maxiter=200)
