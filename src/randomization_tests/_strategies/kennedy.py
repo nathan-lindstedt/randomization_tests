@@ -22,6 +22,8 @@ import numpy as np
 import pandas as pd
 from sklearn.linear_model import LinearRegression
 
+from ..families import fit_reduced
+
 if TYPE_CHECKING:
     from ..families import ModelFamily
 
@@ -164,38 +166,19 @@ class KennedyJointStrategy:
         else:
             Z = np.zeros((n, 0))
 
-        # Duck-typed model-metric dispatch for ordinal/multinomial.
-        _uses_model_metric = hasattr(family, "model_fit_metric")
-
         # --- Reduced model (confounders only) ---
-        if Z.shape[1] > 0:
-            reduced_model = family.fit(Z, y_values, fit_intercept)
-            if _uses_model_metric:
-                base_metric = family.model_fit_metric(reduced_model)  # type: ignore[attr-defined]
-            else:
-                preds_reduced = family.predict(reduced_model, Z)
-                base_metric = family.fit_metric(y_values, preds_reduced)
+        reduced_model, _ = fit_reduced(family, Z, y_values, fit_intercept)
+        if reduced_model is not None:
+            base_metric = family.score(reduced_model, Z, y_values)
         else:
-            if not _uses_model_metric:
-                if fit_intercept:
-                    preds_reduced = np.full(n, np.mean(y_values), dtype=float)
-                else:
-                    preds_reduced = np.zeros(n, dtype=float)
-                base_metric = family.fit_metric(y_values, preds_reduced)
+            base_metric = family.null_score(y_values, fit_intercept)
 
         # --- Full model (all features) ---
         full_features = np.hstack([X_target, Z]) if Z.shape[1] > 0 else X_target
         full_model = family.fit(full_features, y_values, fit_intercept)
-
-        if _uses_model_metric:
-            if Z.shape[1] == 0:
-                base_metric = family.null_fit_metric(full_model)  # type: ignore[attr-defined]
-            obs_improvement = (
-                base_metric - family.model_fit_metric(full_model)  # type: ignore[attr-defined]
-            )
-        else:
-            preds_full = family.predict(full_model, full_features)
-            obs_improvement = base_metric - family.fit_metric(y_values, preds_full)
+        obs_improvement = base_metric - family.score(
+            full_model, full_features, y_values
+        )
 
         # --- Exposure model residuals ---
         if Z.shape[1] > 0:
@@ -213,12 +196,9 @@ class KennedyJointStrategy:
             x_star = x_hat + x_resids[idx]
             perm_features = np.hstack([x_star, Z]) if Z.shape[1] > 0 else x_star
             perm_model = family.fit(perm_features, y_values, fit_intercept)
-            if _uses_model_metric:
-                return float(
-                    base_metric - family.model_fit_metric(perm_model)  # type: ignore[attr-defined]
-                )
-            perm_preds = family.predict(perm_model, perm_features)
-            return float(base_metric - family.fit_metric(y_values, perm_preds))
+            return float(
+                base_metric - family.score(perm_model, perm_features, y_values)
+            )
 
         if n_jobs == 1:
             perm_improvements = np.zeros(n_perm)

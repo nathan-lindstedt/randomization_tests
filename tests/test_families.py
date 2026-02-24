@@ -13,6 +13,7 @@ from randomization_tests.families import (
     NegativeBinomialFamily,
     OrdinalFamily,
     PoissonFamily,
+    fit_reduced,
     register_family,
     resolve_family,
 )
@@ -1610,46 +1611,48 @@ class TestOrdinalNotImplemented:
             ordinal_family.reconstruct_y(np.zeros((1, 5)), np.zeros((1, 5)), rng)
 
     def test_fit_metric_raises(self, ordinal_family):
-        with pytest.raises(NotImplementedError, match="model_fit_metric"):
+        with pytest.raises(NotImplementedError, match="score"):
             ordinal_family.fit_metric(np.zeros(5), np.zeros(5))
 
 
 # ------------------------------------------------------------------ #
-# Model-based fit metric (duck-typed)
+# score() / null_score()
 # ------------------------------------------------------------------ #
 
 
-class TestOrdinalModelFitMetric:
-    def test_model_fit_metric_positive(self, ordinal_family, ordinal_data):
+class TestOrdinalScoreAndNullScore:
+    def test_score_positive(self, ordinal_family, ordinal_data):
         X, y = ordinal_data
         model = ordinal_family.fit(X, y)
-        metric = ordinal_family.model_fit_metric(model)
+        metric = ordinal_family.score(model, X, y)
         assert metric > 0  # -2*llf should be positive
 
-    def test_null_fit_metric_positive(self, ordinal_family, ordinal_data):
+    def test_score_equals_neg2_llf(self, ordinal_family, ordinal_data):
         X, y = ordinal_data
         model = ordinal_family.fit(X, y)
-        null_metric = ordinal_family.null_fit_metric(model)
+        assert ordinal_family.score(model, X, y) == pytest.approx(
+            -2.0 * float(model.llf)
+        )
+
+    def test_null_score_positive(self, ordinal_family, ordinal_data):
+        _, y = ordinal_data
+        null_metric = ordinal_family.null_score(y)
         assert null_metric > 0
 
-    def test_null_metric_greater_than_full(self, ordinal_family, ordinal_data):
+    def test_null_score_matches_statsmodels_llnull(self, ordinal_family, ordinal_data):
+        """Validate against statsmodels' independent llnull computation."""
+        X, y = ordinal_data
+        model = ordinal_family.fit(X, y)
+        expected = -2.0 * float(model.llnull)
+        assert ordinal_family.null_score(y) == pytest.approx(expected, rel=1e-6)
+
+    def test_null_score_greater_than_full(self, ordinal_family, ordinal_data):
         """Null model deviance should be >= full model deviance."""
         X, y = ordinal_data
         model = ordinal_family.fit(X, y)
-        full = ordinal_family.model_fit_metric(model)
-        null = ordinal_family.null_fit_metric(model)
+        full = ordinal_family.score(model, X, y)
+        null = ordinal_family.null_score(y)
         assert null >= full
-
-    def test_hasattr_duck_typing(self, ordinal_family):
-        """Duck-type detection should find model_fit_metric."""
-        assert hasattr(ordinal_family, "model_fit_metric")
-        assert hasattr(ordinal_family, "null_fit_metric")
-
-    def test_other_families_lack_model_fit_metric(self):
-        """Other families should NOT have model_fit_metric."""
-        assert not hasattr(LinearFamily(), "model_fit_metric")
-        assert not hasattr(LogisticFamily(), "model_fit_metric")
-        assert not hasattr(PoissonFamily(), "model_fit_metric")
 
 
 # ------------------------------------------------------------------ #
@@ -1959,40 +1962,50 @@ class TestMultinomialNotImplemented:
             multinomial_family.reconstruct_y(np.zeros((1, 5)), np.zeros((1, 5)), rng)
 
     def test_fit_metric_raises(self, multinomial_family):
-        with pytest.raises(NotImplementedError, match="model_fit_metric"):
+        with pytest.raises(NotImplementedError, match="score"):
             multinomial_family.fit_metric(np.zeros(5), np.zeros(5))
 
 
 # ------------------------------------------------------------------ #
-# Model-based fit metric (duck-typed)
+# score() / null_score()
 # ------------------------------------------------------------------ #
 
 
-class TestMultinomialModelFitMetric:
-    def test_model_fit_metric_positive(self, multinomial_family, multinomial_data):
+class TestMultinomialScoreAndNullScore:
+    def test_score_positive(self, multinomial_family, multinomial_data):
         X, y = multinomial_data
         model = multinomial_family.fit(X, y)
-        metric = multinomial_family.model_fit_metric(model)
+        metric = multinomial_family.score(model, X, y)
         assert metric > 0  # -2*llf should be positive
 
-    def test_null_fit_metric_positive(self, multinomial_family, multinomial_data):
+    def test_score_equals_neg2_llf(self, multinomial_family, multinomial_data):
         X, y = multinomial_data
         model = multinomial_family.fit(X, y)
-        null_metric = multinomial_family.null_fit_metric(model)
+        assert multinomial_family.score(model, X, y) == pytest.approx(
+            -2.0 * float(model.llf)
+        )
+
+    def test_null_score_positive(self, multinomial_family, multinomial_data):
+        _, y = multinomial_data
+        null_metric = multinomial_family.null_score(y)
         assert null_metric > 0
 
-    def test_null_metric_greater_than_full(self, multinomial_family, multinomial_data):
+    def test_null_score_matches_statsmodels_llnull(
+        self, multinomial_family, multinomial_data
+    ):
+        """Validate against statsmodels' independent llnull computation."""
+        X, y = multinomial_data
+        model = multinomial_family.fit(X, y)
+        expected = -2.0 * float(model.llnull)
+        assert multinomial_family.null_score(y) == pytest.approx(expected, rel=1e-6)
+
+    def test_null_score_greater_than_full(self, multinomial_family, multinomial_data):
         """Null model deviance should be >= full model deviance."""
         X, y = multinomial_data
         model = multinomial_family.fit(X, y)
-        full = multinomial_family.model_fit_metric(model)
-        null = multinomial_family.null_fit_metric(model)
+        full = multinomial_family.score(model, X, y)
+        null = multinomial_family.null_score(y)
         assert null >= full
-
-    def test_hasattr_duck_typing(self, multinomial_family):
-        """Duck-type detection should find model_fit_metric."""
-        assert hasattr(multinomial_family, "model_fit_metric")
-        assert hasattr(multinomial_family, "null_fit_metric")
 
 
 # ------------------------------------------------------------------ #
@@ -2142,3 +2155,196 @@ class TestMultinomialRegistry:
         with pytest.warns(UserWarning, match="looks like count data"):
             fam = resolve_family("auto", y)
         assert isinstance(fam, LinearFamily)
+
+
+# ------------------------------------------------------------------ #
+# fit_reduced()
+# ------------------------------------------------------------------ #
+
+
+class TestFitReduced:
+    """Tests for the module-level fit_reduced() utility."""
+
+    def test_linear_with_confounders(self, rng):
+        """Multi-column Z returns a fitted model and predictions."""
+        n = 50
+        Z = rng.standard_normal((n, 2))
+        y = Z @ [1.5, -0.5] + rng.standard_normal(n) * 0.5
+        family = LinearFamily()
+        model, preds = fit_reduced(family, Z, y, fit_intercept=True)
+        assert model is not None
+        assert preds.shape == (n,)
+        # Predictions should match family.predict.
+        np.testing.assert_allclose(preds, family.predict(model, Z))
+
+    def test_logistic_with_confounders(self, rng):
+        """Logistic family + multi-column Z."""
+        n = 80
+        Z = rng.standard_normal((n, 2))
+        prob = 1 / (1 + np.exp(-(Z @ [0.8, -0.3])))
+        y = rng.binomial(1, prob).astype(float)
+        family = LogisticFamily()
+        model, preds = fit_reduced(family, Z, y, fit_intercept=True)
+        assert model is not None
+        assert preds.shape == (n,)
+
+    def test_zero_columns_intercept(self, rng):
+        """Zero-column Z with fit_intercept=True → mean(y) predictions."""
+        n = 40
+        y = rng.standard_normal(n)
+        Z = np.zeros((n, 0))
+        family = LinearFamily()
+        model, preds = fit_reduced(family, Z, y, fit_intercept=True)
+        assert model is None
+        np.testing.assert_allclose(preds, np.full(n, y.mean()))
+
+    def test_zero_columns_no_intercept(self, rng):
+        """Zero-column Z with fit_intercept=False → zero predictions."""
+        n = 40
+        y = rng.standard_normal(n)
+        Z = np.zeros((n, 0))
+        family = LinearFamily()
+        model, preds = fit_reduced(family, Z, y, fit_intercept=False)
+        assert model is None
+        np.testing.assert_allclose(preds, np.zeros(n))
+
+
+# ------------------------------------------------------------------ #
+# score()
+# ------------------------------------------------------------------ #
+
+
+class TestScore:
+    """Tests for the score() protocol method on all families."""
+
+    def test_linear_score_matches_fit_metric(self, rng):
+        n = 60
+        X = rng.standard_normal((n, 3))
+        y = X @ [2.0, -1.0, 0.5] + rng.standard_normal(n) * 0.3
+        family = LinearFamily()
+        model = family.fit(X, y, fit_intercept=True)
+        expected = family.fit_metric(y, family.predict(model, X))
+        assert family.score(model, X, y) == pytest.approx(expected)
+
+    def test_logistic_score_matches_fit_metric(self, rng):
+        n = 80
+        X = rng.standard_normal((n, 2))
+        prob = 1 / (1 + np.exp(-(X @ [1.0, -0.5])))
+        y = rng.binomial(1, prob).astype(float)
+        family = LogisticFamily()
+        model = family.fit(X, y, fit_intercept=True)
+        expected = family.fit_metric(y, family.predict(model, X))
+        assert family.score(model, X, y) == pytest.approx(expected)
+
+    def test_poisson_score_matches_fit_metric(self, rng):
+        n = 80
+        X = rng.standard_normal((n, 2))
+        mu = np.exp(X @ [0.5, -0.3])
+        y = rng.poisson(lam=mu).astype(float)
+        family = PoissonFamily()
+        model = family.fit(X, y, fit_intercept=True)
+        expected = family.fit_metric(y, family.predict(model, X))
+        assert family.score(model, X, y) == pytest.approx(expected)
+
+    def test_negative_binomial_score_matches_fit_metric(self, rng):
+        n = 80
+        X = rng.standard_normal((n, 2))
+        mu = np.exp(X @ [0.5, -0.3])
+        y = rng.poisson(lam=mu).astype(float)
+        family = NegativeBinomialFamily(alpha=1.0)
+        model = family.fit(X, y, fit_intercept=True)
+        expected = family.fit_metric(y, family.predict(model, X))
+        assert family.score(model, X, y) == pytest.approx(expected)
+
+    def test_ordinal_score_returns_neg2_llf(self, rng):
+        n = 100
+        X = rng.standard_normal((n, 2))
+        y = np.digitize(X @ [1.0, 0.5] + rng.standard_normal(n), [-1, 0, 1]).astype(
+            float
+        )
+        family = OrdinalFamily()
+        model = family.fit(X, y, fit_intercept=True)
+        assert family.score(model, X, y) == pytest.approx(-2.0 * float(model.llf))
+
+    def test_multinomial_score_returns_neg2_llf(self, rng):
+        n = 120
+        X = rng.standard_normal((n, 2))
+        y = np.digitize(X @ [1.0, 0.5] + rng.standard_normal(n), [-1, 0, 1]).astype(
+            float
+        )
+        family = MultinomialFamily()
+        model = family.fit(X, y, fit_intercept=True)
+        assert family.score(model, X, y) == pytest.approx(-2.0 * float(model.llf))
+
+
+# ------------------------------------------------------------------ #
+# null_score()
+# ------------------------------------------------------------------ #
+
+
+class TestNullScore:
+    """Tests for the null_score() protocol method on all families."""
+
+    def test_linear_null_score_matches_fit_metric(self, rng):
+        n = 60
+        y = rng.standard_normal(n) * 2.0 + 5.0
+        family = LinearFamily()
+        expected = family.fit_metric(y, np.full(n, y.mean()))
+        assert family.null_score(y, fit_intercept=True) == pytest.approx(expected)
+
+    def test_logistic_null_score_matches_fit_metric(self, rng):
+        n = 80
+        y = rng.binomial(1, 0.3, size=n).astype(float)
+        family = LogisticFamily()
+        expected = family.fit_metric(y, np.full(n, y.mean()))
+        assert family.null_score(y, fit_intercept=True) == pytest.approx(expected)
+
+    def test_poisson_null_score_matches_fit_metric(self, rng):
+        n = 80
+        y = rng.poisson(lam=3.0, size=n).astype(float)
+        family = PoissonFamily()
+        expected = family.fit_metric(y, np.full(n, y.mean()))
+        assert family.null_score(y, fit_intercept=True) == pytest.approx(expected)
+
+    def test_negative_binomial_null_score_matches_fit_metric(self, rng):
+        n = 80
+        y = rng.poisson(lam=3.0, size=n).astype(float)
+        family = NegativeBinomialFamily(alpha=1.0)
+        expected = family.fit_metric(y, np.full(n, y.mean()))
+        assert family.null_score(y, fit_intercept=True) == pytest.approx(expected)
+
+    def test_ordinal_null_score_is_finite_and_positive(self, rng):
+        n = 100
+        X = rng.standard_normal((n, 2))
+        y = np.digitize(X @ [1.0, 0.5] + rng.standard_normal(n), [-1, 0, 1]).astype(
+            float
+        )
+        family = OrdinalFamily()
+        ns = family.null_score(y, fit_intercept=True)
+        assert np.isfinite(ns)
+        assert ns > 0
+        # Null score should be >= fitted model score (null is worse).
+        model = family.fit(X, y, fit_intercept=True)
+        assert ns >= family.score(model, X, y) - 1e-6
+
+    def test_multinomial_null_score_is_finite_and_positive(self, rng):
+        n = 120
+        X = rng.standard_normal((n, 2))
+        y = np.digitize(X @ [1.0, 0.5] + rng.standard_normal(n), [-1, 0, 1]).astype(
+            float
+        )
+        family = MultinomialFamily()
+        ns = family.null_score(y, fit_intercept=True)
+        assert np.isfinite(ns)
+        assert ns > 0
+        # Null score should be >= fitted model score (null is worse).
+        model = family.fit(X, y, fit_intercept=True)
+        assert ns >= family.score(model, X, y) - 1e-6
+
+    def test_linear_null_score_no_intercept(self, rng):
+        """fit_intercept=False → zero predictions."""
+        n = 60
+        y = rng.standard_normal(n) * 2.0 + 5.0
+        family = LinearFamily()
+        expected = family.fit_metric(y, np.zeros(n))
+        assert family.null_score(y, fit_intercept=False) == pytest.approx(expected)

@@ -228,6 +228,51 @@ class ModelFamily(Protocol):
         """
         ...
 
+    def score(self, model: Any, X: np.ndarray, y: np.ndarray) -> float:
+        """Goodness-of-fit metric from a fitted model object.
+
+        Unlike ``fit_metric`` (which takes predictions), ``score``
+        takes the opaque model object and computes the metric
+        internally.  Prediction-based families delegate to
+        ``self.fit_metric(y, self.predict(model, X))``; model-object
+        families (ordinal, multinomial) extract the log-likelihood
+        directly: ``-2 * model.llf``.
+
+        Lower is better — the joint test statistic
+        (reduced - full) is positive when the features improve fit.
+
+        Args:
+            model: A fitted model object returned by ``fit``.
+            X: Design matrix of shape ``(n, p)``.
+            y: Observed response vector of shape ``(n,)``.
+
+        Returns:
+            Scalar fit metric.
+        """
+        ...
+
+    def null_score(self, y: np.ndarray, fit_intercept: bool = True) -> float:
+        """Null-model (intercept-only) baseline metric.
+
+        Prediction-based families compute
+        ``fit_metric(y, full(n, mean(y)))`` (or zeros when
+        ``fit_intercept=False``).  Model-object families fit an
+        intercept-only model and return ``-2 * llf``.
+
+        This replaces the ``null_fit_metric(model)`` duck-typed
+        method and the deferred-assignment pattern in Kennedy joint.
+
+        Lower is better.
+
+        Args:
+            y: Observed response vector of shape ``(n,)``.
+            fit_intercept: Whether the model includes an intercept.
+
+        Returns:
+            Scalar null-model metric.
+        """
+        ...
+
     def diagnostics(
         self,
         X: np.ndarray,
@@ -557,6 +602,19 @@ class LinearFamily:
         reductions.
         """
         return float(mean_squared_error(y_true, y_pred) * len(y_true))
+
+    def score(self, model: Any, X: np.ndarray, y: np.ndarray) -> float:
+        """RSS from fitted model: ``fit_metric(y, predict(model, X))``."""
+        return self.fit_metric(y, self.predict(model, X))
+
+    def null_score(self, y: np.ndarray, fit_intercept: bool = True) -> float:
+        """RSS of the intercept-only (mean) model."""
+        n = len(y)
+        if fit_intercept:
+            preds = np.full(n, np.mean(y), dtype=float)
+        else:
+            preds = np.zeros(n, dtype=float)
+        return self.fit_metric(y, preds)
 
     # ---- Diagnostics & classical inference -------------------------
     #
@@ -918,6 +976,19 @@ class LogisticFamily:
         # Clip predictions to avoid log(0) / inf in cross-entropy.
         y_pred_safe = np.clip(y_pred, 0.001, 0.999)
         return float(2.0 * log_loss(y_true, y_pred_safe, normalize=False))
+
+    def score(self, model: Any, X: np.ndarray, y: np.ndarray) -> float:
+        """Deviance from fitted model: ``fit_metric(y, predict(model, X))``."""
+        return self.fit_metric(y, self.predict(model, X))
+
+    def null_score(self, y: np.ndarray, fit_intercept: bool = True) -> float:
+        """Deviance of the intercept-only (base-rate) model."""
+        n = len(y)
+        if fit_intercept:
+            preds = np.full(n, np.mean(y), dtype=float)
+        else:
+            preds = np.zeros(n, dtype=float)
+        return self.fit_metric(y, preds)
 
     # ---- Diagnostics & classical inference -------------------------
     #
@@ -1330,6 +1401,19 @@ class PoissonFamily:
         contrib[pos] = y_true[pos] * np.log(y_true[pos] / mu[pos])
         deviance_i = contrib - (y_true - mu)
         return float(2.0 * np.sum(deviance_i))
+
+    def score(self, model: Any, X: np.ndarray, y: np.ndarray) -> float:
+        """Deviance from fitted model: ``fit_metric(y, predict(model, X))``."""
+        return self.fit_metric(y, self.predict(model, X))
+
+    def null_score(self, y: np.ndarray, fit_intercept: bool = True) -> float:
+        """Deviance of the intercept-only (mean) model."""
+        n = len(y)
+        if fit_intercept:
+            preds = np.full(n, np.mean(y), dtype=float)
+        else:
+            preds = np.zeros(n, dtype=float)
+        return self.fit_metric(y, preds)
 
     # ---- Diagnostics & classical inference -------------------------
     #
@@ -1748,6 +1832,19 @@ class NegativeBinomialFamily:
 
         return float(2.0 * np.sum(term1 - term2))
 
+    def score(self, model: Any, X: np.ndarray, y: np.ndarray) -> float:
+        """Deviance from fitted model: ``fit_metric(y, predict(model, X))``."""
+        return self.fit_metric(y, self.predict(model, X))
+
+    def null_score(self, y: np.ndarray, fit_intercept: bool = True) -> float:
+        """Deviance of the intercept-only (mean) model."""
+        n = len(y)
+        if fit_intercept:
+            preds = np.full(n, np.mean(y), dtype=float)
+        else:
+            preds = np.zeros(n, dtype=float)
+        return self.fit_metric(y, preds)
+
     # ---- Diagnostics & classical inference -------------------------
 
     def diagnostics(
@@ -1925,10 +2022,11 @@ class NegativeBinomialFamily:
 #    residuals are ill-defined, FL raises ValueError with guidance to
 #    use ter_braak or kennedy methods instead.
 #
-# 3. **model_fit_metric** — The joint test metric is deviance
+# 3. **score() / null_score()** — The joint test metric is deviance
 #    (−2 × log-likelihood), computed from the fitted model object
-#    rather than from predictions.  This is a duck-typed method
-#    (not on the ModelFamily protocol) detected via hasattr().
+#    via the ``score()`` protocol method.  ``null_score()`` computes
+#    the thresholds-only baseline analytically from empirical
+#    category proportions.
 #
 # 4. **fit_intercept is ignored** — OrderedModel always estimates
 #    threshold parameters, which serve as category-specific intercepts.
@@ -2101,7 +2199,7 @@ class OrdinalFamily:
         y_true: np.ndarray,  # noqa: ARG002
         y_pred: np.ndarray,  # noqa: ARG002
     ) -> float:
-        """Not implemented — use model_fit_metric() instead.
+        """Not implemented — use ``score(model, X, y)`` instead.
 
         Ordinal deviance requires the fitted model object (for
         log-likelihood), not just predicted values.
@@ -2112,33 +2210,39 @@ class OrdinalFamily:
         msg = (
             "OrdinalFamily.fit_metric() is not available because ordinal "
             "deviance requires the fitted model object.  Use "
-            "model_fit_metric(model) instead (detected via hasattr)."
+            "score(model, X, y) instead."
         )
         raise NotImplementedError(msg)
 
-    # ---- Model-based fit metric (duck-typed) -----------------------
-    #
-    # These methods are NOT on the ModelFamily protocol.  The Kennedy
-    # joint engine detects them via hasattr() — the same pattern used
-    # for calibrate() on NegativeBinomialFamily.
+    def score(self, model: Any, X: np.ndarray, y: np.ndarray) -> float:  # noqa: ARG002
+        """Deviance from fitted ordinal model: ``-2 * log-likelihood``.
 
-    def model_fit_metric(self, model: Any) -> float:
-        """Deviance (−2 × log-likelihood) from a fitted ordinal model.
-
-        Lower is better, so the joint test statistic
-        ``D_reduced − D_full`` is positive when the features of
-        interest improve fit.
+        *X* and *y* are accepted for protocol compatibility but unused
+        — the log-likelihood is stored on the fitted model object.
         """
         return -2.0 * float(model.llf)
 
-    def null_fit_metric(self, model: Any) -> float:
-        """Null deviance (−2 × null log-likelihood).
+    def null_score(self, y: np.ndarray, fit_intercept: bool = True) -> float:  # noqa: ARG002
+        """Deviance of the thresholds-only (no predictors) ordinal model.
 
-        The null model is the thresholds-only model (no predictors),
-        equivalent to the intercept-only model for continuous families.
-        Used by the Kennedy joint engine when there are no confounders.
+        Computed analytically from empirical category proportions:
+
+            ℓ_null = Σ_k  n_k · log(n_k / n)
+            null_score = −2 · ℓ_null
+
+        This is the exact log-likelihood of the proportional-odds
+        model with no predictors — MLE sets cumulative probabilities
+        equal to empirical cumulative proportions, which yields
+        category probabilities p_k = n_k / n.
+
+        ``fit_intercept`` is accepted for protocol compatibility but
+        ignored — ordinal models always include threshold parameters.
         """
-        return -2.0 * float(model.llnull)
+        _, counts = np.unique(y, return_counts=True)
+        n = len(y)
+        proportions = counts / n
+        ll_null = float(np.sum(counts * np.log(proportions)))
+        return -2.0 * ll_null
 
     # ---- Diagnostics & classical inference -------------------------
 
@@ -2338,9 +2442,9 @@ class OrdinalFamily:
 #    method category_coefs() provides the full (p, K-1) matrix for
 #    users who need per-category detail.
 #
-# 4. **model_fit_metric / null_fit_metric** — Duck-typed methods
-#    (not on protocol) for deviance-based joint test, same pattern
-#    as OrdinalFamily.
+# 4. **score() / null_score()** — Protocol methods for deviance-based
+#    joint test, replacing the former duck-typed model_fit_metric /
+#    null_fit_metric methods.  Same pattern as OrdinalFamily.
 
 
 class MultinomialFamily:
@@ -2527,7 +2631,7 @@ class MultinomialFamily:
         y_true: np.ndarray,  # noqa: ARG002
         y_pred: np.ndarray,  # noqa: ARG002
     ) -> float:
-        """Not implemented — use model_fit_metric() instead.
+        """Not implemented — use ``score(model, X, y)`` instead.
 
         Multinomial deviance requires the fitted model object (for
         log-likelihood), not just predicted values.
@@ -2538,32 +2642,39 @@ class MultinomialFamily:
         msg = (
             "MultinomialFamily.fit_metric() is not available because "
             "multinomial deviance requires the fitted model object.  Use "
-            "model_fit_metric(model) instead (detected via hasattr)."
+            "score(model, X, y) instead."
         )
         raise NotImplementedError(msg)
 
-    # ---- Model-based fit metric (duck-typed) -----------------------
-    #
-    # These methods are NOT on the ModelFamily protocol.  The Kennedy
-    # joint engine detects them via hasattr() — the same pattern used
-    # by OrdinalFamily.
+    def score(self, model: Any, X: np.ndarray, y: np.ndarray) -> float:  # noqa: ARG002
+        """Deviance from fitted multinomial model: ``-2 * log-likelihood``.
 
-    def model_fit_metric(self, model: Any) -> float:
-        """Deviance (−2 × log-likelihood) from a fitted multinomial model.
-
-        Lower is better, so the joint test statistic
-        ``D_reduced − D_full`` is positive when the features of
-        interest improve fit.
+        *X* and *y* are accepted for protocol compatibility but unused
+        — the log-likelihood is stored on the fitted model object.
         """
         return -2.0 * float(model.llf)
 
-    def null_fit_metric(self, model: Any) -> float:
-        """Null deviance (−2 × null log-likelihood).
+    def null_score(self, y: np.ndarray, fit_intercept: bool = True) -> float:
+        """Deviance of the intercept-only multinomial model.
 
-        The null model is the intercept-only model (no predictors).
-        Used by the Kennedy joint engine when there are no confounders.
+        Fits an intercept-only ``MNLogit`` and returns
+        ``-2 * log-likelihood``.
         """
-        return -2.0 * float(model.llnull)
+        from statsmodels.discrete.discrete_model import MNLogit
+
+        n = len(y)
+        # Intercept-only design.
+        if fit_intercept:
+            X_null = np.ones((n, 1), dtype=float)
+        else:
+            X_null = np.zeros((n, 0), dtype=float)
+        y_arr = np.asarray(y)
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", category=SmConvergenceWarning)
+            warnings.filterwarnings("ignore", category=HessianInversionWarning)
+            warnings.filterwarnings("ignore", category=RuntimeWarning)
+            null_model = MNLogit(y_arr, X_null).fit(disp=0, maxiter=200)
+        return -2.0 * float(null_model.llf)
 
     # ---- Diagnostics & classical inference -------------------------
 
@@ -2840,6 +2951,42 @@ def resolve_family(family: str | ModelFamily, y: np.ndarray) -> ModelFamily:
 
     instance: ModelFamily = _FAMILIES[family]()
     return instance
+
+
+def fit_reduced(
+    family: ModelFamily,
+    Z: np.ndarray,
+    y: np.ndarray,
+    fit_intercept: bool,
+) -> tuple[Any | None, np.ndarray]:
+    """Fit a reduced (confounders-only) model, with intercept-only fallback.
+
+    When *Z* has one or more columns the family's ``fit`` + ``predict``
+    are used.  When *Z* has zero columns (no confounders), predictions
+    fall back to ``mean(y)`` (if ``fit_intercept``) or zeros.
+
+    This centralises the "fit reduced or fall back" logic that was
+    previously duplicated in ter Braak, Kennedy joint, and both
+    Freedman-Lane strategies.
+
+    Args:
+        family: A resolved ``ModelFamily`` instance.
+        Z: Confounder matrix of shape ``(n, q)`` where *q* may be 0.
+        y: Response vector of shape ``(n,)``.
+        fit_intercept: Whether the model includes an intercept.
+
+    Returns:
+        ``(model, predictions)`` — *model* is ``None`` when *Z* has
+        zero columns; *predictions* always has shape ``(n,)``.
+    """
+    n = len(y)
+    if Z.shape[1] > 0:
+        model = family.fit(Z, y, fit_intercept)
+        preds = family.predict(model, Z)
+        return model, preds
+    if fit_intercept:
+        return None, np.full(n, np.mean(y), dtype=float)
+    return None, np.zeros(n, dtype=float)
 
 
 # ------------------------------------------------------------------ #

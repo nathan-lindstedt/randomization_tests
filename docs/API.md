@@ -202,23 +202,24 @@ with ≥ 3 levels (integer‑coded 0, 1, …, K−1).
 **Rejected methods:** `freedman_lane`, `freedman_lane_joint` raise
 `ValueError` because ordinal residuals are not well‑defined.
 
-#### `model_fit_metric` (duck‑typed)
+#### `score`
 
 ```python
-OrdinalFamily.model_fit_metric(model: Any) -> float
+OrdinalFamily.score(model: Any, X: np.ndarray, y: np.ndarray) -> float
 ```
 
-Returns `−2 × log‑likelihood` from the fitted ordinal model.  Used by
-the Kennedy joint engine (detected via `hasattr`).
+Returns `−2 × log‑likelihood` from the fitted ordinal model.
+Protocol method used by all joint‑test strategies.
 
-#### `null_fit_metric` (duck‑typed)
+#### `null_score`
 
 ```python
-OrdinalFamily.null_fit_metric(model: Any) -> float
+OrdinalFamily.null_score(y: np.ndarray, fit_intercept: bool = True) -> float
 ```
 
-Returns null deviance `−2 × llnull` (thresholds‑only model).  Used by
-the Kennedy joint engine when there are no confounders.
+Returns the thresholds‑only (no predictors) deviance, computed
+analytically from empirical category proportions:
+`−2 ∑ n_k log(n_k / n)`.
 
 ### `MultinomialFamily`
 
@@ -249,21 +250,22 @@ MultinomialFamily.category_coefs(model: Any) -> np.ndarray
 Returns the full `(p, K−1)` slope matrix from a fitted MNLogit model
 for detailed post‑hoc inspection of per‑category contrasts.
 
-#### `model_fit_metric` (duck‑typed)
+#### `score`
 
 ```python
-MultinomialFamily.model_fit_metric(model: Any) -> float
+MultinomialFamily.score(model: Any, X: np.ndarray, y: np.ndarray) -> float
 ```
 
 Returns `−2 × log‑likelihood` from the fitted multinomial model.
+Protocol method used by all joint‑test strategies.
 
-#### `null_fit_metric` (duck‑typed)
+#### `null_score`
 
 ```python
-MultinomialFamily.null_fit_metric(model: Any) -> float
+MultinomialFamily.null_score(y: np.ndarray, fit_intercept: bool = True) -> float
 ```
 
-Returns null deviance `−2 × llnull` (intercept‑only model).
+Returns the intercept‑only deviance from a fitted `MNLogit` null model.
 
 ### `resolve_family`
 

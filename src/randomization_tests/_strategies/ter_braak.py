@@ -21,6 +21,8 @@ from typing import TYPE_CHECKING
 import numpy as np
 import pandas as pd
 
+from ..families import fit_reduced
+
 if TYPE_CHECKING:
     from ..families import ModelFamily
 
@@ -86,11 +88,17 @@ class TerBraakStrategy:
         for j in range(n_features):
             # Step 1: Fit the reduced model Y ~ X_{-j}.
             X_red = np.delete(X_np, j, axis=1)
-            reduced_model = family.fit(X_red, y_values, fit_intercept)
+            reduced_model, preds_red = fit_reduced(
+                family, X_red, y_values, fit_intercept
+            )
 
-            # Predictions and residuals from the reduced model.
-            preds_red = family.predict(reduced_model, X_red)
-            resids_red = family.residuals(reduced_model, X_red, y_values)
+            # Residuals from the reduced model.
+            if reduced_model is not None:
+                resids_red = family.residuals(reduced_model, X_red, y_values)
+            else:
+                # Zero-column edge case: raw residuals from
+                # intercept-only predictions.
+                resids_red = y_values - preds_red
 
             # Step 2: Build all B permuted residual vectors.
             permuted_resids = resids_red[perm_indices]  # (B, n)

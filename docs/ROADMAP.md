@@ -789,7 +789,7 @@ on ordinal and multinomial families are replaced by new `score()`
 and `null_score()` protocol methods, eliminating the `hasattr`
 branching in Kennedy joint.
 
-### `fit_reduced()` in `_strategies/_shared.py` + `score()` / `null_score()` on protocol
+### `fit_reduced()` in `families.py` + `score()` / `null_score()` on protocol
 
 Deferred from v0.3.0 audit.  Three related problems resolved together:
 
@@ -807,13 +807,18 @@ Deferred from v0.3.0 audit.  Three related problems resolved together:
 
 **Architecture decisions:**
 
-- **`fit_reduced()` is a free function in `_strategies/_shared.py`**
-  (not on the protocol, not on the engine).  The function
-  encapsulates strategy-specific edge-case handling (the
-  intercept-only fallback).  The engine’s job is pre-strategy
-  setup; `fit_reduced` is called during strategy execution.
-  Placing it inside the strategies package follows the
-  utility-near-consumer pattern.
+- **`fit_reduced()` is a module-level function in `families.py`**
+  alongside `resolve_family()`.  It operates entirely on the
+  `ModelFamily` interface (`family.fit()` + `family.predict()`)
+  with a zero-column fallback — it is not family-specific, so
+  it cannot go on the protocol.  Placing it next to `fit()` and
+  `resolve_family()` co-locates all family-interface utilities
+  in one module, maintains a consistent pattern (module-level
+  functions that delegate to the protocol), and keeps the
+  dependency direction correct (strategies import from families,
+  never the reverse).  The v0.5.0 graph compiler and any new
+  callers can import it from `families` without reaching into
+  internal packages.
 
 - **`score(model, X, y) -> float`** is a new `ModelFamily` protocol
   method.  Prediction-based families delegate to
@@ -828,8 +833,9 @@ Deferred from v0.3.0 audit.  Three related problems resolved together:
   thresholds/intercept-only model and return `−2 × llf`.  This
   replaces the `null_fit_metric()` duck-typed method.
 
-- [ ] Add `fit_reduced()` free function in `_strategies/_shared.py`
-  returning `(model | None, predictions)`.
+- [ ] Add `fit_reduced()` module-level function in `families.py`
+  (alongside `resolve_family()`) returning
+  `(model | None, predictions)`.
 - [ ] Add `score(model, X, y)` to the `ModelFamily` protocol and
   implement on all 6 families.
 - [ ] Add `null_score(y, fit_intercept)` to the `ModelFamily` protocol
@@ -1178,15 +1184,13 @@ utilities for permutation distributions and graph topology.
 
 Marks the first stable public API with semantic versioning guarantees.
 The graph specification layer, `ModelFamily` protocol, exchangeability
-cell system, and structured result objects are all stabilised.
+cell system, and structured result objects are all frozen.
 
-### API stability
+### API freeze
 
 - [ ] All public function signatures, graph specification methods,
-  result object attributes, and parameter names are stable.  Breaking
-  changes after this point require a major version bump; additive
-  changes (new methods, new kwargs with defaults, new fields) are
-  always permitted.
+  result object attributes, and parameter names are frozen.  Breaking
+  changes after this point require a major version bump.
 - [ ] Comprehensive deprecation policy for any future interface changes.
 
 ### PyPI publication

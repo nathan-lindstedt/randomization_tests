@@ -18,6 +18,8 @@ from typing import TYPE_CHECKING
 import numpy as np
 import pandas as pd
 
+from ..families import fit_reduced
+
 if TYPE_CHECKING:
     from ..families import ModelFamily
 
@@ -81,13 +83,9 @@ class FreedmanLaneIndividualStrategy:
         if confounders:
             conf_idx = [X.columns.get_loc(c) for c in confounders]
             Z = X_np[:, conf_idx]
-            reduced_model = family.fit(Z, y_values, fit_intercept)
-            preds_reduced = family.predict(reduced_model, Z)
         else:
-            if fit_intercept:
-                preds_reduced = np.full(n, np.mean(y_values), dtype=float)
-            else:
-                preds_reduced = np.zeros(n, dtype=float)
+            Z = np.zeros((n, 0))
+        _, preds_reduced = fit_reduced(family, Z, y_values, fit_intercept)
 
         # Step 3: Permute full-model residuals.
         permuted_resids = full_resids[perm_indices]  # (B, n)
@@ -160,14 +158,7 @@ class FreedmanLaneJointStrategy:
             Z = np.zeros((n, 0))
 
         # --- Observed reduced model ---
-        if Z.shape[1] > 0:
-            reduced_model = family.fit(Z, y_values, fit_intercept)
-            preds_reduced = family.predict(reduced_model, Z)
-        else:
-            if fit_intercept:
-                preds_reduced = np.full(n, np.mean(y_values), dtype=float)
-            else:
-                preds_reduced = np.zeros(n, dtype=float)
+        _, preds_reduced = fit_reduced(family, Z, y_values, fit_intercept)
 
         base_metric = family.fit_metric(y_values, preds_reduced)
 
@@ -189,14 +180,7 @@ class FreedmanLaneJointStrategy:
             ).ravel()
 
             # Refit reduced model on Y*
-            if Z.shape[1] > 0:
-                red_model_star = family.fit(Z, y_star, fit_intercept)
-                red_preds_star = family.predict(red_model_star, Z)
-            else:
-                if fit_intercept:
-                    red_preds_star = np.full(n, np.mean(y_star), dtype=float)
-                else:
-                    red_preds_star = np.zeros(n, dtype=float)
+            _, red_preds_star = fit_reduced(family, Z, y_star, fit_intercept)
             metric_red = family.fit_metric(y_star, red_preds_star)
 
             # Refit full model on Y*
