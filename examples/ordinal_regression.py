@@ -113,9 +113,11 @@ print_diagnostics_table(results_ter_braak, feature_names=X.columns.tolist())
 
 all_confounder_results = {}
 for predictor in X.columns:
-    all_confounder_results[predictor] = identify_confounders(X, y, predictor=predictor)
+    all_confounder_results[predictor] = identify_confounders(
+        X, y, predictor=predictor, family="ordinal"
+    )
 
-print_confounder_table(all_confounder_results)
+print_confounder_table(all_confounder_results, family="ordinal")
 
 # Collect confounders from any predictor that has them
 predictors_with_confounders = {

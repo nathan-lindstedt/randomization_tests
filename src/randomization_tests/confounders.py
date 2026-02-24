@@ -42,11 +42,16 @@ References:
 
 from __future__ import annotations
 
+import logging
+
 import numpy as np
 from scipy import stats
 from sklearn.linear_model import LinearRegression
 
 from ._compat import DataFrameLike, _ensure_pandas_df
+from .families import ModelFamily, resolve_family
+
+logger = logging.getLogger(__name__)
 
 # ------------------------------------------------------------------ #
 # Step 1 – Correlation screening (Pearson r)
@@ -209,6 +214,7 @@ def mediation_analysis(
     confidence_level: float = 0.95,
     precision: int = 4,
     random_state: int | None = None,
+    family: str = "auto",
 ) -> dict:
     """Preacher & Hayes (2004, 2008) bootstrap test of the indirect effect.
 
@@ -263,17 +269,35 @@ def mediation_analysis(
     m_vals = X[mediator].values.reshape(-1, 1)
     n = len(y_values)
 
+    # Resolve the outcome family.  The a-path (M ~ X) always uses
+    # linear OLS because the mediator is assumed continuous.  The
+    # b-path (Y ~ X + M), total effect (Y ~ X), and direct effect
+    # (c') use the resolved family so that count, ordinal, and
+    # multinomial outcomes are modelled correctly.
+    fam = resolve_family(family, y_values)
+    _use_family = fam.name != "linear"
+    logger.debug(
+        "mediation_analysis: resolved family=%r, use_family=%s",
+        fam.name,
+        _use_family,
+    )
+
     # --- Observed paths (point estimates from the full sample) ---
 
     # Step 1: Total effect (c path) — regress Y on X alone.
     # This captures X's entire influence on Y, both direct and
     # any portion routed through M.
     #   Y = c·X + e₁
-    model_total = LinearRegression().fit(x_vals, y_values)
-    c_total = model_total.coef_[0]
+    if _use_family:
+        model_total_f = fam.fit(x_vals, y_values.astype(float), fit_intercept=True)
+        c_total = float(fam.coefs(model_total_f)[0])
+    else:
+        model_total = LinearRegression().fit(x_vals, y_values)
+        c_total = model_total.coef_[0]
 
     # Step 2: a path — regress M on X.
     # Measures how much a one-unit change in X shifts M.
+    # Always linear OLS — the mediator is continuous by assumption.
     #   M = a·X + e₂
     model_a = LinearRegression().fit(x_vals, m_vals.ravel())
     a_path = model_a.coef_[0]
@@ -284,9 +308,15 @@ def mediation_analysis(
     # on Y holding X constant.
     #   Y = c′·X + b·M + e₃
     xm = np.hstack([x_vals, m_vals])
-    model_full = LinearRegression().fit(xm, y_values)
-    c_prime = model_full.coef_[0]  # direct effect
-    b_path = model_full.coef_[1]  # M → Y controlling for X
+    if _use_family:
+        model_full_f = fam.fit(xm, y_values.astype(float), fit_intercept=True)
+        full_coefs = fam.coefs(model_full_f)
+        c_prime = float(full_coefs[0])  # direct effect
+        b_path = float(full_coefs[1])  # M → Y controlling for X
+    else:
+        model_full = LinearRegression().fit(xm, y_values)
+        c_prime = model_full.coef_[0]  # direct effect
+        b_path = model_full.coef_[1]  # M → Y controlling for X
 
     # The indirect effect: a·b
     # This is the product of X→M and M→Y|X, representing the portion
@@ -323,15 +353,25 @@ def mediation_analysis(
         y_b = y_values[idx]  # (n,)   — resampled Y
 
         # a path: M* = a₀ + a*·X* + ε
+        # Always linear OLS — mediator is continuous.
         # a_coef[0] is the intercept, a_coef[1] is the slope a*
         a_coef, _, _, _ = np.linalg.lstsq(x_b, m_b, rcond=None)
         a_boot = a_coef[1]  # slope (index 0 is intercept)
 
         # b path: Y* = b₀ + c′*·X* + b*·M* + ε
-        # xm_b columns: [1, X*, M*] → b_coef = [intercept, c′*, b*]
-        xm_b = np.hstack([x_b, m_vals[idx]])  # (n, 3)
-        b_coef, _, _, _ = np.linalg.lstsq(xm_b, y_b, rcond=None)
-        b_boot = b_coef[2]  # mediator slope
+        # For non-linear families, use the family's fit/coefs.
+        if _use_family:
+            xm_raw = np.hstack([x_vals[idx], m_vals[idx]])  # (n, 2) no intercept
+            try:
+                bm = fam.fit(xm_raw, y_b.astype(float), fit_intercept=True)
+                b_boot = float(fam.coefs(bm)[1])  # mediator slope
+            except Exception:
+                b_boot = 0.0  # graceful degradation
+        else:
+            # xm_b columns: [1, X*, M*] → b_coef = [intercept, c′*, b*]
+            xm_b = np.hstack([x_b, m_vals[idx]])  # (n, 3)
+            b_coef, _, _, _ = np.linalg.lstsq(xm_b, y_b, rcond=None)
+            b_boot = b_coef[2]  # mediator slope
 
         bootstrap_indirect[b_i] = a_boot * b_boot
 
@@ -349,6 +389,7 @@ def mediation_analysis(
         m_vals,
         y_values,
         confidence_level,
+        family=fam if _use_family else None,
     )
 
     # Decision criterion (Preacher & Hayes):
@@ -418,6 +459,8 @@ def _bca_ci(
     m_vals: np.ndarray,
     y_values: np.ndarray,
     confidence_level: float,
+    *,
+    family: ModelFamily | None = None,
 ) -> tuple[float, float]:
     """Bias-corrected and accelerated (BCa) bootstrap CI.
 
@@ -473,12 +516,22 @@ def _bca_ci(
         m_j = m_vals[idx].ravel()
         y_j = y_values[idx]
 
+        # a-path: always linear OLS
         a_coef, _, _, _ = np.linalg.lstsq(x_j, m_j, rcond=None)
         a_jack = a_coef[1]
 
-        xm_j = np.hstack([x_j, m_vals[idx]])
-        b_coef, _, _, _ = np.linalg.lstsq(xm_j, y_j, rcond=None)
-        b_jack = b_coef[2]
+        # b-path: family-appropriate model when non-linear
+        if family is not None:
+            xm_raw = np.hstack([x_vals[idx], m_vals[idx]])  # no intercept
+            try:
+                bm = family.fit(xm_raw, y_j.astype(float), fit_intercept=True)
+                b_jack = float(family.coefs(bm)[1])
+            except Exception:
+                b_jack = 0.0
+        else:
+            xm_j = np.hstack([x_j, m_vals[idx]])
+            b_coef, _, _, _ = np.linalg.lstsq(xm_j, y_j, rcond=None)
+            b_jack = b_coef[2]
 
         jackknife_indirect[i] = a_jack * b_jack
 
@@ -553,6 +606,7 @@ def identify_confounders(
     n_bootstrap: int = 1000,
     confidence_level: float = 0.95,
     random_state: int | None = None,
+    family: str = "auto",
 ) -> dict:
     """Two-step confounder identification.
 
@@ -602,6 +656,7 @@ def identify_confounders(
             n_bootstrap=n_bootstrap,
             confidence_level=confidence_level,
             random_state=random_state,
+            family=family,
         )
         mediation_results[candidate] = med
         if med["is_mediator"]:

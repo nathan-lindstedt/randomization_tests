@@ -118,12 +118,13 @@ print_joint_results_table(
 all_confounder_results = {}
 for predictor in X_wine.columns:
     all_confounder_results[predictor] = identify_confounders(
-        X_wine, y_wine, predictor=predictor
+        X_wine, y_wine, predictor=predictor, family="multinomial"
     )
 
 print_confounder_table(
     all_confounder_results,
     title="Confounder Identification for All Predictors (Multinomial)",
+    family="multinomial",
 )
 
 predictors_with_confounders = {

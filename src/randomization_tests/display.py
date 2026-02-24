@@ -715,6 +715,7 @@ def print_confounder_table(
     p_value_threshold: float = 0.05,
     n_bootstrap: int = 1000,
     confidence_level: float = 0.95,
+    family: str | None = None,
 ) -> None:
     """Print confounder identification results in a formatted ASCII table.
 
@@ -785,6 +786,8 @@ def print_confounder_table(
         f"p < {p_value_threshold}   "
         f"Mediation: BCa bootstrap (B={n_bootstrap}, {ci_pct}% CI)"
     )
+    if family is not None:
+        print(f"Family:    {family}")
     print("-" * W)
 
     # ── Partition predictors ───────────────────────────────────── #
