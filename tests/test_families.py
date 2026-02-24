@@ -59,6 +59,9 @@ class TestProtocolConformance:
     def test_direct_permutation(self, family):
         assert family.direct_permutation is False
 
+    def test_stat_label(self, family):
+        assert family.stat_label == "t"
+
 
 # ------------------------------------------------------------------ #
 # validate_y
@@ -393,6 +396,9 @@ class TestLogisticProtocolConformance:
     def test_direct_permutation(self, logistic_family):
         assert logistic_family.direct_permutation is False
 
+    def test_stat_label(self, logistic_family):
+        assert logistic_family.stat_label == "z"
+
 
 # ------------------------------------------------------------------ #
 # validate_y (logistic)
@@ -651,6 +657,9 @@ class TestPoissonProtocolConformance:
 
     def test_metric_label(self, poisson_family):
         assert poisson_family.metric_label == "Deviance Reduction"
+
+    def test_stat_label(self, poisson_family):
+        assert poisson_family.stat_label == "z"
 
 
 # ------------------------------------------------------------------ #
@@ -1059,6 +1068,9 @@ class TestNBProtocolConformance:
 
     def test_metric_label(self, nb_family):
         assert nb_family.metric_label == "Deviance Reduction"
+
+    def test_stat_label(self, nb_family):
+        assert nb_family.stat_label == "z"
 
 
 # ------------------------------------------------------------------ #
@@ -1506,6 +1518,9 @@ class TestOrdinalProtocolConformance:
     def test_metric_label(self, ordinal_family):
         assert ordinal_family.metric_label == "Deviance Reduction"
 
+    def test_stat_label(self, ordinal_family):
+        assert ordinal_family.stat_label == "z"
+
 
 # ------------------------------------------------------------------ #
 # validate_y
@@ -1852,6 +1867,9 @@ class TestMultinomialProtocolConformance:
 
     def test_metric_label(self, multinomial_family):
         assert multinomial_family.metric_label == "Deviance Reduction"
+
+    def test_stat_label(self, multinomial_family):
+        assert multinomial_family.stat_label == "\u03c7\u00b2"
 
 
 # ------------------------------------------------------------------ #

@@ -694,11 +694,11 @@ def _wald_chi2_from_mnlogit(
     """
     params = np.asarray(model.params)  # (p_aug, K-1)
     cov = np.asarray(model.cov_params())  # ((K-1)*p_aug, (K-1)*p_aug)
-    Km1 = params.shape[1]
-    start = 1 if has_intercept else 0
-    p_slopes = p_aug - start
+    Km1 = params.shape[1]  # K − 1 — non-reference categories
+    start = 1 if has_intercept else 0  # skip intercept column
+    p_slopes = p_aug - start  # number of slope predictors
 
-    wald = np.empty(p_slopes)
+    wald = np.empty(p_slopes)  # output buffer for χ²_j values
     for j_slope in range(p_slopes):
         j = j_slope + start  # column index in X_aug
         # β_j across K-1 equations

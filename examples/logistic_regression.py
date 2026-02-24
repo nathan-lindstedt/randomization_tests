@@ -48,6 +48,8 @@ auto_family = resolve_family("auto", np.ravel(y_bc))
 assert auto_family.name == "logistic", f"Expected 'logistic', got {auto_family.name!r}"
 print(f"resolve_family('auto', y) → {auto_family.name!r}")
 
+_family = resolve_family("logistic")
+
 # ============================================================================# ter Braak (1992) \u2014 family="auto" (auto-detection)
 # ============================================================================
 
@@ -58,6 +60,7 @@ assert results_ter_braak_auto_bc["family"] == "logistic"
 print_results_table(
     results_ter_braak_auto_bc,
     feature_names=X_bc.columns.tolist(),
+    family=_family,
     target_name=y_bc.columns[0],
     title="ter Braak (1992) Permutation Test (family='auto' \u2192 logistic)",
 )
@@ -71,12 +74,14 @@ results_ter_braak_bc = permutation_test_regression(
 print_results_table(
     results_ter_braak_bc,
     feature_names=X_bc.columns.tolist(),
+    family=_family,
     target_name=y_bc.columns[0],
     title="ter Braak (1992) Permutation Test (family='logistic')",
 )
 print_diagnostics_table(
     results_ter_braak_bc,
     feature_names=X_bc.columns.tolist(),
+    family=_family,
     title="ter Braak (1992) Diagnostics (family='logistic')",
 )
 assert results_ter_braak_bc["model_type"] == "logistic"
@@ -93,12 +98,14 @@ with warnings.catch_warnings():
 print_results_table(
     results_kennedy_bc,
     feature_names=X_bc.columns.tolist(),
+    family=_family,
     target_name=y_bc.columns[0],
     title="Kennedy (1995) Individual Permutation Test (family='logistic')",
 )
 print_diagnostics_table(
     results_kennedy_bc,
     feature_names=X_bc.columns.tolist(),
+    family=_family,
     title="Kennedy (1995) Individual Diagnostics (family='logistic')",
 )
 
@@ -113,6 +120,7 @@ with warnings.catch_warnings():
     )
 print_joint_results_table(
     results_kennedy_joint_bc,
+    family=_family,
     target_name=y_bc.columns[0],
     title="Kennedy (1995) Joint Permutation Test (family='logistic')",
 )
@@ -129,12 +137,14 @@ with warnings.catch_warnings():
 print_results_table(
     results_fl_bc,
     feature_names=X_bc.columns.tolist(),
+    family=_family,
     target_name=y_bc.columns[0],
     title="Freedman–Lane (1983) Individual Permutation Test (family='logistic')",
 )
 print_diagnostics_table(
     results_fl_bc,
     feature_names=X_bc.columns.tolist(),
+    family=_family,
     title="Freedman–Lane (1983) Individual Diagnostics (family='logistic')",
 )
 
@@ -149,6 +159,7 @@ with warnings.catch_warnings():
     )
 print_joint_results_table(
     results_fl_joint_bc,
+    family=_family,
     target_name=y_bc.columns[0],
     title="Freedman–Lane (1983) Joint Permutation Test (family='logistic')",
 )
@@ -192,6 +203,7 @@ if predictors_with_confounders_bc:
     print_results_table(
         results_kc_bc,
         feature_names=X_bc.columns.tolist(),
+        family=_family,
         target_name=y_bc.columns[0],
         title=(
             f"Kennedy (1995) for '{example_predictor_bc}' "
@@ -202,6 +214,7 @@ if predictors_with_confounders_bc:
     print_diagnostics_table(
         results_kc_bc,
         feature_names=X_bc.columns.tolist(),
+        family=_family,
         title=(
             f"Kennedy (1995) Diagnostics for '{example_predictor_bc}' "
             f"(family='logistic')"

@@ -300,17 +300,21 @@ def _package_joint_result(
     """Build a :class:`JointTestResult` from a joint strategy's output."""
     obs_improvement, perm_improvements, metric_type, features_tested = raw
 
+    # Phipson & Smyth (2010) empirical p-value: (b + 1) / (B + 1)
+    # where b = #{permuted Δ ≥ observed Δ}.  The +1 in numerator
+    # and denominator guarantees p ∈ (0, 1] and accounts for the
+    # observed statistic as one of the possible permutations.
     p_value = float(
         (np.sum(perm_improvements >= obs_improvement) + 1) / (n_permutations + 1)
     )
-    rounded = np.round(p_value, precision)
-    val = f"{rounded:.{precision}f}"
+    rounded = np.round(p_value, precision)  # round to display precision
+    val = f"{rounded:.{precision}f}"  # fixed-width string representation
     if p_value < p_value_threshold_two:
-        p_value_str = f"{val} (**)"
+        p_value_str = f"{val} (**)"  # highly significant
     elif p_value < p_value_threshold_one:
-        p_value_str = f"{val} (*)"
+        p_value_str = f"{val} (*)"  # significant
     else:
-        p_value_str = f"{val} (ns)"
+        p_value_str = f"{val} (ns)"  # not significant
 
     return JointTestResult(
         observed_improvement=obs_improvement,

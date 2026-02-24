@@ -194,17 +194,23 @@ def _classical_p_values_fallback(
     ``calculate_p_values`` is called without a ``family`` argument
     (e.g. from standalone tests).
     """
-    unique_y = np.unique(y_values)
-    is_binary = (len(unique_y) == 2) and np.all(np.isin(unique_y, [0, 1]))
+    unique_y = np.unique(y_values)  # sorted distinct response values
+    is_binary = (len(unique_y) == 2) and np.all(
+        np.isin(unique_y, [0, 1])
+    )  # True iff y ∈ {0, 1}
 
-    X_sm = sm.add_constant(X) if fit_intercept else np.asarray(X)
+    X_sm = (
+        sm.add_constant(X) if fit_intercept else np.asarray(X)
+    )  # design matrix with optional intercept
     with warnings.catch_warnings():
         warnings.filterwarnings("ignore", category=SmConvergenceWarning)
         warnings.filterwarnings("ignore", category=PerfectSeparationWarning)
         if is_binary:
-            sm_model = sm.Logit(y_values, X_sm).fit(disp=0)
+            sm_model = sm.Logit(y_values, X_sm).fit(disp=0)  # MLE logistic regression
         else:
-            sm_model = sm.OLS(y_values, X_sm).fit()
+            sm_model = sm.OLS(y_values, X_sm).fit()  # OLS linear regression
 
-    pvals = sm_model.pvalues[1:] if fit_intercept else sm_model.pvalues
+    # Strip the intercept p-value (index 0) when an intercept is present,
+    # so the returned array has shape (p,) matching the feature columns.
+    pvals = sm_model.pvalues[1:] if fit_intercept else sm_model.pvalues  # shape (p,)
     return np.asarray(pvals)

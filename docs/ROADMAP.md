@@ -855,22 +855,56 @@ The current `display.py` uses `if/elif` chains on `model_type`
 strings to format headers and diagnostics tables.  This scales
 poorly — each new family adds branches in three locations
 (`print_results_table`, `print_joint_results_table`, diagnostics
-rendering).  v0.4.0 will move formatting responsibility into the
-`ModelFamily` protocol:
+rendering).  v0.4.0 moves formatting responsibility into the
+`ModelFamily` protocol via a clean break — no fallback paths,
+no deprecation warnings, all `model_type` branching deleted:
 
-- [ ] `ModelFamily.display_header(diagnostics: dict) -> list[str]` —
-  returns pre-formatted lines for the results table header (R²,
-  deviance, AIC, etc.).
+- [ ] `ModelFamily.display_header(diagnostics: dict) ->
+  list[tuple[str, str, str, str]]` — returns structured row
+  descriptors for the results table header.  Each 4-tuple is
+  `(left_label, left_value, right_label, right_value)`.  Families
+  own content and value formatting; `display.py` owns all layout.
 - [ ] `ModelFamily.display_diagnostics(diagnostics: dict) ->
-  list[tuple[str, str]]` — returns label/value pairs for the
-  extended diagnostics table.
-- [ ] `display.py` becomes family-agnostic: calls the protocol
-  methods and renders whatever the family returns.  No `model_type`
-  branching.
-- [ ] **Deprecation:** `model_type` string-based branches emit
-  `FutureWarning` in v0.4.0, removed in v0.5.0.
+  tuple[list[tuple[str, str]], list[str]]` — returns `(lines, notes)`:
+  label/value pairs for model-level diagnostics and warning strings
+  for the Notes section.  Bundling notes with lines avoids residual
+  `model_type` branching in `display.py`.
+- [ ] `ModelFamily.stat_label: str` property — `"t"`, `"z"`, or
+  `"χ²"` per family.  Used in result table column headers.
+- [ ] `display.py` becomes family-agnostic: `family: ModelFamily` is
+  a **required** parameter on `print_results_table()`,
+  `print_joint_results_table()`, and `print_diagnostics_table()`.
+  All `model_type` branch blocks are deleted.
 - [ ] Unblocks user-defined families — a custom `ModelFamily` can
   control its own display output without modifying `display.py`.
+
+### Diagnostics refactor — family-driven computation
+
+The same `model_type` branching pattern in `diagnostics.py`
+(`compute_all_diagnostics()` L950–1117) is eliminated by moving
+family-specific diagnostic computation into the protocol:
+
+- [ ] `ModelFamily.compute_extended_diagnostics(X, y, fit_intercept)
+  -> dict[str, Any]` — returns family-specific diagnostic key–value
+  pairs.  The dict keys must match what `display_diagnostics()` reads
+  (contract locked in by the display refactor).
+- [ ] `compute_all_diagnostics()`: `family: ModelFamily` replaces
+  `model_type: str`.  The entire `model_type` branch block is
+  deleted and replaced by
+  `result.update(family.compute_extended_diagnostics(...))`.
+- [ ] Generic diagnostics (VIF, standardized coefs, Monte Carlo SE,
+  divergence flags, Cook's distance, permutation coverage) remain in
+  `diagnostics.py` — they are family-agnostic.
+
+### `model_type` removal from result objects
+
+- [ ] `model_type` field removed from `IndividualTestResult` and
+  `JointTestResult` dataclass definitions.
+- [ ] A `model_type` property alias on `_DictAccessMixin` returns
+  `self.family` for backward compat — no warning, just a thin alias.
+- [ ] `to_dict()` still includes `"model_type"` for JSON compat.
+- [ ] New fields added to result objects: `feature_names`, `n_permutations`,
+  `groups` (None until v0.4.1), `permutation_strategy` (None until v0.4.1).
 
 ### Sign-flip test
 

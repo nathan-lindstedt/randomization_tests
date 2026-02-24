@@ -12,7 +12,11 @@ tailed error distributions) are precisely the situations where the
 permutation test adds value.
 """
 
+from __future__ import annotations
+
 import textwrap
+
+from randomization_tests.families import ModelFamily
 
 
 def _truncate(name: str, max_len: int) -> str:
@@ -37,9 +41,27 @@ def _wrap(text: str, width: int = 80, indent: int = 2) -> str:
     )
 
 
+def _render_header_rows(
+    rows: list[tuple[str, str, str, str]],
+    col1: int,
+    col2: int,
+) -> None:
+    """Print structured header rows from ``family.display_header()``.
+
+    Each 4-tuple is ``(left_label, left_value, right_label,
+    right_value)``.  The left pair is flush-left in *col1* columns;
+    the right pair is right-aligned in *col2* columns.
+    """
+    for ll, lv, rl, rv in rows:
+        left = f"{ll:<16}{lv:<{col1 - 16}}" if ll else f"{'':<{col1}}"
+        right = f"{rl:>{col2 - 11}} {rv:>10}" if rl else ""
+        print(f"{left}{right}")
+
+
 def print_results_table(
     results: dict,
     feature_names: list[str],
+    family: ModelFamily,
     target_name: str | None = None,
     title: str = "Permutation Test Results",
 ) -> None:
@@ -49,6 +71,7 @@ def print_results_table(
         results: Results dictionary returned by
             :func:`~randomization_tests.permutation_test_regression`.
         feature_names: Names of the features/predictors.
+        family: The model family instance used for formatting.
         target_name: Name of the target variable.
         title: Title for the output table.
     """
@@ -58,7 +81,6 @@ def print_results_table(
     print("=" * 80)
 
     diag = results.get("diagnostics", {})
-    model_type = results["model_type"]
     col1 = 40
     col2 = 38
 
@@ -69,7 +91,7 @@ def print_results_table(
             f"{'No. Observations:':>{col2 - 11}} {diag.get('n_observations', 'N/A'):>10}"
         )
     print(
-        f"{'Model Type:':<16}{model_type:<{col1 - 16}}"
+        f"{'Model Type:':<16}{family.name:<{col1 - 16}}"
         f"{'No. Features:':>{col2 - 11}} {diag.get('n_features', 'N/A'):>10}"
     )
     print(
@@ -77,76 +99,12 @@ def print_results_table(
         f"{'AIC:':>{col2 - 11}} {diag.get('aic', 'N/A'):>10}"
     )
 
-    if model_type == "linear":
-        print(
-            f"{'R-squared:':<16}{diag.get('r_squared', 'N/A'):<{col1 - 16}}"
-            f"{'BIC:':>{col2 - 11}} {diag.get('bic', 'N/A'):>10}"
-        )
-        print(
-            f"{'Adj. R-squared:':<16}{diag.get('r_squared_adj', 'N/A'):<{col1 - 16}}"
-            f"{'F-statistic:':>{col2 - 11}} {diag.get('f_statistic', 'N/A'):>10}"
-        )
-        f_p = diag.get("f_p_value", None)
-        f_p_str = f"{f_p:.4e}" if f_p is not None else "N/A"
-        print(f"{'':<{col1}}{'Prob (F-stat):':>{col2 - 11}} {f_p_str:>10}")
-    elif model_type in ("poisson", "negative_binomial"):
-        print(
-            f"{'Deviance:':<16}{diag.get('deviance', 'N/A'):<{col1 - 16}}"
-            f"{'BIC:':>{col2 - 11}} {diag.get('bic', 'N/A'):>10}"
-        )
-        print(
-            f"{'Log-Likelihood:':<16}{diag.get('log_likelihood', 'N/A'):<{col1 - 16}}"
-            f"{'Dispersion:':>{col2 - 11}} {diag.get('dispersion', 'N/A'):>10}"
-        )
-        pearson = diag.get("pearson_chi2", None)
-        pearson_str = f"{pearson:.4f}" if pearson is not None else "N/A"
-        alpha_disp = diag.get("alpha", None)
-        if model_type == "negative_binomial" and alpha_disp is not None:
-            print(
-                f"{'Alpha (NB):':>{col1}}"
-                f"{chr(0x03C7) + chr(0x00B2) + ' (Pearson):':>{col2 - 11}} {pearson_str:>10}"
-            )
-        else:
-            print(
-                f"{'':<{col1}}"
-                f"{chr(0x03C7) + chr(0x00B2) + ' (Pearson):':>{col2 - 11}} {pearson_str:>10}"
-            )
-    elif model_type in ("ordinal", "multinomial"):
-        print(
-            f"{'Pseudo R-sq:':<16}{diag.get('pseudo_r_squared', 'N/A'):<{col1 - 16}}"
-            f"{'BIC:':>{col2 - 11}} {diag.get('bic', 'N/A'):>10}"
-        )
-        print(
-            f"{'Log-Likelihood:':<16}{diag.get('log_likelihood', 'N/A'):<{col1 - 16}}"
-            f"{'LL-Null:':>{col2 - 11}} {diag.get('log_likelihood_null', 'N/A'):>10}"
-        )
-        n_cats = diag.get("n_categories", None)
-        n_cats_str = str(n_cats) if n_cats is not None else "N/A"
-        llr_p = diag.get("llr_p_value", None)
-        llr_p_str = f"{llr_p:.4e}" if llr_p is not None else "N/A"
-        print(
-            f"{'Categories:':<16}{n_cats_str:<{col1 - 16}}"
-            f"{'LLR p-value:':>{col2 - 11}} {llr_p_str:>10}"
-        )
-    else:
-        print(
-            f"{'Pseudo R-sq:':<16}{diag.get('pseudo_r_squared', 'N/A'):<{col1 - 16}}"
-            f"{'BIC:':>{col2 - 11}} {diag.get('bic', 'N/A'):>10}"
-        )
-        print(
-            f"{'Log-Likelihood:':<16}{diag.get('log_likelihood', 'N/A'):<{col1 - 16}}"
-            f"{'LL-Null:':>{col2 - 11}} {diag.get('log_likelihood_null', 'N/A'):>10}"
-        )
-        llr_p = diag.get("llr_p_value", None)
-        llr_p_str = f"{llr_p:.4e}" if llr_p is not None else "N/A"
-        print(f"{'':<{col1}}{'LLR p-value:':>{col2 - 11}} {llr_p_str:>10}")
+    _render_header_rows(family.display_header(diag), col1, col2)
 
     print("-" * 80)
 
     fc = 25
-    stat_label = "t" if model_type == "linear" else "z"
-    if model_type == "multinomial":
-        stat_label = chr(0x03C7) + chr(0x00B2)
+    stat_label = family.stat_label
     emp_hdr = f"P>|{stat_label}| (Emp)"
     asy_hdr = f"P>|{stat_label}| (Asy)"
     print(f"{'Feature':<{fc}} {'Coef':>12} {emp_hdr:>18} {asy_hdr:>18}")
@@ -192,6 +150,7 @@ def print_results_table(
 
 def print_joint_results_table(
     results: dict,
+    family: ModelFamily,
     target_name: str | None = None,
     title: str = "Joint Permutation Test Results",
 ) -> None:
@@ -201,6 +160,7 @@ def print_joint_results_table(
         results: Results dictionary returned by
             :func:`~randomization_tests.permutation_test_regression` with
             ``method='kennedy_joint'``.
+        family: The model family instance used for formatting.
         target_name: Name of the target variable.
         title: Title for the output table.
     """
@@ -210,7 +170,6 @@ def print_joint_results_table(
     print("=" * 80)
 
     diag = results.get("diagnostics", {})
-    model_type = results["model_type"]
     col1 = 40
     col2 = 38
 
@@ -221,7 +180,7 @@ def print_joint_results_table(
             f"{'No. Observations:':>{col2 - 11}} {diag.get('n_observations', 'N/A'):>10}"
         )
     print(
-        f"{'Model Type:':<16}{model_type:<{col1 - 16}}"
+        f"{'Model Type:':<16}{family.name:<{col1 - 16}}"
         f"{'No. Features:':>{col2 - 11}} {diag.get('n_features', 'N/A'):>10}"
     )
     print(
@@ -229,69 +188,7 @@ def print_joint_results_table(
         f"{'AIC:':>{col2 - 11}} {diag.get('aic', 'N/A'):>10}"
     )
 
-    if model_type == "linear":
-        print(
-            f"{'R-squared:':<16}{diag.get('r_squared', 'N/A'):<{col1 - 16}}"
-            f"{'BIC:':>{col2 - 11}} {diag.get('bic', 'N/A'):>10}"
-        )
-        print(
-            f"{'Adj. R-squared:':<16}{diag.get('r_squared_adj', 'N/A'):<{col1 - 16}}"
-            f"{'F-statistic:':>{col2 - 11}} {diag.get('f_statistic', 'N/A'):>10}"
-        )
-        f_p = diag.get("f_p_value", None)
-        f_p_str = f"{f_p:.4e}" if f_p is not None else "N/A"
-        print(f"{'':<{col1}}{'Prob (F-stat):':>{col2 - 11}} {f_p_str:>10}")
-    elif model_type in ("poisson", "negative_binomial"):
-        print(
-            f"{'Deviance:':<16}{diag.get('deviance', 'N/A'):<{col1 - 16}}"
-            f"{'BIC:':>{col2 - 11}} {diag.get('bic', 'N/A'):>10}"
-        )
-        print(
-            f"{'Log-Likelihood:':<16}{diag.get('log_likelihood', 'N/A'):<{col1 - 16}}"
-            f"{'Dispersion:':>{col2 - 11}} {diag.get('dispersion', 'N/A'):>10}"
-        )
-        pearson = diag.get("pearson_chi2", None)
-        pearson_str = f"{pearson:.4f}" if pearson is not None else "N/A"
-        alpha_disp = diag.get("alpha", None)
-        if model_type == "negative_binomial" and alpha_disp is not None:
-            print(
-                f"{'Alpha (NB):':>{col1}}"
-                f"{chr(0x03C7) + chr(0x00B2) + ' (Pearson):':>{col2 - 11}} {pearson_str:>10}"
-            )
-        else:
-            print(
-                f"{'':<{col1}}"
-                f"{chr(0x03C7) + chr(0x00B2) + ' (Pearson):':>{col2 - 11}} {pearson_str:>10}"
-            )
-    elif model_type in ("ordinal", "multinomial"):
-        print(
-            f"{'Pseudo R-sq:':<16}{diag.get('pseudo_r_squared', 'N/A'):<{col1 - 16}}"
-            f"{'BIC:':>{col2 - 11}} {diag.get('bic', 'N/A'):>10}"
-        )
-        print(
-            f"{'Log-Likelihood:':<16}{diag.get('log_likelihood', 'N/A'):<{col1 - 16}}"
-            f"{'LL-Null:':>{col2 - 11}} {diag.get('log_likelihood_null', 'N/A'):>10}"
-        )
-        n_cats = diag.get("n_categories", None)
-        n_cats_str = str(n_cats) if n_cats is not None else "N/A"
-        llr_p = diag.get("llr_p_value", None)
-        llr_p_str = f"{llr_p:.4e}" if llr_p is not None else "N/A"
-        print(
-            f"{'Categories:':<16}{n_cats_str:<{col1 - 16}}"
-            f"{'LLR p-value:':>{col2 - 11}} {llr_p_str:>10}"
-        )
-    else:
-        print(
-            f"{'Pseudo R-sq:':<16}{diag.get('pseudo_r_squared', 'N/A'):<{col1 - 16}}"
-            f"{'BIC:':>{col2 - 11}} {diag.get('bic', 'N/A'):>10}"
-        )
-        print(
-            f"{'Log-Likelihood:':<16}{diag.get('log_likelihood', 'N/A'):<{col1 - 16}}"
-            f"{'LL-Null:':>{col2 - 11}} {diag.get('log_likelihood_null', 'N/A'):>10}"
-        )
-        llr_p = diag.get("llr_p_value", None)
-        llr_p_str = f"{llr_p:.4e}" if llr_p is not None else "N/A"
-        print(f"{'':<{col1}}{'LLR p-value:':>{col2 - 11}} {llr_p_str:>10}")
+    _render_header_rows(family.display_header(diag), col1, col2)
 
     print(f"{'Metric:':<16}{results['metric_type']}")
 
@@ -338,6 +235,7 @@ def print_joint_results_table(
 def print_diagnostics_table(
     results: dict,
     feature_names: list[str],
+    family: ModelFamily,
     title: str = "Extended Diagnostics",
 ) -> None:
     """Print extended model diagnostics in a formatted ASCII table.
@@ -355,23 +253,23 @@ def print_diagnostics_table(
     2. **Legend** — a compact 2-3 line key explaining each column,
        including VIF thresholds and what DIVERGENT means.
     3. **Model-level Diagnostics** — residual-based assumption checks
-       (Breusch-Pagan for linear, deviance residuals for logistic),
-       Cook's distance influence counts, and permutation coverage.
+       delegated to the family's ``display_diagnostics()`` method,
+       plus Cook's distance and permutation coverage.
     4. **Notes** (conditional) — plain-language warnings printed only
        when a diagnostic flags a potential concern.
 
     Args:
         results: Results dictionary returned by
             :func:`~randomization_tests.permutation_test_regression`.
-            Must contain ``extended_diagnostics`` and ``model_type``.
+            Must contain ``extended_diagnostics``.
         feature_names: Names of the features/predictors.
+        family: The model family instance used for formatting.
         title: Title for the output table.
     """
     ext = results.get("extended_diagnostics")
     if ext is None:
         return
 
-    model_type = results["model_type"]
     W = 80
     notes: list[str] = []
 
@@ -455,9 +353,15 @@ def print_diagnostics_table(
         else:
             vif_str = f"{'':>9}"
 
-        # Monte Carlo SE — 4 dp sufficient for precision assessment
+        # Monte Carlo SE — 4 dp sufficient for precision assessment.
+        # Confounders have no permutation distribution, so their MC SE
+        # is NaN; display an em dash instead of a bare "nan".
         if i < len(mc_ses):
-            mc_str = f"{mc_ses[i]:>9.4f}"
+            mc_val = mc_ses[i]
+            if isinstance(mc_val, float) and mc_val != mc_val:  # NaN check
+                mc_str = f"{'—':>9}"
+            else:
+                mc_str = f"{mc_val:>9.4f}"
         else:
             mc_str = f"{'':>9}"
 
@@ -535,136 +439,10 @@ def print_diagnostics_table(
     print("Model-level Diagnostics")
     print("-" * W)
 
-    if model_type == "linear":
-        bp = ext.get("breusch_pagan", {})
-        if bp:
-            print(
-                f"{'  Breusch-Pagan LM:':<{lw}}"
-                f"{bp.get('lm_stat', 'N/A'):>10}   "
-                f"p = {_fmt_p(bp.get('lm_p_value'))}"
-            )
-            print(
-                f"{'  Breusch-Pagan F:':<{lw}}"
-                f"{bp.get('f_stat', 'N/A'):>10}   "
-                f"p = {_fmt_p(bp.get('f_p_value'))}"
-            )
-            bp_p = bp.get("lm_p_value")
-            if bp_p is not None and bp_p < 0.05:
-                notes.append(
-                    f"Breusch-Pagan p = {bp_p:.4f}: "
-                    f"heteroscedastic residuals detected; "
-                    f"exchangeability assumption may be violated."
-                )
-    elif model_type == "poisson":
-        gof = ext.get("poisson_gof", {})
-        if gof:
-            print(
-                f"{'  Pearson ' + chr(0x03C7) + chr(0x00B2) + ':':<{lw}}"
-                f"{gof.get('pearson_chi2', 'N/A'):>10}"
-            )
-            print(f"{'  Deviance:':<{lw}}{gof.get('deviance', 'N/A'):>10}")
-            disp = gof.get("dispersion", None)
-            disp_str = f"{disp:.4f}" if disp is not None else "N/A"
-            print(f"{'  Dispersion:':<{lw}}{disp_str:>10}")
-            if gof.get("overdispersed", False):
-                notes.append(
-                    f"Dispersion = {disp_str}: overdispersion "
-                    f"detected (> 1.5). Consider using "
-                    f"family='negative_binomial'."
-                )
-    elif model_type == "negative_binomial":
-        gof = ext.get("nb_gof", {})
-        if gof:
-            print(
-                f"{'  Pearson ' + chr(0x03C7) + chr(0x00B2) + ':':<{lw}}"
-                f"{gof.get('pearson_chi2', 'N/A'):>10}"
-            )
-            print(f"{'  Deviance:':<{lw}}{gof.get('deviance', 'N/A'):>10}")
-            disp = gof.get("dispersion", None)
-            disp_str = f"{disp:.4f}" if disp is not None else "N/A"
-            print(f"{'  Dispersion:':<{lw}}{disp_str:>10}")
-            alpha_val = gof.get("alpha", None)
-            alpha_str = f"{alpha_val:.4f}" if alpha_val is not None else "N/A"
-            alpha_label = "  \u03b1 (NB Dispersion):"
-            print(f"{alpha_label:<{lw}}{alpha_str:>10}")
-            if gof.get("overdispersed", False):
-                notes.append(
-                    f"Dispersion = {disp_str}: residual "
-                    f"overdispersion detected after NB fit."
-                )
-    elif model_type == "ordinal":
-        gof = ext.get("ordinal_gof", {})
-        if gof:
-            pr2 = gof.get("pseudo_r_squared", None)
-            pr2_str = f"{pr2:.4f}" if pr2 is not None else "N/A"
-            print(f"{'  Pseudo R-sq:':<{lw}}{pr2_str:>10}")
-            ll = gof.get("log_likelihood", None)
-            ll_str = f"{ll:.4f}" if ll is not None else "N/A"
-            print(f"{'  Log-Likelihood:':<{lw}}{ll_str:>10}")
-            n_cats = gof.get("n_categories", None)
-            n_cats_str = str(n_cats) if n_cats is not None else "N/A"
-            print(f"{'  Categories:':<{lw}}{n_cats_str:>10}")
-            # Proportional odds test
-            po_chi2 = gof.get("prop_odds_chi2", None)
-            po_p = gof.get("prop_odds_p", None)
-            if po_chi2 is not None:
-                po_chi2_str = f"{po_chi2:.4f}" if po_chi2 is not None else "N/A"
-                print(
-                    f"{'  Prop. Odds ' + chr(0x03C7) + chr(0x00B2) + ':':<{lw}}"
-                    f"{po_chi2_str:>10}   "
-                    f"p = {_fmt_p(po_p)}"
-                )
-                po_df = gof.get("prop_odds_df", None)
-                if po_df is not None:
-                    print(f"{'  Prop. Odds df:':<{lw}}{po_df:>10}")
-                if po_p is not None and po_p < 0.05:
-                    notes.append(
-                        "Proportional odds "
-                        + chr(0x03C7)
-                        + chr(0x00B2)
-                        + f" p = {po_p:.4f}: the proportional odds "
-                        "assumption may be violated."
-                    )
-    elif model_type == "multinomial":
-        gof = ext.get("multinomial_gof", {})
-        if gof:
-            pr2 = gof.get("pseudo_r_squared", None)
-            pr2_str = f"{pr2:.4f}" if pr2 is not None else "N/A"
-            print(f"{'  Pseudo R-sq:':<{lw}}{pr2_str:>10}")
-            ll = gof.get("log_likelihood", None)
-            ll_str = f"{ll:.4f}" if ll is not None else "N/A"
-            print(f"{'  Log-Likelihood:':<{lw}}{ll_str:>10}")
-            n_cats = gof.get("n_categories", None)
-            n_cats_str = str(n_cats) if n_cats is not None else "N/A"
-            print(f"{'  Categories:':<{lw}}{n_cats_str:>10}")
-            llr_p = gof.get("llr_p_value", None)
-            if llr_p is not None:
-                print(f"{'  LLR p-value:':<{lw}}{_fmt_p(llr_p):>10}")
-            cat_counts = gof.get("category_counts", {})
-            if cat_counts:
-                counts_str = ", ".join(
-                    f"{k}: {v}" for k, v in sorted(cat_counts.items())
-                )
-                print(f"  Category counts:  {counts_str}")
-    else:
-        dr = ext.get("deviance_residuals", {})
-        if dr:
-            print(f"{'  Deviance resid. mean:':<{lw}}{dr.get('mean', 'N/A'):>10}")
-            print(f"{'  Deviance resid. var:':<{lw}}{dr.get('variance', 'N/A'):>10}")
-            print(f"{'  |d_i| > 2 count:':<{lw}}{dr.get('n_extreme', 'N/A'):>10}")
-            print(
-                f"{'  Runs test Z:':<{lw}}"
-                f"{dr.get('runs_test_z', 'N/A'):>10}   "
-                f"p = {_fmt_p(dr.get('runs_test_p'))}"
-            )
-            n_extreme = dr.get("n_extreme", 0)
-            if isinstance(n_extreme, (int, float)) and n_extreme > 0:
-                notes.append(f"{int(n_extreme)} obs. with |deviance residual| > 2.")
-            runs_p = dr.get("runs_test_p")
-            if runs_p is not None and runs_p < 0.05:
-                notes.append(
-                    "Runs test p < 0.05: non-random residual pattern detected."
-                )
+    diag_lines, diag_notes = family.display_diagnostics(ext)
+    for label, value in diag_lines:
+        print(f"{'  ' + label:<{lw}}{value}")
+    notes.extend(diag_notes)
 
     # Cook's distance
     cd = ext.get("cooks_distance", {})
@@ -699,15 +477,6 @@ def print_diagnostics_table(
     print()
 
 
-def _fmt_p(p: float | None) -> str:
-    """Format a p-value for the diagnostics table."""
-    if p is None:
-        return "N/A"
-    if p < 0.0001:
-        return f"{p:.2e}"
-    return f"{p:.4f}"
-
-
 def print_confounder_table(
     confounder_results: dict,
     title: str = "Confounder Identification Results",
@@ -715,7 +484,7 @@ def print_confounder_table(
     p_value_threshold: float = 0.05,
     n_bootstrap: int = 1000,
     confidence_level: float = 0.95,
-    family: str | None = None,
+    family: ModelFamily | str | None = None,
 ) -> None:
     """Print confounder identification results in a formatted ASCII table.
 
@@ -787,7 +556,8 @@ def print_confounder_table(
         f"Mediation: BCa bootstrap (B={n_bootstrap}, {ci_pct}% CI)"
     )
     if family is not None:
-        print(f"Family:    {family}")
+        family_str = family.name if isinstance(family, ModelFamily) else family
+        print(f"Family:    {family_str}")
     print("-" * W)
 
     # ── Partition predictors ───────────────────────────────────── #

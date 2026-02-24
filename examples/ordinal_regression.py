@@ -91,6 +91,8 @@ print(f"  direct_permutation = {ordinal_family.direct_permutation}")
 print(f"  residual_type = {ordinal_family.residual_type!r}")
 print(f"  metric_label = {ordinal_family.metric_label!r}")
 
+_family = resolve_family("ordinal")
+
 # ============================================================================
 # ter Braak (1992) — direct Y permutation (Manly 1997)
 # ============================================================================
@@ -104,8 +106,10 @@ with warnings.catch_warnings():
     results_ter_braak = permutation_test_regression(
         X, y, method="ter_braak", family="ordinal", n_permutations=199
     )
-print_results_table(results_ter_braak, feature_names=X.columns.tolist())
-print_diagnostics_table(results_ter_braak, feature_names=X.columns.tolist())
+print_results_table(results_ter_braak, feature_names=X.columns.tolist(), family=_family)
+print_diagnostics_table(
+    results_ter_braak, feature_names=X.columns.tolist(), family=_family
+)
 
 # ============================================================================
 # Confounder analysis
@@ -150,8 +154,10 @@ with warnings.catch_warnings():
         confounders=confounders,
         n_permutations=199,
     )
-print_results_table(results_kennedy, feature_names=X.columns.tolist())
-print_diagnostics_table(results_kennedy, feature_names=X.columns.tolist())
+print_results_table(results_kennedy, feature_names=X.columns.tolist(), family=_family)
+print_diagnostics_table(
+    results_kennedy, feature_names=X.columns.tolist(), family=_family
+)
 
 # ============================================================================
 # Kennedy (1995) joint — collective predictive improvement
@@ -171,7 +177,7 @@ with warnings.catch_warnings():
         confounders=confounders,
         n_permutations=199,
     )
-print_joint_results_table(results_joint)
+print_joint_results_table(results_joint, family=_family)
 
 # ============================================================================
 # Freedman-Lane rejection (expected ValueError)

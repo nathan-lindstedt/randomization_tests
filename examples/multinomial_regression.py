@@ -26,6 +26,7 @@ from randomization_tests import (
     print_diagnostics_table,
     print_joint_results_table,
     print_results_table,
+    resolve_family,
 )
 
 # ============================================================================
@@ -51,6 +52,8 @@ class_names = ["class_0", "class_1", "class_2"]
 print(f"Classes: {dict(enumerate(class_names))}")
 print(f"Class counts: {dict(zip(class_names, np.bincount(y_values), strict=True))}")
 
+_family = resolve_family("multinomial")
+
 # ============================================================================
 # ter Braak (1992) — family="multinomial"
 # ============================================================================
@@ -61,12 +64,14 @@ results_ter_braak = permutation_test_regression(
 print_results_table(
     results_ter_braak,
     feature_names=X_wine.columns.tolist(),
+    family=_family,
     target_name="class",
     title="ter Braak (1992) Permutation Test (family='multinomial')",
 )
 print_diagnostics_table(
     results_ter_braak,
     feature_names=X_wine.columns.tolist(),
+    family=_family,
     title="ter Braak (1992) Diagnostics (family='multinomial')",
 )
 assert results_ter_braak["model_type"] == "multinomial"
@@ -83,12 +88,14 @@ with warnings.catch_warnings():
 print_results_table(
     results_kennedy,
     feature_names=X_wine.columns.tolist(),
+    family=_family,
     target_name="class",
     title="Kennedy (1995) Individual Permutation Test (family='multinomial')",
 )
 print_diagnostics_table(
     results_kennedy,
     feature_names=X_wine.columns.tolist(),
+    family=_family,
     title="Kennedy (1995) Individual Diagnostics (family='multinomial')",
 )
 
@@ -107,6 +114,7 @@ with warnings.catch_warnings():
     )
 print_joint_results_table(
     results_kennedy_joint,
+    family=_family,
     target_name="class",
     title="Kennedy (1995) Joint Permutation Test (family='multinomial')",
 )
@@ -151,6 +159,7 @@ if predictors_with_confounders:
     print_results_table(
         results_kc,
         feature_names=X_wine.columns.tolist(),
+        family=_family,
         target_name="class",
         title=(
             f"Kennedy (1995) for '{example_predictor}' "
@@ -161,6 +170,7 @@ if predictors_with_confounders:
     print_diagnostics_table(
         results_kc,
         feature_names=X_wine.columns.tolist(),
+        family=_family,
         title=(
             f"Kennedy (1995) Diagnostics for '{example_predictor}' "
             f"(family='multinomial')"

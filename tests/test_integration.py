@@ -30,7 +30,7 @@ from randomization_tests.display import (
     print_joint_results_table,
     print_results_table,
 )
-from randomization_tests.families import LinearFamily, LogisticFamily
+from randomization_tests.families import LinearFamily, LogisticFamily, resolve_family
 
 # ------------------------------------------------------------------ #
 # Shared fixtures
@@ -323,7 +323,8 @@ class TestDisplayIntegration:
         result = permutation_test_regression(
             X, y, n_permutations=_N_PERMS, random_state=_SEED, method="ter_braak"
         )
-        print_results_table(result, list(X.columns))
+        family = resolve_family(result["model_type"])
+        print_results_table(result, list(X.columns), family=family)
         captured = capsys.readouterr()
         assert (
             "ter_braak" in captured.out.lower() or "ter braak" in captured.out.lower()
@@ -341,7 +342,7 @@ class TestDisplayIntegration:
             method="kennedy_joint",
             confounders=["x3"],
         )
-        print_joint_results_table(result)
+        print_joint_results_table(result, family=resolve_family(result["model_type"]))
         captured = capsys.readouterr()
         assert (
             "kennedy_joint" in captured.out.lower() or "kennedy" in captured.out.lower()
@@ -352,7 +353,8 @@ class TestDisplayIntegration:
         result = permutation_test_regression(
             X, y, n_permutations=_N_PERMS, random_state=_SEED, method="ter_braak"
         )
-        print_diagnostics_table(result, list(X.columns))
+        family = resolve_family(result["model_type"])
+        print_diagnostics_table(result, list(X.columns), family=family)
         captured = capsys.readouterr()
         assert len(captured.out) > 0
 
@@ -699,8 +701,9 @@ class TestPoissonIntegration:
         result = permutation_test_regression(
             X, y, n_permutations=50, random_state=_SEED, family="poisson"
         )
-        print_results_table(result, list(X.columns))
-        print_diagnostics_table(result, list(X.columns))
+        family = resolve_family(result["model_type"])
+        print_results_table(result, list(X.columns), family=family)
+        print_diagnostics_table(result, list(X.columns), family=family)
         captured = capsys.readouterr()
         assert "poisson" in captured.out.lower()
 
@@ -766,8 +769,9 @@ class TestNegBinIntegration:
         result = permutation_test_regression(
             X, y, n_permutations=50, random_state=_SEED, family="negative_binomial"
         )
-        print_results_table(result, list(X.columns))
-        print_diagnostics_table(result, list(X.columns))
+        family = resolve_family(result["model_type"])
+        print_results_table(result, list(X.columns), family=family)
+        print_diagnostics_table(result, list(X.columns), family=family)
         captured = capsys.readouterr()
         assert "negative" in captured.out.lower()
 
@@ -850,8 +854,9 @@ class TestOrdinalIntegration:
         result = permutation_test_regression(
             X, y, n_permutations=50, random_state=_SEED, family="ordinal"
         )
-        print_results_table(result, list(X.columns))
-        print_diagnostics_table(result, list(X.columns))
+        family = resolve_family(result["model_type"])
+        print_results_table(result, list(X.columns), family=family)
+        print_diagnostics_table(result, list(X.columns), family=family)
         captured = capsys.readouterr()
         assert "ordinal" in captured.out.lower()
 
@@ -934,8 +939,9 @@ class TestMultinomialIntegration:
         result = permutation_test_regression(
             X, y, n_permutations=50, random_state=_SEED, family="multinomial"
         )
-        print_results_table(result, list(X.columns))
-        print_diagnostics_table(result, list(X.columns))
+        family = resolve_family(result["model_type"])
+        print_results_table(result, list(X.columns), family=family)
+        print_diagnostics_table(result, list(X.columns), family=family)
         captured = capsys.readouterr()
         assert "multinomial" in captured.out.lower()
 

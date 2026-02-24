@@ -6,6 +6,7 @@ from randomization_tests.display import (
     print_joint_results_table,
     print_results_table,
 )
+from randomization_tests.families import resolve_family
 
 
 class TestTruncate:
@@ -42,7 +43,12 @@ class TestPrintResultsTable:
                 "bic": 155.0,
             },
         }
-        print_results_table(results, ["x1", "x2"], target_name="y")
+        print_results_table(
+            results,
+            ["x1", "x2"],
+            family=resolve_family("linear"),
+            target_name="y",
+        )
         captured = capsys.readouterr()
         assert "ter_braak" in captured.out
         assert "x1" in captured.out
@@ -65,7 +71,7 @@ class TestPrintResultsTable:
                 "bic": 105,
             },
         }
-        print_results_table(results, ["x1"])
+        print_results_table(results, ["x1"], family=resolve_family("linear"))
         out = capsys.readouterr().out
         assert "Notes" in out
         assert "without confounders" in out
@@ -88,7 +94,7 @@ class TestPrintResultsTable:
                 "bic": 105,
             },
         }
-        print_results_table(results, ["x1"])
+        print_results_table(results, ["x1"], family=resolve_family("linear"))
         out = capsys.readouterr().out
         assert "Notes" not in out
 
@@ -109,7 +115,7 @@ class TestPrintResultsTable:
                 "bic": 105,
             },
         }
-        print_results_table(results, ["x1"])
+        print_results_table(results, ["x1"], family=resolve_family("linear"))
         out = capsys.readouterr().out
         assert "Notes" not in out
 
@@ -138,7 +144,11 @@ class TestPrintJointResultsTable:
                 "bic": 155.0,
             },
         }
-        print_joint_results_table(results, target_name="y")
+        print_joint_results_table(
+            results,
+            family=resolve_family("linear"),
+            target_name="y",
+        )
         captured = capsys.readouterr()
         assert "kennedy_joint" in captured.out
         assert "12.34" in captured.out
@@ -163,7 +173,7 @@ class TestPrintJointResultsTable:
                 "bic": 105,
             },
         }
-        print_joint_results_table(results)
+        print_joint_results_table(results, family=resolve_family("linear"))
         out = capsys.readouterr().out
         assert "Notes" in out
         assert "without confounders" in out
@@ -188,7 +198,7 @@ class TestPrintJointResultsTable:
                 "bic": 105,
             },
         }
-        print_joint_results_table(results)
+        print_joint_results_table(results, family=resolve_family("linear"))
         out = capsys.readouterr().out
         assert "Notes" not in out
 

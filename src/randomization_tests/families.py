@@ -49,6 +49,20 @@ from statsmodels.tools.sm_exceptions import (
 )
 
 # ------------------------------------------------------------------ #
+# Display helpers
+# ------------------------------------------------------------------ #
+
+
+def _fmt_p(p: float | None) -> str:
+    """Format a p-value for display: scientific notation if tiny, 4 dp otherwise."""
+    if p is None:
+        return "N/A"
+    if p < 0.0001:
+        return f"{p:.2e}"
+    return f"{p:.4f}"
+
+
+# ------------------------------------------------------------------ #
 # ModelFamily protocol
 # ------------------------------------------------------------------ #
 #
@@ -96,6 +110,62 @@ class ModelFamily(Protocol):
         goodness-of-fit measure underlies the joint test statistic.
         Examples: ``"RSS Reduction"`` (linear), ``"Deviance Reduction"``
         (logistic, Poisson, negative binomial).
+        """
+        ...
+
+    @property
+    def stat_label(self) -> str:
+        """Symbol for the per-coefficient test statistic.
+
+        Displayed in result table column headers to identify the
+        statistic reported for each predictor.
+        Examples: ``"t"`` (linear), ``"z"`` (logistic, Poisson,
+        negative binomial, ordinal), ``"χ²"`` (multinomial).
+        """
+        ...
+
+    # ---- Display ---------------------------------------------------
+
+    def display_header(
+        self,
+        diagnostics: dict[str, Any],
+    ) -> list[tuple[str, str, str, str]]:
+        """Return structured row descriptors for the results table header.
+
+        Each 4-tuple is ``(left_label, left_value, right_label,
+        right_value)``.  ``display.py`` owns all column-width and
+        alignment logic; families own content and value formatting.
+        Use empty strings for absent cells.
+
+        Args:
+            diagnostics: The ``diagnostics`` dict from the result object.
+
+        Returns:
+            A list of 4-tuples, one per header row.
+        """
+        ...
+
+    def display_diagnostics(
+        self,
+        diagnostics: dict[str, Any],
+    ) -> tuple[list[tuple[str, str]], list[str]]:
+        """Return model-level diagnostic lines and interpretive notes.
+
+        The first element is a list of ``(label, formatted_value)``
+        pairs rendered in the "Model-level Diagnostics" section.  The
+        second element is a list of plain-text warning strings appended
+        to the "Notes" section when a diagnostic flags a concern.
+
+        Bundling notes with lines keeps ``display.py`` fully
+        family-agnostic — each family owns both its diagnostic values
+        and their interpretive warnings.
+
+        Args:
+            diagnostics: The ``extended_diagnostics`` dict from the
+                result object.
+
+        Returns:
+            ``(lines, notes)`` — diagnostic lines and warning strings.
         """
         ...
 
@@ -228,18 +298,68 @@ class ModelFamily(Protocol):
         """
         ...
 
+    # ---- Unified scoring interface ---------------------------------
+    #
+    # The joint permutation test (Kennedy 1995) needs to compare the
+    # fit of a full model (all features) against a reduced model
+    # (confounders only).  The test statistic is:
+    #
+    #   Δ = S(reduced) − S(full)
+    #
+    # where S(·) is a "score" — a goodness-of-fit metric where
+    # **lower values indicate better fit**.  When the full model
+    # fits better than the reduced model, Δ > 0.
+    #
+    # Before this interface existed, scoring was split across two
+    # incompatible code paths:
+    #
+    # 1. **Prediction-based families** (linear, logistic, Poisson, NB)
+    #    computed S via ``fit_metric(y, predict(model, X))`` — the
+    #    metric only needed predicted values, not the model object.
+    #
+    # 2. **Model-object families** (ordinal, multinomial) stored the
+    #    log-likelihood on the fitted model and used
+    #    ``-2 * model.llf`` as the score — but this was accessed
+    #    through duck-typed ``model_fit_metric()`` methods that
+    #    strategies detected via ``hasattr()``.
+    #
+    # ``score()`` and ``null_score()`` unify both paths behind a
+    # single protocol interface.  Every family implements both.
+    # Strategy code never needs to know which path is taken.
+    #
+    # Convention: "lower is better" for all families:
+    #   - Linear:  RSS = Σ(yᵢ − ŷᵢ)² — decreases with better fit.
+    #   - GLMs:    Deviance = −2·ℓ(model) — decreases as the
+    #              log-likelihood ℓ increases with better fit.
+    #   - Ordinal/Multinomial: −2·ℓ(model) — same convention.
+    #
+    # The null-model score is needed as the baseline for the joint
+    # test when there are no confounders (Z has zero columns).  In
+    # that case, the reduced model IS the null model, and we need
+    # S(null) without fitting anything.
+
     def score(self, model: Any, X: np.ndarray, y: np.ndarray) -> float:
-        """Goodness-of-fit metric from a fitted model object.
+        """Goodness-of-fit score from a fitted model object.
 
-        Unlike ``fit_metric`` (which takes predictions), ``score``
-        takes the opaque model object and computes the metric
-        internally.  Prediction-based families delegate to
-        ``self.fit_metric(y, self.predict(model, X))``; model-object
-        families (ordinal, multinomial) extract the log-likelihood
-        directly: ``-2 * model.llf``.
+        Computes the family-specific metric that the joint test uses
+        to measure model fit.  The convention is **lower is better**:
 
-        Lower is better — the joint test statistic
-        (reduced - full) is positive when the features improve fit.
+        * **Prediction-based families** (linear, logistic, Poisson,
+          negative binomial): delegates to
+          ``self.fit_metric(y, self.predict(model, X))``.  For linear
+          this is RSS = Σ(yᵢ − ŷᵢ)²; for GLMs this is the deviance
+          D = 2·Σ[ℓᵢ(saturated) − ℓᵢ(model)].
+
+        * **Model-object families** (ordinal, multinomial): extracts
+          the log-likelihood from the fitted statsmodels object and
+          returns ``−2 · ℓ(model)``.  This is necessary because these
+          models produce category-probability predictions rather than
+          scalar predictions, so ``fit_metric(y, predict(...))`` is
+          not meaningful.
+
+        The joint test statistic is ``Δ = score(reduced) − score(full)``.
+        When features improve fit, the full model has a lower score,
+        so Δ > 0.
 
         Args:
             model: A fitted model object returned by ``fit``.
@@ -247,29 +367,43 @@ class ModelFamily(Protocol):
             y: Observed response vector of shape ``(n,)``.
 
         Returns:
-            Scalar fit metric.
+            Scalar fit metric (lower is better).
         """
         ...
 
     def null_score(self, y: np.ndarray, fit_intercept: bool = True) -> float:
-        """Null-model (intercept-only) baseline metric.
+        """Null-model (intercept-only) baseline score.
 
-        Prediction-based families compute
-        ``fit_metric(y, full(n, mean(y)))`` (or zeros when
-        ``fit_intercept=False``).  Model-object families fit an
-        intercept-only model and return ``-2 * llf``.
+        Computes the score of a model with **no predictor variables**
+        — only an intercept (if ``fit_intercept=True``).  This is the
+        baseline for the joint test when there are no confounders:
 
-        This replaces the ``null_fit_metric(model)`` duck-typed
-        method and the deferred-assignment pattern in Kennedy joint.
+            Δ = null_score(y) − score(full_model, X, y)
 
-        Lower is better.
+        Implementation varies by family type:
+
+        * **Prediction-based families**: the intercept-only MLE
+          predicts ``ȳ`` (the sample mean) for every observation.
+          The null score is therefore ``fit_metric(y, [ȳ, ȳ, …, ȳ])``.
+          For linear: RSS_null = Σ(yᵢ − ȳ)² = (n−1)·Var(y).
+          For logistic: Deviance_null = 2·Σ[−yᵢ·log(p̄) − (1−yᵢ)·log(1−p̄)]
+          where p̄ = P(Y=1) = ȳ.
+
+        * **Ordinal**: analytical formula from empirical proportions.
+          See ``OrdinalFamily.null_score()`` for derivation.
+
+        * **Multinomial**: fits an intercept-only ``MNLogit`` model.
+          See ``MultinomialFamily.null_score()`` for rationale.
+
+        When ``fit_intercept=False``, predictions are all zeros —
+        this is a degenerate model used only in edge-case testing.
 
         Args:
             y: Observed response vector of shape ``(n,)``.
             fit_intercept: Whether the model includes an intercept.
 
         Returns:
-            Scalar null-model metric.
+            Scalar null-model metric (lower is better).
         """
         ...
 
@@ -494,6 +628,67 @@ class LinearFamily:
     def metric_label(self) -> str:
         return "RSS Reduction"
 
+    @property
+    def stat_label(self) -> str:
+        return "t"
+
+    # ---- Display ---------------------------------------------------
+
+    def display_header(
+        self,
+        diagnostics: dict[str, Any],
+    ) -> list[tuple[str, str, str, str]]:
+        """Return header rows for the linear results table."""
+        f_p = diagnostics.get("f_p_value")
+        f_p_str = f"{f_p:.4e}" if f_p is not None else "N/A"
+        return [
+            (
+                "R-squared:",
+                str(diagnostics.get("r_squared", "N/A")),
+                "BIC:",
+                str(diagnostics.get("bic", "N/A")),
+            ),
+            (
+                "Adj. R-squared:",
+                str(diagnostics.get("r_squared_adj", "N/A")),
+                "F-statistic:",
+                str(diagnostics.get("f_statistic", "N/A")),
+            ),
+            ("", "", "Prob (F-stat):", f_p_str),
+        ]
+
+    def display_diagnostics(
+        self,
+        diagnostics: dict[str, Any],
+    ) -> tuple[list[tuple[str, str]], list[str]]:
+        """Return diagnostic lines and notes for the linear family."""
+        lines: list[tuple[str, str]] = []
+        notes: list[str] = []
+        bp = diagnostics.get("breusch_pagan", {})
+        if bp:
+            lines.append(
+                (
+                    "Breusch-Pagan LM:",
+                    f"{bp.get('lm_stat', 'N/A'):>10}   "
+                    f"p = {_fmt_p(bp.get('lm_p_value'))}",
+                )
+            )
+            lines.append(
+                (
+                    "Breusch-Pagan F:",
+                    f"{bp.get('f_stat', 'N/A'):>10}   "
+                    f"p = {_fmt_p(bp.get('f_p_value'))}",
+                )
+            )
+            bp_p = bp.get("lm_p_value")
+            if bp_p is not None and bp_p < 0.05:
+                notes.append(
+                    f"Breusch-Pagan p = {bp_p:.4f}: "
+                    f"heteroscedastic residuals detected; "
+                    f"exchangeability assumption may be violated."
+                )
+        return lines, notes
+
     # ---- Validation ------------------------------------------------
     #
     # Catch two common data errors early:
@@ -603,12 +798,49 @@ class LinearFamily:
         """
         return float(mean_squared_error(y_true, y_pred) * len(y_true))
 
+    # ---- Scoring (joint test interface) ----------------------------
+    #
+    # For OLS the natural goodness-of-fit measure is RSS:
+    #
+    #   RSS = Σᵢ (yᵢ − ŷᵢ)²
+    #
+    # The joint test statistic is Δ = RSS_reduced − RSS_full.
+    # Adding informative features reduces RSS, so Δ > 0 when the
+    # features collectively improve the fit.  The F-statistic is a
+    # scaled version of this same quantity:
+    #
+    #   F = [(RSS_reduced − RSS_full) / q] / [RSS_full / (n − p − 1)]
+    #
+    # where q is the number of features being tested and p is the
+    # total number of predictors including confounders.  The
+    # permutation test replaces the F-distribution assumption with
+    # an empirical reference distribution of Δ values.
+    #
+    # The null-model (intercept-only) predicts ȳ for every
+    # observation — this is the OLS MLE when the design matrix
+    # contains only an intercept column.  Its RSS equals the
+    # total sum of squares: RSS_null = Σ(yᵢ − ȳ)² = (n−1)·Var(y).
+
     def score(self, model: Any, X: np.ndarray, y: np.ndarray) -> float:
-        """RSS from fitted model: ``fit_metric(y, predict(model, X))``."""
+        """RSS from a fitted linear model.
+
+        Delegates to ``fit_metric(y, predict(model, X))`` which
+        computes RSS = Σ(yᵢ − ŷᵢ)² = MSE × n.
+        """
         return self.fit_metric(y, self.predict(model, X))
 
     def null_score(self, y: np.ndarray, fit_intercept: bool = True) -> float:
-        """RSS of the intercept-only (mean) model."""
+        """RSS of the intercept-only (mean) model.
+
+        The OLS intercept-only model predicts ŷᵢ = ȳ for all i.
+        RSS_null = Σ(yᵢ − ȳ)² is the total sum of squares (TSS),
+        which equals (n − 1) · Var(y).  This is the maximum RSS
+        achievable by any model with an intercept — adding any
+        predictor can only reduce RSS (OLS is a projection).
+
+        When ``fit_intercept=False``, predicts zero for all
+        observations — a degenerate baseline for edge-case testing.
+        """
         n = len(y)
         if fit_intercept:
             preds = np.full(n, np.mean(y), dtype=float)
@@ -847,6 +1079,64 @@ class LogisticFamily:
     def metric_label(self) -> str:
         return "Deviance Reduction"
 
+    @property
+    def stat_label(self) -> str:
+        return "z"
+
+    # ---- Display ---------------------------------------------------
+
+    def display_header(
+        self,
+        diagnostics: dict[str, Any],
+    ) -> list[tuple[str, str, str, str]]:
+        """Return header rows for the logistic results table."""
+        llr_p = diagnostics.get("llr_p_value")
+        llr_p_str = f"{llr_p:.4e}" if llr_p is not None else "N/A"
+        return [
+            (
+                "Pseudo R-sq:",
+                str(diagnostics.get("pseudo_r_squared", "N/A")),
+                "BIC:",
+                str(diagnostics.get("bic", "N/A")),
+            ),
+            (
+                "Log-Likelihood:",
+                str(diagnostics.get("log_likelihood", "N/A")),
+                "LL-Null:",
+                str(diagnostics.get("log_likelihood_null", "N/A")),
+            ),
+            ("", "", "LLR p-value:", llr_p_str),
+        ]
+
+    def display_diagnostics(
+        self,
+        diagnostics: dict[str, Any],
+    ) -> tuple[list[tuple[str, str]], list[str]]:
+        """Return diagnostic lines and notes for the logistic family."""
+        lines: list[tuple[str, str]] = []
+        notes: list[str] = []
+        dr = diagnostics.get("deviance_residuals", {})
+        if dr:
+            lines.append(("Deviance resid. mean:", f"{dr.get('mean', 'N/A'):>10}"))
+            lines.append(("Deviance resid. var:", f"{dr.get('variance', 'N/A'):>10}"))
+            lines.append(("|d_i| > 2 count:", f"{dr.get('n_extreme', 'N/A'):>10}"))
+            lines.append(
+                (
+                    "Runs test Z:",
+                    f"{dr.get('runs_test_z', 'N/A'):>10}   "
+                    f"p = {_fmt_p(dr.get('runs_test_p'))}",
+                )
+            )
+            n_extreme = dr.get("n_extreme", 0)
+            if isinstance(n_extreme, (int, float)) and n_extreme > 0:
+                notes.append(f"{int(n_extreme)} obs. with |deviance residual| > 2.")
+            runs_p = dr.get("runs_test_p")
+            if runs_p is not None and runs_p < 0.05:
+                notes.append(
+                    "Runs test p < 0.05: non-random residual pattern detected."
+                )
+        return lines, notes
+
     # ---- Validation ------------------------------------------------
     #
     # Logistic regression requires exactly two classes, coded as 0/1.
@@ -977,12 +1267,53 @@ class LogisticFamily:
         y_pred_safe = np.clip(y_pred, 0.001, 0.999)
         return float(2.0 * log_loss(y_true, y_pred_safe, normalize=False))
 
+    # ---- Scoring (joint test interface) ----------------------------
+    #
+    # For logistic regression, the goodness-of-fit measure is the
+    # deviance — twice the negative log-likelihood:
+    #
+    #   D = −2·ℓ(model) = 2·Σᵢ [−yᵢ·log(p̂ᵢ) − (1−yᵢ)·log(1−p̂ᵢ)]
+    #
+    # where p̂ᵢ = P(Yᵢ = 1 | Xᵢ) is the predicted probability.
+    # Deviance is the logistic analogue of RSS — the MLE minimises
+    # it (equivalently, maximises the log-likelihood).  The joint
+    # test statistic Δ = D_reduced − D_full is the likelihood-ratio
+    # statistic, which under classical theory follows a χ² distribution
+    # with q degrees of freedom.  The permutation test replaces this
+    # distributional assumption with an empirical reference.
+    #
+    # The null-model predicts p̂ᵢ = ȳ = P(Y=1) for every observation
+    # — this is the MLE of the intercept-only logistic model.
+    # (The logistic intercept β₀ satisfies P = 1/(1+exp(−β₀)) = ȳ,
+    # i.e. β₀ = log(ȳ/(1−ȳ)), which gives predicted probability ȳ.)
+    #
+    # Predictions are clipped to [0.001, 0.999] before computing
+    # deviance to avoid log(0) singularities.
+
     def score(self, model: Any, X: np.ndarray, y: np.ndarray) -> float:
-        """Deviance from fitted model: ``fit_metric(y, predict(model, X))``."""
+        """Deviance from a fitted logistic model.
+
+        Delegates to ``fit_metric(y, predict(model, X))`` which
+        computes D = 2·Σ[−yᵢ·log(p̂ᵢ) − (1−yᵢ)·log(1−p̂ᵢ)].
+        """
         return self.fit_metric(y, self.predict(model, X))
 
     def null_score(self, y: np.ndarray, fit_intercept: bool = True) -> float:
-        """Deviance of the intercept-only (base-rate) model."""
+        """Deviance of the intercept-only (base-rate) logistic model.
+
+        The intercept-only MLE predicts p̂ᵢ = ȳ = P(Y = 1) for
+        all observations.  The null deviance is:
+
+            D_null = 2·Σ[−yᵢ·log(ȳ) − (1−yᵢ)·log(1−ȳ)]
+                   = −2·[n₁·log(ȳ) + n₀·log(1−ȳ)]
+
+        where n₁ = Σyᵢ and n₀ = n − n₁.  This is the maximum
+        deviance for any logistic model with an intercept.
+
+        When ``fit_intercept=False``, predicts p̂ = 0.5 (logistic
+        sigmoid of zero) — but we pass 0.0 through ``fit_metric``
+        which clips to 0.001, giving a conservative baseline.
+        """
         n = len(y)
         if fit_intercept:
             preds = np.full(n, np.mean(y), dtype=float)
@@ -1248,6 +1579,67 @@ class PoissonFamily:
     def metric_label(self) -> str:
         return "Deviance Reduction"
 
+    @property
+    def stat_label(self) -> str:
+        return "z"
+
+    # ---- Display ---------------------------------------------------
+
+    def display_header(
+        self,
+        diagnostics: dict[str, Any],
+    ) -> list[tuple[str, str, str, str]]:
+        """Return header rows for the Poisson results table."""
+        pearson = diagnostics.get("pearson_chi2")
+        pearson_str = f"{pearson:.4f}" if pearson is not None else "N/A"
+        return [
+            (
+                "Deviance:",
+                str(diagnostics.get("deviance", "N/A")),
+                "BIC:",
+                str(diagnostics.get("bic", "N/A")),
+            ),
+            (
+                "Log-Likelihood:",
+                str(diagnostics.get("log_likelihood", "N/A")),
+                "Dispersion:",
+                str(diagnostics.get("dispersion", "N/A")),
+            ),
+            (
+                "",
+                "",
+                "\u03c7\u00b2 (Pearson):",
+                pearson_str,
+            ),
+        ]
+
+    def display_diagnostics(
+        self,
+        diagnostics: dict[str, Any],
+    ) -> tuple[list[tuple[str, str]], list[str]]:
+        """Return diagnostic lines and notes for the Poisson family."""
+        lines: list[tuple[str, str]] = []
+        notes: list[str] = []
+        gof = diagnostics.get("poisson_gof", {})
+        if gof:
+            lines.append(
+                (
+                    "Pearson \u03c7\u00b2:",
+                    f"{gof.get('pearson_chi2', 'N/A'):>10}",
+                )
+            )
+            lines.append(("Deviance:", f"{gof.get('deviance', 'N/A'):>10}"))
+            disp = gof.get("dispersion", None)
+            disp_str = f"{disp:.4f}" if disp is not None else "N/A"
+            lines.append(("Dispersion:", f"{disp_str:>10}"))
+            if gof.get("overdispersed", False):
+                notes.append(
+                    f"Dispersion = {disp_str}: overdispersion "
+                    f"detected (> 1.5). Consider using "
+                    f"family='negative_binomial'."
+                )
+        return lines, notes
+
     # ---- Validation ------------------------------------------------
     #
     # Poisson requires non-negative values.  We accept floats that are
@@ -1392,22 +1784,62 @@ class PoissonFamily:
         lower-is-better, so the joint test statistic
         D_reduced − D_full is positive when the features improve fit.
         """
-        mu = np.maximum(y_pred, 1e-10)
+        mu = np.maximum(y_pred, 1e-10)  # μ̂, shape (n,) — clamp to avoid log(0)
         # 0 * log(0/μ̂) = 0 by convention (L'Hôpital).
         # Use mask-and-index to avoid evaluating log(0) (np.where
         # evaluates both branches eagerly, producing RuntimeWarnings).
-        pos = y_true > 0
-        contrib = np.zeros_like(y_true, dtype=float)
-        contrib[pos] = y_true[pos] * np.log(y_true[pos] / mu[pos])
-        deviance_i = contrib - (y_true - mu)
-        return float(2.0 * np.sum(deviance_i))
+        pos = y_true > 0  # boolean mask for non-zero observations
+        contrib = np.zeros_like(
+            y_true, dtype=float
+        )  # y·log(y/μ̂) accumulator, shape (n,)
+        contrib[pos] = y_true[pos] * np.log(
+            y_true[pos] / mu[pos]
+        )  # non-zero terms only
+        deviance_i = contrib - (
+            y_true - mu
+        )  # per-obs deviance contribution, shape (n,)
+        return float(2.0 * np.sum(deviance_i))  # D = 2·Σ deviance_i, scalar
+
+    # ---- Scoring (joint test interface) ----------------------------
+    #
+    # For Poisson regression, fit is measured by the deviance:
+    #
+    #   D = 2·Σᵢ [yᵢ·log(yᵢ/μ̂ᵢ) − (yᵢ − μ̂ᵢ)]
+    #
+    # where μ̂ᵢ = exp(Xᵢ·β̂) is the predicted count (mean of the
+    # Poisson distribution for observation i).  The deviance equals
+    # 2·[ℓ(saturated) − ℓ(model)], where the saturated model sets
+    # μ̂ᵢ = yᵢ exactly.  Lower deviance means better fit.
+    #
+    # The null-model predicts μ̂ᵢ = ȳ (the sample mean count) for
+    # every observation.  This is the Poisson MLE with intercept
+    # only: the intercept is β₀ = log(ȳ), giving
+    # μ̂ = exp(β₀) = ȳ.
+    #
+    # The joint test statistic Δ = D_reduced − D_full is analogous
+    # to the likelihood-ratio test: large Δ means the tested
+    # features collectively reduce the deviance.
 
     def score(self, model: Any, X: np.ndarray, y: np.ndarray) -> float:
-        """Deviance from fitted model: ``fit_metric(y, predict(model, X))``."""
+        """Deviance from a fitted Poisson model.
+
+        Delegates to ``fit_metric(y, predict(model, X))`` which
+        computes D = 2·Σ[yᵢ·log(yᵢ/μ̂ᵢ) − (yᵢ − μ̂ᵢ)].
+        """
         return self.fit_metric(y, self.predict(model, X))
 
     def null_score(self, y: np.ndarray, fit_intercept: bool = True) -> float:
-        """Deviance of the intercept-only (mean) model."""
+        """Deviance of the intercept-only Poisson model.
+
+        The Poisson intercept-only MLE is β₀ = log(ȳ), predicting
+        μ̂ᵢ = ȳ for all observations.  The null deviance is:
+
+            D_null = 2·Σ[yᵢ·log(yᵢ/ȳ) − (yᵢ − ȳ)]
+
+        The second term vanishes (Σ(yᵢ − ȳ) = 0), leaving
+        D_null = 2·Σ yᵢ·log(yᵢ/ȳ) for observations where yᵢ > 0
+        (0·log(0/·) = 0 by convention).
+        """
         n = len(y)
         if fit_intercept:
             preds = np.full(n, np.mean(y), dtype=float)
@@ -1442,9 +1874,11 @@ class PoissonFamily:
             warnings.filterwarnings("ignore", category=SmConvergenceWarning)
             warnings.filterwarnings("ignore", category=RuntimeWarning)
             sm_model = sm.GLM(y, X_sm, family=sm.families.Poisson()).fit(disp=0)
-        pearson_chi2 = float(sm_model.pearson_chi2)
-        df_resid = float(sm_model.df_resid)
-        dispersion = pearson_chi2 / df_resid if df_resid > 0 else float("nan")
+        pearson_chi2 = float(sm_model.pearson_chi2)  # Σ (yᵢ − μ̂ᵢ)² / μ̂ᵢ
+        df_resid = float(sm_model.df_resid)  # n − p − 1
+        dispersion = (
+            pearson_chi2 / df_resid if df_resid > 0 else float("nan")
+        )  # > 1 signals overdispersion
         return {
             "n_observations": len(y),
             "n_features": X.shape[1],
@@ -1656,6 +2090,73 @@ class NegativeBinomialFamily:
     def metric_label(self) -> str:
         return "Deviance Reduction"
 
+    @property
+    def stat_label(self) -> str:
+        return "z"
+
+    # ---- Display ---------------------------------------------------
+
+    def display_header(
+        self,
+        diagnostics: dict[str, Any],
+    ) -> list[tuple[str, str, str, str]]:
+        """Return header rows for the negative binomial results table."""
+        pearson = diagnostics.get("pearson_chi2")
+        pearson_str = f"{pearson:.4f}" if pearson is not None else "N/A"
+        # Show Alpha (NB) on the left if available, else empty cell.
+        alpha_disp = diagnostics.get("alpha")
+        left_label = "Alpha (NB):" if alpha_disp is not None else ""
+        left_value = str(alpha_disp) if alpha_disp is not None else ""
+        return [
+            (
+                "Deviance:",
+                str(diagnostics.get("deviance", "N/A")),
+                "BIC:",
+                str(diagnostics.get("bic", "N/A")),
+            ),
+            (
+                "Log-Likelihood:",
+                str(diagnostics.get("log_likelihood", "N/A")),
+                "Dispersion:",
+                str(diagnostics.get("dispersion", "N/A")),
+            ),
+            (
+                left_label,
+                left_value,
+                "\u03c7\u00b2 (Pearson):",
+                pearson_str,
+            ),
+        ]
+
+    def display_diagnostics(
+        self,
+        diagnostics: dict[str, Any],
+    ) -> tuple[list[tuple[str, str]], list[str]]:
+        """Return diagnostic lines and notes for the negative binomial family."""
+        lines: list[tuple[str, str]] = []
+        notes: list[str] = []
+        gof = diagnostics.get("nb_gof", {})
+        if gof:
+            lines.append(
+                (
+                    "Pearson \u03c7\u00b2:",
+                    f"{gof.get('pearson_chi2', 'N/A'):>10}",
+                )
+            )
+            lines.append(("Deviance:", f"{gof.get('deviance', 'N/A'):>10}"))
+            disp = gof.get("dispersion", None)
+            disp_str = f"{disp:.4f}" if disp is not None else "N/A"
+            lines.append(("Dispersion:", f"{disp_str:>10}"))
+            alpha_val = gof.get("alpha", None)
+            alpha_str = f"{alpha_val:.4f}" if alpha_val is not None else "N/A"
+            lines.append(("\u03b1 (NB Dispersion):", f"{alpha_str:>10}"))
+            if gof.get("overdispersed", False):
+                notes.append(
+                    f"Dispersion = {disp_str}: residual "
+                    f"overdispersion detected after NB fit."
+                )
+        return lines, notes
+
     # ---- Internal helpers ------------------------------------------
 
     def _nb_family(self, alpha: float) -> sm.families.NegativeBinomial:
@@ -1799,12 +2300,14 @@ class NegativeBinomialFamily:
         data in the permuted samples.
         """
         alpha = self._require_alpha("reconstruct_y")
-        mu_star = predictions + permuted_residuals
-        mu_star = np.clip(mu_star, 1e-10, 1e8)
+        mu_star = predictions + permuted_residuals  # μ* = μ̂ + π(e), shape (n,)
+        mu_star = np.clip(mu_star, 1e-10, 1e8)  # clamp to valid NB mean range
         # NB2 parameterisation: n = 1/α, p = 1/(1 + α·μ)
-        n_param = 1.0 / alpha
-        p_param = 1.0 / (1.0 + alpha * mu_star)
-        return np.asarray(rng.negative_binomial(n=n_param, p=p_param))
+        n_param = 1.0 / alpha  # NB size param, scalar (broadcast)
+        p_param = 1.0 / (1.0 + alpha * mu_star)  # NB success prob, shape (n,)
+        return np.asarray(
+            rng.negative_binomial(n=n_param, p=p_param)
+        )  # Y* ~ NB(n, p), shape (n,)
 
     def fit_metric(
         self,
@@ -1819,25 +2322,54 @@ class NegativeBinomialFamily:
         same pattern as PoissonFamily.
         """
         alpha = self._require_alpha("fit_metric")
-        mu = np.maximum(y_pred, 1e-10)
-        inv_a = 1.0 / alpha
+        mu = np.maximum(y_pred, 1e-10)  # μ̂, shape (n,) — clamp to avoid log(0)
+        inv_a = 1.0 / alpha  # 1/α, scalar — used in both deviance terms
 
         # Term 1: y · log(y / μ̂), with 0·log(0/·) = 0 by convention.
-        pos = y_true > 0
-        term1 = np.zeros_like(y_true, dtype=float)
-        term1[pos] = y_true[pos] * np.log(y_true[pos] / mu[pos])
+        pos = y_true > 0  # boolean mask for non-zero counts
+        term1 = np.zeros_like(y_true, dtype=float)  # y·log(y/μ̂) accumulator, shape (n,)
+        term1[pos] = y_true[pos] * np.log(y_true[pos] / mu[pos])  # non-zero terms only
 
         # Term 2: (y + 1/α) · log((1 + α·y) / (1 + α·μ̂))
-        term2 = (y_true + inv_a) * np.log((1.0 + alpha * y_true) / (1.0 + alpha * mu))
+        term2 = (y_true + inv_a) * np.log(
+            (1.0 + alpha * y_true) / (1.0 + alpha * mu)
+        )  # shape (n,)
 
-        return float(2.0 * np.sum(term1 - term2))
+        return float(2.0 * np.sum(term1 - term2))  # D_NB = 2·Σ(term1 − term2), scalar
+
+    # ---- Scoring (joint test interface) ----------------------------
+    #
+    # The negative binomial deviance generalises the Poisson deviance
+    # to allow overdispersion (Var(Y) = μ + α·μ²).  It is:
+    #
+    #   D_NB = 2·Σᵢ [yᵢ·log(yᵢ/μ̂ᵢ)
+    #               − (yᵢ + 1/α)·log((1 + α·yᵢ)/(1 + α·μ̂ᵢ))]
+    #
+    # where α is the overdispersion parameter estimated during
+    # calibration.  When α → 0 this reduces to the Poisson deviance.
+    # The score-based joint test statistic Δ = D_reduced − D_full
+    # measures collective feature importance as with all other
+    # families.
+    #
+    # The null-model predicts μ̂ᵢ = ȳ for all i, just like Poisson.
+    # The NB intercept-only MLE is β₀ = log(ȳ), with the α parameter
+    # held fixed at its calibrated value.
 
     def score(self, model: Any, X: np.ndarray, y: np.ndarray) -> float:
-        """Deviance from fitted model: ``fit_metric(y, predict(model, X))``."""
+        """NB deviance from a fitted negative binomial model.
+
+        Delegates to ``fit_metric(y, predict(model, X))`` which
+        computes the NB2 deviance with the calibrated α.
+        """
         return self.fit_metric(y, self.predict(model, X))
 
     def null_score(self, y: np.ndarray, fit_intercept: bool = True) -> float:
-        """Deviance of the intercept-only (mean) model."""
+        """NB deviance of the intercept-only (mean) model.
+
+        Predicts μ̂ᵢ = ȳ for all observations, then evaluates the
+        NB2 deviance formula with the calibrated α.  This is the
+        baseline for the joint test when no confounders are present.
+        """
         n = len(y)
         if fit_intercept:
             preds = np.full(n, np.mean(y), dtype=float)
@@ -1860,9 +2392,11 @@ class NegativeBinomialFamily:
             warnings.filterwarnings("ignore", category=SmConvergenceWarning)
             warnings.filterwarnings("ignore", category=RuntimeWarning)
             sm_model = sm.GLM(y, X_sm, family=self._nb_family(alpha)).fit(disp=0)
-        pearson_chi2 = float(sm_model.pearson_chi2)
-        df_resid = float(sm_model.df_resid)
-        dispersion = pearson_chi2 / df_resid if df_resid > 0 else float("nan")
+        pearson_chi2 = float(sm_model.pearson_chi2)  # Σ (yᵢ − μ̂ᵢ)² / Var(μ̂ᵢ)
+        df_resid = float(sm_model.df_resid)  # n − p − 1
+        dispersion = (
+            pearson_chi2 / df_resid if df_resid > 0 else float("nan")
+        )  # > 1 signals residual overdispersion
         return {
             "n_observations": len(y),
             "n_features": X.shape[1],
@@ -2080,6 +2614,78 @@ class OrdinalFamily:
     def metric_label(self) -> str:
         return "Deviance Reduction"
 
+    @property
+    def stat_label(self) -> str:
+        return "z"
+
+    # ---- Display ---------------------------------------------------
+
+    def display_header(
+        self,
+        diagnostics: dict[str, Any],
+    ) -> list[tuple[str, str, str, str]]:
+        """Return header rows for the ordinal results table."""
+        n_cats = diagnostics.get("n_categories")
+        n_cats_str = str(n_cats) if n_cats is not None else "N/A"
+        llr_p = diagnostics.get("llr_p_value")
+        llr_p_str = f"{llr_p:.4e}" if llr_p is not None else "N/A"
+        return [
+            (
+                "Pseudo R-sq:",
+                str(diagnostics.get("pseudo_r_squared", "N/A")),
+                "BIC:",
+                str(diagnostics.get("bic", "N/A")),
+            ),
+            (
+                "Log-Likelihood:",
+                str(diagnostics.get("log_likelihood", "N/A")),
+                "LL-Null:",
+                str(diagnostics.get("log_likelihood_null", "N/A")),
+            ),
+            ("Categories:", n_cats_str, "LLR p-value:", llr_p_str),
+        ]
+
+    def display_diagnostics(
+        self,
+        diagnostics: dict[str, Any],
+    ) -> tuple[list[tuple[str, str]], list[str]]:
+        """Return diagnostic lines and notes for the ordinal family."""
+        lines: list[tuple[str, str]] = []
+        notes: list[str] = []
+        gof = diagnostics.get("ordinal_gof", {})
+        if gof:
+            pr2 = gof.get("pseudo_r_squared", None)
+            pr2_str = f"{pr2:.4f}" if pr2 is not None else "N/A"
+            lines.append(("Pseudo R-sq:", f"{pr2_str:>10}"))
+            ll = gof.get("log_likelihood", None)
+            ll_str = f"{ll:.4f}" if ll is not None else "N/A"
+            lines.append(("Log-Likelihood:", f"{ll_str:>10}"))
+            n_cats = gof.get("n_categories", None)
+            n_cats_str = str(n_cats) if n_cats is not None else "N/A"
+            lines.append(("Categories:", f"{n_cats_str:>10}"))
+            # Proportional odds test
+            po_chi2 = gof.get("prop_odds_chi2", None)
+            po_p = gof.get("prop_odds_p", None)
+            if po_chi2 is not None:
+                po_chi2_str = f"{po_chi2:.4f}"
+                lines.append(
+                    (
+                        "Prop. Odds \u03c7\u00b2:",
+                        f"{po_chi2_str:>10}   p = {_fmt_p(po_p)}",
+                    )
+                )
+                po_df = gof.get("prop_odds_df", None)
+                if po_df is not None:
+                    lines.append(("Prop. Odds df:", f"{po_df:>10}"))
+                if po_p is not None and po_p < 0.05:
+                    notes.append(
+                        "Proportional odds "
+                        + "\u03c7\u00b2"
+                        + f" p = {po_p:.4f}: the proportional odds "
+                        "assumption may be violated."
+                    )
+        return lines, notes
+
     # ---- Validation ------------------------------------------------
 
     def validate_y(self, y: np.ndarray) -> None:
@@ -2144,8 +2750,8 @@ class OrdinalFamily:
         other families (all return a 1-D prediction).
         """
         prob_matrix = np.asarray(model.predict())  # (n, K)
-        levels = np.arange(prob_matrix.shape[1])
-        return np.asarray(prob_matrix @ levels)  # (n,)
+        levels = np.arange(prob_matrix.shape[1])  # [0, 1, …, K-1] category indices
+        return np.asarray(prob_matrix @ levels)  # E[Y|X] = Σ k·P(Y=k|X), shape (n,)
 
     def coefs(self, model: Any) -> np.ndarray:
         """Extract slope coefficients (thresholds excluded).
@@ -2153,8 +2759,8 @@ class OrdinalFamily:
         ``model.params[:p]`` are the β coefficients;
         ``model.params[p:]`` are the K−1 threshold parameters.
         """
-        n_features = model.model.exog.shape[1]
-        return np.asarray(model.params[:n_features])
+        n_features = model.model.exog.shape[1]  # p — slope count (excl. thresholds)
+        return np.asarray(model.params[:n_features])  # β̂ slope coefficients, shape (p,)
 
     def residuals(
         self,
@@ -2214,33 +2820,85 @@ class OrdinalFamily:
         )
         raise NotImplementedError(msg)
 
-    def score(self, model: Any, X: np.ndarray, y: np.ndarray) -> float:  # noqa: ARG002
-        """Deviance from fitted ordinal model: ``-2 * log-likelihood``.
+    # ---- Scoring (joint test interface) ----------------------------
+    #
+    # Ordinal models (proportional-odds / cumulative-link) differ
+    # from prediction-based families in a fundamental way: the model
+    # output is a vector of cumulative probabilities for K ordered
+    # categories, not a single scalar prediction.  There is no
+    # natural "prediction" that can be plugged into a residual-style
+    # metric.  The natural goodness-of-fit measure is the deviance:
+    #
+    #   D = −2 · ℓ(model)
+    #
+    # where ℓ(model) is the log-likelihood of the proportional-odds
+    # model.  The log-likelihood for observation i in category k is:
+    #
+    #   ℓᵢ = log(pᵢₖ)
+    #
+    # where pᵢₖ = P(Yᵢ = k | Xᵢ) is determined by the cumulative
+    # link function Φ and the threshold (cutpoint) parameters αₖ:
+    #
+    #   P(Yᵢ ≤ k | Xᵢ) = Φ(αₖ − Xᵢ·β)
+    #   pᵢₖ = P(Yᵢ ≤ k) − P(Yᵢ ≤ k−1)
+    #
+    # The score is extracted directly from the fitted statsmodels
+    # ``OrderedModel`` object via ``model.llf``.  The ``X`` and ``y``
+    # arguments are accepted for protocol compatibility but unused.
+    #
+    # Null model:
+    # The null (no-predictor) ordinal model has only threshold
+    # parameters — no β coefficients.  Its MLE sets cumulative
+    # probabilities equal to the empirical cumulative proportions,
+    # which gives category probabilities pₖ = nₖ/n.  The null
+    # log-likelihood is therefore:
+    #
+    #   ℓ_null = Σₖ nₖ · log(nₖ / n)
+    #
+    # This is computed analytically rather than by fitting an
+    # ``OrderedModel`` with zero predictors, because statsmodels'
+    # ``OrderedModel`` does not support zero-column exog arrays
+    # (the Hessian becomes singular, causing a LinAlgError).
+    # The analytical formula is exact and has been validated against
+    # the ``model.llnull`` attribute from a full ordinal fit.
 
-        *X* and *y* are accepted for protocol compatibility but unused
-        — the log-likelihood is stored on the fitted model object.
+    def score(self, model: Any, X: np.ndarray, y: np.ndarray) -> float:  # noqa: ARG002
+        """Deviance from a fitted ordinal model: ``−2 · ℓ(model)``.
+
+        The log-likelihood ℓ is stored on the fitted
+        ``OrderedModel`` object.  Lower deviance (higher ℓ) means
+        better fit.  ``X`` and ``y`` are unused — present only for
+        protocol compatibility.
         """
         return -2.0 * float(model.llf)
 
     def null_score(self, y: np.ndarray, fit_intercept: bool = True) -> float:  # noqa: ARG002
         """Deviance of the thresholds-only (no predictors) ordinal model.
 
-        Computed analytically from empirical category proportions:
+        Computed analytically from empirical category proportions
+        rather than by fitting a model (see section comment above).
 
-            ℓ_null = Σ_k  n_k · log(n_k / n)
+        The analytical formula is:
+
+            ℓ_null = Σₖ nₖ · log(nₖ / n)
             null_score = −2 · ℓ_null
 
-        This is the exact log-likelihood of the proportional-odds
-        model with no predictors — MLE sets cumulative probabilities
-        equal to empirical cumulative proportions, which yields
-        category probabilities p_k = n_k / n.
+        where nₖ is the count of observations in category k and
+        n = Σₖ nₖ is the total sample size.  This is the multinomial
+        log-likelihood evaluated at pₖ = nₖ/n — the maximum-likelihood
+        estimates for the proportional-odds model with no predictors.
 
         ``fit_intercept`` is accepted for protocol compatibility but
-        ignored — ordinal models always include threshold parameters.
+        ignored — ordinal models always include threshold parameters
+        (the thresholds play the role of the intercept).
+
+        Validated against ``model.llnull`` from statsmodels full fits.
         """
-        _, counts = np.unique(y, return_counts=True)
-        n = len(y)
+        _, counts = np.unique(y, return_counts=True)  # nₖ — per-category counts
+        n = len(y)  # total observations
+        # pₖ = nₖ/n — empirical category proportions (MLE).
         proportions = counts / n
+        # ℓ_null = Σₖ nₖ · log(pₖ) = Σₖ nₖ · log(nₖ/n).
         ll_null = float(np.sum(counts * np.log(proportions)))
         return -2.0 * ll_null
 
@@ -2259,13 +2917,15 @@ class OrdinalFamily:
         categories.
         """
         model = self.fit(X, y, fit_intercept)
-        llf = float(model.llf)
-        llnull = float(model.llnull)
-        pseudo_r2 = 1.0 - llf / llnull if llnull != 0.0 else float("nan")
+        llf = float(model.llf)  # ℓ(model) — fitted log-likelihood
+        llnull = float(model.llnull)  # ℓ₀ — null (intercept-only) log-likelihood
+        pseudo_r2 = (
+            1.0 - llf / llnull if llnull != 0.0 else float("nan")
+        )  # McFadden's R² = 1 − ℓ/ℓ₀
 
-        # Threshold parameters (cutpoints)
-        n_features = X.shape[1]
-        thresholds = np.asarray(model.params[n_features:])
+        # Threshold parameters (cutpoints α₀, …, α_{K-2})
+        n_features = X.shape[1]  # p — number of slope predictors
+        thresholds = np.asarray(model.params[n_features:])  # cutpoints, shape (K-1,)
 
         # Log-likelihood ratio test p-value
         try:
@@ -2297,8 +2957,8 @@ class OrdinalFamily:
         Returns one p-value per slope coefficient (thresholds excluded).
         """
         model = self.fit(X, y, fit_intercept)
-        n_features = X.shape[1]
-        return np.asarray(model.pvalues[:n_features])
+        n_features = X.shape[1]  # p — slope count (excl. thresholds)
+        return np.asarray(model.pvalues[:n_features])  # Wald z p-values, shape (p,)
 
     # ---- Exchangeability (v0.4.0 forward-compat) -------------------
 
@@ -2491,6 +3151,66 @@ class MultinomialFamily:
     def metric_label(self) -> str:
         return "Deviance Reduction"
 
+    @property
+    def stat_label(self) -> str:
+        return "\u03c7\u00b2"
+
+    # ---- Display ---------------------------------------------------
+
+    def display_header(
+        self,
+        diagnostics: dict[str, Any],
+    ) -> list[tuple[str, str, str, str]]:
+        """Return header rows for the multinomial results table."""
+        n_cats = diagnostics.get("n_categories")
+        n_cats_str = str(n_cats) if n_cats is not None else "N/A"
+        llr_p = diagnostics.get("llr_p_value")
+        llr_p_str = f"{llr_p:.4e}" if llr_p is not None else "N/A"
+        return [
+            (
+                "Pseudo R-sq:",
+                str(diagnostics.get("pseudo_r_squared", "N/A")),
+                "BIC:",
+                str(diagnostics.get("bic", "N/A")),
+            ),
+            (
+                "Log-Likelihood:",
+                str(diagnostics.get("log_likelihood", "N/A")),
+                "LL-Null:",
+                str(diagnostics.get("log_likelihood_null", "N/A")),
+            ),
+            ("Categories:", n_cats_str, "LLR p-value:", llr_p_str),
+        ]
+
+    def display_diagnostics(
+        self,
+        diagnostics: dict[str, Any],
+    ) -> tuple[list[tuple[str, str]], list[str]]:
+        """Return diagnostic lines and notes for the multinomial family."""
+        lines: list[tuple[str, str]] = []
+        notes: list[str] = []
+        gof = diagnostics.get("multinomial_gof", {})
+        if gof:
+            pr2 = gof.get("pseudo_r_squared", None)
+            pr2_str = f"{pr2:.4f}" if pr2 is not None else "N/A"
+            lines.append(("Pseudo R-sq:", f"{pr2_str:>10}"))
+            ll = gof.get("log_likelihood", None)
+            ll_str = f"{ll:.4f}" if ll is not None else "N/A"
+            lines.append(("Log-Likelihood:", f"{ll_str:>10}"))
+            n_cats = gof.get("n_categories", None)
+            n_cats_str = str(n_cats) if n_cats is not None else "N/A"
+            lines.append(("Categories:", f"{n_cats_str:>10}"))
+            llr_p = gof.get("llr_p_value", None)
+            if llr_p is not None:
+                lines.append(("LLR p-value:", f"{_fmt_p(llr_p):>10}"))
+            cat_counts = gof.get("category_counts", {})
+            if cat_counts:
+                counts_str = ", ".join(
+                    f"{k}: {v}" for k, v in sorted(cat_counts.items())
+                )
+                lines.append(("Category counts:", counts_str))
+        return lines, notes
+
     # ---- Validation ------------------------------------------------
 
     def validate_y(self, y: np.ndarray) -> None:
@@ -2547,8 +3267,8 @@ class MultinomialFamily:
         with other families (all return a 1-D prediction).
         """
         prob_matrix = np.asarray(model.predict())  # (n, K)
-        levels = np.arange(prob_matrix.shape[1])
-        return np.asarray(prob_matrix @ levels)  # (n,)
+        levels = np.arange(prob_matrix.shape[1])  # [0, 1, …, K-1] category indices
+        return np.asarray(prob_matrix @ levels)  # E[Y|X] = Σ k·P(Y=k|X), shape (n,)
 
     def coefs(self, model: Any) -> np.ndarray:
         """Extract per-predictor Wald χ² test statistics.
@@ -2568,9 +3288,15 @@ class MultinomialFamily:
         """
         from ._backends._numpy import _wald_chi2_from_mnlogit
 
-        p_aug = model.model.exog.shape[1]
-        has_intercept = bool(model.k_constant)
-        return np.asarray(_wald_chi2_from_mnlogit(model, p_aug, has_intercept))
+        p_aug = model.model.exog.shape[
+            1
+        ]  # total columns in design matrix (incl. intercept)
+        has_intercept = bool(
+            model.k_constant
+        )  # True if statsmodels added a constant column
+        return np.asarray(  # Wald χ²_j per predictor, shape (p,)
+            _wald_chi2_from_mnlogit(model, p_aug, has_intercept)
+        )
 
     def category_coefs(self, model: Any) -> np.ndarray:
         """Extract the full ``(p, K-1)`` coefficient matrix.
@@ -2646,28 +3372,75 @@ class MultinomialFamily:
         )
         raise NotImplementedError(msg)
 
-    def score(self, model: Any, X: np.ndarray, y: np.ndarray) -> float:  # noqa: ARG002
-        """Deviance from fitted multinomial model: ``-2 * log-likelihood``.
+    # ---- Scoring (joint test interface) ----------------------------
+    #
+    # Multinomial logistic regression (MNLogit / softmax) models a
+    # categorical outcome Y ∈ {0, 1, …, K−1} with K ≥ 3 unordered
+    # categories.  The model estimates K−1 coefficient vectors
+    # (one per non-reference category), and the predicted probability
+    # for category k is:
+    #
+    #   P(Y = k | X) = exp(Xβₖ) / Σⱼ exp(Xβⱼ)   (softmax)
+    #
+    # Like ordinal models, the output is a probability vector rather
+    # than a scalar, so prediction-based metrics are not applicable.
+    # The natural fit measure is the deviance:
+    #
+    #   D = −2 · ℓ(model) = −2 · Σᵢ log P(Yᵢ = yᵢ | Xᵢ, β̂)
+    #
+    # The score is extracted from ``model.llf`` on the fitted
+    # ``MNLogit`` object.  The joint test statistic is
+    # Δ = D_reduced − D_full, the same convention as all families.
+    #
+    # Null model:
+    # Unlike the ordinal family, the multinomial null score is NOT
+    # computed analytically.  The reason: the multinomial
+    # log-likelihood with an intercept-only model is:
+    #
+    #   ℓ_null = Σₖ nₖ · log(nₖ / n)
+    #
+    # which looks simple, but statsmodels' MNLogit parameterises the
+    # intercept as K−1 log-odds ratios (softmax), not as direct
+    # probabilities.  The analytical formula IS equivalent, but
+    # rather than risking a discrepancy if the parameterisation
+    # changes, we fit an intercept-only MNLogit to get ℓ_null
+    # directly.  This is numerically cheap (converges in 1–2
+    # iterations) and guaranteed to match the full model's scale.
+    # The result has been validated against ``model.llnull`` from
+    # full multinomial fits.
 
-        *X* and *y* are accepted for protocol compatibility but unused
-        — the log-likelihood is stored on the fitted model object.
+    def score(self, model: Any, X: np.ndarray, y: np.ndarray) -> float:  # noqa: ARG002
+        """Deviance from a fitted multinomial model: ``−2 · ℓ(model)``.
+
+        The log-likelihood ℓ is stored on the fitted ``MNLogit``
+        object.  Lower deviance (higher ℓ) means better fit.
+        ``X`` and ``y`` are unused — present for protocol
+        compatibility.
         """
         return -2.0 * float(model.llf)
 
     def null_score(self, y: np.ndarray, fit_intercept: bool = True) -> float:
         """Deviance of the intercept-only multinomial model.
 
-        Fits an intercept-only ``MNLogit`` and returns
-        ``-2 * log-likelihood``.
+        Fits a zero-predictor ``MNLogit`` (intercept-only design
+        matrix of shape (n, 1)) via statsmodels and returns
+        ``−2 · ℓ_null``.  The MLE converges to category
+        probabilities pₖ = nₖ/n in 1–2 Newton iterations.
+
+        This is done by model-fitting rather than analytically to
+        stay consistent with the softmax parameterisation used by
+        ``MNLogit`` — see the section comment above for rationale.
+
+        Validated against ``model.llnull`` from full multinomial fits.
         """
         from statsmodels.discrete.discrete_model import MNLogit
 
-        n = len(y)
-        # Intercept-only design.
+        n = len(y)  # total observations
+        # Intercept-only design matrix: a column of ones.
         if fit_intercept:
-            X_null = np.ones((n, 1), dtype=float)
+            X_null = np.ones((n, 1), dtype=float)  # (n, 1) — intercept-only design
         else:
-            X_null = np.zeros((n, 0), dtype=float)
+            X_null = np.zeros((n, 0), dtype=float)  # empty design → degenerate model
         y_arr = np.asarray(y)
         with warnings.catch_warnings():
             warnings.filterwarnings("ignore", category=SmConvergenceWarning)
@@ -2690,9 +3463,11 @@ class MultinomialFamily:
         AIC, BIC, LLR p-value, and category counts.
         """
         model = self.fit(X, y, fit_intercept)
-        llf = float(model.llf)
-        llnull = float(model.llnull)
-        pseudo_r2 = 1.0 - llf / llnull if llnull != 0.0 else float("nan")
+        llf = float(model.llf)  # ℓ(model) — fitted log-likelihood
+        llnull = float(model.llnull)  # ℓ₀ — null (intercept-only) log-likelihood
+        pseudo_r2 = (
+            1.0 - llf / llnull if llnull != 0.0 else float("nan")
+        )  # McFadden's R² = 1 − ℓ/ℓ₀
 
         # Log-likelihood ratio test p-value
         try:
@@ -2700,7 +3475,9 @@ class MultinomialFamily:
         except (AttributeError, TypeError):
             llr_p = float("nan")
 
-        unique_y, counts = np.unique(y, return_counts=True)
+        unique_y, counts = np.unique(
+            y, return_counts=True
+        )  # category labels and frequencies
 
         return {
             "n_observations": len(y),
@@ -2733,9 +3510,11 @@ class MultinomialFamily:
 
         model = self.fit(X, y, fit_intercept)
         wald_stats = self.coefs(model)  # (p,)
-        K = len(np.unique(y))
+        K = len(np.unique(y))  # number of response categories
         df = K - 1  # degrees of freedom per predictor
-        return np.asarray(sp_stats.chi2.sf(wald_stats, df=df))
+        return np.asarray(
+            sp_stats.chi2.sf(wald_stats, df=df)
+        )  # 1 − F_{χ²}(χ²_j; K−1), shape (p,)
 
     # ---- Exchangeability (v0.4.0 forward-compat) -------------------
 
@@ -2888,7 +3667,10 @@ def register_family(name: str, cls: type) -> None:
     _FAMILIES[name] = cls
 
 
-def resolve_family(family: str | ModelFamily, y: np.ndarray) -> ModelFamily:
+def resolve_family(
+    family: str | ModelFamily,
+    y: np.ndarray | None = None,
+) -> ModelFamily:
     """Resolve a family string or instance to a concrete ``ModelFamily``.
 
     When *family* is already a ``ModelFamily`` instance, it is returned
@@ -2907,31 +3689,39 @@ def resolve_family(family: str | ModelFamily, y: np.ndarray) -> ModelFamily:
             instance.  ``"auto"`` triggers automatic detection.
             Instances are returned immediately.
         y: Response vector of shape ``(n,)``, used only when
-            *family* is ``"auto"``.  Ignored when *family* is a
-            ``ModelFamily`` instance.
+            *family* is ``"auto"``.  May be omitted when *family*
+            is an explicit string or a ``ModelFamily`` instance.
 
     Returns:
         A ``ModelFamily`` instance ready for use by the permutation
         engine.
 
     Raises:
-        ValueError: If *family* is a string that is not ``"auto"``
-            and is not found in the registry.
+        ValueError: If *family* is ``"auto"`` and *y* is not
+            provided, or if *family* is a string that is not
+            ``"auto"`` and is not found in the registry.
     """
     # Pass-through for pre-configured instances.
     if isinstance(family, ModelFamily):
         return family
     if family == "auto":
-        unique_y = np.unique(y)
-        is_binary = bool(len(unique_y) == 2 and np.all(np.isin(unique_y, [0, 1])))
+        if y is None:
+            msg = "resolve_family() requires 'y' when family='auto'."
+            raise ValueError(msg)
+        unique_y = np.unique(y)  # sorted distinct values of y
+        is_binary = bool(
+            len(unique_y) == 2 and np.all(np.isin(unique_y, [0, 1]))
+        )  # True iff y ∈ {0, 1}
         if is_binary:
             family = "logistic"
         else:
             family = "linear"
             # Warn if Y looks like count data (non-negative integers,
             # > 2 unique values) — the user may want a count model.
-            _is_integer = np.all(np.equal(np.mod(y, 1), 0))
-            _is_nonneg = bool(np.all(y >= 0))
+            _is_integer = np.all(
+                np.equal(np.mod(y, 1), 0)
+            )  # True if every y_i is whole
+            _is_nonneg = bool(np.all(y >= 0))  # True if no negative values
             if _is_integer and _is_nonneg and len(unique_y) > 2:
                 import warnings
 
@@ -2953,6 +3743,44 @@ def resolve_family(family: str | ModelFamily, y: np.ndarray) -> ModelFamily:
     return instance
 
 
+# ------------------------------------------------------------------ #
+# Reduced-model fitting (shared across all strategies)
+# ------------------------------------------------------------------ #
+#
+# Every permutation strategy needs to fit a "reduced model" at some
+# point — a model that includes confounders Z but excludes the
+# features being tested.  The reduced model serves different roles
+# depending on the strategy:
+#
+# * **ter Braak (1992)**: For each feature j, fit Y ~ X_{-j} to get
+#   predicted values ŷ₋ⱼ and residuals e₋ⱼ = Y − ŷ₋ⱼ.  The
+#   residuals are then permuted.
+#
+# * **Kennedy joint (1995)**: Fit Y ~ Z to get the base score
+#   S(reduced).  The joint test statistic Δ = S(reduced) − S(full)
+#   measures how much the tested features improve fit.
+#
+# * **Freedman–Lane (1983)**: Fit Y ~ Z to get reduced-model
+#   predicted values ŷ_Z.  Permuted responses are constructed as
+#   Y* = ŷ_Z + π(residuals_full).
+#
+# The logic is identical across all strategies:
+#   - If Z has columns: fit the model and predict.
+#   - If Z has zero columns (no confounders): use the intercept-only
+#     prediction, which is ŷᵢ = ȳ for all i.
+#
+# The mean(y) fallback is correct for ALL families because the
+# intercept-only MLE always predicts the sample mean on the
+# response scale:
+#   - Linear:  β₀ = ȳ              → ŷ = ȳ
+#   - Logistic: β₀ = logit(ȳ)      → P̂ = ȳ
+#   - Poisson:  β₀ = log(ȳ)        → μ̂ = ȳ
+#   - NB:       β₀ = log(ȳ)        → μ̂ = ȳ
+# For ordinal/multinomial, the zero-column case doesn't arise in
+# practice (these families use direct_permutation or model-object
+# scoring), but mean(y) is still a reasonable numeric fallback.
+
+
 def fit_reduced(
     family: ModelFamily,
     Z: np.ndarray,
@@ -2966,8 +3794,8 @@ def fit_reduced(
     fall back to ``mean(y)`` (if ``fit_intercept``) or zeros.
 
     This centralises the "fit reduced or fall back" logic that was
-    previously duplicated in ter Braak, Kennedy joint, and both
-    Freedman-Lane strategies.
+    previously duplicated in four places across three strategy files
+    (ter Braak, Kennedy joint, Freedman-Lane individual and joint).
 
     Args:
         family: A resolved ``ModelFamily`` instance.
@@ -2981,11 +3809,15 @@ def fit_reduced(
     """
     n = len(y)
     if Z.shape[1] > 0:
+        # Confounders present: fit the family's model on Z and predict.
         model = family.fit(Z, y, fit_intercept)
         preds = family.predict(model, Z)
         return model, preds
+    # No confounders: intercept-only prediction = sample mean.
+    # This is the MLE prediction for all GLM families (see above).
     if fit_intercept:
         return None, np.full(n, np.mean(y), dtype=float)
+    # No intercept, no confounders: degenerate zero prediction.
     return None, np.zeros(n, dtype=float)
 
 

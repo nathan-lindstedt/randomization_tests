@@ -353,6 +353,7 @@ class TestComputeAllDiagnostics:
 class TestPrintDiagnosticsTable:
     def test_prints_without_error(self, capsys):
         from randomization_tests.display import print_diagnostics_table
+        from randomization_tests.families import resolve_family
 
         results = {
             "model_type": "linear",
@@ -378,7 +379,11 @@ class TestPrintDiagnosticsTable:
                 },
             },
         }
-        print_diagnostics_table(results, ["x1", "x2"])
+        print_diagnostics_table(
+            results,
+            ["x1", "x2"],
+            family=resolve_family("linear"),
+        )
         captured = capsys.readouterr()
         assert "Per-predictor" in captured.out
         assert "Model-level" in captured.out
@@ -389,6 +394,7 @@ class TestPrintDiagnosticsTable:
 
     def test_logistic_shows_deviance_residuals(self, capsys):
         from randomization_tests.display import print_diagnostics_table
+        from randomization_tests.families import resolve_family
 
         results = {
             "model_type": "logistic",
@@ -415,7 +421,11 @@ class TestPrintDiagnosticsTable:
                 },
             },
         }
-        print_diagnostics_table(results, ["x1", "x2"])
+        print_diagnostics_table(
+            results,
+            ["x1", "x2"],
+            family=resolve_family("logistic"),
+        )
         captured = capsys.readouterr()
         assert "Deviance resid" in captured.out
         assert "Runs test" in captured.out
@@ -424,14 +434,20 @@ class TestPrintDiagnosticsTable:
 
     def test_no_extended_diagnostics_exits_silently(self, capsys):
         from randomization_tests.display import print_diagnostics_table
+        from randomization_tests.families import resolve_family
 
         results = {"model_type": "linear"}
-        print_diagnostics_table(results, ["x1"])
+        print_diagnostics_table(
+            results,
+            ["x1"],
+            family=resolve_family("linear"),
+        )
         captured = capsys.readouterr()
         assert captured.out == ""
 
     def test_high_vif_warning_displayed(self, capsys):
         from randomization_tests.display import print_diagnostics_table
+        from randomization_tests.families import resolve_family
 
         results = {
             "model_type": "linear",
@@ -457,7 +473,11 @@ class TestPrintDiagnosticsTable:
                 },
             },
         }
-        print_diagnostics_table(results, ["x1", "x2"])
+        print_diagnostics_table(
+            results,
+            ["x1", "x2"],
+            family=resolve_family("linear"),
+        )
         captured = capsys.readouterr()
         assert "severe" in captured.out
         assert "moderate" in captured.out
