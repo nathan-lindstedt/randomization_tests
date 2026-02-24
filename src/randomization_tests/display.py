@@ -15,8 +15,12 @@ permutation test adds value.
 from __future__ import annotations
 
 import textwrap
+from typing import TYPE_CHECKING
 
 from randomization_tests.families import ModelFamily
+
+if TYPE_CHECKING:
+    from ._results import IndividualTestResult, JointTestResult
 
 
 def _truncate(name: str, max_len: int) -> str:
@@ -59,28 +63,30 @@ def _render_header_rows(
 
 
 def print_results_table(
-    results: dict,
-    feature_names: list[str],
-    family: ModelFamily,
-    target_name: str | None = None,
+    results: IndividualTestResult,
+    *,
     title: str = "Permutation Test Results",
 ) -> None:
     """Print regression results in a formatted ASCII table similar to statsmodels.
 
+    All metadata (family, feature names, target name) is extracted
+    from the result object — no additional context is needed.
+
     Args:
-        results: Results dictionary returned by
+        results: Typed result object returned by
             :func:`~randomization_tests.permutation_test_regression`.
-        feature_names: Names of the features/predictors.
-        family: The model family instance used for formatting.
-        target_name: Name of the target variable.
         title: Title for the output table.
     """
+    family: ModelFamily = results.family
+    feature_names: list[str] = results.feature_names
+    target_name: str | None = results.target_name
+
     print("=" * 80)
     for line in textwrap.wrap(title, width=78):
         print(f"{line:^80}")
     print("=" * 80)
 
-    diag = results.get("diagnostics", {})
+    diag = getattr(results, "diagnostics", {})
     col1 = 40
     col2 = 38
 
@@ -95,7 +101,7 @@ def print_results_table(
         f"{'No. Features:':>{col2 - 11}} {diag.get('n_features', 'N/A'):>10}"
     )
     print(
-        f"{'Method:':<16}{results['method']:<{col1 - 16}}"
+        f"{'Method:':<16}{results.method:<{col1 - 16}}"
         f"{'AIC:':>{col2 - 11}} {diag.get('aic', 'N/A'):>10}"
     )
 
@@ -110,9 +116,9 @@ def print_results_table(
     print(f"{'Feature':<{fc}} {'Coef':>12} {emp_hdr:>18} {asy_hdr:>18}")
     print("-" * 80)
 
-    coefs = results["model_coefs"]
-    emp_p = results["permuted_p_values"]
-    asy_p = results["classic_p_values"]
+    coefs = results.model_coefs
+    emp_p = results.permuted_p_values
+    asy_p = results.classic_p_values
 
     for i, feat in enumerate(feature_names):
         trunc_feat = _truncate(feat, fc)
@@ -122,8 +128,8 @@ def print_results_table(
     # ── Notes ──────────────────────────────────────────────────── #
     # Kennedy / Freedman–Lane without confounders is valid but unusual —
     # surface a note so the user knows ter Braak may be more appropriate.
-    method = results.get("method", "")
-    confounders = results.get("confounders")
+    method = getattr(results, "method", "")
+    confounders = getattr(results, "confounders", None)
     if method in ("kennedy", "freedman_lane") and not confounders:
         method_label = "Freedman\u2013Lane" if method == "freedman_lane" else "Kennedy"
         print("-" * 80)
@@ -141,35 +147,38 @@ def print_results_table(
 
     print("=" * 80)
     print(
-        f"(*) p < {results['p_value_threshold_one']}   "
-        f"(**) p < {results['p_value_threshold_two']}   "
-        f"(ns) p >= {results['p_value_threshold_one']}"
+        f"(*) p < {results.p_value_threshold_one}   "
+        f"(**) p < {results.p_value_threshold_two}   "
+        f"(ns) p >= {results.p_value_threshold_one}"
     )
     print()
 
 
 def print_joint_results_table(
-    results: dict,
-    family: ModelFamily,
-    target_name: str | None = None,
+    results: JointTestResult,
+    *,
     title: str = "Joint Permutation Test Results",
 ) -> None:
     """Print joint test results in a formatted ASCII table.
 
+    All metadata (family, target name) is extracted from the result
+    object — no additional context is needed.
+
     Args:
-        results: Results dictionary returned by
+        results: Typed result object returned by
             :func:`~randomization_tests.permutation_test_regression` with
-            ``method='kennedy_joint'``.
-        family: The model family instance used for formatting.
-        target_name: Name of the target variable.
+            ``method='kennedy_joint'`` or ``method='freedman_lane_joint'``.
         title: Title for the output table.
     """
+    family: ModelFamily = results.family
+    target_name: str | None = results.target_name
+
     print("=" * 80)
     for line in textwrap.wrap(title, width=78):
         print(f"{line:^80}")
     print("=" * 80)
 
-    diag = results.get("diagnostics", {})
+    diag = getattr(results, "diagnostics", {})
     col1 = 40
     col2 = 38
 
@@ -184,27 +193,27 @@ def print_joint_results_table(
         f"{'No. Features:':>{col2 - 11}} {diag.get('n_features', 'N/A'):>10}"
     )
     print(
-        f"{'Method:':<16}{results['method']:<{col1 - 16}}"
+        f"{'Method:':<16}{results.method:<{col1 - 16}}"
         f"{'AIC:':>{col2 - 11}} {diag.get('aic', 'N/A'):>10}"
     )
 
     _render_header_rows(family.display_header(diag), col1, col2)
 
-    print(f"{'Metric:':<16}{results['metric_type']}")
+    print(f"{'Metric:':<16}{results.metric_type}")
 
-    feat_list = ", ".join(_truncate(f, 25) for f in results["features_tested"])
+    feat_list = ", ".join(_truncate(f, 25) for f in results.features_tested)
     print(_wrap(f"Features Tested: {feat_list}", width=80, indent=17))
-    if results["confounders"]:
-        conf_list = ", ".join(_truncate(c, 25) for c in results["confounders"])
+    if results.confounders:
+        conf_list = ", ".join(_truncate(c, 25) for c in results.confounders)
         print(_wrap(f"Confounders: {conf_list}", width=80, indent=13))
     print("-" * 80)
 
-    print(f"{'Observed Improvement:':<30} {results['observed_improvement']:>12.4f}")
-    print(f"{'Joint p-Value:':<30} {results['p_value_str']:>12}")
+    print(f"{'Observed Improvement:':<30} {results.observed_improvement:>12.4f}")
+    print(f"{'Joint p-Value:':<30} {results.p_value_str:>12}")
 
     # ── Notes ──────────────────────────────────────────────────── #
-    method = results.get("method", "")
-    confounders = results.get("confounders")
+    method = getattr(results, "method", "")
+    confounders = getattr(results, "confounders", None)
     if method in ("kennedy_joint", "freedman_lane_joint") and not confounders:
         method_label = (
             "Freedman\u2013Lane" if method == "freedman_lane_joint" else "Kennedy"
@@ -224,21 +233,23 @@ def print_joint_results_table(
 
     print("=" * 80)
     print(
-        f"(*) p < {results['p_value_threshold_one']}   "
-        f"(**) p < {results['p_value_threshold_two']}   "
-        f"(ns) p >= {results['p_value_threshold_one']}"
+        f"(*) p < {results.p_value_threshold_one}   "
+        f"(**) p < {results.p_value_threshold_two}   "
+        f"(ns) p >= {results.p_value_threshold_one}"
     )
     print("Omnibus test: single p-value for all tested features combined.")
     print()
 
 
 def print_diagnostics_table(
-    results: dict,
-    feature_names: list[str],
-    family: ModelFamily,
+    results: IndividualTestResult,
+    *,
     title: str = "Extended Diagnostics",
 ) -> None:
     """Print extended model diagnostics in a formatted ASCII table.
+
+    All metadata (family, feature names) is extracted from the result
+    object — no additional context is needed.
 
     This table complements :func:`print_results_table` with additional
     per-predictor and model-level diagnostics.  It is intended to be
@@ -259,14 +270,15 @@ def print_diagnostics_table(
        when a diagnostic flags a potential concern.
 
     Args:
-        results: Results dictionary returned by
+        results: Typed result object returned by
             :func:`~randomization_tests.permutation_test_regression`.
             Must contain ``extended_diagnostics``.
-        feature_names: Names of the features/predictors.
-        family: The model family instance used for formatting.
         title: Title for the output table.
     """
-    ext = results.get("extended_diagnostics")
+    family: ModelFamily = results.family
+    feature_names: list[str] = results.feature_names
+
+    ext = getattr(results, "extended_diagnostics", None)
     if ext is None:
         return
 
@@ -484,7 +496,7 @@ def print_confounder_table(
     p_value_threshold: float = 0.05,
     n_bootstrap: int = 1000,
     confidence_level: float = 0.95,
-    family: ModelFamily | str | None = None,
+    family: ModelFamily | None = None,
 ) -> None:
     """Print confounder identification results in a formatted ASCII table.
 
@@ -556,8 +568,7 @@ def print_confounder_table(
         f"Mediation: BCa bootstrap (B={n_bootstrap}, {ci_pct}% CI)"
     )
     if family is not None:
-        family_str = family.name if isinstance(family, ModelFamily) else family
-        print(f"Family:    {family_str}")
+        print(f"Family:    {family.name}")
     print("-" * W)
 
     # ── Partition predictors ───────────────────────────────────── #

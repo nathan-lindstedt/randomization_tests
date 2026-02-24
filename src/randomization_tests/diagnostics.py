@@ -114,7 +114,7 @@ def compute_standardized_coefs(
     X: pd.DataFrame,
     y_values: np.ndarray,
     model_coefs: np.ndarray,
-    model_type: str = "linear",
+    family: ModelFamily,
 ) -> np.ndarray:
     """Compute standardized (beta-weight) coefficients.
 
@@ -125,8 +125,8 @@ def compute_standardized_coefs(
         X: Feature matrix.
         y_values: Response vector.
         model_coefs: Raw coefficients, shape ``(n_features,)``.
-        model_type: Model family name (e.g. ``"linear"``,
-            ``"logistic"``).  Controls the standardisation formula.
+        family: :class:`ModelFamily` instance.  Controls the
+            standardisation formula.
 
     Returns:
         Array of standardized coefficients, shape ``(n_features,)``.
@@ -135,7 +135,7 @@ def compute_standardized_coefs(
     # of each column of X.  Shape: (n_features,).
     sd_x = np.std(X.values, axis=0, ddof=1)
 
-    if model_type == "logistic":
+    if family.name == "logistic":
         # Logistic: β* = β · SD(X_j)
         # The coefficient β_j is in log-odds units; multiplying by
         # SD(X_j) gives the log-odds change per one-SD increase in
@@ -497,7 +497,7 @@ def _runs_test(binary_seq: np.ndarray) -> tuple[float, float]:
 def compute_cooks_distance(
     X: pd.DataFrame,
     y_values: np.ndarray,
-    model_type: str = "linear",
+    family: ModelFamily,
 ) -> dict:
     """Compute Cook's distance and flag influential observations.
 
@@ -518,9 +518,8 @@ def compute_cooks_distance(
     Args:
         X: Feature matrix.
         y_values: Response vector.
-        model_type: Model family name (e.g. ``"linear"``,
-            ``"logistic"``).  Controls whether OLS or GLM Cook's D
-            is computed.
+        family: :class:`ModelFamily` instance.  Controls whether
+            OLS or GLM Cook's D is computed.
 
     Returns:
         Dictionary with ``cooks_d`` (array), ``n_influential`` (count
@@ -541,7 +540,7 @@ def compute_cooks_distance(
     # trigger index-alignment broadcasts.
     y_values = np.asarray(y_values)
 
-    if model_type == "logistic":
+    if family.name == "logistic":
         # --- Logistic: GLM Cook's D via statsmodels ---
         #
         # We delegate to statsmodels GLMInfluence rather than computing
@@ -893,9 +892,8 @@ def compute_all_diagnostics(
         model_coefs: Raw coefficients, shape ``(n_features,)``.
         family: The ``ModelFamily`` instance for the active model.
             Used to dispatch family-specific diagnostics via
-            ``compute_extended_diagnostics()`` and to derive the
-            ``model_type`` string for helper functions that still
-            branch on it.
+            ``compute_extended_diagnostics()`` and passed directly
+            to helper functions.
         raw_empirical_p: Numeric empirical p-values.
         raw_classic_p: Numeric classical p-values.
         n_permutations: Number of permutations (B).
@@ -913,10 +911,6 @@ def compute_all_diagnostics(
         confounders = []
     result: dict = {}
 
-    # Derive model_type string for helpers that still branch on it
-    # (compute_standardized_coefs, compute_cooks_distance).
-    model_type = family.name
-
     # Store the permutation count so downstream display code can
     # report B alongside Monte Carlo SE without a separate lookup.
     result["n_permutations"] = n_permutations
@@ -929,7 +923,7 @@ def compute_all_diagnostics(
         X,
         y_values,
         model_coefs,
-        model_type,
+        family,
     ).tolist()
 
     result["vif"] = compute_vif(X).tolist()
@@ -973,7 +967,7 @@ def compute_all_diagnostics(
                 "ignore",
                 category=PerfectSeparationWarning,
             )
-            result["cooks_distance"] = compute_cooks_distance(X, y_values, model_type)
+            result["cooks_distance"] = compute_cooks_distance(X, y_values, family)
     except Exception as exc:
         logger.debug("Cook's distance diagnostics failed: %s", exc)
         n = len(y_values)

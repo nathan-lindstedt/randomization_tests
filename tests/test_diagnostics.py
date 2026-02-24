@@ -74,19 +74,19 @@ class TestStandardizedCoefs:
     def test_linear_shape_matches_input(self):
         X, y = _make_linear_data()
         coefs = np.array([2.0, -1.0, 0.0])
-        result = compute_standardized_coefs(X, y, coefs, model_type="linear")
+        result = compute_standardized_coefs(X, y, coefs, LinearFamily())
         assert result.shape == (3,)
 
     def test_logistic_shape_matches_input(self):
         X, y = _make_binary_data()
         coefs = np.array([2.0, 0.0])
-        result = compute_standardized_coefs(X, y, coefs, model_type="logistic")
+        result = compute_standardized_coefs(X, y, coefs, LogisticFamily())
         assert result.shape == (2,)
 
     def test_linear_scales_by_sd_ratio(self):
         X, y = _make_linear_data()
         coefs = np.array([2.0, -1.0, 0.0])
-        result = compute_standardized_coefs(X, y, coefs, model_type="linear")
+        result = compute_standardized_coefs(X, y, coefs, LinearFamily())
         sd_x = np.std(X.values, axis=0, ddof=1)
         sd_y = np.std(y, ddof=1)
         expected = coefs * sd_x / sd_y
@@ -95,7 +95,7 @@ class TestStandardizedCoefs:
     def test_logistic_scales_by_sd_x_only(self):
         X, y = _make_binary_data()
         coefs = np.array([2.0, 0.0])
-        result = compute_standardized_coefs(X, y, coefs, model_type="logistic")
+        result = compute_standardized_coefs(X, y, coefs, LogisticFamily())
         sd_x = np.std(X.values, axis=0, ddof=1)
         expected = coefs * sd_x
         np.testing.assert_allclose(result, expected)
@@ -105,7 +105,7 @@ class TestStandardizedCoefs:
         X = pd.DataFrame({"x1": [1.0, 2.0, 3.0]})
         y = np.array([5.0, 5.0, 5.0])
         coefs = np.array([1.0])
-        result = compute_standardized_coefs(X, y, coefs, model_type="linear")
+        result = compute_standardized_coefs(X, y, coefs, LinearFamily())
         np.testing.assert_allclose(result, [0.0])
 
 
@@ -227,7 +227,7 @@ class TestDevianceResiduals:
 class TestCooksDistance:
     def test_linear_returns_expected_keys(self):
         X, y = _make_linear_data()
-        result = compute_cooks_distance(X, y, model_type="linear")
+        result = compute_cooks_distance(X, y, LinearFamily())
         assert "cooks_d" in result
         assert "n_influential" in result
         assert "threshold" in result
@@ -236,13 +236,13 @@ class TestCooksDistance:
 
     def test_logistic_returns_expected_keys(self):
         X, y = _make_binary_data()
-        result = compute_cooks_distance(X, y, model_type="logistic")
+        result = compute_cooks_distance(X, y, LogisticFamily())
         assert "cooks_d" in result
         assert len(result["cooks_d"]) == len(y)
 
     def test_threshold_is_four_over_n(self):
         X, y = _make_linear_data(n=100)
-        result = compute_cooks_distance(X, y, model_type="linear")
+        result = compute_cooks_distance(X, y, LinearFamily())
         assert result["threshold"] == pytest.approx(4.0 / 100)
 
 
@@ -353,12 +353,15 @@ class TestComputeAllDiagnostics:
 
 class TestPrintDiagnosticsTable:
     def test_prints_without_error(self, capsys):
-        from randomization_tests.display import print_diagnostics_table
-        from randomization_tests.families import resolve_family
+        from types import SimpleNamespace
 
-        results = {
-            "model_type": "linear",
-            "extended_diagnostics": {
+        from randomization_tests.display import print_diagnostics_table
+        from randomization_tests.families import LinearFamily
+
+        results = SimpleNamespace(
+            family=LinearFamily(),
+            feature_names=["x1", "x2"],
+            extended_diagnostics={
                 "standardized_coefs": [0.8, -0.4],
                 "vif": [1.1, 1.1],
                 "monte_carlo_se": [0.006, 0.015],
@@ -379,12 +382,8 @@ class TestPrintDiagnosticsTable:
                     "coverage_str": "5.2% of 3628800 possible",
                 },
             },
-        }
-        print_diagnostics_table(
-            results,
-            ["x1", "x2"],
-            family=resolve_family("linear"),
         )
+        print_diagnostics_table(results)
         captured = capsys.readouterr()
         assert "Per-predictor" in captured.out
         assert "Model-level" in captured.out
@@ -394,12 +393,15 @@ class TestPrintDiagnosticsTable:
         assert "Cook" in captured.out
 
     def test_logistic_shows_deviance_residuals(self, capsys):
-        from randomization_tests.display import print_diagnostics_table
-        from randomization_tests.families import resolve_family
+        from types import SimpleNamespace
 
-        results = {
-            "model_type": "logistic",
-            "extended_diagnostics": {
+        from randomization_tests.display import print_diagnostics_table
+        from randomization_tests.families import LogisticFamily
+
+        results = SimpleNamespace(
+            family=LogisticFamily(),
+            feature_names=["x1", "x2"],
+            extended_diagnostics={
                 "standardized_coefs": [2.0, 0.1],
                 "vif": [1.0, 1.0],
                 "monte_carlo_se": [0.003, 0.015],
@@ -421,12 +423,8 @@ class TestPrintDiagnosticsTable:
                     "coverage_str": "< 0.1% of 7.27e+18 possible",
                 },
             },
-        }
-        print_diagnostics_table(
-            results,
-            ["x1", "x2"],
-            family=resolve_family("logistic"),
         )
+        print_diagnostics_table(results)
         captured = capsys.readouterr()
         assert "Deviance resid" in captured.out
         assert "Runs test" in captured.out
@@ -434,25 +432,29 @@ class TestPrintDiagnosticsTable:
         assert "Breusch-Pagan" not in captured.out
 
     def test_no_extended_diagnostics_exits_silently(self, capsys):
-        from randomization_tests.display import print_diagnostics_table
-        from randomization_tests.families import resolve_family
+        from types import SimpleNamespace
 
-        results = {"model_type": "linear"}
-        print_diagnostics_table(
-            results,
-            ["x1"],
-            family=resolve_family("linear"),
+        from randomization_tests.display import print_diagnostics_table
+        from randomization_tests.families import LinearFamily
+
+        results = SimpleNamespace(
+            family=LinearFamily(),
+            feature_names=["x1"],
         )
+        print_diagnostics_table(results)
         captured = capsys.readouterr()
         assert captured.out == ""
 
     def test_high_vif_warning_displayed(self, capsys):
-        from randomization_tests.display import print_diagnostics_table
-        from randomization_tests.families import resolve_family
+        from types import SimpleNamespace
 
-        results = {
-            "model_type": "linear",
-            "extended_diagnostics": {
+        from randomization_tests.display import print_diagnostics_table
+        from randomization_tests.families import LinearFamily
+
+        results = SimpleNamespace(
+            family=LinearFamily(),
+            feature_names=["x1", "x2"],
+            extended_diagnostics={
                 "standardized_coefs": [0.5, 0.5],
                 "vif": [12.0, 6.5],
                 "monte_carlo_se": [0.006, 0.015],
@@ -473,12 +475,8 @@ class TestPrintDiagnosticsTable:
                     "coverage_str": "1.0% of 500000 possible",
                 },
             },
-        }
-        print_diagnostics_table(
-            results,
-            ["x1", "x2"],
-            family=resolve_family("linear"),
         )
+        print_diagnostics_table(results)
         captured = capsys.readouterr()
         assert "severe" in captured.out
         assert "moderate" in captured.out

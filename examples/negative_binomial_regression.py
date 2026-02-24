@@ -27,7 +27,6 @@ from randomization_tests import (
     print_diagnostics_table,
     print_joint_results_table,
     print_results_table,
-    resolve_family,
 )
 
 # ============================================================================
@@ -68,8 +67,6 @@ print(f"Var(y):            {y_arr.var():.2f}")
 print(f"Var/Mean ratio:    {y_arr.var() / y_arr.mean():.2f}  (>>1 → overdispersed)")
 print()
 
-_family = resolve_family("negative_binomial")
-
 # ============================================================================
 # ter Braak (1992) — family="negative_binomial" (explicit)
 # ============================================================================
@@ -77,18 +74,13 @@ _family = resolve_family("negative_binomial")
 results_ter_braak = permutation_test_regression(
     X, y, method="ter_braak", family="negative_binomial"
 )
-assert results_ter_braak["model_type"] == "negative_binomial"
+assert results_ter_braak.family.name == "negative_binomial"
 print_results_table(
     results_ter_braak,
-    feature_names=feature_names,
-    family=_family,
-    target_name="cnt",
     title="ter Braak (1992) Permutation Test (family='negative_binomial')",
 )
 print_diagnostics_table(
     results_ter_braak,
-    feature_names=feature_names,
-    family=_family,
     title="ter Braak (1992) Diagnostics (family='negative_binomial')",
 )
 
@@ -130,9 +122,6 @@ if predictors_with_confounders:
     )
     print_results_table(
         results_kennedy,
-        feature_names=feature_names,
-        family=_family,
-        target_name="cnt",
         title=(
             f"Kennedy (1995) for '{example_predictor}' "
             f"(controlling for {', '.join(example_confounders)}) "
@@ -141,8 +130,6 @@ if predictors_with_confounders:
     )
     print_diagnostics_table(
         results_kennedy,
-        feature_names=feature_names,
-        family=_family,
         title="Kennedy (1995) Individual Diagnostics (family='negative_binomial')",
     )
 
@@ -160,8 +147,6 @@ if predictors_with_confounders:
     )
     print_joint_results_table(
         results_kennedy_joint,
-        family=_family,
-        target_name="cnt",
         title=(
             f"Kennedy (1995) Joint "
             f"(controlling for {', '.join(example_confounders)}) "
@@ -183,9 +168,6 @@ if predictors_with_confounders:
     )
     print_results_table(
         results_fl,
-        feature_names=feature_names,
-        family=_family,
-        target_name="cnt",
         title=(
             f"Freedman–Lane (1983) Individual "
             f"(controlling for {', '.join(example_confounders)}) "
@@ -194,8 +176,6 @@ if predictors_with_confounders:
     )
     print_diagnostics_table(
         results_fl,
-        feature_names=feature_names,
-        family=_family,
         title="Freedman–Lane (1983) Individual Diagnostics (family='negative_binomial')",
     )
 
@@ -213,8 +193,6 @@ if predictors_with_confounders:
     )
     print_joint_results_table(
         results_fl_joint,
-        family=_family,
-        target_name="cnt",
         title=(
             f"Freedman–Lane (1983) Joint "
             f"(controlling for {', '.join(example_confounders)}) "

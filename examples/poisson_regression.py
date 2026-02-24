@@ -3,7 +3,7 @@ Test Case 3: Poisson Regression (Count Outcome)
 Abalone dataset (UCI ML Repository ID=1)
 
 Demonstrates:
-- ``family="poisson"`` — explicit family selection via ``resolve_family``
+- ``family="poisson"`` — explicit family selection
 - All five permutation methods routed through ``PoissonFamily``
 - Direct ``ModelFamily`` protocol usage (fit / predict / residuals /
   reconstruct_y / fit_metric / diagnostics / classical_p_values /
@@ -89,8 +89,6 @@ assert poisson_family.name == "poisson"
 print(f"resolve_family('poisson', y) → {poisson_family.name!r}")
 print()
 
-_family = resolve_family("poisson")
-
 # ============================================================================
 # ter Braak (1992) — family="poisson" (explicit)
 # ============================================================================
@@ -100,19 +98,14 @@ results_ter_braak = permutation_test_regression(
 )
 print_results_table(
     results_ter_braak,
-    feature_names=X.columns.tolist(),
-    family=_family,
-    target_name=y.columns[0],
     title="ter Braak (1992) Permutation Test (family='poisson')",
 )
 print_diagnostics_table(
     results_ter_braak,
-    feature_names=X.columns.tolist(),
-    family=_family,
     title="ter Braak (1992) Extended Diagnostics (family='poisson')",
 )
-assert results_ter_braak["model_type"] == "poisson"
-assert results_ter_braak["family"] == "poisson"
+assert results_ter_braak.family.name == "poisson"
+assert results_ter_braak.family.name == "poisson"
 
 # ============================================================================
 # Kennedy (1995) individual — family="poisson"
@@ -125,15 +118,10 @@ with warnings.catch_warnings():
     )
 print_results_table(
     results_kennedy,
-    feature_names=X.columns.tolist(),
-    family=_family,
-    target_name=y.columns[0],
     title="Kennedy (1995) Individual Permutation Test (family='poisson')",
 )
 print_diagnostics_table(
     results_kennedy,
-    feature_names=X.columns.tolist(),
-    family=_family,
     title="Kennedy (1995) Individual Diagnostics (family='poisson')",
 )
 
@@ -148,8 +136,6 @@ with warnings.catch_warnings():
     )
 print_joint_results_table(
     results_kennedy_joint,
-    family=_family,
-    target_name=y.columns[0],
     title="Kennedy (1995) Joint Permutation Test (family='poisson')",
 )
 
@@ -164,15 +150,10 @@ with warnings.catch_warnings():
     )
 print_results_table(
     results_fl,
-    feature_names=X.columns.tolist(),
-    family=_family,
-    target_name=y.columns[0],
     title="Freedman–Lane (1983) Individual Permutation Test (family='poisson')",
 )
 print_diagnostics_table(
     results_fl,
-    feature_names=X.columns.tolist(),
-    family=_family,
     title="Freedman–Lane (1983) Individual Diagnostics (family='poisson')",
 )
 
@@ -187,8 +168,6 @@ with warnings.catch_warnings():
     )
 print_joint_results_table(
     results_fl_joint,
-    family=_family,
-    target_name=y.columns[0],
     title="Freedman–Lane (1983) Joint Permutation Test (family='poisson')",
 )
 
@@ -228,9 +207,6 @@ if predictors_with_confounders:
     )
     print_results_table(
         results_kc,
-        feature_names=X.columns.tolist(),
-        family=_family,
-        target_name=y.columns[0],
         title=(
             f"Kennedy (1995) for '{example_predictor}' "
             f"(controlling for {', '.join(example_confounders)}) "
@@ -239,8 +215,6 @@ if predictors_with_confounders:
     )
     print_diagnostics_table(
         results_kc,
-        feature_names=X.columns.tolist(),
-        family=_family,
         title=f"Kennedy (1995) Diagnostics for '{example_predictor}' (family='poisson')",
     )
 

@@ -106,10 +106,8 @@ with warnings.catch_warnings():
     results_ter_braak = permutation_test_regression(
         X, y, method="ter_braak", family="ordinal", n_permutations=199
     )
-print_results_table(results_ter_braak, feature_names=X.columns.tolist(), family=_family)
-print_diagnostics_table(
-    results_ter_braak, feature_names=X.columns.tolist(), family=_family
-)
+print_results_table(results_ter_braak)
+print_diagnostics_table(results_ter_braak)
 
 # ============================================================================
 # Confounder analysis
@@ -121,7 +119,7 @@ for predictor in X.columns:
         X, y, predictor=predictor, family="ordinal"
     )
 
-print_confounder_table(all_confounder_results, family="ordinal")
+print_confounder_table(all_confounder_results, family=_family)
 
 # Collect confounders from any predictor that has them
 predictors_with_confounders = {
@@ -154,10 +152,8 @@ with warnings.catch_warnings():
         confounders=confounders,
         n_permutations=199,
     )
-print_results_table(results_kennedy, feature_names=X.columns.tolist(), family=_family)
-print_diagnostics_table(
-    results_kennedy, feature_names=X.columns.tolist(), family=_family
-)
+print_results_table(results_kennedy)
+print_diagnostics_table(results_kennedy)
 
 # ============================================================================
 # Kennedy (1995) joint — collective predictive improvement
@@ -177,7 +173,7 @@ with warnings.catch_warnings():
         confounders=confounders,
         n_permutations=199,
     )
-print_joint_results_table(results_joint, family=_family)
+print_joint_results_table(results_joint)
 
 # ============================================================================
 # Freedman-Lane rejection (expected ValueError)

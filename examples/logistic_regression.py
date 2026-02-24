@@ -3,7 +3,7 @@ Test Case 2: Logistic Regression (Binary Outcome)
 Breast Cancer Wisconsin (Diagnostic) dataset (UCI ML Repository ID=17)
 
 Demonstrates:
-- ``family="logistic"`` — explicit family selection via ``resolve_family``
+- ``family="logistic"`` — explicit family selection
 - All five permutation methods routed through ``LogisticFamily``
 - Direct ``ModelFamily`` protocol usage (fit / predict / residuals /
   reconstruct_y / fit_metric / diagnostics / classical_p_values /
@@ -48,20 +48,15 @@ auto_family = resolve_family("auto", np.ravel(y_bc))
 assert auto_family.name == "logistic", f"Expected 'logistic', got {auto_family.name!r}"
 print(f"resolve_family('auto', y) → {auto_family.name!r}")
 
-_family = resolve_family("logistic")
-
 # ============================================================================# ter Braak (1992) \u2014 family="auto" (auto-detection)
 # ============================================================================
 
 results_ter_braak_auto_bc = permutation_test_regression(
     X_bc, y_bc, method="ter_braak", family="auto"
 )
-assert results_ter_braak_auto_bc["family"] == "logistic"
+assert results_ter_braak_auto_bc.family.name == "logistic"
 print_results_table(
     results_ter_braak_auto_bc,
-    feature_names=X_bc.columns.tolist(),
-    family=_family,
-    target_name=y_bc.columns[0],
     title="ter Braak (1992) Permutation Test (family='auto' \u2192 logistic)",
 )
 
@@ -73,18 +68,13 @@ results_ter_braak_bc = permutation_test_regression(
 )
 print_results_table(
     results_ter_braak_bc,
-    feature_names=X_bc.columns.tolist(),
-    family=_family,
-    target_name=y_bc.columns[0],
     title="ter Braak (1992) Permutation Test (family='logistic')",
 )
 print_diagnostics_table(
     results_ter_braak_bc,
-    feature_names=X_bc.columns.tolist(),
-    family=_family,
     title="ter Braak (1992) Diagnostics (family='logistic')",
 )
-assert results_ter_braak_bc["model_type"] == "logistic"
+assert results_ter_braak_bc.family.name == "logistic"
 
 # ============================================================================
 # Kennedy (1995) individual — family="logistic"
@@ -97,15 +87,10 @@ with warnings.catch_warnings():
     )
 print_results_table(
     results_kennedy_bc,
-    feature_names=X_bc.columns.tolist(),
-    family=_family,
-    target_name=y_bc.columns[0],
     title="Kennedy (1995) Individual Permutation Test (family='logistic')",
 )
 print_diagnostics_table(
     results_kennedy_bc,
-    feature_names=X_bc.columns.tolist(),
-    family=_family,
     title="Kennedy (1995) Individual Diagnostics (family='logistic')",
 )
 
@@ -120,8 +105,6 @@ with warnings.catch_warnings():
     )
 print_joint_results_table(
     results_kennedy_joint_bc,
-    family=_family,
-    target_name=y_bc.columns[0],
     title="Kennedy (1995) Joint Permutation Test (family='logistic')",
 )
 
@@ -136,15 +119,10 @@ with warnings.catch_warnings():
     )
 print_results_table(
     results_fl_bc,
-    feature_names=X_bc.columns.tolist(),
-    family=_family,
-    target_name=y_bc.columns[0],
     title="Freedman–Lane (1983) Individual Permutation Test (family='logistic')",
 )
 print_diagnostics_table(
     results_fl_bc,
-    feature_names=X_bc.columns.tolist(),
-    family=_family,
     title="Freedman–Lane (1983) Individual Diagnostics (family='logistic')",
 )
 
@@ -159,8 +137,6 @@ with warnings.catch_warnings():
     )
 print_joint_results_table(
     results_fl_joint_bc,
-    family=_family,
-    target_name=y_bc.columns[0],
     title="Freedman–Lane (1983) Joint Permutation Test (family='logistic')",
 )
 
@@ -202,9 +178,6 @@ if predictors_with_confounders_bc:
     )
     print_results_table(
         results_kc_bc,
-        feature_names=X_bc.columns.tolist(),
-        family=_family,
-        target_name=y_bc.columns[0],
         title=(
             f"Kennedy (1995) for '{example_predictor_bc}' "
             f"(controlling for {', '.join(example_confounders_bc)}) "
@@ -213,8 +186,6 @@ if predictors_with_confounders_bc:
     )
     print_diagnostics_table(
         results_kc_bc,
-        feature_names=X_bc.columns.tolist(),
-        family=_family,
         title=(
             f"Kennedy (1995) Diagnostics for '{example_predictor_bc}' "
             f"(family='logistic')"

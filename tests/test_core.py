@@ -49,7 +49,7 @@ class TestTerBraakLinear:
         assert "model_coefs" in result
         assert "permuted_p_values" in result
         assert "classic_p_values" in result
-        assert result["model_type"] == "linear"
+        assert result.family.name == "linear"
         assert result["method"] == "ter_braak"
 
     def test_correct_number_of_coefs(self):
@@ -91,7 +91,7 @@ class TestTerBraakLogistic:
             method="ter_braak",
             random_state=42,
         )
-        assert result["model_type"] == "logistic"
+        assert result.family.name == "logistic"
 
     def test_correct_number_of_coefs(self):
         X, y = _make_binary_data()
@@ -145,7 +145,7 @@ class TestKennedyIndividual:
                 confounders=[],
                 random_state=42,
             )
-        assert result["model_type"] == "logistic"
+        assert result.family.name == "logistic"
 
 
 class TestKennedyJoint:
@@ -177,7 +177,7 @@ class TestKennedyJoint:
                 random_state=42,
             )
         assert "observed_improvement" in result
-        assert result["model_type"] == "logistic"
+        assert result.family.name == "logistic"
 
     def test_p_value_in_valid_range(self):
         X, y = _make_linear_data()
@@ -244,7 +244,7 @@ class TestFitInterceptFalse:
             random_state=42,
             fit_intercept=False,
         )
-        assert result["model_type"] == "linear"
+        assert result.family.name == "linear"
         assert len(result["model_coefs"]) == 3
         assert len(result["permuted_p_values"]) == 3
         assert len(result["classic_p_values"]) == 3
@@ -259,7 +259,7 @@ class TestFitInterceptFalse:
             random_state=42,
             fit_intercept=False,
         )
-        assert result["model_type"] == "logistic"
+        assert result.family.name == "logistic"
         assert len(result["model_coefs"]) == 2
 
     def test_kennedy_linear_no_intercept(self):
@@ -288,7 +288,7 @@ class TestFitInterceptFalse:
                 random_state=42,
                 fit_intercept=False,
             )
-        assert result["model_type"] == "logistic"
+        assert result.family.name == "logistic"
 
     def test_kennedy_joint_linear_no_intercept(self):
         X, y = _make_linear_data()
@@ -317,7 +317,7 @@ class TestFitInterceptFalse:
                 random_state=42,
                 fit_intercept=False,
             )
-        assert result["model_type"] == "logistic"
+        assert result.family.name == "logistic"
         assert "p_value" in result
 
     def test_coefs_differ_from_intercept_model(self):
@@ -365,7 +365,7 @@ class TestFamilyParameter:
             random_state=42,
             family="linear",
         )
-        assert result["model_type"] == "linear"
+        assert result.family.name == "linear"
         assert len(result["model_coefs"]) == 3
 
     def test_explicit_logistic_with_binary_y(self):
@@ -380,7 +380,7 @@ class TestFamilyParameter:
             random_state=42,
             family="logistic",
         )
-        assert result["model_type"] == "logistic"
+        assert result.family.name == "logistic"
         assert len(result["model_coefs"]) == 2
 
     def test_auto_selects_linear_for_continuous(self):
@@ -395,7 +395,7 @@ class TestFamilyParameter:
             random_state=42,
             family="auto",
         )
-        assert result["model_type"] == "linear"
+        assert result.family.name == "linear"
 
     def test_auto_selects_logistic_for_binary(self):
         """Default family='auto' should resolve to logistic for
@@ -409,7 +409,7 @@ class TestFamilyParameter:
             random_state=42,
             family="auto",
         )
-        assert result["model_type"] == "logistic"
+        assert result.family.name == "logistic"
 
     # ---- Explicit family vs data mismatch → validate_y error ----
 
@@ -515,7 +515,7 @@ class TestFamilyParameter:
             random_state=42,
             family="linear",
         )
-        assert result["model_type"] == "linear"
+        assert result.family.name == "linear"
         assert result["permuted_p_values"][2] == "N/A (confounder)"
 
     def test_kennedy_joint_with_explicit_family(self):
@@ -530,7 +530,7 @@ class TestFamilyParameter:
                 random_state=42,
                 family="logistic",
             )
-        assert result["model_type"] == "logistic"
+        assert result.family.name == "logistic"
         assert "observed_improvement" in result
 
     def test_family_instance_passthrough(self):
@@ -546,7 +546,7 @@ class TestFamilyParameter:
             random_state=42,
             family=LinearFamily(),
         )
-        assert result["model_type"] == "linear"
+        assert result.family.name == "linear"
         assert len(result["model_coefs"]) == 3
 
 
@@ -761,7 +761,7 @@ class TestFreedmanLaneIndividual:
             random_state=42,
         )
         assert result["method"] == "freedman_lane"
-        assert result["model_type"] == "linear"
+        assert result.family.name == "linear"
         assert len(result["model_coefs"]) == 3
         # x3 is a confounder — its p-value should be N/A
         assert result["permuted_p_values"][2] == "N/A (confounder)"
@@ -798,7 +798,7 @@ class TestFreedmanLaneIndividual:
             confounders=["z1"],
             random_state=42,
         )
-        assert result["model_type"] == "logistic"
+        assert result.family.name == "logistic"
         assert result["method"] == "freedman_lane"
         # z1 is a confounder
         z1_idx = list(X.columns).index("z1")
@@ -816,7 +816,7 @@ class TestFreedmanLaneIndividual:
                 confounders=[],
                 random_state=42,
             )
-        assert result["model_type"] == "logistic"
+        assert result.family.name == "logistic"
 
     def test_p_values_in_valid_range(self):
         """All non-confounder p-values should be in (0, 1]."""
@@ -846,7 +846,7 @@ class TestFreedmanLaneIndividual:
             random_state=42,
             family="linear",
         )
-        assert result["model_type"] == "linear"
+        assert result.family.name == "linear"
 
     def test_explicit_family_logistic(self):
         """Explicit family='logistic' works with Freedman–Lane."""
@@ -863,7 +863,7 @@ class TestFreedmanLaneIndividual:
             random_state=42,
             family="logistic",
         )
-        assert result["model_type"] == "logistic"
+        assert result.family.name == "logistic"
 
     def test_fit_intercept_false(self):
         """Freedman–Lane with fit_intercept=False runs correctly."""
@@ -935,7 +935,7 @@ class TestFreedmanLaneJoint:
             random_state=42,
         )
         assert "observed_improvement" in result
-        assert result["model_type"] == "logistic"
+        assert result.family.name == "logistic"
         assert result["metric_type"] == "Deviance Reduction"
 
     def test_p_value_in_valid_range(self):
@@ -1009,7 +1009,7 @@ class TestResultDictProvenance:
         result = permutation_test_regression(
             X, y, n_permutations=20, method="ter_braak", random_state=0
         )
-        assert result["family"] == "linear"
+        assert result.family.name == "linear"
         assert result["backend"] == "numpy"
 
     def test_kennedy_has_family_and_backend(self):
@@ -1022,7 +1022,7 @@ class TestResultDictProvenance:
             confounders=["x2"],
             random_state=0,
         )
-        assert result["family"] == "logistic"
+        assert result.family.name == "logistic"
         assert result["backend"] == "numpy"
 
     def test_kennedy_joint_has_family_and_backend(self):
@@ -1035,7 +1035,7 @@ class TestResultDictProvenance:
             confounders=["x3"],
             random_state=0,
         )
-        assert result["family"] == "linear"
+        assert result.family.name == "linear"
         assert result["backend"] == "numpy"
 
     def test_freedman_lane_has_family_and_backend(self):
@@ -1048,7 +1048,7 @@ class TestResultDictProvenance:
             confounders=["x3"],
             random_state=0,
         )
-        assert result["family"] == "linear"
+        assert result.family.name == "linear"
         assert result["backend"] == "numpy"
 
     def test_freedman_lane_joint_has_family_and_backend(self):
@@ -1061,5 +1061,5 @@ class TestResultDictProvenance:
             confounders=["x2"],
             random_state=0,
         )
-        assert result["family"] == "logistic"
+        assert result.family.name == "logistic"
         assert result["backend"] == "numpy"

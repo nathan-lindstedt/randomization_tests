@@ -63,18 +63,13 @@ results_ter_braak = permutation_test_regression(
 )
 print_results_table(
     results_ter_braak,
-    feature_names=X_wine.columns.tolist(),
-    family=_family,
-    target_name="class",
     title="ter Braak (1992) Permutation Test (family='multinomial')",
 )
 print_diagnostics_table(
     results_ter_braak,
-    feature_names=X_wine.columns.tolist(),
-    family=_family,
     title="ter Braak (1992) Diagnostics (family='multinomial')",
 )
-assert results_ter_braak["model_type"] == "multinomial"
+assert results_ter_braak.family.name == "multinomial"
 
 # ============================================================================
 # Kennedy (1995) individual — family="multinomial"
@@ -87,15 +82,10 @@ with warnings.catch_warnings():
     )
 print_results_table(
     results_kennedy,
-    feature_names=X_wine.columns.tolist(),
-    family=_family,
-    target_name="class",
     title="Kennedy (1995) Individual Permutation Test (family='multinomial')",
 )
 print_diagnostics_table(
     results_kennedy,
-    feature_names=X_wine.columns.tolist(),
-    family=_family,
     title="Kennedy (1995) Individual Diagnostics (family='multinomial')",
 )
 
@@ -114,8 +104,6 @@ with warnings.catch_warnings():
     )
 print_joint_results_table(
     results_kennedy_joint,
-    family=_family,
-    target_name="class",
     title="Kennedy (1995) Joint Permutation Test (family='multinomial')",
 )
 
@@ -132,7 +120,7 @@ for predictor in X_wine.columns:
 print_confounder_table(
     all_confounder_results,
     title="Confounder Identification for All Predictors (Multinomial)",
-    family="multinomial",
+    family=_family,
 )
 
 predictors_with_confounders = {
@@ -158,9 +146,6 @@ if predictors_with_confounders:
     )
     print_results_table(
         results_kc,
-        feature_names=X_wine.columns.tolist(),
-        family=_family,
-        target_name="class",
         title=(
             f"Kennedy (1995) for '{example_predictor}' "
             f"(controlling for {', '.join(example_confounders)}) "
@@ -169,8 +154,6 @@ if predictors_with_confounders:
     )
     print_diagnostics_table(
         results_kc,
-        feature_names=X_wine.columns.tolist(),
-        family=_family,
         title=(
             f"Kennedy (1995) Diagnostics for '{example_predictor}' "
             f"(family='multinomial')"

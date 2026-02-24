@@ -377,8 +377,9 @@ for all existing families.
   a `UserWarning` guides users to the simpler method.
 - [X] All five methods (ter Braak, Kennedy individual/joint,
   Freedman–Lane individual/joint) available for every family.
-- [X] Result dicts carry `"family"` and `"backend"` provenance keys
-  alongside the existing `"model_type"` key (Step 17).
+- [X] Result dicts carry `"family"` and `"backend"` provenance keys.
+  (`"model_type"` was also added here but subsequently removed in
+  v0.4.0 — see "model_type removal" below.)
 
 ### Step 6b — Stabilisation
 
@@ -896,15 +897,33 @@ family-specific diagnostic computation into the protocol:
   divergence flags, Cook's distance, permutation coverage) remain in
   `diagnostics.py` — they are family-agnostic.
 
-### `model_type` removal from result objects
+### `model_type` removal from result objects + self-contained display
 
-- [ ] `model_type` field removed from `IndividualTestResult` and
-  `JointTestResult` dataclass definitions.
-- [ ] A `model_type` property alias on `_DictAccessMixin` returns
-  `self.family` for backward compat — no warning, just a thin alias.
-- [ ] `to_dict()` still includes `"model_type"` for JSON compat.
-- [ ] New fields added to result objects: `feature_names`, `n_permutations`,
-  `groups` (None until v0.4.1), `permutation_strategy` (None until v0.4.1).
+- [X] `model_type` field deleted from `IndividualTestResult` and
+  `JointTestResult` dataclass definitions.  No property alias, no
+  `to_dict()` key — zero `model_type` anywhere in the codebase.
+- [X] `family: str` field changed to `family: ModelFamily` instance
+  on both result classes.  All consumers use the instance directly
+  (`results.family.stat_label`, `results.family.display_header()`,
+  etc.).
+- [X] `_SERIALIZERS: ClassVar[dict[str, Any]]` registry on
+  `_DictAccessMixin`.  `to_dict()` consults the registry to convert
+  non-primitive fields (e.g. `family` → `family.name`), then always
+  runs `_numpy_to_python()` on the result (composing, not exclusive).
+  Prepares infrastructure for v0.5.0 `GraphTestResult`.
+- [X] Self-contained display functions: `print_results_table(results,
+  *, title=...)`, `print_joint_results_table(results, *, title=...)`,
+  `print_diagnostics_table(results, *, title=...)`.  All metadata
+  (`family`, `feature_names`, `target_name`) extracted from the
+  result object internally — no parameter passing.
+- [X] `compute_standardized_coefs` and `compute_cooks_distance` take
+  `family: ModelFamily` (not `model_type: str`).
+- [X] `print_confounder_table`: `family: ModelFamily | None = None`
+  (drop `str` from union type).
+- [X] New fields added to result objects: `feature_names: list[str]`,
+  `target_name: str`, `n_permutations: int`,
+  `groups: np.ndarray | None` (None until v0.4.1),
+  `permutation_strategy: str | None` (None until v0.4.1).
 
 ### Sign-flip test
 
@@ -1108,10 +1127,12 @@ this release extends the result interface for graph-structured models
 and adds academic output formats.
 
 **Note:** The core result dataclasses (`IndividualTestResult`,
-`JointTestResult`) and their backward-compatible dict-access layer
+`JointTestResult`) and their dict-like access layer
 (`_DictAccessMixin`, `.to_dict()`) were pulled forward into v0.3.0
-Step 6b (stabilisation).  This release builds on that foundation
-rather than starting from scratch.
+Step 6b (stabilisation).  v0.4.0 Step 6 enriched these with
+`family: ModelFamily` instances, a `_SERIALIZERS` registry,
+self-contained display functions, and new metadata fields.
+This release builds on that foundation.
 
 ### Extended result types
 
@@ -1138,18 +1159,19 @@ rather than starting from scratch.
 
 ### Display decoupling
 
-Deferred from v0.3.0 audit.  The display functions in `display.py`
-currently reach into result dicts by string key.  With typed result
-objects now in place (Step 6b), display functions should accept the
-typed objects directly and use attribute access.
+**Pulled forward to v0.4.0** ("`model_type` removal from result
+objects + self-contained display" above).  Display functions now
+accept typed result objects with `family: ModelFamily` and extract
+all metadata internally.  No remaining work here.
 
-- [ ] `print_results_table()` and `print_joint_results_table()` accept
-  `IndividualTestResult` / `JointTestResult` natively (dict input
-  remains supported via `_DictAccessMixin` for backward compatibility).
-- [ ] Type annotations on all display function signatures updated to
+- [X] `print_results_table()` and `print_joint_results_table()` accept
+  `IndividualTestResult` / `JointTestResult` natively with
+  keyword-only `title` parameter.  All context (`family`,
+  `feature_names`, `target_name`) extracted from the result object.
+- [X] Type annotations on all display function signatures updated to
   reflect the typed inputs.
-- [ ] Remove internal string-key assumptions that would break if
-  result schema changes.
+- [X] Internal string-key assumptions eliminated — display functions
+  use typed attribute access exclusively.
 
 ### Programmatic access
 

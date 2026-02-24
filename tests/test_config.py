@@ -118,7 +118,7 @@ class TestBackendIntegration:
             method="ter_braak",
             random_state=42,
         )
-        assert result["model_type"] == "logistic"
+        assert result.family.name == "logistic"
         assert "model_coefs" in result
 
     def test_public_api_exports(self):

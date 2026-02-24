@@ -102,9 +102,9 @@ def permutation_test_regression(
             vectorisation).
 
     Returns:
-        Dictionary containing coefficients, p-values, diagnostics, and
-        method metadata.  Includes ``"model_type"`` set to the
-        resolved family name (e.g. ``"linear"`` or ``"logistic"``).
+        Typed result object containing coefficients, p-values,
+        diagnostics, and method metadata.  The ``family`` attribute
+        holds the resolved :class:`ModelFamily` instance.
 
     Raises:
         ValueError: If *method* is not one of the recognised options,
@@ -191,6 +191,8 @@ def permutation_test_regression(
     if strategy.is_joint:
         return _package_joint_result(
             result,  # type: ignore[arg-type]
+            X=X,
+            y=y,
             engine=engine,
             method=method,
             confounders=confounders,
@@ -289,6 +291,8 @@ def _validate_inputs(
 def _package_joint_result(
     raw: tuple[float, np.ndarray, str, list[str]],
     *,
+    X: pd.DataFrame,
+    y: pd.DataFrame,
     engine: PermutationEngine,
     method: str,
     confounders: list[str],
@@ -322,11 +326,15 @@ def _package_joint_result(
         p_value=p_value,
         p_value_str=p_value_str,
         metric_type=metric_type,
-        model_type=engine.family.name,
-        family=engine.family.name,
+        family=engine.family,
         backend=engine.backend_name,
         features_tested=features_tested,
         confounders=confounders or [],
+        feature_names=list(X.columns),
+        target_name=str(y.columns[0]),
+        n_permutations=n_permutations,
+        groups=None,
+        permutation_strategy=None,
         p_value_threshold_one=p_value_threshold_one,
         p_value_threshold_two=p_value_threshold_two,
         method=method,
@@ -398,9 +406,13 @@ def _package_individual_result(
         p_value_threshold_two=p_value_threshold_two,
         method=method,
         confounders=confounders or [],
-        model_type=engine.family.name,
-        family=engine.family.name,
+        family=engine.family,
         backend=engine.backend_name,
+        feature_names=list(X.columns),
+        target_name=str(y.columns[0]),
+        n_permutations=n_permutations,
+        groups=None,
+        permutation_strategy=None,
         diagnostics=engine.diagnostics,
         extended_diagnostics=extended_diagnostics,
     )

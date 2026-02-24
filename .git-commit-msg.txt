@@ -1,0 +1,17 @@
+Step 6: Zero model_type + ModelFamily on results + self-contained display
+
+- Delete model_type field from IndividualTestResult and JointTestResult
+- Change family field from str to ModelFamily instance on both result classes
+- Add _SERIALIZERS ClassVar registry to _DictAccessMixin; to_dict()
+  composes serializers (family -> family.name) with _numpy_to_python()
+- Add 5 new fields to both result classes: feature_names, target_name,
+  n_permutations, groups, permutation_strategy
+- Make display functions self-contained: print_results_table(results, *,
+  title=...) extracts family/feature_names/target_name from result object
+- Same for print_joint_results_table and print_diagnostics_table
+- compute_standardized_coefs and compute_cooks_distance take
+  family: ModelFamily instead of model_type: str
+- print_confounder_table family param: ModelFamily | None (drop str)
+- Update all 7 test files, 6 example files, API.md, QUICKSTART.md
+- Zero model_type references in src/, tests/, examples/
+- 648 passed, mypy clean, ruff clean

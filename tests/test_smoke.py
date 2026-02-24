@@ -70,7 +70,7 @@ class TestLinearSmoke:
         elapsed = time.monotonic() - t0
         assert elapsed < 30, f"Linear smoke test took {elapsed:.1f}s (limit 30s)"
         assert len(result["model_coefs"]) == P
-        assert result["model_type"] == "linear"
+        assert result.family.name == "linear"
 
     def test_result_structure(self) -> None:
         X, y = _make_large_linear()
@@ -96,7 +96,7 @@ class TestLogisticSmoke:
         elapsed = time.monotonic() - t0
         assert elapsed < 120, f"Logistic smoke test took {elapsed:.1f}s (limit 120s)"
         assert len(result["model_coefs"]) == P
-        assert result["model_type"] == "logistic"
+        assert result.family.name == "logistic"
 
 
 @pytest.mark.slow

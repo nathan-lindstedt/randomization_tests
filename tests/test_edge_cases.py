@@ -69,7 +69,7 @@ class TestSingleFeature:
         )
         assert len(result["model_coefs"]) == 1
         assert len(result["permuted_p_values"]) == 1
-        assert result["model_type"] == "linear"
+        assert result.family.name == "linear"
 
     def test_kennedy_linear(self) -> None:
         X, y = _linear_data()
@@ -172,7 +172,7 @@ class TestPerfectSeparation:
             X, y, n_permutations=50, method="ter_braak", random_state=0
         )
         assert all(np.isfinite(result["raw_empirical_p"]))
-        assert result["model_type"] == "logistic"
+        assert result.family.name == "logistic"
 
     def test_kennedy(self, separated_data: tuple[pd.DataFrame, pd.DataFrame]) -> None:
         X, y = separated_data

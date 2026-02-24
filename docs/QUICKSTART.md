@@ -39,10 +39,10 @@ results = permutation_test_regression(
 )
 
 # Display a statsmodels-style results table
-print_results_table(results, feature_names=list(X.columns), target_name="y")
+print_results_table(results)
 
 # Display extended diagnostics (VIF, Cook's D, etc.)
-print_diagnostics_table(results, feature_names=list(X.columns))
+print_diagnostics_table(results)
 ```
 
 ## Available methods
@@ -64,7 +64,7 @@ Kennedy and Freedman–Lane methods require the `confounders` parameter
 ## Confounder identification
 
 ```python
-from randomization_tests import identify_confounders, print_confounder_table
+from randomization_tests import identify_confounders, print_confounder_table, resolve_family
 
 result = identify_confounders(X, y, predictor="x1", random_state=42)
 print_confounder_table(result)
@@ -77,7 +77,7 @@ total-effect regressions use the appropriate GLM:
 result = identify_confounders(
     X, y, predictor="x1", family="poisson", random_state=42,
 )
-print_confounder_table(result, family="poisson")
+print_confounder_table(result, family=resolve_family("poisson"))
 ```
 
 For all predictors at once:

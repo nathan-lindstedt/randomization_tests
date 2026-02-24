@@ -1,15 +1,12 @@
 """Typed result objects for permutation tests.
 
-Replaces the plain-dictionary return values from
-``permutation_test_regression`` with frozen dataclasses that provide:
+Frozen dataclasses that provide:
 
 * **Attribute access** — ``result.family``, ``result.method``, etc.
 * **Dict-like access** — ``result["family"]``, ``result.get("key")``,
-  ``"key" in result`` for backward compatibility with existing code
-  that consumes the old dict interface (display functions, tests,
-  downstream scripts).
+  ``"key" in result`` for consumers that prefer bracket syntax.
 * **Serialisation** — ``.to_dict()`` returns a plain ``dict[str, Any]``
-  identical to the v0.3.17 return format.
+  with all NumPy types converted to native Python.
 
 Two concrete result types mirror the two test topologies:
 
@@ -26,9 +23,12 @@ mutated after creation.
 from __future__ import annotations
 
 from dataclasses import dataclass, fields
-from typing import Any
+from typing import TYPE_CHECKING, Any, ClassVar
 
 import numpy as np
+
+if TYPE_CHECKING:
+    from .families import ModelFamily
 
 # ------------------------------------------------------------------ #
 # Serialisation helper
@@ -59,22 +59,27 @@ def _numpy_to_python(obj: Any) -> Any:
 # ------------------------------------------------------------------ #
 # Dict-compatibility mixin
 # ------------------------------------------------------------------ #
-#
-# All existing consumers of permutation_test_regression — display
-# functions, example scripts, user code — access results via dict
-# syntax (result["key"], result.get("key", default)).  This mixin
-# provides that surface so the dataclass is a drop-in replacement.
 
 
 class _DictAccessMixin:
-    """Backward-compatible dict-like access for result dataclasses.
+    """Dict-like access convenience for result dataclasses.
 
-    Supports three patterns used throughout the codebase:
+    Supports three access patterns:
 
     1. ``result["key"]``     — raises ``KeyError`` on miss
     2. ``result.get(key, d)`` — returns *d* on miss (default ``None``)
     3. ``"key" in result``   — membership test
+
+    Subclasses may override ``_SERIALIZERS`` to register custom
+    conversion functions for non-primitive fields (e.g.
+    ``ModelFamily`` → ``str``).  Serializers compose with
+    :func:`_numpy_to_python` — serialized values containing NumPy
+    types are still converted.
     """
+
+    _SERIALIZERS: ClassVar[dict[str, Any]] = {
+        "family": lambda f: f.name,
+    }
 
     def __getitem__(self, key: str) -> Any:
         """Attribute lookup via bracket syntax."""
@@ -98,17 +103,18 @@ class _DictAccessMixin:
         return hasattr(self, key)
 
     def to_dict(self) -> dict[str, Any]:
-        """Convert to a plain dictionary (v0.3.17 format).
+        """Convert to a plain dictionary.
 
-        NumPy arrays are converted to nested Python lists so that the
-        returned dict is JSON-serialisable and matches the format that
-        ``permutation_test_regression`` returned prior to v0.3.17.5.
+        Applies per-field serializers from ``_SERIALIZERS``, then runs
+        :func:`_numpy_to_python` on every value so the returned dict
+        is fully JSON-serialisable.
         """
         result: dict[str, Any] = {}
         for f in fields(self):  # type: ignore[arg-type]
             val = getattr(self, f.name)
-            val = _numpy_to_python(val)
-            result[f.name] = val
+            if f.name in self._SERIALIZERS:
+                val = self._SERIALIZERS[f.name](val)
+            result[f.name] = _numpy_to_python(val)
         return result
 
 
@@ -125,8 +131,7 @@ class IndividualTestResult(_DictAccessMixin):
     ``"ter_braak"``, ``"kennedy"``, and ``"freedman_lane"``.
 
     All fields are accessible both as attributes (``result.family``)
-    and via dict syntax (``result["family"]``) for backward
-    compatibility.
+    and via dict syntax (``result["family"]``).
     """
 
     # ---- Coefficients & null distribution --------------------------
@@ -163,14 +168,26 @@ class IndividualTestResult(_DictAccessMixin):
     confounders: list[str]
     """Confounder column names (empty list if none)."""
 
-    model_type: str
-    """Resolved family name (e.g. ``"linear"``, ``"logistic"``)."""
-
-    family: str
-    """Alias for ``model_type`` — semantic provenance key."""
+    family: ModelFamily
+    """Model family instance (e.g. ``LinearFamily()``)."""
 
     backend: str
     """Compute backend used (``"numpy"`` or ``"jax"``)."""
+
+    feature_names: list[str]
+    """Feature column names from the design matrix."""
+
+    target_name: str
+    """Target column name."""
+
+    n_permutations: int
+    """Actual number of permutations used."""
+
+    groups: np.ndarray | None
+    """Exchangeability group labels (``None`` until v0.4.1)."""
+
+    permutation_strategy: str | None
+    """``"within"``, ``"between"``, ``"two-stage"``, or ``None``."""
 
     # ---- Diagnostics -----------------------------------------------
     diagnostics: dict[str, Any]
@@ -192,8 +209,7 @@ class JointTestResult(_DictAccessMixin):
     Returned by ``permutation_test_regression`` for methods
     ``"kennedy_joint"`` and ``"freedman_lane_joint"``.
 
-    All fields are accessible both as attributes and via dict syntax
-    for backward compatibility.
+    All fields are accessible both as attributes and via dict syntax.
     """
 
     # ---- Test statistic & null distribution -------------------------
@@ -214,11 +230,8 @@ class JointTestResult(_DictAccessMixin):
     metric_type: str
     """Label for the fit metric (``"RSS Reduction"`` or ``"Deviance Reduction"``)."""
 
-    model_type: str
-    """Resolved family name."""
-
-    family: str
-    """Alias for ``model_type``."""
+    family: ModelFamily
+    """Model family instance (e.g. ``LinearFamily()``)."""
 
     backend: str
     """Compute backend used."""
@@ -229,6 +242,21 @@ class JointTestResult(_DictAccessMixin):
 
     confounders: list[str]
     """Confounder column names."""
+
+    feature_names: list[str]
+    """All feature column names from the design matrix."""
+
+    target_name: str
+    """Target column name."""
+
+    n_permutations: int
+    """Actual number of permutations used."""
+
+    groups: np.ndarray | None
+    """Exchangeability group labels (``None`` until v0.4.1)."""
+
+    permutation_strategy: str | None
+    """``"within"``, ``"between"``, ``"two-stage"``, or ``None``."""
 
     # ---- Thresholds ------------------------------------------------
     p_value_threshold_one: float

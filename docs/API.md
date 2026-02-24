@@ -504,9 +504,8 @@ BCa bootstrap CI (`indirect_effect_ci`), `ci_method` (`"BCa"`),
 
 ```python
 print_results_table(
-    results: dict,
-    feature_names: list[str],
-    target_name: str | None = None,
+    results: IndividualTestResult,
+    *,
     title: str = "Permutation Test Results",
 ) -> None
 ```
@@ -516,11 +515,12 @@ statsmodels output.  Shows model summary statistics (top panel) and
 per‑feature coefficients with empirical (permutation) and classical
 (asymptotic) p‑values side by side (bottom panel).
 
+Feature names, target name, and model family are read directly from
+the result object.
+
 | Parameter | Description |
 |---|---|
-| `results` | Results dictionary from `permutation_test_regression`. |
-| `feature_names` | Names of the features/predictors. |
-| `target_name` | Name of the target variable. |
+| `results` | `IndividualTestResult` from `permutation_test_regression`. |
 | `title` | Title for the output table. |
 
 ---
@@ -529,19 +529,20 @@ per‑feature coefficients with empirical (permutation) and classical
 
 ```python
 print_joint_results_table(
-    results: dict,
-    target_name: str | None = None,
+    results: JointTestResult,
+    *,
     title: str = "Joint Permutation Test Results",
 ) -> None
 ```
 
-Print joint test results (Kennedy joint method) in a formatted ASCII
-table.
+Print joint test results (Kennedy/Freedman–Lane joint methods) in a
+formatted ASCII table.
+
+Target name and model family are read directly from the result object.
 
 | Parameter | Description |
 |---|---|
-| `results` | Results dictionary from `permutation_test_regression` with `method="kennedy_joint"`. |
-| `target_name` | Name of the target variable. |
+| `results` | `JointTestResult` from `permutation_test_regression` (joint methods). |
 | `title` | Title for the output table. |
 
 ---
@@ -550,8 +551,8 @@ table.
 
 ```python
 print_diagnostics_table(
-    results: dict,
-    feature_names: list[str],
+    results: IndividualTestResult,
+    *,
     title: str = "Extended Diagnostics",
 ) -> None
 ```
@@ -559,7 +560,8 @@ print_diagnostics_table(
 Print extended model diagnostics in a formatted ASCII table.
 
 Complements `print_results_table` with additional per‑predictor and
-model‑level diagnostics.  The table has four sections:
+model‑level diagnostics.  Feature names and model family are read
+directly from the result object.  The table has four sections:
 
 1. **Per‑predictor Diagnostics** — standardised coefficients, VIF,
    Monte Carlo SE, optional Exposure R² (Kennedy method), and
@@ -572,8 +574,7 @@ model‑level diagnostics.  The table has four sections:
 
 | Parameter | Description |
 |---|---|
-| `results` | Results dictionary from `permutation_test_regression`. Must contain `extended_diagnostics`. |
-| `feature_names` | Names of the features/predictors. |
+| `results` | `IndividualTestResult` from `permutation_test_regression`. Must contain `extended_diagnostics`. |
 | `title` | Title for the output table. |
 
 ---
@@ -588,7 +589,7 @@ print_confounder_table(
     p_value_threshold: float = 0.05,
     n_bootstrap: int = 1000,
     confidence_level: float = 0.95,
-    family: str | None = None,
+    family: ModelFamily | None = None,
 ) -> None
 ```
 
@@ -606,7 +607,7 @@ dicts.
 | `p_value_threshold` | Screening p‑value cutoff (shown in header). |
 | `n_bootstrap` | Bootstrap iterations for mediation (shown in header). |
 | `confidence_level` | CI level for mediation (shown in header). |
-| `family` | Optional family string (e.g. `"poisson"`).  When supplied, shown in the table header and passed to `identify_confounders`. |
+| `family` | Optional `ModelFamily` instance (e.g. `PoissonFamily()`).  When supplied, the family name is shown in the table header. |
 
 ---
 

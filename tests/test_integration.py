@@ -30,7 +30,7 @@ from randomization_tests.display import (
     print_joint_results_table,
     print_results_table,
 )
-from randomization_tests.families import LinearFamily, LogisticFamily, resolve_family
+from randomization_tests.families import LinearFamily, LogisticFamily
 
 # ------------------------------------------------------------------ #
 # Shared fixtures
@@ -113,7 +113,7 @@ class TestResultTypes:
             method="ter_braak",
         )
         assert isinstance(result, IndividualTestResult)
-        assert result.family == "logistic"
+        assert result.family.name == "logistic"
 
 
 # ------------------------------------------------------------------ #
@@ -214,7 +214,7 @@ class TestToDict:
         )
         d = result.to_dict()
         assert d["method"] == result.method
-        assert d["family"] == result.family
+        assert d["family"] == result.family.name
         assert d["model_coefs"] == result.model_coefs
 
 
@@ -260,9 +260,13 @@ _INDIVIDUAL_FIELDS = {
     "p_value_threshold_two",
     "method",
     "confounders",
-    "model_type",
     "family",
     "backend",
+    "feature_names",
+    "target_name",
+    "n_permutations",
+    "groups",
+    "permutation_strategy",
     "diagnostics",
     "extended_diagnostics",
 }
@@ -273,11 +277,15 @@ _JOINT_FIELDS = {
     "p_value",
     "p_value_str",
     "metric_type",
-    "model_type",
     "family",
     "backend",
     "features_tested",
     "confounders",
+    "feature_names",
+    "target_name",
+    "n_permutations",
+    "groups",
+    "permutation_strategy",
     "p_value_threshold_one",
     "p_value_threshold_two",
     "method",
@@ -323,8 +331,7 @@ class TestDisplayIntegration:
         result = permutation_test_regression(
             X, y, n_permutations=_N_PERMS, random_state=_SEED, method="ter_braak"
         )
-        family = resolve_family(result["model_type"])
-        print_results_table(result, list(X.columns), family=family)
+        print_results_table(result)
         captured = capsys.readouterr()
         assert (
             "ter_braak" in captured.out.lower() or "ter braak" in captured.out.lower()
@@ -342,7 +349,7 @@ class TestDisplayIntegration:
             method="kennedy_joint",
             confounders=["x3"],
         )
-        print_joint_results_table(result, family=resolve_family(result["model_type"]))
+        print_joint_results_table(result)
         captured = capsys.readouterr()
         assert (
             "kennedy_joint" in captured.out.lower() or "kennedy" in captured.out.lower()
@@ -353,8 +360,7 @@ class TestDisplayIntegration:
         result = permutation_test_regression(
             X, y, n_permutations=_N_PERMS, random_state=_SEED, method="ter_braak"
         )
-        family = resolve_family(result["model_type"])
-        print_diagnostics_table(result, list(X.columns), family=family)
+        print_diagnostics_table(result)
         captured = capsys.readouterr()
         assert len(captured.out) > 0
 
@@ -465,13 +471,6 @@ class TestCrossMethodConsistency:
         )
         # Both should carry diagnostics dicts with the same keys
         assert set(r_ind.diagnostics.keys()) == set(r_joint.diagnostics.keys())
-
-    def test_family_and_model_type_consistent(self) -> None:
-        X, y = _linear_data()
-        result = permutation_test_regression(
-            X, y, n_permutations=_N_PERMS, random_state=_SEED, method="ter_braak"
-        )
-        assert result.family == result.model_type
 
 
 # ------------------------------------------------------------------ #
@@ -658,7 +657,7 @@ class TestPoissonIntegration:
             kwargs["confounders"] = ["x2"]
         result = permutation_test_regression(X, y, **kwargs)
         assert isinstance(result, IndividualTestResult)
-        assert result.family == "poisson"
+        assert result.family.name == "poisson"
         assert len(result.model_coefs) == 2
 
     @pytest.mark.parametrize("method", ["kennedy_joint", "freedman_lane_joint"])
@@ -674,7 +673,7 @@ class TestPoissonIntegration:
             confounders=["x2"],
         )
         assert isinstance(result, JointTestResult)
-        assert result.family == "poisson"
+        assert result.family.name == "poisson"
 
     def test_deterministic_seed(self) -> None:
         X, y = _poisson_data()
@@ -701,9 +700,8 @@ class TestPoissonIntegration:
         result = permutation_test_regression(
             X, y, n_permutations=50, random_state=_SEED, family="poisson"
         )
-        family = resolve_family(result["model_type"])
-        print_results_table(result, list(X.columns), family=family)
-        print_diagnostics_table(result, list(X.columns), family=family)
+        print_results_table(result)
+        print_diagnostics_table(result)
         captured = capsys.readouterr()
         assert "poisson" in captured.out.lower()
 
@@ -727,7 +725,7 @@ class TestNegBinIntegration:
             kwargs["confounders"] = ["x2"]
         result = permutation_test_regression(X, y, **kwargs)
         assert isinstance(result, IndividualTestResult)
-        assert result.family == "negative_binomial"
+        assert result.family.name == "negative_binomial"
 
     @pytest.mark.parametrize("method", ["kennedy_joint", "freedman_lane_joint"])
     def test_joint_methods(self, method: str) -> None:
@@ -742,7 +740,7 @@ class TestNegBinIntegration:
             confounders=["x2"],
         )
         assert isinstance(result, JointTestResult)
-        assert result.family == "negative_binomial"
+        assert result.family.name == "negative_binomial"
 
     def test_deterministic_seed(self) -> None:
         X, y = _negbin_data()
@@ -769,9 +767,8 @@ class TestNegBinIntegration:
         result = permutation_test_regression(
             X, y, n_permutations=50, random_state=_SEED, family="negative_binomial"
         )
-        family = resolve_family(result["model_type"])
-        print_results_table(result, list(X.columns), family=family)
-        print_diagnostics_table(result, list(X.columns), family=family)
+        print_results_table(result)
+        print_diagnostics_table(result)
         captured = capsys.readouterr()
         assert "negative" in captured.out.lower()
 
@@ -799,7 +796,7 @@ class TestOrdinalIntegration:
             kwargs["confounders"] = ["x3"]
         result = permutation_test_regression(X, y, **kwargs)
         assert isinstance(result, IndividualTestResult)
-        assert result.family == "ordinal"
+        assert result.family.name == "ordinal"
 
     def test_kennedy_joint(self) -> None:
         X, y = _ordinal_data()
@@ -813,7 +810,7 @@ class TestOrdinalIntegration:
             confounders=["x3"],
         )
         assert isinstance(result, JointTestResult)
-        assert result.family == "ordinal"
+        assert result.family.name == "ordinal"
 
     @pytest.mark.parametrize("method", ["freedman_lane", "freedman_lane_joint"])
     def test_freedman_lane_rejected(self, method: str) -> None:
@@ -854,9 +851,8 @@ class TestOrdinalIntegration:
         result = permutation_test_regression(
             X, y, n_permutations=50, random_state=_SEED, family="ordinal"
         )
-        family = resolve_family(result["model_type"])
-        print_results_table(result, list(X.columns), family=family)
-        print_diagnostics_table(result, list(X.columns), family=family)
+        print_results_table(result)
+        print_diagnostics_table(result)
         captured = capsys.readouterr()
         assert "ordinal" in captured.out.lower()
 
@@ -884,7 +880,7 @@ class TestMultinomialIntegration:
             kwargs["confounders"] = ["x3"]
         result = permutation_test_regression(X, y, **kwargs)
         assert isinstance(result, IndividualTestResult)
-        assert result.family == "multinomial"
+        assert result.family.name == "multinomial"
 
     def test_kennedy_joint(self) -> None:
         X, y = _multinomial_data()
@@ -898,7 +894,7 @@ class TestMultinomialIntegration:
             confounders=["x3"],
         )
         assert isinstance(result, JointTestResult)
-        assert result.family == "multinomial"
+        assert result.family.name == "multinomial"
 
     @pytest.mark.parametrize("method", ["freedman_lane", "freedman_lane_joint"])
     def test_freedman_lane_rejected(self, method: str) -> None:
@@ -939,9 +935,8 @@ class TestMultinomialIntegration:
         result = permutation_test_regression(
             X, y, n_permutations=50, random_state=_SEED, family="multinomial"
         )
-        family = resolve_family(result["model_type"])
-        print_results_table(result, list(X.columns), family=family)
-        print_diagnostics_table(result, list(X.columns), family=family)
+        print_results_table(result)
+        print_diagnostics_table(result)
         captured = capsys.readouterr()
         assert "multinomial" in captured.out.lower()
 

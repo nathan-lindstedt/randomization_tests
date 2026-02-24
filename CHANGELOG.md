@@ -9,6 +9,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`model_type` removal + self-contained display (Step 6):**
+  `model_type` field deleted from both `IndividualTestResult` and
+  `JointTestResult`.  `family` field changed from `str` to
+  `ModelFamily` instance.  Zero `model_type` references remain
+  anywhere in the codebase.
+- **`_SERIALIZERS` registry:** `_DictAccessMixin` gains a
+  `_SERIALIZERS: ClassVar[dict[str, Any]]` class variable.
+  `to_dict()` composes serializers (e.g. `family → family.name`)
+  with the existing `_numpy_to_python()` conversion.
+- **Self-contained display:** `print_results_table(results, *, title=...)`,
+  `print_joint_results_table(results, *, title=...)`, and
+  `print_diagnostics_table(results, *, title=...)` now extract
+  `family`, `feature_names`, and `target_name` directly from the
+  result object — no parameter passing required.
+- **New result fields:** `feature_names`, `target_name`,
+  `n_permutations`, `groups`, and `permutation_strategy` added to
+  both `IndividualTestResult` and `JointTestResult`.
+
+### Changed
+
+- `compute_standardized_coefs` and `compute_cooks_distance` now take
+  `family: ModelFamily` instead of `model_type: str`.
+- `print_confounder_table` `family` parameter changed from
+  `str | None` to `ModelFamily | None`.
+- All 6 example scripts updated to use self-contained display calls.
+- `API.md` and `QUICKSTART.md` updated for new display signatures.
+
 - **`compute_extended_diagnostics()` protocol method:** each
   `ModelFamily` now owns its family-specific model-level diagnostic
   computation (`breusch_pagan`, `deviance_residuals`, `poisson_gof`,

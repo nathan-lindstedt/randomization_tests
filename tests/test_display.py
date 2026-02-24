@@ -1,12 +1,14 @@
 """Tests for the display module."""
 
+from types import SimpleNamespace
+
 from randomization_tests.display import (
     _truncate,
     print_confounder_table,
     print_joint_results_table,
     print_results_table,
 )
-from randomization_tests.families import resolve_family
+from randomization_tests.families import LinearFamily
 
 
 class TestTruncate:
@@ -24,15 +26,17 @@ class TestTruncate:
 
 class TestPrintResultsTable:
     def test_prints_without_error(self, capsys):
-        results = {
-            "model_coefs": [1.0, 2.0],
-            "permuted_p_values": ["0.01 (**)", "0.5 (ns)"],
-            "classic_p_values": ["0.01 (**)", "0.45 (ns)"],
-            "p_value_threshold_one": 0.05,
-            "p_value_threshold_two": 0.01,
-            "method": "ter_braak",
-            "model_type": "linear",
-            "diagnostics": {
+        results = SimpleNamespace(
+            model_coefs=[1.0, 2.0],
+            permuted_p_values=["0.01 (**)", "0.5 (ns)"],
+            classic_p_values=["0.01 (**)", "0.45 (ns)"],
+            p_value_threshold_one=0.05,
+            p_value_threshold_two=0.01,
+            method="ter_braak",
+            family=LinearFamily(),
+            feature_names=["x1", "x2"],
+            target_name="y",
+            diagnostics={
                 "n_observations": 100,
                 "n_features": 2,
                 "r_squared": 0.85,
@@ -42,98 +46,101 @@ class TestPrintResultsTable:
                 "aic": 150.0,
                 "bic": 155.0,
             },
-        }
-        print_results_table(
-            results,
-            ["x1", "x2"],
-            family=resolve_family("linear"),
-            target_name="y",
         )
+        print_results_table(results)
         captured = capsys.readouterr()
         assert "ter_braak" in captured.out
         assert "x1" in captured.out
 
     def test_kennedy_no_confounders_note(self, capsys):
         """Notes section appears for Kennedy without confounders."""
-        results = {
-            "model_coefs": [1.0],
-            "permuted_p_values": ["0.01 (**)"],
-            "classic_p_values": ["0.01 (**)"],
-            "p_value_threshold_one": 0.05,
-            "p_value_threshold_two": 0.01,
-            "method": "kennedy",
-            "confounders": [],
-            "model_type": "linear",
-            "diagnostics": {
+        results = SimpleNamespace(
+            model_coefs=[1.0],
+            permuted_p_values=["0.01 (**)"],
+            classic_p_values=["0.01 (**)"],
+            p_value_threshold_one=0.05,
+            p_value_threshold_two=0.01,
+            method="kennedy",
+            confounders=[],
+            family=LinearFamily(),
+            feature_names=["x1"],
+            target_name="y",
+            diagnostics={
                 "n_observations": 50,
                 "n_features": 1,
                 "aic": 100,
                 "bic": 105,
             },
-        }
-        print_results_table(results, ["x1"], family=resolve_family("linear"))
+        )
+        print_results_table(results)
         out = capsys.readouterr().out
         assert "Notes" in out
         assert "without confounders" in out
 
     def test_kennedy_with_confounders_no_note(self, capsys):
         """Notes section absent for Kennedy with confounders."""
-        results = {
-            "model_coefs": [1.0],
-            "permuted_p_values": ["0.01 (**)"],
-            "classic_p_values": ["0.01 (**)"],
-            "p_value_threshold_one": 0.05,
-            "p_value_threshold_two": 0.01,
-            "method": "kennedy",
-            "confounders": ["x2"],
-            "model_type": "linear",
-            "diagnostics": {
+        results = SimpleNamespace(
+            model_coefs=[1.0],
+            permuted_p_values=["0.01 (**)"],
+            classic_p_values=["0.01 (**)"],
+            p_value_threshold_one=0.05,
+            p_value_threshold_two=0.01,
+            method="kennedy",
+            confounders=["x2"],
+            family=LinearFamily(),
+            feature_names=["x1"],
+            target_name="y",
+            diagnostics={
                 "n_observations": 50,
                 "n_features": 1,
                 "aic": 100,
                 "bic": 105,
             },
-        }
-        print_results_table(results, ["x1"], family=resolve_family("linear"))
+        )
+        print_results_table(results)
         out = capsys.readouterr().out
         assert "Notes" not in out
 
     def test_ter_braak_no_note(self, capsys):
         """Notes section absent for ter Braak method."""
-        results = {
-            "model_coefs": [1.0],
-            "permuted_p_values": ["0.01 (**)"],
-            "classic_p_values": ["0.01 (**)"],
-            "p_value_threshold_one": 0.05,
-            "p_value_threshold_two": 0.01,
-            "method": "ter_braak",
-            "model_type": "linear",
-            "diagnostics": {
+        results = SimpleNamespace(
+            model_coefs=[1.0],
+            permuted_p_values=["0.01 (**)"],
+            classic_p_values=["0.01 (**)"],
+            p_value_threshold_one=0.05,
+            p_value_threshold_two=0.01,
+            method="ter_braak",
+            family=LinearFamily(),
+            feature_names=["x1"],
+            target_name="y",
+            diagnostics={
                 "n_observations": 50,
                 "n_features": 1,
                 "aic": 100,
                 "bic": 105,
             },
-        }
-        print_results_table(results, ["x1"], family=resolve_family("linear"))
+        )
+        print_results_table(results)
         out = capsys.readouterr().out
         assert "Notes" not in out
 
 
 class TestPrintJointResultsTable:
     def test_prints_without_error(self, capsys):
-        results = {
-            "observed_improvement": 12.34,
-            "p_value": 0.002,
-            "p_value_str": "0.002 (**)",
-            "metric_type": "RSS Reduction",
-            "model_type": "linear",
-            "features_tested": ["x1", "x2"],
-            "confounders": [],
-            "p_value_threshold_one": 0.05,
-            "p_value_threshold_two": 0.01,
-            "method": "kennedy_joint",
-            "diagnostics": {
+        results = SimpleNamespace(
+            observed_improvement=12.34,
+            p_value=0.002,
+            p_value_str="0.002 (**)",
+            metric_type="RSS Reduction",
+            family=LinearFamily(),
+            feature_names=["x1", "x2"],
+            target_name="y",
+            features_tested=["x1", "x2"],
+            confounders=[],
+            p_value_threshold_one=0.05,
+            p_value_threshold_two=0.01,
+            method="kennedy_joint",
+            diagnostics={
                 "n_observations": 100,
                 "n_features": 2,
                 "r_squared": 0.85,
@@ -143,62 +150,62 @@ class TestPrintJointResultsTable:
                 "aic": 150.0,
                 "bic": 155.0,
             },
-        }
-        print_joint_results_table(
-            results,
-            family=resolve_family("linear"),
-            target_name="y",
         )
+        print_joint_results_table(results)
         captured = capsys.readouterr()
         assert "kennedy_joint" in captured.out
         assert "12.34" in captured.out
 
     def test_no_confounders_note(self, capsys):
         """Notes section appears for joint Kennedy without confounders."""
-        results = {
-            "observed_improvement": 5.0,
-            "p_value": 0.04,
-            "p_value_str": "0.04 (*)",
-            "metric_type": "RSS Reduction",
-            "model_type": "linear",
-            "features_tested": ["x1"],
-            "confounders": [],
-            "p_value_threshold_one": 0.05,
-            "p_value_threshold_two": 0.01,
-            "method": "kennedy_joint",
-            "diagnostics": {
+        results = SimpleNamespace(
+            observed_improvement=5.0,
+            p_value=0.04,
+            p_value_str="0.04 (*)",
+            metric_type="RSS Reduction",
+            family=LinearFamily(),
+            feature_names=["x1"],
+            target_name="y",
+            features_tested=["x1"],
+            confounders=[],
+            p_value_threshold_one=0.05,
+            p_value_threshold_two=0.01,
+            method="kennedy_joint",
+            diagnostics={
                 "n_observations": 50,
                 "n_features": 1,
                 "aic": 100,
                 "bic": 105,
             },
-        }
-        print_joint_results_table(results, family=resolve_family("linear"))
+        )
+        print_joint_results_table(results)
         out = capsys.readouterr().out
         assert "Notes" in out
         assert "without confounders" in out
 
     def test_with_confounders_no_note(self, capsys):
         """Notes section absent for joint Kennedy with confounders."""
-        results = {
-            "observed_improvement": 5.0,
-            "p_value": 0.04,
-            "p_value_str": "0.04 (*)",
-            "metric_type": "RSS Reduction",
-            "model_type": "linear",
-            "features_tested": ["x1"],
-            "confounders": ["x2"],
-            "p_value_threshold_one": 0.05,
-            "p_value_threshold_two": 0.01,
-            "method": "kennedy_joint",
-            "diagnostics": {
+        results = SimpleNamespace(
+            observed_improvement=5.0,
+            p_value=0.04,
+            p_value_str="0.04 (*)",
+            metric_type="RSS Reduction",
+            family=LinearFamily(),
+            feature_names=["x1"],
+            target_name="y",
+            features_tested=["x1"],
+            confounders=["x2"],
+            p_value_threshold_one=0.05,
+            p_value_threshold_two=0.01,
+            method="kennedy_joint",
+            diagnostics={
                 "n_observations": 50,
                 "n_features": 1,
                 "aic": 100,
                 "bic": 105,
             },
-        }
-        print_joint_results_table(results, family=resolve_family("linear"))
+        )
+        print_joint_results_table(results)
         out = capsys.readouterr().out
         assert "Notes" not in out
 
