@@ -1,4 +1,4 @@
-"""Integration and regression tests for v0.3.17.5 stabilization.
+"""Integration and regression tests.
 
 Tests cover:
 - Result type verification (IndividualTestResult / JointTestResult)
@@ -7,6 +7,8 @@ Tests cover:
 - exchangeability_cells() protocol stub
 - Pinned-seed regression tests for numerical determinism
 - Schema validation (all expected fields present)
+- New GLM families: Poisson, NegBin, ordinal, multinomial (Step 34)
+- Confounder module with each family
 """
 
 from __future__ import annotations
@@ -20,6 +22,7 @@ import pytest
 from randomization_tests import (
     IndividualTestResult,
     JointTestResult,
+    identify_confounders,
     permutation_test_regression,
 )
 from randomization_tests.display import (
@@ -566,3 +569,485 @@ class TestNJobsWarnings:
         np.testing.assert_array_almost_equal(
             r_serial.raw_empirical_p, r_parallel.raw_empirical_p
         )
+
+
+# ------------------------------------------------------------------ #
+# 10. New GLM family integration tests  (Step 34)
+# ------------------------------------------------------------------ #
+
+# ---- Synthetic data generators ----
+
+
+def _poisson_data(n: int = 200, seed: int = _SEED) -> tuple[pd.DataFrame, pd.DataFrame]:
+    rng = np.random.default_rng(seed)
+    X = pd.DataFrame({"x1": rng.standard_normal(n), "x2": rng.standard_normal(n)})
+    mu = np.exp(0.5 + 0.8 * X["x1"].values - 0.3 * X["x2"].values)
+    y = pd.DataFrame({"y": rng.poisson(mu)})
+    return X, y
+
+
+def _negbin_data(n: int = 200, seed: int = _SEED) -> tuple[pd.DataFrame, pd.DataFrame]:
+    rng = np.random.default_rng(seed)
+    X = pd.DataFrame({"x1": rng.standard_normal(n), "x2": rng.standard_normal(n)})
+    mu = np.exp(0.5 + 0.6 * X["x1"].values)
+    alpha = 1.0
+    p_nb = 1.0 / (1.0 + alpha * mu)
+    n_nb = 1.0 / alpha
+    y = pd.DataFrame({"y": rng.negative_binomial(n_nb, p_nb)})
+    return X, y
+
+
+def _ordinal_data(n: int = 300, seed: int = _SEED) -> tuple[pd.DataFrame, pd.DataFrame]:
+    rng = np.random.default_rng(seed)
+    X = pd.DataFrame(
+        {
+            "x1": rng.standard_normal(n),
+            "x2": rng.standard_normal(n),
+            "x3": rng.standard_normal(n),
+        }
+    )
+    latent = 1.0 * X["x1"].values + rng.standard_normal(n)
+    y_vals = np.digitize(latent, bins=[-1, 0, 1])  # 0, 1, 2, 3
+    y = pd.DataFrame({"y": y_vals})
+    return X, y
+
+
+def _multinomial_data(
+    n: int = 300, seed: int = _SEED
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    rng = np.random.default_rng(seed)
+    X = pd.DataFrame(
+        {
+            "x1": rng.standard_normal(n),
+            "x2": rng.standard_normal(n),
+            "x3": rng.standard_normal(n),
+        }
+    )
+    # 3 classes via softmax
+    logits = np.column_stack(
+        [
+            np.zeros(n),
+            0.8 * X["x1"].values,
+            -0.5 * X["x2"].values,
+        ]
+    )
+    probs = np.exp(logits) / np.exp(logits).sum(axis=1, keepdims=True)
+    y_vals = np.array([rng.choice(3, p=p) for p in probs])
+    y = pd.DataFrame({"y": y_vals})
+    return X, y
+
+
+# ---- Poisson integration ----
+
+
+class TestPoissonIntegration:
+    """Integration tests for Poisson family across methods."""
+
+    @pytest.mark.parametrize("method", ["ter_braak", "kennedy", "freedman_lane"])
+    def test_individual_methods(self, method: str) -> None:
+        X, y = _poisson_data()
+        kwargs: dict = dict(
+            n_permutations=50,
+            random_state=_SEED,
+            method=method,
+            family="poisson",
+        )
+        if method in ("kennedy", "freedman_lane"):
+            kwargs["confounders"] = ["x2"]
+        result = permutation_test_regression(X, y, **kwargs)
+        assert isinstance(result, IndividualTestResult)
+        assert result.family == "poisson"
+        assert len(result.model_coefs) == 2
+
+    @pytest.mark.parametrize("method", ["kennedy_joint", "freedman_lane_joint"])
+    def test_joint_methods(self, method: str) -> None:
+        X, y = _poisson_data()
+        result = permutation_test_regression(
+            X,
+            y,
+            n_permutations=50,
+            random_state=_SEED,
+            method=method,
+            family="poisson",
+            confounders=["x2"],
+        )
+        assert isinstance(result, JointTestResult)
+        assert result.family == "poisson"
+
+    def test_deterministic_seed(self) -> None:
+        X, y = _poisson_data()
+        kw: dict = dict(
+            n_permutations=50,
+            random_state=_SEED,
+            method="ter_braak",
+            family="poisson",
+        )
+        r1 = permutation_test_regression(X, y, **kw)
+        r2 = permutation_test_regression(X, y, **kw)
+        np.testing.assert_array_equal(r1.model_coefs, r2.model_coefs)
+        np.testing.assert_array_equal(r1.raw_empirical_p, r2.raw_empirical_p)
+
+    def test_diagnostics_present(self) -> None:
+        X, y = _poisson_data()
+        result = permutation_test_regression(
+            X, y, n_permutations=50, random_state=_SEED, family="poisson"
+        )
+        assert "n_observations" in result.diagnostics
+
+    def test_display_runs(self, capsys: pytest.CaptureFixture[str]) -> None:
+        X, y = _poisson_data()
+        result = permutation_test_regression(
+            X, y, n_permutations=50, random_state=_SEED, family="poisson"
+        )
+        print_results_table(result, list(X.columns))
+        print_diagnostics_table(result, list(X.columns))
+        captured = capsys.readouterr()
+        assert "poisson" in captured.out.lower()
+
+
+# ---- Negative binomial integration ----
+
+
+class TestNegBinIntegration:
+    """Integration tests for NegBin family across methods."""
+
+    @pytest.mark.parametrize("method", ["ter_braak", "kennedy", "freedman_lane"])
+    def test_individual_methods(self, method: str) -> None:
+        X, y = _negbin_data()
+        kwargs: dict = dict(
+            n_permutations=50,
+            random_state=_SEED,
+            method=method,
+            family="negative_binomial",
+        )
+        if method in ("kennedy", "freedman_lane"):
+            kwargs["confounders"] = ["x2"]
+        result = permutation_test_regression(X, y, **kwargs)
+        assert isinstance(result, IndividualTestResult)
+        assert result.family == "negative_binomial"
+
+    @pytest.mark.parametrize("method", ["kennedy_joint", "freedman_lane_joint"])
+    def test_joint_methods(self, method: str) -> None:
+        X, y = _negbin_data()
+        result = permutation_test_regression(
+            X,
+            y,
+            n_permutations=50,
+            random_state=_SEED,
+            method=method,
+            family="negative_binomial",
+            confounders=["x2"],
+        )
+        assert isinstance(result, JointTestResult)
+        assert result.family == "negative_binomial"
+
+    def test_deterministic_seed(self) -> None:
+        X, y = _negbin_data()
+        kw: dict = dict(
+            n_permutations=50,
+            random_state=_SEED,
+            method="ter_braak",
+            family="negative_binomial",
+        )
+        r1 = permutation_test_regression(X, y, **kw)
+        r2 = permutation_test_regression(X, y, **kw)
+        np.testing.assert_array_equal(r1.model_coefs, r2.model_coefs)
+        np.testing.assert_array_equal(r1.raw_empirical_p, r2.raw_empirical_p)
+
+    def test_diagnostics_present(self) -> None:
+        X, y = _negbin_data()
+        result = permutation_test_regression(
+            X, y, n_permutations=50, random_state=_SEED, family="negative_binomial"
+        )
+        assert "n_observations" in result.diagnostics
+
+    def test_display_runs(self, capsys: pytest.CaptureFixture[str]) -> None:
+        X, y = _negbin_data()
+        result = permutation_test_regression(
+            X, y, n_permutations=50, random_state=_SEED, family="negative_binomial"
+        )
+        print_results_table(result, list(X.columns))
+        print_diagnostics_table(result, list(X.columns))
+        captured = capsys.readouterr()
+        assert "negative" in captured.out.lower()
+
+
+# ---- Ordinal integration ----
+
+
+class TestOrdinalIntegration:
+    """Integration tests for ordinal family across supported methods.
+
+    Ordinal supports ter_braak, kennedy, kennedy_joint.
+    Freedman-Lane raises NotImplementedError (ill-defined residuals).
+    """
+
+    @pytest.mark.parametrize("method", ["ter_braak", "kennedy"])
+    def test_individual_methods(self, method: str) -> None:
+        X, y = _ordinal_data()
+        kwargs: dict = dict(
+            n_permutations=50,
+            random_state=_SEED,
+            method=method,
+            family="ordinal",
+        )
+        if method == "kennedy":
+            kwargs["confounders"] = ["x3"]
+        result = permutation_test_regression(X, y, **kwargs)
+        assert isinstance(result, IndividualTestResult)
+        assert result.family == "ordinal"
+
+    def test_kennedy_joint(self) -> None:
+        X, y = _ordinal_data()
+        result = permutation_test_regression(
+            X,
+            y,
+            n_permutations=50,
+            random_state=_SEED,
+            method="kennedy_joint",
+            family="ordinal",
+            confounders=["x3"],
+        )
+        assert isinstance(result, JointTestResult)
+        assert result.family == "ordinal"
+
+    @pytest.mark.parametrize("method", ["freedman_lane", "freedman_lane_joint"])
+    def test_freedman_lane_rejected(self, method: str) -> None:
+        X, y = _ordinal_data()
+        with pytest.raises(ValueError, match="not supported for family='ordinal'"):
+            permutation_test_regression(
+                X,
+                y,
+                n_permutations=50,
+                random_state=_SEED,
+                method=method,
+                family="ordinal",
+                confounders=["x3"],
+            )
+
+    def test_deterministic_seed(self) -> None:
+        X, y = _ordinal_data()
+        kw: dict = dict(
+            n_permutations=50,
+            random_state=_SEED,
+            method="ter_braak",
+            family="ordinal",
+        )
+        r1 = permutation_test_regression(X, y, **kw)
+        r2 = permutation_test_regression(X, y, **kw)
+        np.testing.assert_array_equal(r1.model_coefs, r2.model_coefs)
+        np.testing.assert_array_equal(r1.raw_empirical_p, r2.raw_empirical_p)
+
+    def test_diagnostics_present(self) -> None:
+        X, y = _ordinal_data()
+        result = permutation_test_regression(
+            X, y, n_permutations=50, random_state=_SEED, family="ordinal"
+        )
+        assert "n_observations" in result.diagnostics
+
+    def test_display_runs(self, capsys: pytest.CaptureFixture[str]) -> None:
+        X, y = _ordinal_data()
+        result = permutation_test_regression(
+            X, y, n_permutations=50, random_state=_SEED, family="ordinal"
+        )
+        print_results_table(result, list(X.columns))
+        print_diagnostics_table(result, list(X.columns))
+        captured = capsys.readouterr()
+        assert "ordinal" in captured.out.lower()
+
+
+# ---- Multinomial integration ----
+
+
+class TestMultinomialIntegration:
+    """Integration tests for multinomial family across supported methods.
+
+    Multinomial supports ter_braak, kennedy, kennedy_joint.
+    Freedman-Lane raises NotImplementedError (ill-defined residuals).
+    """
+
+    @pytest.mark.parametrize("method", ["ter_braak", "kennedy"])
+    def test_individual_methods(self, method: str) -> None:
+        X, y = _multinomial_data()
+        kwargs: dict = dict(
+            n_permutations=50,
+            random_state=_SEED,
+            method=method,
+            family="multinomial",
+        )
+        if method == "kennedy":
+            kwargs["confounders"] = ["x3"]
+        result = permutation_test_regression(X, y, **kwargs)
+        assert isinstance(result, IndividualTestResult)
+        assert result.family == "multinomial"
+
+    def test_kennedy_joint(self) -> None:
+        X, y = _multinomial_data()
+        result = permutation_test_regression(
+            X,
+            y,
+            n_permutations=50,
+            random_state=_SEED,
+            method="kennedy_joint",
+            family="multinomial",
+            confounders=["x3"],
+        )
+        assert isinstance(result, JointTestResult)
+        assert result.family == "multinomial"
+
+    @pytest.mark.parametrize("method", ["freedman_lane", "freedman_lane_joint"])
+    def test_freedman_lane_rejected(self, method: str) -> None:
+        X, y = _multinomial_data()
+        with pytest.raises(ValueError, match="not supported for family='multinomial'"):
+            permutation_test_regression(
+                X,
+                y,
+                n_permutations=50,
+                random_state=_SEED,
+                method=method,
+                family="multinomial",
+                confounders=["x3"],
+            )
+
+    def test_deterministic_seed(self) -> None:
+        X, y = _multinomial_data()
+        kw: dict = dict(
+            n_permutations=50,
+            random_state=_SEED,
+            method="ter_braak",
+            family="multinomial",
+        )
+        r1 = permutation_test_regression(X, y, **kw)
+        r2 = permutation_test_regression(X, y, **kw)
+        np.testing.assert_array_equal(r1.model_coefs, r2.model_coefs)
+        np.testing.assert_array_equal(r1.raw_empirical_p, r2.raw_empirical_p)
+
+    def test_diagnostics_present(self) -> None:
+        X, y = _multinomial_data()
+        result = permutation_test_regression(
+            X, y, n_permutations=50, random_state=_SEED, family="multinomial"
+        )
+        assert "n_observations" in result.diagnostics
+
+    def test_display_runs(self, capsys: pytest.CaptureFixture[str]) -> None:
+        X, y = _multinomial_data()
+        result = permutation_test_regression(
+            X, y, n_permutations=50, random_state=_SEED, family="multinomial"
+        )
+        print_results_table(result, list(X.columns))
+        print_diagnostics_table(result, list(X.columns))
+        captured = capsys.readouterr()
+        assert "multinomial" in captured.out.lower()
+
+
+# ---- Confounder module with each family ----
+
+
+class TestConfounderFamilyIntegration:
+    """Test that identify_confounders works with each family."""
+
+    def test_linear_confounders(self) -> None:
+        X, y = _linear_data()
+        result = identify_confounders(
+            X, y, predictor="x1", random_state=_SEED, family="linear"
+        )
+        assert "identified_confounders" in result
+        assert "identified_mediators" in result
+
+    def test_logistic_confounders(self) -> None:
+        X, y = _binary_data()
+        result = identify_confounders(
+            X, y, predictor="x1", random_state=_SEED, family="logistic"
+        )
+        assert "identified_confounders" in result
+
+    def test_poisson_confounders(self) -> None:
+        X, y = _poisson_data()
+        result = identify_confounders(
+            X, y, predictor="x1", random_state=_SEED, family="poisson"
+        )
+        assert "identified_confounders" in result
+
+    def test_negbin_confounders(self) -> None:
+        X, y = _negbin_data()
+        result = identify_confounders(
+            X, y, predictor="x1", random_state=_SEED, family="negative_binomial"
+        )
+        assert "identified_confounders" in result
+
+    def test_ordinal_confounders(self) -> None:
+        X, y = _ordinal_data()
+        result = identify_confounders(
+            X, y, predictor="x1", random_state=_SEED, family="ordinal"
+        )
+        assert "identified_confounders" in result
+
+    def test_multinomial_confounders(self) -> None:
+        X, y = _multinomial_data()
+        result = identify_confounders(
+            X, y, predictor="x1", random_state=_SEED, family="multinomial"
+        )
+        assert "identified_confounders" in result
+
+
+# ---- Cross-family field consistency ----
+
+
+class TestCrossFamilyConsistency:
+    """Verify result schema consistency across all families."""
+
+    @pytest.mark.parametrize(
+        "family_str,data_fn",
+        [
+            ("linear", _linear_data),
+            ("logistic", _binary_data),
+            ("poisson", _poisson_data),
+            ("negative_binomial", _negbin_data),
+            ("ordinal", _ordinal_data),
+            ("multinomial", _multinomial_data),
+        ],
+    )
+    def test_individual_schema(self, family_str: str, data_fn: object) -> None:
+        X, y = data_fn()  # type: ignore[operator]
+        result = permutation_test_regression(
+            X,
+            y,
+            n_permutations=50,
+            random_state=_SEED,
+            method="ter_braak",
+            family=family_str,
+        )
+        d = result.to_dict()
+        assert d["family"] == family_str
+        assert "model_coefs" in d
+        assert "diagnostics" in d
+        assert "raw_empirical_p" in d
+
+    @pytest.mark.parametrize(
+        "family_str,data_fn",
+        [
+            ("linear", _linear_data),
+            ("logistic", _binary_data),
+            ("poisson", _poisson_data),
+            ("negative_binomial", _negbin_data),
+            ("ordinal", _ordinal_data),
+            ("multinomial", _multinomial_data),
+        ],
+    )
+    def test_joint_schema(self, family_str: str, data_fn: object) -> None:
+        X, y = data_fn()  # type: ignore[operator]
+        # Use x2 or x3 as confounder (whichever exists)
+        conf = ["x2"] if "x2" in X.columns else ["x3"]
+        result = permutation_test_regression(
+            X,
+            y,
+            n_permutations=50,
+            random_state=_SEED,
+            method="kennedy_joint",
+            family=family_str,
+            confounders=conf,
+        )
+        d = result.to_dict()
+        assert d["family"] == family_str
+        assert "observed_improvement" in d
+        assert "p_value" in d

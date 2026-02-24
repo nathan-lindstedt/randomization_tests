@@ -52,9 +52,14 @@ print_diagnostics_table(results, feature_names=list(X.columns))
 | ter Braak (1992) | `"ter_braak"` | Permute residuals under the reduced model. Default. |
 | Kennedy (1995) individual | `"kennedy"` | Partial out confounders, permute exposure residuals. |
 | Kennedy (1995) joint | `"kennedy_joint"` | Test whether predictors collectively improve fit beyond confounders. |
+| Freedman–Lane (1983) individual | `"freedman_lane"` | Permute full-model residuals, reconstruct from reduced-model fitted values. Better power than Kennedy when predictors are correlated. |
+| Freedman–Lane (1983) joint | `"freedman_lane_joint"` | Joint version of Freedman–Lane. |
 
-Kennedy methods require the `confounders` parameter (a list of column
-names).
+Kennedy and Freedman–Lane methods require the `confounders` parameter
+(a list of column names).
+
+> **Note:** Ordinal and multinomial families do not support Freedman–Lane
+> methods (residuals are ill-defined for these model types).
 
 ## Confounder identification
 
@@ -63,6 +68,16 @@ from randomization_tests import identify_confounders, print_confounder_table
 
 result = identify_confounders(X, y, predictor="x1", random_state=42)
 print_confounder_table(result)
+```
+
+For non-linear families, pass `family=` so that the b-path and
+total-effect regressions use the appropriate GLM:
+
+```python
+result = identify_confounders(
+    X, y, predictor="x1", family="poisson", random_state=42,
+)
+print_confounder_table(result, family="poisson")
 ```
 
 For all predictors at once:
@@ -141,6 +156,48 @@ print(get_backend())  # "jax" if detected, "numpy" otherwise
 
 - [API Reference](API.md)
 - [Background & motivation](../README.md)
+
+## Model families
+
+By default (`family="auto"`), binary targets trigger logistic regression
+and all other targets use linear regression.  Pass an explicit `family=`
+string for count, ordinal, or multinomial outcomes.
+
+### Poisson (count data)
+
+```python
+results = permutation_test_regression(
+    X, y, family="poisson", n_permutations=1_000, random_state=42,
+)
+```
+
+### Negative binomial (overdispersed counts)
+
+```python
+results = permutation_test_regression(
+    X, y, family="negative_binomial", n_permutations=1_000, random_state=42,
+)
+```
+
+### Ordinal (ordered categories)
+
+```python
+# y must be integer-coded with ≥ 3 levels (0, 1, 2, ...)
+results = permutation_test_regression(
+    X, y, family="ordinal", n_permutations=1_000, random_state=42,
+)
+```
+
+### Multinomial (unordered categories)
+
+```python
+# y must be integer-coded with ≥ 3 classes (0, 1, 2, ...)
+results = permutation_test_regression(
+    X, y, family="multinomial", n_permutations=1_000, random_state=42,
+)
+```
+
+See `examples/` for complete worked examples of each family.
 
 ## Backend configuration
 

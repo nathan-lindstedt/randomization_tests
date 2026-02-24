@@ -5,6 +5,76 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-02-23
+
+### Added
+
+- **`ModelFamily` protocol:** strategy pattern decoupling model fitting
+  from the permutation engine.  Each family implements `validate_y`,
+  `fit`, `predict`, `coefs`, `residuals`, `reconstruct_y`, `fit_metric`,
+  `diagnostics`, `classical_p_values`, `exchangeability_cells`,
+  `batch_fit`, and `batch_fit_varying_X`.
+- **`_backends/` package:** `BackendProtocol` with `NumpyBackend` and
+  `JaxBackend` implementations.  `resolve_backend()` auto-detects JAX.
+- **Four new GLM families:** Poisson, negative binomial (NB2),
+  ordinal (proportional-odds logistic), and multinomial (softmax)
+  regression — all with JAX Newton–Raphson batch solvers and
+  NumPy/statsmodels fallback.
+- **Negative binomial `calibrate()` pattern:** dispersion α estimated
+  once on observed data via MLE, held fixed for all permutation refits.
+  Duck-typed, idempotent, frozen-dataclass design.
+- **Multinomial LRT test statistic:** per-predictor likelihood-ratio
+  chi-squared preserves the `(p,)` protocol contract.
+  `category_coefs(model)` convenience method for `(p, K−1)` inspection.
+- **Ordinal proportional-odds test:** Brant-like χ² test comparing
+  pooled slopes to category-specific binary logit slopes, reported in
+  diagnostics.
+- **Freedman–Lane (1983) permutation method:** `method="freedman_lane"`
+  (individual) and `method="freedman_lane_joint"` — full-model residual
+  permutation with reduced-model fitted values.  Better power than
+  Kennedy when predictors are correlated.
+- **`PermutationEngine` class:** resolves family, backend, calibration,
+  and permutation indices at construction time.
+  `permutation_test_regression()` is now a thin wrapper.
+- **`family=` parameter** on `permutation_test_regression()`,
+  `identify_confounders()`, `mediation_analysis()`, and
+  `print_confounder_table()`.
+- **`n_jobs=` parameter** for joblib parallelisation of batch-fit loops
+  (NumPy backend).  Ignored when JAX is active.
+- **Typed result objects:** `IndividualTestResult` and `JointTestResult`
+  frozen dataclasses with `_DictAccessMixin` for backward-compatible
+  dict-like access and `.to_dict()` JSON serialisation.
+- **Count auto-detection warning:** `family="auto"` warns when Y looks
+  like count data (non-negative integers, >2 unique values).
+- **JAX improvements:** float64 precision, triple convergence criteria,
+  `while_loop` dynamic early exit (25× speedup), damped Hessian
+  regularisation, aggregated convergence warnings.
+- **Integration tests:** 50 new tests covering all families × methods,
+  Freedman–Lane rejection for ordinal/multinomial, cross-family schema
+  consistency, confounder module with each family.
+- **Example scripts:** `poisson_regression.py`,
+  `negative_binomial_regression.py`, `ordinal_regression.py`,
+  `multinomial_regression.py`.
+
+### Changed
+
+- `core.py` refactored from `is_binary` branching to family-dispatched
+  method calls via `_strategies/` package.
+- `compute_all_diagnostics` accepts `model_type: str` instead of
+  `is_binary: bool`.
+- `calculate_p_values` delegates to `family.classical_p_values()`.
+- Display tables support all six families with family-specific headers,
+  diagnostics panels, and stat labels.
+- Test suite expanded from 163 to ~580 tests.
+
+### Removed
+
+- `_batch_ols_coefs()` from `core.py` (superseded by
+  `NumpyBackend.batch_ols()`).
+- `_compute_diagnostics()` from `core.py` (superseded by
+  `family.diagnostics()`).
+- Top-level `_jax.py` shim (superseded by `_backends/_jax.py`).
+
 ## [0.2.0] - 2026-02-22
 
 ### Added

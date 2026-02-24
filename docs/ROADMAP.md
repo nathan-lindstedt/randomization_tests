@@ -189,10 +189,12 @@ all existing methods from the start.
 **Progress:** Steps 1–7 complete (all six families: linear, logistic,
 Poisson, negative binomial, ordinal, multinomial).  All six have
 JAX Newton–Raphson backends.  Count auto-detection warning
-implemented.  ~524 tests passing.  Remaining: confounder module
-update (Step 3), `PermutationEngine` refactor (Step 9), and backend
-injection for testability (Step 10).  Sign-flip test deferred to
-v0.4.0 (different assumption domain — symmetry vs exchangeability).
+implemented.  Confounder module updated with `family` parameter.
+`PermutationEngine` class refactor complete.  ~580 tests passing.
+Remaining: `str | ModelFamily` parameter widening (Step 9),
+`permute_hook()` extension point (Step 9), backend injection for
+testability (Step 10).  Sign-flip test deferred to v0.4.0
+(different assumption domain — symmetry vs exchangeability).
 
 ### Step 1 — `ModelFamily` protocol
 
@@ -246,7 +248,7 @@ Depends on Steps 1–2.  Converts the existing engine from hard-coded
   delegates classical p-value computation to
   `family.classical_p_values()`, removing the duplicate statsmodels
   refit that was previously hard-coded in `pvalues.py`.
-- [ ] Confounder module updated: `family` parameter on
+- [X] Confounder module updated: `family` parameter on
   `identify_confounders` and `mediation_analysis`, using the
   family-appropriate model for the b-path and total-effect equations.
 
@@ -401,9 +403,10 @@ type safety, dead-code removal, and test coverage.
 
 - [X] `exchangeability_cells(X, y) -> np.ndarray | None` added to
   the `ModelFamily` protocol with full docstring.  Returns `None`
-  (global exchangeability) on all four current families
+  (global exchangeability) on all six current families
   (`LinearFamily`, `LogisticFamily`, `PoissonFamily`,
-  `NegativeBinomialFamily`).  v0.4.0 will implement non-trivial
+  `NegativeBinomialFamily`, `OrdinalFamily`, `MultinomialFamily`).
+  v0.4.0 will implement non-trivial
   cell structures for clustered and multilevel designs.
 
 #### Dead code removal
@@ -431,7 +434,7 @@ type safety, dead-code removal, and test coverage.
 
 #### Integration and regression test suite
 
-- [X] `tests/test_integration.py` (37 tests) covering:
+- [X] `tests/test_integration.py` (87 tests) covering:
   - Result type verification (`isinstance` checks for all 7 methods)
   - Dict-access backward compatibility (`__getitem__`, `.get()`,
     `__contains__`, `KeyError`, frozen immutability)
@@ -444,6 +447,12 @@ type safety, dead-code removal, and test coverage.
   - Cross-method metadata consistency
   - `n_jobs` warning emission and suppression (7 tests)
   - Parallel-vs-serial result equivalence
+  - Poisson, negative binomial, ordinal, and multinomial integration
+    tests (synthetic data, individual/joint, determinism, diagnostics,
+    display)
+  - Freedman–Lane `ValueError` rejection for ordinal/multinomial
+  - Confounder module with all six families
+  - Cross-family schema consistency (parametrised over all 6 families)
 
 ### Step 7 — New GLM families
 
@@ -512,7 +521,7 @@ permutation methods and both backends from the start.
 
 #### Multinomial logistic regression
 
-- [ ] Extends binary logistic to unordered categorical outcomes with
+- [X] Extends binary logistic to unordered categorical outcomes with
   *K* classes via a softmax link, producing *K* − 1 coefficient
   vectors (one per contrast against the reference class, class 0).
 
@@ -553,34 +562,33 @@ be revisited at that time under YAGNI.
 
 ##### Implementation plan
 
-- [ ] `validate_y`: check unordered categorical (integer-coded, ≥ 3
+- [X] `validate_y`: check unordered categorical (integer-coded, ≥ 3
   classes).
-- [ ] `fit`: delegates to `statsmodels.MNLogit`; returns fitted result.
-- [ ] `coefs`: LRT chi-squared per predictor (scalar per predictor,
+- [X] `fit`: delegates to `statsmodels.MNLogit`; returns fitted result.
+- [X] `coefs`: LRT chi-squared per predictor (scalar per predictor,
   shape `(p,)`).
-- [ ] `category_coefs(model)`: convenience method returning the full
+- [X] `category_coefs(model)`: convenience method returning the full
   `(p, K−1)` slope matrix for detailed post-hoc inspection.
-- [ ] `residuals`: deviance residual per observation,
-  `−log p̂(y_i)`, consistent with logistic/count families.
-- [ ] `reconstruct_y`: multinomial sampling from permuted probability
-  vectors via `np.random.choice(K, p=softmax(...))`.
-- [ ] `fit_metric`: deviance (−2 × log-likelihood), scalar, for joint
-  tests.  Same pattern as logistic/Poisson/NegBin.
-- [ ] `direct_permutation = False`: probability-scale residuals are
-  well-defined.  ter Braak permutes Y (class labels) directly;
-  Kennedy/Freedman–Lane permute exposure residuals as usual.
-- [ ] `diagnostics`: log-likelihood, AIC, BIC, pseudo-R², per-class
-  accuracy.
-- [ ] `classical_p_values`: LRT p-values per predictor (matching
+- [X] `residuals`: raises `NotImplementedError` — multinomial
+  residuals are ill-defined for the Freedman–Lane pipeline.
+- [X] `reconstruct_y`: raises `NotImplementedError` — multinomial
+  Y-reconstruction from residuals is not supported.
+- [X] `fit_metric`: raises `NotImplementedError` — use
+  `model_fit_metric()` instead.
+- [X] `direct_permutation = True`: class labels are permuted
+  directly (same pattern as ordinal).  Freedman–Lane rejected
+  with `ValueError` by the engine.
+- [X] `diagnostics`: log-likelihood, AIC, BIC, pseudo-R², LLR
+  p-value, category counts.
+- [X] `classical_p_values`: LRT p-values per predictor (matching
   `coefs()` reduction).
-- [ ] JAX backend required: `batch_multinomial` and
-  `batch_multinomial_varying_X` must have JAX Newton–Raphson
-  implementations (autodiff via `jax.grad`/`jax.hessian` on softmax
-  cross-entropy NLL) from day one, with NumPy/statsmodels fallback.
-  Zero initialisation is safe (softmax bounds µ).  *K* captured as
-  closure constant (same pattern as ordinal).
-- [ ] NumPy fallback: joblib-parallelised `statsmodels.MNLogit` loop.
-- [ ] Table output: one row per predictor with LRT statistic and
+- [X] JAX backend: `batch_multinomial` and
+  `batch_multinomial_varying_X` with JAX Newton–Raphson
+  (autodiff via `jax.grad`/`jax.hessian` on softmax
+  cross-entropy NLL), with NumPy/statsmodels fallback.
+  Zero initialisation, *K* as closure constant.
+- [X] NumPy fallback: joblib-parallelised `statsmodels.MNLogit` loop.
+- [X] Table output: one row per predictor with LRT statistic and
   permutation p-value.  Per-contrast detail available via
   `category_coefs()`.
 
@@ -607,10 +615,11 @@ This is the prerequisite for v0.4.0 exchangeability cells (which
 need a hook point in the permutation loop) and v0.5.0's graph
 compiler (which dispatches to the engine per equation).
 
-- [ ] Extract the permutation loop from
+- [X] Extract the permutation loop from
   `permutation_test_regression()` into a `PermutationEngine` class
-  with a `run()` method.
-- [ ] `PermutationEngine` accepts a `ModelFamily`, backend, and
+  with construction-time resolution of family, backend, and
+  permutations.
+- [X] `PermutationEngine` accepts a `ModelFamily`, backend, and
   permutation configuration (method, n_permutations, n_jobs,
   seed) at construction time.
 - [ ] Widen the public `family` parameter from `str` to
@@ -620,14 +629,14 @@ compiler (which dispatches to the engine per equation).
   instance is passed, `resolve_family()` is skipped and the
   instance is used as-is (with `calibrate()` still called via
   `hasattr` guard for uncalibrated instances).
-- [ ] The engine constructor calls `calibrate()` (via `hasattr`
+- [X] The engine constructor calls `calibrate()` (via `hasattr`
   guard) on the family instance, yielding a fully-resolved family
   for the loop — see §Design Notes under Step 10.
 - [ ] The engine exposes a `permute_hook()` extension point that
   v0.4.0 can override with exchangeability-constrained permutations.
-- [ ] `permutation_test_regression()` becomes a thin public wrapper
-  that constructs a `PermutationEngine` and calls `run()`.
-- [ ] All existing tests pass without modification (the public API
+- [X] `permutation_test_regression()` becomes a thin public wrapper
+  that constructs a `PermutationEngine` and delegates to strategies.
+- [X] All existing tests pass without modification (the public API
   surface is unchanged).
 
 ### Step 10 — Backend injection for testability
@@ -758,9 +767,9 @@ permutation test specification for any single-equation model.
 **Forward-compatibility note:** the `exchangeability_cells()` method
 was added to the `ModelFamily` protocol in v0.3.0 Step 6b
 (stabilisation) as a no-op stub returning `None` (global
-exchangeability) on all four families (linear, logistic, Poisson,
-negative binomial).  This release fills it in with real cell
-structures.  Similarly, `calibrate()` (v0.3.0 Step 7, NB) is
+exchangeability) on all six families (linear, logistic, Poisson,
+negative binomial, ordinal, multinomial).  This release fills it in
+with real cell structures.  Similarly, `calibrate()` (v0.3.0 Step 7, NB) is
 currently called via `hasattr` in `core.py`; the
 `PermutationEngine` (Step 9) will formalise this as a constructor
 hook.

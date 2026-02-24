@@ -2,9 +2,10 @@
 
 > **Package:** `randomization_tests`
 >
-> Permutation tests for regression models using ter Braak (1992) and
-> Kennedy (1995) methods with vectorised OLS, optional JAX autodiff for
-> logistic regression, and pre‑generated unique permutations.
+> Permutation tests for regression models using ter Braak (1992),
+> Kennedy (1995), and Freedman–Lane (1983) methods with vectorised
+> batch fitting, optional JAX autodiff for all GLM families, and
+> pre‑generated unique permutations.
 >
 > All functions accepting data inputs support both **pandas** and
 > **Polars** DataFrames (coerced internally via `_ensure_pandas_df`).
@@ -36,8 +37,8 @@ Run a permutation test for regression coefficients.
 
 By default (`family="auto"`), detects binary vs. continuous outcomes and
 uses logistic or linear regression accordingly.  Pass an explicit family
-string (`"linear"`, `"logistic"`, `"poisson"`, `"negative_binomial"`) to
-override auto‑detection.
+string (`"linear"`, `"logistic"`, `"poisson"`, `"negative_binomial"`,
+`"ordinal"`, `"multinomial"`) to override auto‑detection.
 
 | Parameter | Description |
 |---|---|
@@ -51,7 +52,7 @@ override auto‑detection.
 | `confounders` | Column names of confounders (required for Kennedy and Freedman–Lane methods). |
 | `random_state` | Seed for reproducibility. |
 | `fit_intercept` | Whether to include an intercept in the regression model. Set to `False` for through‑origin regression. |
-| `family` | Model family string. `"auto"` (default) detects binary `{0, 1}` targets → logistic, otherwise linear. Explicit values (`"linear"`, `"logistic"`, `"poisson"`, `"negative_binomial"`) bypass auto‑detection. |
+| `family` | Model family string. `"auto"` (default) detects binary `{0, 1}` targets → logistic, otherwise linear. Explicit values: `"linear"`, `"logistic"`, `"poisson"`, `"negative_binomial"`, `"ordinal"`, `"multinomial"`. |
 | `n_jobs` | Number of parallel jobs for the permutation batch‑fit loop. `1` (default) is sequential; `-1` uses all CPU cores. Ignored when the JAX backend is active. |
 
 **Returns:** A dictionary containing model coefficients, empirical
@@ -88,7 +89,7 @@ Runtime‑checkable protocol that every family class must satisfy.
 
 | Property / Method | Description |
 |---|---|
-| `name: str` | Short label, e.g. `"linear"`, `"logistic"`, `"poisson"`, `"negative_binomial"`. |
+| `name: str` | Short label, e.g. `"linear"`, `"logistic"`, `"poisson"`, `"negative_binomial"`, `"ordinal"`, `"multinomial"`. |
 | `residual_type: str` | Residual flavour (`"raw"`, `"probability"`, `"response"`). |
 | `direct_permutation: bool` | `True` when the family supports direct Y‑permutation (ter Braak shortcut). |
 | `metric_label: str` | Human‑readable label for the joint‑test metric (e.g. `"RSS Reduction"`). |
@@ -219,6 +220,51 @@ OrdinalFamily.null_fit_metric(model: Any) -> float
 Returns null deviance `−2 × llnull` (thresholds‑only model).  Used by
 the Kennedy joint engine when there are no confounders.
 
+### `MultinomialFamily`
+
+Multinomial logistic regression (softmax link) for unordered categorical
+outcomes with ≥ 3 classes (integer‑coded 0, 1, …, K−1).
+
+- `residual_type = "none"` — multinomial residuals are ill‑defined.
+- `direct_permutation = True` — permutes class labels directly.
+- `metric_label = "χ²"`.
+- `fit` uses `statsmodels.discrete.discrete_model.MNLogit`.
+- `coefs` returns a scalar LRT chi‑squared per predictor (shape `(p,)`)
+  — the standard reduction for testing whether a predictor affects a
+  multi‑class outcome.
+- `residuals`, `reconstruct_y`, `fit_metric` raise `NotImplementedError`.
+- `batch_fit` uses a joblib‑parallelised MNLogit loop.
+
+**Supported methods:** `ter_braak`, `kennedy`, `kennedy_joint`.
+
+**Rejected methods:** `freedman_lane`, `freedman_lane_joint` raise
+`ValueError` because multinomial residuals are not well‑defined.
+
+#### `category_coefs` (convenience)
+
+```python
+MultinomialFamily.category_coefs(model: Any) -> np.ndarray
+```
+
+Returns the full `(p, K−1)` slope matrix from a fitted MNLogit model
+for detailed post‑hoc inspection of per‑category contrasts.
+
+#### `model_fit_metric` (duck‑typed)
+
+```python
+MultinomialFamily.model_fit_metric(model: Any) -> float
+```
+
+Returns `−2 × log‑likelihood` from the fitted multinomial model.
+
+#### `null_fit_metric` (duck‑typed)
+
+```python
+MultinomialFamily.null_fit_metric(model: Any) -> float
+```
+
+Returns null deviance `−2 × llnull` (intercept‑only model).
+
 ### `resolve_family`
 
 ```python
@@ -235,6 +281,7 @@ Resolve a family string to a `ModelFamily` instance.
 | `"poisson"` | `PoissonFamily()`. |
 | `"negative_binomial"` | `NegativeBinomialFamily()` (uncalibrated; α estimated during calibration). |
 | `"ordinal"` | `OrdinalFamily()`. Requires ≥ 3 categories; supports ter Braak, Kennedy only. |
+| `"multinomial"` | `MultinomialFamily()`. Requires ≥ 3 unordered categories; supports ter Braak, Kennedy only. |
 
 **Raises:** `ValueError` for unrecognised family strings.
 
@@ -343,6 +390,7 @@ identify_confounders(
     n_bootstrap: int = 1000,
     confidence_level: float = 0.95,
     random_state: int | None = None,
+    family: str = "auto",
 ) -> dict
 ```
 
@@ -364,6 +412,7 @@ classified as likely confounders.
 | `n_bootstrap` | Bootstrap iterations for mediation analysis. |
 | `confidence_level` | Confidence‑interval level. |
 | `random_state` | Seed for reproducibility. |
+| `family` | Model family string (`"auto"`, `"linear"`, `"logistic"`, `"poisson"`, `"negative_binomial"`, `"ordinal"`, `"multinomial"`). When non‑linear, the b‑path and total‑effect regressions use the family‑appropriate GLM instead of OLS. |
 
 **Returns:** Dictionary with keys `identified_confounders`,
 `identified_mediators`, `screening_results`, and `mediation_results`.
@@ -413,6 +462,7 @@ mediation_analysis(
     confidence_level: float = 0.95,
     precision: int = 4,
     random_state: int | None = None,
+    family: str = "auto",
 ) -> dict
 ```
 
@@ -436,6 +486,7 @@ effect is the sole criterion for mediation.
 | `confidence_level` | Confidence‑interval level. |
 | `precision` | Decimal places for rounding. |
 | `random_state` | Seed for reproducibility. |
+| `family` | Model family string. When non‑linear, the b‑path (Y ~ X + M) and total‑effect (Y ~ X) regressions use the family‑appropriate GLM. |
 
 **Returns:** Dictionary containing the mediation decomposition
 (`total_effect`, `direct_effect`, `indirect_effect`, `a_path`, `b_path`),
@@ -535,6 +586,7 @@ print_confounder_table(
     p_value_threshold: float = 0.05,
     n_bootstrap: int = 1000,
     confidence_level: float = 0.95,
+    family: str | None = None,
 ) -> None
 ```
 
@@ -552,6 +604,7 @@ dicts.
 | `p_value_threshold` | Screening p‑value cutoff (shown in header). |
 | `n_bootstrap` | Bootstrap iterations for mediation (shown in header). |
 | `confidence_level` | CI level for mediation (shown in header). |
+| `family` | Optional family string (e.g. `"poisson"`).  When supplied, shown in the table header and passed to `identify_confounders`. |
 
 ---
 
