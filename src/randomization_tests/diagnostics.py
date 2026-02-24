@@ -66,7 +66,7 @@ from __future__ import annotations
 import logging
 import math
 import warnings
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import pandas as pd
@@ -80,6 +80,9 @@ from statsmodels.tools.sm_exceptions import (
 )
 
 logger = logging.getLogger(__name__)
+
+if TYPE_CHECKING:
+    from .families import ModelFamily
 
 # ------------------------------------------------------------------ #
 # Per-predictor diagnostics
@@ -872,7 +875,7 @@ def compute_all_diagnostics(
     X: pd.DataFrame,
     y_values: np.ndarray,
     model_coefs: np.ndarray,
-    model_type: str = "linear",
+    family: ModelFamily,
     *,
     raw_empirical_p: np.ndarray,
     raw_classic_p: np.ndarray,
@@ -888,9 +891,11 @@ def compute_all_diagnostics(
         X: Feature matrix.
         y_values: Response vector.
         model_coefs: Raw coefficients, shape ``(n_features,)``.
-        model_type: Model family name (e.g. ``"linear"``,
-            ``"logistic"``).  Replaces the former ``is_binary``
-            flag to support arbitrary family extensions.
+        family: The ``ModelFamily`` instance for the active model.
+            Used to dispatch family-specific diagnostics via
+            ``compute_extended_diagnostics()`` and to derive the
+            ``model_type`` string for helper functions that still
+            branch on it.
         raw_empirical_p: Numeric empirical p-values.
         raw_classic_p: Numeric classical p-values.
         n_permutations: Number of permutations (B).
@@ -907,6 +912,10 @@ def compute_all_diagnostics(
     if confounders is None:
         confounders = []
     result: dict = {}
+
+    # Derive model_type string for helpers that still branch on it
+    # (compute_standardized_coefs, compute_cooks_distance).
+    model_type = family.name
 
     # Store the permutation count so downstream display code can
     # report B alongside Monte Carlo SE without a separate lookup.
@@ -937,193 +946,17 @@ def compute_all_diagnostics(
     )
 
     # ---- Model-level diagnostics ----
-    # These check global assumptions (exchangeability, influence) and
-    # report a single summary per model.  The branch on model_type
-    # selects Breusch-Pagan (linear) vs. deviance residuals (logistic).
-    #
-    # Each block is wrapped in try/except because statsmodels can fail
-    # on degenerate data (perfect separation, rank-deficient designs,
-    # near-saturated probabilities).  The permutation test itself
-    # succeeds in these cases — only the post-hoc diagnostics break.
-    # Graceful degradation returns NaN-filled sentinel dicts so the
-    # rest of the results pipeline is unaffected.
-    if model_type == "logistic":
-        try:
-            with warnings.catch_warnings():
-                warnings.filterwarnings(
-                    "ignore",
-                    category=RuntimeWarning,
-                )
-                warnings.filterwarnings(
-                    "ignore",
-                    category=SmConvergenceWarning,
-                )
-                warnings.filterwarnings(
-                    "ignore",
-                    category=PerfectSeparationWarning,
-                )
-                result["deviance_residuals"] = compute_deviance_residual_diagnostics(
-                    X, y_values
-                )
-        except Exception as exc:
-            logger.debug("Deviance residual diagnostics failed: %s", exc)
-            result["deviance_residuals"] = {
-                "mean": float("nan"),
-                "variance": float("nan"),
-                "n_extreme": 0,
-                "runs_test_z": float("nan"),
-                "runs_test_p": float("nan"),
-                "warning": f"Diagnostics unavailable: {exc}",
-            }
-    elif model_type == "poisson":
-        try:
-            with warnings.catch_warnings():
-                warnings.filterwarnings("ignore", category=RuntimeWarning)
-                warnings.filterwarnings("ignore", category=SmConvergenceWarning)
-                X_sm = sm.add_constant(X) if fit_intercept else np.asarray(X)
-                pois_model = sm.GLM(y_values, X_sm, family=sm.families.Poisson()).fit(
-                    disp=0
-                )
-                pearson_chi2 = float(pois_model.pearson_chi2)
-                df_resid = float(pois_model.df_resid)
-                dispersion = pearson_chi2 / df_resid if df_resid > 0 else float("nan")
-                result["poisson_gof"] = {
-                    "deviance": float(pois_model.deviance),
-                    "pearson_chi2": pearson_chi2,
-                    "dispersion": dispersion,
-                    "overdispersed": dispersion > 1.5,
-                }
-        except Exception as exc:
-            logger.debug("Poisson GoF diagnostics failed: %s", exc)
-            result["poisson_gof"] = {
-                "deviance": float("nan"),
-                "pearson_chi2": float("nan"),
-                "dispersion": float("nan"),
-                "overdispersed": False,
-                "warning": f"Diagnostics unavailable: {exc}",
-            }
-    elif model_type == "negative_binomial":
-        try:
-            with warnings.catch_warnings():
-                warnings.filterwarnings("ignore", category=RuntimeWarning)
-                warnings.filterwarnings("ignore", category=SmConvergenceWarning)
-                X_sm = sm.add_constant(X) if fit_intercept else np.asarray(X)
-                # Estimate α via MLE, then fit GLM with fixed α.
-                nb_mle = sm.NegativeBinomial(y_values, X_sm).fit(disp=0, maxiter=200)
-                alpha_hat = float(np.exp(nb_mle.lnalpha))
-                nb_model = sm.GLM(
-                    y_values,
-                    X_sm,
-                    family=sm.families.NegativeBinomial(alpha=alpha_hat),
-                ).fit(disp=0)
-                pearson_chi2 = float(nb_model.pearson_chi2)
-                df_resid = float(nb_model.df_resid)
-                dispersion = pearson_chi2 / df_resid if df_resid > 0 else float("nan")
-                result["nb_gof"] = {
-                    "deviance": float(nb_model.deviance),
-                    "pearson_chi2": pearson_chi2,
-                    "dispersion": dispersion,
-                    "alpha": alpha_hat,
-                    "overdispersed": dispersion > 1.5,
-                }
-        except Exception as exc:
-            logger.debug("NB GoF diagnostics failed: %s", exc)
-            result["nb_gof"] = {
-                "deviance": float("nan"),
-                "pearson_chi2": float("nan"),
-                "dispersion": float("nan"),
-                "alpha": float("nan"),
-                "warning": f"Diagnostics unavailable: {exc}",
-            }
-    elif model_type == "ordinal":
-        try:
-            from statsmodels.miscmodels.ordinal_model import OrderedModel
-
-            with warnings.catch_warnings():
-                warnings.filterwarnings("ignore", category=RuntimeWarning)
-                warnings.filterwarnings("ignore", category=SmConvergenceWarning)
-                X_arr = np.asarray(X, dtype=float)
-                ord_model = OrderedModel(y_values, X_arr, distr="logit").fit(
-                    disp=0, method="bfgs"
-                )
-            llf = float(ord_model.llf)
-            llnull = float(ord_model.llnull)
-            pseudo_r2 = 1.0 - llf / llnull if llnull != 0.0 else float("nan")
-
-            # --- Proportional odds (Brant-like) test ---
-            # Compare the pooled proportional-odds model to separate
-            # binary logit models at each threshold.  Under H₀ the
-            # coefficients are equal across thresholds; a significant
-            # chi-squared indicates the proportional odds assumption
-            # is violated.
-            po_result = _proportional_odds_test(X_arr, y_values, ord_model)
-
-            result["ordinal_gof"] = {
-                "pseudo_r_squared": pseudo_r2,
-                "log_likelihood": llf,
-                "log_likelihood_null": llnull,
-                "n_categories": len(np.unique(y_values)),
-                **po_result,
-            }
-        except Exception as exc:
-            logger.debug("Ordinal GoF diagnostics failed: %s", exc)
-            result["ordinal_gof"] = {
-                "pseudo_r_squared": float("nan"),
-                "log_likelihood": float("nan"),
-                "log_likelihood_null": float("nan"),
-                "n_categories": len(np.unique(y_values)),
-                "warning": f"Diagnostics unavailable: {exc}",
-            }
-    elif model_type == "multinomial":
-        try:
-            from statsmodels.discrete.discrete_model import MNLogit
-
-            with warnings.catch_warnings():
-                warnings.filterwarnings("ignore", category=RuntimeWarning)
-                warnings.filterwarnings("ignore", category=SmConvergenceWarning)
-                X_sm = sm.add_constant(X) if fit_intercept else np.asarray(X)
-                mn_model = MNLogit(y_values, X_sm).fit(disp=0, maxiter=200)
-            llf = float(mn_model.llf)
-            llnull = float(mn_model.llnull)
-            pseudo_r2 = 1.0 - llf / llnull if llnull != 0.0 else float("nan")
-            try:
-                llr_p = float(mn_model.llr_pvalue)
-            except (AttributeError, TypeError):
-                llr_p = float("nan")
-            unique_y, counts = np.unique(y_values, return_counts=True)
-            result["multinomial_gof"] = {
-                "pseudo_r_squared": pseudo_r2,
-                "log_likelihood": llf,
-                "log_likelihood_null": llnull,
-                "n_categories": len(unique_y),
-                "category_counts": dict(
-                    zip(unique_y.tolist(), counts.tolist(), strict=True)
-                ),
-                "aic": float(mn_model.aic),
-                "bic": float(mn_model.bic),
-                "llr_p_value": llr_p,
-            }
-        except Exception as exc:
-            logger.debug("Multinomial GoF diagnostics failed: %s", exc)
-            result["multinomial_gof"] = {
-                "pseudo_r_squared": float("nan"),
-                "log_likelihood": float("nan"),
-                "log_likelihood_null": float("nan"),
-                "n_categories": len(np.unique(y_values)),
-                "warning": f"Diagnostics unavailable: {exc}",
-            }
-    else:
-        try:
-            result["breusch_pagan"] = compute_breusch_pagan(X, y_values)
-        except Exception as exc:
-            logger.debug("Breusch-Pagan diagnostics failed: %s", exc)
-            result["breusch_pagan"] = {
-                "lm_stat": float("nan"),
-                "lm_p_value": float("nan"),
-                "f_stat": float("nan"),
-                "f_p_value": float("nan"),
-                "warning": f"Diagnostics unavailable: {exc}",
-            }
+    # Family-specific diagnostics (Breusch-Pagan, deviance residuals,
+    # Poisson/NB GoF, ordinal/multinomial GoF) are computed by the
+    # family's ``compute_extended_diagnostics()`` method.  Each
+    # implementation wraps its calculations in try/except so that
+    # degenerate data returns NaN-filled sentinel dicts rather than
+    # crashing the results pipeline.
+    result.update(
+        family.compute_extended_diagnostics(
+            X.values.astype(float), y_values, fit_intercept
+        )
+    )
 
     # Influential observations
     try:

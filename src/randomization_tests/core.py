@@ -377,7 +377,7 @@ def _package_individual_result(
         X=X,
         y_values=y_values,
         model_coefs=engine.model_coefs,
-        model_type=engine.family.name,
+        family=engine.family,
         raw_empirical_p=raw_empirical_p,
         raw_classic_p=raw_classic_p,
         n_permutations=n_permutations,

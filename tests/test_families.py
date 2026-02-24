@@ -190,6 +190,12 @@ class TestDiagnostics:
         diag = family.diagnostics(X, y)
         assert 0.0 < diag["r_squared"] <= 1.0
 
+    def test_compute_extended_diagnostics_returns_dict(self, family, linear_data):
+        X, y = linear_data
+        result = family.compute_extended_diagnostics(X, y, fit_intercept=True)
+        assert isinstance(result, dict)
+        assert "breusch_pagan" in result
+
 
 # ------------------------------------------------------------------ #
 # classical_p_values
@@ -537,6 +543,14 @@ class TestLogisticDiagnostics:
         diag = logistic_family.diagnostics(X, y)
         assert diag["pseudo_r_squared"] > 0.0
 
+    def test_compute_extended_diagnostics_returns_dict(
+        self, logistic_family, logistic_data
+    ):
+        X, y = logistic_data
+        result = logistic_family.compute_extended_diagnostics(X, y, fit_intercept=True)
+        assert isinstance(result, dict)
+        assert "deviance_residuals" in result
+
 
 # ------------------------------------------------------------------ #
 # classical_p_values (logistic)
@@ -871,6 +885,14 @@ class TestPoissonDiagnostics:
         X, y = poisson_data
         diag = poisson_family.diagnostics(X, y, fit_intercept=True)
         assert diag["deviance"] > 0
+
+    def test_compute_extended_diagnostics_returns_dict(
+        self, poisson_family, poisson_data
+    ):
+        X, y = poisson_data
+        result = poisson_family.compute_extended_diagnostics(X, y, fit_intercept=True)
+        assert isinstance(result, dict)
+        assert "poisson_gof" in result
 
 
 # ------------------------------------------------------------------ #
@@ -1353,6 +1375,12 @@ class TestNBDiagnostics:
         diag = nb_family.diagnostics(X, y, fit_intercept=True)
         assert diag["alpha"] == pytest.approx(nb_family.alpha, rel=1e-3)
 
+    def test_compute_extended_diagnostics_returns_dict(self, nb_family, nb_data):
+        X, y = nb_data
+        result = nb_family.compute_extended_diagnostics(X, y, fit_intercept=True)
+        assert isinstance(result, dict)
+        assert "nb_gof" in result
+
 
 # ------------------------------------------------------------------ #
 # classical_p_values
@@ -1730,6 +1758,14 @@ class TestOrdinalDiagnostics:
         assert diag["aic"] > 0
         assert diag["bic"] > 0
 
+    def test_compute_extended_diagnostics_returns_dict(
+        self, ordinal_family, ordinal_data
+    ):
+        X, y = ordinal_data
+        result = ordinal_family.compute_extended_diagnostics(X, y, fit_intercept=True)
+        assert isinstance(result, dict)
+        assert "ordinal_gof" in result
+
 
 # ------------------------------------------------------------------ #
 # Classical p-values
@@ -2084,6 +2120,16 @@ class TestMultinomialDiagnostics:
         diag = multinomial_family.diagnostics(X, y)
         assert diag["aic"] > 0
         assert diag["bic"] > 0
+
+    def test_compute_extended_diagnostics_returns_dict(
+        self, multinomial_family, multinomial_data
+    ):
+        X, y = multinomial_data
+        result = multinomial_family.compute_extended_diagnostics(
+            X, y, fit_intercept=True
+        )
+        assert isinstance(result, dict)
+        assert "multinomial_gof" in result
 
 
 # ------------------------------------------------------------------ #

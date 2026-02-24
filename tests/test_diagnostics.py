@@ -19,6 +19,7 @@ from randomization_tests.diagnostics import (
     compute_standardized_coefs,
     compute_vif,
 )
+from randomization_tests.families import LinearFamily, LogisticFamily
 
 # ── Fixtures ─────────────────────────────────────────────────────── #
 
@@ -290,7 +291,7 @@ class TestComputeAllDiagnostics:
             X,
             y,
             coefs,
-            model_type="linear",
+            family=LinearFamily(),
             raw_empirical_p=raw_emp,
             raw_classic_p=raw_cls,
             n_permutations=1000,
@@ -314,7 +315,7 @@ class TestComputeAllDiagnostics:
             X,
             y,
             coefs,
-            model_type="logistic",
+            family=LogisticFamily(),
             raw_empirical_p=raw_emp,
             raw_classic_p=raw_cls,
             n_permutations=1000,
@@ -335,7 +336,7 @@ class TestComputeAllDiagnostics:
             X,
             y,
             coefs,
-            model_type="linear",
+            family=LinearFamily(),
             raw_empirical_p=raw_emp,
             raw_classic_p=raw_cls,
             n_permutations=1000,
@@ -549,7 +550,7 @@ class TestExposureRSquared:
             X=X,
             y_values=y,
             model_coefs=coefs,
-            model_type="linear",
+            family=LinearFamily(),
             raw_empirical_p=raw_p,
             raw_classic_p=raw_p,
             n_permutations=100,
@@ -574,7 +575,7 @@ class TestExposureRSquared:
             X=X,
             y_values=y,
             model_coefs=coefs,
-            model_type="linear",
+            family=LinearFamily(),
             raw_empirical_p=raw_p,
             raw_classic_p=raw_p,
             n_permutations=100,
@@ -597,7 +598,7 @@ class TestExposureRSquared:
             X=X,
             y_values=y,
             model_coefs=coefs,
-            model_type="linear",
+            family=LinearFamily(),
             raw_empirical_p=raw_p,
             raw_classic_p=raw_p,
             n_permutations=100,

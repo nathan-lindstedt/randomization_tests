@@ -9,6 +9,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`compute_extended_diagnostics()` protocol method:** each
+  `ModelFamily` now owns its family-specific model-level diagnostic
+  computation (`breusch_pagan`, `deviance_residuals`, `poisson_gof`,
+  `nb_gof`, `ordinal_gof`, `multinomial_gof`).  The 170-line
+  `model_type` branch block in `diagnostics.py` is deleted; replaced
+  by a single `result.update(family.compute_extended_diagnostics(...))`
+  dispatch.
+
+### Changed
+
+- `compute_all_diagnostics()` parameter `model_type: str` replaced
+  by `family: ModelFamily`.  `core.py` call site updated from
+  `model_type=engine.family.name` to `family=engine.family`.
+- Family-specific diagnostic logic migrated from `diagnostics.py`
+  into `LinearFamily`, `LogisticFamily`, `PoissonFamily`,
+  `NegativeBinomialFamily`, `OrdinalFamily`, and `MultinomialFamily`.
+  Each implementation includes try/except with NaN-filled sentinel
+  dicts for graceful degradation on degenerate data.
+- Tests updated: `test_diagnostics.py` passes `family=` instances
+  instead of `model_type=` strings; `test_families.py` gains 6 new
+  `compute_extended_diagnostics` assertions.
+
 - **`ModelFamily` protocol:** strategy pattern decoupling model fitting
   from the permutation engine.  Each family implements `validate_y`,
   `fit`, `predict`, `coefs`, `residuals`, `reconstruct_y`, `fit_metric`,

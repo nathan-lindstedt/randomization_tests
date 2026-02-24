@@ -169,6 +169,44 @@ class ModelFamily(Protocol):
         """
         ...
 
+    def compute_extended_diagnostics(
+        self,
+        X: np.ndarray,
+        y: np.ndarray,
+        fit_intercept: bool,
+    ) -> dict[str, Any]:
+        """Compute family-specific model-level diagnostics.
+
+        Returns a dict whose keys match exactly what
+        ``display_diagnostics()`` reads — the contract is locked in
+        by Step 4.  Each family produces its own diagnostic key:
+
+        =============================  =========================
+        Family                         Dict key produced
+        =============================  =========================
+        ``LinearFamily``               ``"breusch_pagan"``
+        ``LogisticFamily``             ``"deviance_residuals"``
+        ``PoissonFamily``              ``"poisson_gof"``
+        ``NegativeBinomialFamily``     ``"nb_gof"``
+        ``OrdinalFamily``              ``"ordinal_gof"``
+        ``MultinomialFamily``          ``"multinomial_gof"``
+        =============================  =========================
+
+        Implementations wrap their calculations in ``try/except`` so
+        that degenerate data (perfect separation, rank-deficient
+        designs) returns NaN-filled sentinel dicts rather than
+        crashing the results pipeline.
+
+        Args:
+            X: Design matrix of shape ``(n, p)`` — no intercept column.
+            y: Response vector of shape ``(n,)``.
+            fit_intercept: Whether the model includes an intercept.
+
+        Returns:
+            Dictionary with a single family-specific diagnostic key.
+        """
+        ...
+
     # ---- Validation ------------------------------------------------
 
     def validate_y(self, y: np.ndarray) -> None:
@@ -689,6 +727,33 @@ class LinearFamily:
                 )
         return lines, notes
 
+    def compute_extended_diagnostics(
+        self,
+        X: np.ndarray,
+        y: np.ndarray,
+        fit_intercept: bool,  # noqa: ARG002
+    ) -> dict[str, Any]:
+        """Compute Breusch-Pagan heteroscedasticity test."""
+        from .diagnostics import compute_breusch_pagan
+
+        try:
+            return {"breusch_pagan": compute_breusch_pagan(X, y)}
+        except Exception as exc:
+            import logging
+
+            logging.getLogger(__name__).debug(
+                "Breusch-Pagan diagnostics failed: %s", exc
+            )
+            return {
+                "breusch_pagan": {
+                    "lm_stat": float("nan"),
+                    "lm_p_value": float("nan"),
+                    "f_stat": float("nan"),
+                    "f_p_value": float("nan"),
+                    "warning": f"Diagnostics unavailable: {exc}",
+                }
+            }
+
     # ---- Validation ------------------------------------------------
     #
     # Catch two common data errors early:
@@ -1136,6 +1201,40 @@ class LogisticFamily:
                     "Runs test p < 0.05: non-random residual pattern detected."
                 )
         return lines, notes
+
+    def compute_extended_diagnostics(
+        self,
+        X: np.ndarray,
+        y: np.ndarray,
+        fit_intercept: bool,  # noqa: ARG002
+    ) -> dict[str, Any]:
+        """Compute deviance residual diagnostics for logistic models."""
+        from .diagnostics import compute_deviance_residual_diagnostics
+
+        try:
+            with warnings.catch_warnings():
+                warnings.filterwarnings("ignore", category=RuntimeWarning)
+                warnings.filterwarnings("ignore", category=SmConvergenceWarning)
+                warnings.filterwarnings("ignore", category=PerfectSeparationWarning)
+                return {
+                    "deviance_residuals": compute_deviance_residual_diagnostics(X, y)
+                }
+        except Exception as exc:
+            import logging
+
+            logging.getLogger(__name__).debug(
+                "Deviance residual diagnostics failed: %s", exc
+            )
+            return {
+                "deviance_residuals": {
+                    "mean": float("nan"),
+                    "variance": float("nan"),
+                    "n_extreme": 0,
+                    "runs_test_z": float("nan"),
+                    "runs_test_p": float("nan"),
+                    "warning": f"Diagnostics unavailable: {exc}",
+                }
+            }
 
     # ---- Validation ------------------------------------------------
     #
@@ -1639,6 +1738,44 @@ class PoissonFamily:
                     f"family='negative_binomial'."
                 )
         return lines, notes
+
+    def compute_extended_diagnostics(
+        self,
+        X: np.ndarray,
+        y: np.ndarray,
+        fit_intercept: bool,
+    ) -> dict[str, Any]:
+        """Compute Poisson goodness-of-fit diagnostics."""
+        try:
+            with warnings.catch_warnings():
+                warnings.filterwarnings("ignore", category=RuntimeWarning)
+                warnings.filterwarnings("ignore", category=SmConvergenceWarning)
+                X_sm = sm.add_constant(X) if fit_intercept else np.asarray(X)
+                pois_model = sm.GLM(y, X_sm, family=sm.families.Poisson()).fit(disp=0)
+                pearson_chi2 = float(pois_model.pearson_chi2)
+                df_resid = float(pois_model.df_resid)
+                dispersion = pearson_chi2 / df_resid if df_resid > 0 else float("nan")
+                return {
+                    "poisson_gof": {
+                        "deviance": float(pois_model.deviance),
+                        "pearson_chi2": pearson_chi2,
+                        "dispersion": dispersion,
+                        "overdispersed": dispersion > 1.5,
+                    }
+                }
+        except Exception as exc:
+            import logging
+
+            logging.getLogger(__name__).debug("Poisson GoF diagnostics failed: %s", exc)
+            return {
+                "poisson_gof": {
+                    "deviance": float("nan"),
+                    "pearson_chi2": float("nan"),
+                    "dispersion": float("nan"),
+                    "overdispersed": False,
+                    "warning": f"Diagnostics unavailable: {exc}",
+                }
+            }
 
     # ---- Validation ------------------------------------------------
     #
@@ -2156,6 +2293,52 @@ class NegativeBinomialFamily:
                     f"overdispersion detected after NB fit."
                 )
         return lines, notes
+
+    def compute_extended_diagnostics(
+        self,
+        X: np.ndarray,
+        y: np.ndarray,
+        fit_intercept: bool,
+    ) -> dict[str, Any]:
+        """Compute negative binomial goodness-of-fit diagnostics."""
+        try:
+            with warnings.catch_warnings():
+                warnings.filterwarnings("ignore", category=RuntimeWarning)
+                warnings.filterwarnings("ignore", category=SmConvergenceWarning)
+                X_sm = sm.add_constant(X) if fit_intercept else np.asarray(X)
+                # Estimate α via MLE, then fit GLM with fixed α.
+                nb_mle = sm.NegativeBinomial(y, X_sm).fit(disp=0, maxiter=200)
+                alpha_hat = float(np.exp(nb_mle.lnalpha))
+                nb_model = sm.GLM(
+                    y,
+                    X_sm,
+                    family=sm.families.NegativeBinomial(alpha=alpha_hat),
+                ).fit(disp=0)
+                pearson_chi2 = float(nb_model.pearson_chi2)
+                df_resid = float(nb_model.df_resid)
+                dispersion = pearson_chi2 / df_resid if df_resid > 0 else float("nan")
+                return {
+                    "nb_gof": {
+                        "deviance": float(nb_model.deviance),
+                        "pearson_chi2": pearson_chi2,
+                        "dispersion": dispersion,
+                        "alpha": alpha_hat,
+                        "overdispersed": dispersion > 1.5,
+                    }
+                }
+        except Exception as exc:
+            import logging
+
+            logging.getLogger(__name__).debug("NB GoF diagnostics failed: %s", exc)
+            return {
+                "nb_gof": {
+                    "deviance": float("nan"),
+                    "pearson_chi2": float("nan"),
+                    "dispersion": float("nan"),
+                    "alpha": float("nan"),
+                    "warning": f"Diagnostics unavailable: {exc}",
+                }
+            }
 
     # ---- Internal helpers ------------------------------------------
 
@@ -2686,6 +2869,53 @@ class OrdinalFamily:
                     )
         return lines, notes
 
+    def compute_extended_diagnostics(
+        self,
+        X: np.ndarray,
+        y: np.ndarray,
+        fit_intercept: bool,  # noqa: ARG002
+    ) -> dict[str, Any]:
+        """Compute ordinal goodness-of-fit and proportional odds test."""
+        from statsmodels.miscmodels.ordinal_model import OrderedModel
+
+        from .diagnostics import _proportional_odds_test
+
+        try:
+            with warnings.catch_warnings():
+                warnings.filterwarnings("ignore", category=RuntimeWarning)
+                warnings.filterwarnings("ignore", category=SmConvergenceWarning)
+                warnings.filterwarnings("ignore", category=HessianInversionWarning)
+                X_arr = np.asarray(X, dtype=float)
+                ord_model = OrderedModel(y, X_arr, distr="logit").fit(
+                    disp=0, method="bfgs"
+                )
+            llf = float(ord_model.llf)
+            llnull = float(ord_model.llnull)
+            pseudo_r2 = 1.0 - llf / llnull if llnull != 0.0 else float("nan")
+            po_result = _proportional_odds_test(X_arr, y, ord_model)
+            return {
+                "ordinal_gof": {
+                    "pseudo_r_squared": pseudo_r2,
+                    "log_likelihood": llf,
+                    "log_likelihood_null": llnull,
+                    "n_categories": len(np.unique(y)),
+                    **po_result,
+                }
+            }
+        except Exception as exc:
+            import logging
+
+            logging.getLogger(__name__).debug("Ordinal GoF diagnostics failed: %s", exc)
+            return {
+                "ordinal_gof": {
+                    "pseudo_r_squared": float("nan"),
+                    "log_likelihood": float("nan"),
+                    "log_likelihood_null": float("nan"),
+                    "n_categories": len(np.unique(y)),
+                    "warning": f"Diagnostics unavailable: {exc}",
+                }
+            }
+
     # ---- Validation ------------------------------------------------
 
     def validate_y(self, y: np.ndarray) -> None:
@@ -3210,6 +3440,60 @@ class MultinomialFamily:
                 )
                 lines.append(("Category counts:", counts_str))
         return lines, notes
+
+    def compute_extended_diagnostics(
+        self,
+        X: np.ndarray,
+        y: np.ndarray,
+        fit_intercept: bool,
+    ) -> dict[str, Any]:
+        """Compute multinomial goodness-of-fit diagnostics."""
+        from statsmodels.discrete.discrete_model import MNLogit
+
+        try:
+            with warnings.catch_warnings():
+                warnings.filterwarnings("ignore", category=RuntimeWarning)
+                warnings.filterwarnings("ignore", category=SmConvergenceWarning)
+                warnings.filterwarnings("ignore", category=HessianInversionWarning)
+                X_sm = sm.add_constant(X) if fit_intercept else np.asarray(X)
+                mn_model = MNLogit(y, X_sm).fit(disp=0, maxiter=200)
+            llf = float(mn_model.llf)
+            llnull = float(mn_model.llnull)
+            pseudo_r2 = 1.0 - llf / llnull if llnull != 0.0 else float("nan")
+            try:
+                llr_p = float(mn_model.llr_pvalue)
+            except (AttributeError, TypeError):
+                llr_p = float("nan")
+            unique_y, counts = np.unique(y, return_counts=True)
+            return {
+                "multinomial_gof": {
+                    "pseudo_r_squared": pseudo_r2,
+                    "log_likelihood": llf,
+                    "log_likelihood_null": llnull,
+                    "n_categories": len(unique_y),
+                    "category_counts": dict(
+                        zip(unique_y.tolist(), counts.tolist(), strict=True)
+                    ),
+                    "aic": float(mn_model.aic),
+                    "bic": float(mn_model.bic),
+                    "llr_p_value": llr_p,
+                }
+            }
+        except Exception as exc:
+            import logging
+
+            logging.getLogger(__name__).debug(
+                "Multinomial GoF diagnostics failed: %s", exc
+            )
+            return {
+                "multinomial_gof": {
+                    "pseudo_r_squared": float("nan"),
+                    "log_likelihood": float("nan"),
+                    "log_likelihood_null": float("nan"),
+                    "n_categories": len(np.unique(y)),
+                    "warning": f"Diagnostics unavailable: {exc}",
+                }
+            }
 
     # ---- Validation ------------------------------------------------
 
