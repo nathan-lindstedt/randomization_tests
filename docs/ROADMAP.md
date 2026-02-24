@@ -655,8 +655,10 @@ compiler (which dispatches to the engine per equation).
 - [X] The engine constructor calls `calibrate()` (via `hasattr`
   guard) on the family instance, yielding a fully-resolved family
   for the loop — see §Design Notes under Step 10.
-- [ ] The engine exposes a `permute_hook()` extension point that
-  v0.4.0 can override with exchangeability-constrained permutations.
+- [X] The engine exposes a `_permute_hook()` extension point that
+  v0.4.1 can override with exchangeability-constrained permutations.
+  `permute_indices()` converted from `@staticmethod` to instance
+  method and delegates to `_permute_hook()`.
 - [X] `permutation_test_regression()` becomes a thin public wrapper
   that constructs a `PermutationEngine` and delegates to strategies.
 - [X] All existing tests pass without modification (the public API

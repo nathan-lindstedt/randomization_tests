@@ -1,24 +1,12 @@
-Step 7 + 7a: Delete _classical_p_values_fallback, family warning hygiene
+Step 8: permute_hook() extension point
 
-Step 7 - pvalues.py dead-code removal:
-- Delete _classical_p_values_fallback() (was dead for 4 newer families)
-- Make family parameter required on calculate_p_values()
-- Remove sm, SmConvergenceWarning, PerfectSeparationWarning imports
-- Update module/function docstrings (no more falls-back language)
-- Update test_pvalues.py and test_compat.py to pass family instances
+- Convert permute_indices from @staticmethod to instance method
+- Add _permute_hook() as the extension point for v0.4.1
+  exchangeability-constrained permutations
+- permute_indices delegates to _permute_hook; subclasses override
+  _permute_hook to restrict permutations within cells
+- Update TestPermuteIndices (5 tests) from static to instance calls
+- Add test_permute_indices_is_instance_method
+- Add test_permute_hook_override (subclass override proof)
 
-Step 7a - family warning hygiene + engine band-aid removal:
-- LinearFamily.diagnostics(): add RuntimeWarning suppression
-- LogisticFamily.diagnostics(): add SmConvergenceWarning,
-  PerfectSeparationWarning, RuntimeWarning suppression
-- PoissonFamily: add PerfectSeparationWarning to diagnostics(),
-  classical_p_values(), fit()
-- NegativeBinomialFamily: add PerfectSeparationWarning to
-  diagnostics(), classical_p_values(), fit()
-- OrdinalFamily.fit(): add PerfectSeparationWarning
-- MultinomialFamily.fit(): add PerfectSeparationWarning
-- engine.py: remove warnings.catch_warnings() wrapper around
-  family.diagnostics() and dead warning imports
-
-Every family is now self-contained for warning suppression.
-648 tests pass, mypy + ruff clean.
+650 tests pass (648 + 2 new), mypy + ruff clean.

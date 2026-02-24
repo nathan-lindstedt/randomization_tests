@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`permute_hook()` extension point (Step 8):**
+  `PermutationEngine.permute_indices()` converted from `@staticmethod`
+  to instance method.  New `_permute_hook()` method serves as the
+  extension point for v0.4.1 exchangeability-constrained permutations.
+  Subclasses override `_permute_hook()` to restrict permutations
+  within exchangeability cells.  Two new tests added:
+  `test_permute_indices_is_instance_method` and
+  `test_permute_hook_override`.
 - **`_classical_p_values_fallback` removal + family warning hygiene (Step 7 + 7a):**
   Deleted the dead `_classical_p_values_fallback()` function from
   `pvalues.py`.  `family` parameter on `calculate_p_values()` changed

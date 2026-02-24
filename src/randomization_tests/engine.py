@@ -155,11 +155,9 @@ class PermutationEngine:
         )
 
     # ---- Shared primitive -----------------------------------------
-    # v0.4.0 exchangeability cells will override / wrap this method to
-    # restrict permutations within strata.
 
-    @staticmethod
     def permute_indices(
+        self,
         n_samples: int,
         n_permutations: int,
         random_state: int | None = None,
@@ -167,8 +165,33 @@ class PermutationEngine:
         """Generate unique permutation indices.
 
         This is the single point of permutation generation that all
-        strategies consume.  In v0.4.0, exchangeability-cell logic
-        will extend this to produce *within-cell* permutations.
+        strategies consume.  Delegates to :meth:`_permute_hook`, which
+        subclasses can override to implement exchangeability-constrained
+        permutations (v0.4.1).
+
+        Args:
+            n_samples: Number of observations.
+            n_permutations: Number of unique permutations to generate.
+            random_state: Seed for reproducibility.
+
+        Returns:
+            Array of shape ``(B, n_samples)`` with permutation indices.
+        """
+        return self._permute_hook(n_samples, n_permutations, random_state)
+
+    def _permute_hook(
+        self,
+        n_samples: int,
+        n_permutations: int,
+        random_state: int | None = None,
+    ) -> np.ndarray:
+        """Extension point for exchangeability-constrained permutations.
+
+        Default implementation generates globally-exchangeable
+        permutations via :func:`generate_unique_permutations`.
+        Subclasses override this to restrict permutations within
+        exchangeability cells (v0.4.1) or apply user-supplied
+        constraints.
 
         Args:
             n_samples: Number of observations.

@@ -160,6 +160,30 @@ class TestEngineConstruction:
         engine = PermutationEngine(X, y, n_permutations=_N_PERMS, random_state=_SEED)
         assert engine.perm_indices.shape == (_N_PERMS, len(y))
 
+    def test_permute_indices_is_instance_method(self, linear_data):
+        """permute_indices is an instance method, not a staticmethod."""
+        X, y = linear_data
+        engine = PermutationEngine(X, y, n_permutations=_N_PERMS, random_state=_SEED)
+        result = engine.permute_indices(
+            n_samples=len(y), n_permutations=5, random_state=0
+        )
+        assert result.shape == (5, len(y))
+
+    def test_permute_hook_override(self, linear_data):
+        """Subclassing _permute_hook is picked up by permute_indices."""
+        X, y = linear_data
+
+        class IdentityEngine(PermutationEngine):
+            def _permute_hook(self, n_samples, n_permutations, random_state=None):
+                return np.tile(np.arange(n_samples), (n_permutations, 1))
+
+        engine = IdentityEngine(X, y, n_permutations=_N_PERMS, random_state=_SEED)
+        # The constructor already called permute_indices → _permute_hook,
+        # so perm_indices should be all-identity rows.
+        expected_row = np.arange(len(y))
+        for row in engine.perm_indices:
+            np.testing.assert_array_equal(row, expected_row)
+
     def test_diagnostics_is_dict(self, linear_data):
         X, y = linear_data
         engine = PermutationEngine(X, y, n_permutations=_N_PERMS, random_state=_SEED)
@@ -321,16 +345,22 @@ class TestEngineBackendWarnings:
 class TestPermuteIndices:
     """Permutation index array properties."""
 
+    def _make_engine(self, linear_data):
+        X, y = linear_data
+        return PermutationEngine(X, y, n_permutations=_N_PERMS, random_state=_SEED)
+
     def test_shape(self, linear_data):
         X, y = linear_data
         n = len(y)
-        indices = PermutationEngine.permute_indices(n, _N_PERMS, random_state=_SEED)
+        engine = self._make_engine(linear_data)
+        indices = engine.permute_indices(n, _N_PERMS, random_state=_SEED)
         assert indices.shape == (_N_PERMS, n)
 
     def test_no_duplicate_rows(self, linear_data):
         X, y = linear_data
         n = len(y)
-        indices = PermutationEngine.permute_indices(n, _N_PERMS, random_state=_SEED)
+        engine = self._make_engine(linear_data)
+        indices = engine.permute_indices(n, _N_PERMS, random_state=_SEED)
         # Each row should be unique
         unique_rows = np.unique(indices, axis=0)
         assert unique_rows.shape[0] == indices.shape[0]
@@ -338,7 +368,8 @@ class TestPermuteIndices:
     def test_no_identity_permutation(self, linear_data):
         X, y = linear_data
         n = len(y)
-        indices = PermutationEngine.permute_indices(n, _N_PERMS, random_state=_SEED)
+        engine = self._make_engine(linear_data)
+        indices = engine.permute_indices(n, _N_PERMS, random_state=_SEED)
         identity = np.arange(n)
         for row in indices:
             assert not np.array_equal(row, identity)
@@ -346,15 +377,17 @@ class TestPermuteIndices:
     def test_deterministic_under_fixed_seed(self, linear_data):
         X, y = linear_data
         n = len(y)
-        indices1 = PermutationEngine.permute_indices(n, _N_PERMS, random_state=_SEED)
-        indices2 = PermutationEngine.permute_indices(n, _N_PERMS, random_state=_SEED)
+        engine = self._make_engine(linear_data)
+        indices1 = engine.permute_indices(n, _N_PERMS, random_state=_SEED)
+        indices2 = engine.permute_indices(n, _N_PERMS, random_state=_SEED)
         np.testing.assert_array_equal(indices1, indices2)
 
     def test_rows_are_valid_permutations(self, linear_data):
         """Each row is a permutation of 0..n-1."""
         X, y = linear_data
         n = len(y)
-        indices = PermutationEngine.permute_indices(n, _N_PERMS, random_state=_SEED)
+        engine = self._make_engine(linear_data)
+        indices = engine.permute_indices(n, _N_PERMS, random_state=_SEED)
         for row in indices:
             assert sorted(row) == list(range(n))
 
