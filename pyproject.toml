@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "randomization-tests"
-version = "0.2.0"
+version = "0.4.0"
 description = "Permutation tests for regression models using ter Braak (1992) and Kennedy (1995) methods"
 readme = "README.md"
 license = {text = "MIT"}

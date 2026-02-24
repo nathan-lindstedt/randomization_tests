@@ -533,6 +533,22 @@ class TestFamilyParameter:
         assert result["model_type"] == "logistic"
         assert "observed_improvement" in result
 
+    def test_family_instance_passthrough(self):
+        """Step 1: passing a ModelFamily instance directly."""
+        from randomization_tests.families import LinearFamily
+
+        X, y = _make_linear_data()
+        result = permutation_test_regression(
+            X,
+            y,
+            n_permutations=50,
+            method="ter_braak",
+            random_state=42,
+            family=LinearFamily(),
+        )
+        assert result["model_type"] == "linear"
+        assert len(result["model_coefs"]) == 3
+
 
 class TestNJobs:
     """Tests for joblib-based parallel permutation fitting.

@@ -2777,8 +2777,13 @@ def register_family(name: str, cls: type) -> None:
     _FAMILIES[name] = cls
 
 
-def resolve_family(family: str, y: np.ndarray) -> ModelFamily:
-    """Resolve a family string to a concrete ``ModelFamily`` instance.
+def resolve_family(family: str | ModelFamily, y: np.ndarray) -> ModelFamily:
+    """Resolve a family string or instance to a concrete ``ModelFamily``.
+
+    When *family* is already a ``ModelFamily`` instance, it is returned
+    as-is (pass-through).  This enables callers to pass pre-configured
+    instances (e.g. ``NegativeBinomialFamily(alpha=2.0)``) without
+    triggering fresh resolution or construction.
 
     ``"auto"`` → ``"linear"`` or ``"logistic"`` via binary detection
     (exactly two unique values, both in ``{0, 1}``).
@@ -2787,19 +2792,24 @@ def resolve_family(family: str, y: np.ndarray) -> ModelFamily:
     etc.) map directly to the corresponding registered class.
 
     Args:
-        family: Family identifier.  ``"auto"`` triggers automatic
-            detection.
+        family: Family identifier string **or** a ``ModelFamily``
+            instance.  ``"auto"`` triggers automatic detection.
+            Instances are returned immediately.
         y: Response vector of shape ``(n,)``, used only when
-            *family* is ``"auto"``.
+            *family* is ``"auto"``.  Ignored when *family* is a
+            ``ModelFamily`` instance.
 
     Returns:
         A ``ModelFamily`` instance ready for use by the permutation
         engine.
 
     Raises:
-        ValueError: If *family* is not ``"auto"`` and is not found
-            in the registry.
+        ValueError: If *family* is a string that is not ``"auto"``
+            and is not found in the registry.
     """
+    # Pass-through for pre-configured instances.
+    if isinstance(family, ModelFamily):
+        return family
     if family == "auto":
         unique_y = np.unique(y)
         is_binary = bool(len(unique_y) == 2 and np.all(np.isin(unique_y, [0, 1])))

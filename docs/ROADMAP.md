@@ -207,6 +207,10 @@ testability (Step 10).  Sign-flip test deferred to v0.4.0
     `exchangeability_cells`, `batch_fit`, `batch_fit_varying_X`.
   - **Duck-typed (not in protocol):** `calibrate()` — only implemented
     by families with nuisance parameters (see §Design Notes).
+  - **v0.4.0 additions:** `score(model, X, y)` and
+    `null_score(y, fit_intercept)` added to protocol, replacing
+    duck-typed `model_fit_metric()` / `null_fit_metric()`.
+    `stat_label` property also added (see v0.4.0 plan).
 - [X] `LinearFamily` and `LogisticFamily` implementations refactored
   from existing `core.py` logic.
 - [X] `resolve_family()` dispatch: `"auto"` resolves to `"linear"` or
@@ -504,6 +508,8 @@ permutation methods and both backends from the start.
 - [X] Kennedy methods supported via linear exposure-model residuals.
 - [X] Duck-typed `model_fit_metric(model)` and `null_fit_metric(model)`
   for Kennedy joint test deviance (−2·llf), detected via `hasattr()`.
+  **v0.4.0:** replaced by `score()` and `null_score()` protocol
+  methods; duck-typed methods removed.
 - [X] `fit_intercept` accepted but ignored — thresholds always serve as
   category-specific intercepts.
 - [X] `method="bfgs"` for reliable convergence on the single observed
@@ -574,7 +580,8 @@ be revisited at that time under YAGNI.
 - [X] `reconstruct_y`: raises `NotImplementedError` — multinomial
   Y-reconstruction from residuals is not supported.
 - [X] `fit_metric`: raises `NotImplementedError` — use
-  `model_fit_metric()` instead.
+  `model_fit_metric()` instead.  **v0.4.0:** `score()` protocol
+  method subsumes this; `model_fit_metric()` removed.
 - [X] `direct_permutation = True`: class labels are permuted
   directly (same pattern as ordinal).  Freedman–Lane rejected
   with `ValueError` by the engine.
@@ -625,10 +632,15 @@ compiler (which dispatches to the engine per equation).
 - [ ] Widen the public `family` parameter from `str` to
   `str | ModelFamily` so users can pass pre-configured family
   instances (e.g. `NegativeBinomialFamily(alpha=2.0)`) directly
-  to `permutation_test_regression()`.  When a `ModelFamily`
-  instance is passed, `resolve_family()` is skipped and the
-  instance is used as-is (with `calibrate()` still called via
-  `hasattr` guard for uncalibrated instances).
+  to `permutation_test_regression()`.  Resolution is centralized
+  in `resolve_family()` — widened from `(str, ndarray)` to
+  `(str | ModelFamily, ndarray)` — which returns instances
+  as-is (pass-through) and resolves strings as before.  This
+  gives a single code path for the engine, core, confounders,
+  and the v0.5.0 graph compiler.  `calibrate()` is already
+  idempotent (returns `self` when already configured), so the
+  engine's unconditional `calibrate()` call is a no-op for
+  pre-configured instances — no special-casing needed.
 - [X] The engine constructor calls `calibrate()` (via `hasattr`
   guard) on the family instance, yielding a fully-resolved family
   for the loop — see §Design Notes under Step 10.
@@ -772,19 +784,61 @@ negative binomial, ordinal, multinomial).  This release fills it in
 with real cell structures.  Similarly, `calibrate()` (v0.3.0 Step 7, NB) is
 currently called via `hasattr` in `core.py`; the
 `PermutationEngine` (Step 9) will formalise this as a constructor
-hook.
+hook.  The duck-typed `model_fit_metric()` and `null_fit_metric()`
+on ordinal and multinomial families are replaced by new `score()`
+and `null_score()` protocol methods, eliminating the `hasattr`
+branching in Kennedy joint.
 
-### `fit_reduced()` on `ModelFamily`
+### `fit_reduced()` in `_strategies/_shared.py` + `score()` / `null_score()` on protocol
 
-Deferred from v0.3.0 audit.  Factors out the duplicated
-reduced-model fitting logic that currently lives inline in
-`_kennedy_individual_generic`, `_kennedy_joint`,
-`_freedman_lane_individual`, and `_freedman_lane_joint`.
+Deferred from v0.3.0 audit.  Three related problems resolved together:
 
-- [ ] Add `fit_reduced(X, y, exposure_idx, confounders)` to the
-  `ModelFamily` protocol, returning the reduced-model residuals and
-  fitted values in a single call.
-- [ ] Refactor all four methods to delegate to `family.fit_reduced()`.
+1. **Reduced-model fitting duplication** — four strategies repeat the
+   same “fit Z or fall back to intercept-only predictions” block.
+2. **Duck-typed metric branching** — Kennedy joint uses
+   `hasattr(family, "model_fit_metric")` to branch between
+   prediction-based families and model-object families (ordinal,
+   multinomial).  Fragile and forces every joint strategy to know
+   about both API surfaces.
+3. **Deferred null-metric assignment** — when Kennedy joint has no
+   confounders and the family is ordinal/multinomial, it defers
+   `base_metric` until after the full model is fitted, then pulls
+   `model.llnull`.  Hard to follow.
+
+**Architecture decisions:**
+
+- **`fit_reduced()` is a free function in `_strategies/_shared.py`**
+  (not on the protocol, not on the engine).  The function
+  encapsulates strategy-specific edge-case handling (the
+  intercept-only fallback).  The engine’s job is pre-strategy
+  setup; `fit_reduced` is called during strategy execution.
+  Placing it inside the strategies package follows the
+  utility-near-consumer pattern.
+
+- **`score(model, X, y) -> float`** is a new `ModelFamily` protocol
+  method.  Prediction-based families delegate to
+  `self.fit_metric(y, self.predict(model, X))`.  Model-object
+  families (ordinal, multinomial) return `−2 × model.llf`.  This
+  eliminates all `hasattr` / `_uses_model_metric` branching.
+
+- **`null_score(y, fit_intercept) -> float`** is a new `ModelFamily`
+  protocol method (Option 1 — safe and explicit).  Prediction-based
+  families compute `fit_metric(y, mean(y))` or
+  `fit_metric(y, zeros)`.  Model-object families fit a
+  thresholds/intercept-only model and return `−2 × llf`.  This
+  replaces the `null_fit_metric()` duck-typed method.
+
+- [ ] Add `fit_reduced()` free function in `_strategies/_shared.py`
+  returning `(model | None, predictions)`.
+- [ ] Add `score(model, X, y)` to the `ModelFamily` protocol and
+  implement on all 6 families.
+- [ ] Add `null_score(y, fit_intercept)` to the `ModelFamily` protocol
+  and implement on all 6 families.
+- [ ] Refactor all four strategy files to use `fit_reduced()` and
+  `family.score()` / `family.null_score()`.
+- [ ] Remove duck-typed `model_fit_metric()` and `null_fit_metric()`
+  from `OrdinalFamily` and `MultinomialFamily` (subsumed by
+  `score()` and `null_score()`).
 - [ ] Performance: the reduced model is fitted once and cached,
   avoiding redundant refits when the same reduced model applies to
   multiple exposure variables.
@@ -1124,13 +1178,15 @@ utilities for permutation distributions and graph topology.
 
 Marks the first stable public API with semantic versioning guarantees.
 The graph specification layer, `ModelFamily` protocol, exchangeability
-cell system, and structured result objects are all frozen.
+cell system, and structured result objects are all stabilised.
 
-### API freeze
+### API stability
 
 - [ ] All public function signatures, graph specification methods,
-  result object attributes, and parameter names are frozen.  Breaking
-  changes after this point require a major version bump.
+  result object attributes, and parameter names are stable.  Breaking
+  changes after this point require a major version bump; additive
+  changes (new methods, new kwargs with defaults, new fields) are
+  always permitted.
 - [ ] Comprehensive deprecation policy for any future interface changes.
 
 ### PyPI publication

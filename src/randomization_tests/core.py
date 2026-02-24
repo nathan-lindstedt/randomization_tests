@@ -28,6 +28,7 @@ from ._results import IndividualTestResult, JointTestResult
 from ._strategies import resolve_strategy
 from .diagnostics import compute_all_diagnostics
 from .engine import PermutationEngine
+from .families import ModelFamily
 from .pvalues import calculate_p_values
 
 # ------------------------------------------------------------------ #
@@ -46,7 +47,7 @@ def permutation_test_regression(
     confounders: list[str] | None = None,
     random_state: int | None = None,
     fit_intercept: bool = True,
-    family: str = "auto",
+    family: str | ModelFamily = "auto",
     n_jobs: int = 1,
 ) -> IndividualTestResult | JointTestResult:
     """Run a permutation test for regression coefficients.
@@ -81,11 +82,16 @@ def permutation_test_regression(
             ``False`` when integrating with a scikit-learn pipeline
             that has already centred or otherwise pre-processed the
             features.
-        family: Model family string.  ``"auto"`` (default) detects
-            binary {0, 1} targets → logistic, otherwise linear.
-            Explicit values (``"linear"``, ``"logistic"``) bypass
-            auto-detection and are validated against the response
-            via the family's ``validate_y()`` method.
+        family: Model family string **or** a ``ModelFamily`` instance.
+            ``"auto"`` (default) detects binary {0, 1} targets →
+            logistic, otherwise linear.  Explicit strings
+            (``"linear"``, ``"logistic"``, ``"poisson"``, etc.)
+            bypass auto-detection and are validated against the
+            response via the family's ``validate_y()`` method.
+            Pre-configured instances (e.g.
+            ``NegativeBinomialFamily(alpha=2.0)``) are accepted
+            directly — ``calibrate()`` is still called but is a
+            no-op when the instance is already configured.
         n_jobs: Number of parallel jobs for the permutation batch-fit
             loop.  ``1`` (default) means sequential execution.
             ``-1`` uses all available CPU cores.  Values > 1 enable
@@ -149,7 +155,7 @@ def permutation_test_regression(
     engine = PermutationEngine(
         X,
         y_values,
-        family_str=family,
+        family=family,
         fit_intercept=fit_intercept,
         n_permutations=n_permutations,
         random_state=random_state,

@@ -214,7 +214,7 @@ def mediation_analysis(
     confidence_level: float = 0.95,
     precision: int = 4,
     random_state: int | None = None,
-    family: str = "auto",
+    family: str | ModelFamily = "auto",
 ) -> dict:
     """Preacher & Hayes (2004, 2008) bootstrap test of the indirect effect.
 
@@ -606,7 +606,7 @@ def identify_confounders(
     n_bootstrap: int = 1000,
     confidence_level: float = 0.95,
     random_state: int | None = None,
-    family: str = "auto",
+    family: str | ModelFamily = "auto",
 ) -> dict:
     """Two-step confounder identification.
 

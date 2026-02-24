@@ -59,7 +59,7 @@ class PermutationEngine:
         X: pd.DataFrame,
         y_values: np.ndarray,
         *,
-        family_str: str = "auto",
+        family: str | ModelFamily = "auto",
         fit_intercept: bool = True,
         n_permutations: int = 5_000,
         random_state: int | None = None,
@@ -67,7 +67,7 @@ class PermutationEngine:
         method: str = "ter_braak",
     ) -> None:
         # ---- Family resolution ------------------------------------
-        self.family: ModelFamily = resolve_family(family_str, y_values)
+        self.family: ModelFamily = resolve_family(family, y_values)
 
         # Calibrate nuisance parameters if the family supports it.
         if hasattr(self.family, "calibrate"):
@@ -75,8 +75,12 @@ class PermutationEngine:
                 X.to_numpy().astype(float), y_values, fit_intercept
             )
 
-        # Validate Y against the family's constraints (explicit only).
-        if family_str != "auto":
+        # Validate Y against the family's constraints.
+        # Skip only for "auto" — auto-detection is mechanically
+        # guaranteed to pick a compatible family.  Explicit choices
+        # (strings or ModelFamily instances) can be wrong and deserve
+        # a clear validate_y error rather than an opaque sklearn crash.
+        if family != "auto":
             self.family.validate_y(y_values)
 
         # Reject Freedman-Lane for direct-permutation families.

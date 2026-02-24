@@ -263,6 +263,21 @@ class TestRegistry:
         with pytest.raises(AttributeError):
             family.name = "other"  # type: ignore[misc]
 
+    def test_instance_passthrough(self):
+        """resolve_family() returns a ModelFamily instance as-is."""
+        instance = LinearFamily()
+        y = np.array([1.0, 2.0, 3.0])
+        result = resolve_family(instance, y)
+        assert result is instance
+
+    def test_instance_passthrough_nb(self):
+        """Pre-configured NB instance is returned unchanged."""
+        instance = NegativeBinomialFamily(alpha=2.5)
+        y = np.array([0.0, 1.0, 2.0])
+        result = resolve_family(instance, y)
+        assert result is instance
+        assert result.alpha == 2.5
+
 
 # ------------------------------------------------------------------ #
 # Count auto-detection (Step 22)
