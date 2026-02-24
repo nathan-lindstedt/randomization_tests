@@ -66,6 +66,7 @@ from __future__ import annotations
 import logging
 import math
 import warnings
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -757,6 +758,105 @@ def compute_exposure_r_squared(
 
 
 # ------------------------------------------------------------------ #
+# Proportional odds test (Brant-like)
+# ------------------------------------------------------------------ #
+
+
+def _proportional_odds_test(
+    X: np.ndarray,
+    y: np.ndarray,
+    ord_model: Any,
+) -> dict:
+    """Test the proportional-odds assumption via a Brant-like χ² test.
+
+    The test compares the pooled proportional-odds slopes to
+    category-specific slopes obtained from separate binary logistic
+    regressions at each cumulative threshold.  Under H₀ all slopes
+    are equal; a significant χ² indicates violation.
+
+    Parameters
+    ----------
+    X : ndarray, shape (n, p)
+        Predictor matrix (no constant column).
+    y : ndarray, shape (n,)
+        Integer-coded ordinal outcome.
+    ord_model : OrderedModel result
+        Fitted proportional-odds model (used only to extract the
+        pooled slope vector).
+
+    Returns
+    -------
+    dict
+        Keys ``prop_odds_chi2``, ``prop_odds_df``, ``prop_odds_p``.
+        All values are ``float('nan')`` when the test cannot be
+        computed (e.g. singular Hessian, too few categories).
+    """
+    from scipy import stats as sp_stats
+
+    nan_result: dict = {
+        "prop_odds_chi2": float("nan"),
+        "prop_odds_df": float("nan"),
+        "prop_odds_p": float("nan"),
+    }
+
+    try:
+        categories = np.sort(np.unique(y))
+        J = len(categories)  # number of categories
+        if J < 3:
+            return nan_result
+
+        # pooled slopes from the proportional-odds model
+        pooled_params = np.asarray(ord_model.params)
+        # OrderedModel stores thresholds first, then slopes
+        p = X.shape[1]
+        pooled_slopes = pooled_params[-p:]  # last p entries = slopes
+
+        # Fit J-1 separate binary logit models at each threshold
+        n_thresholds = J - 1
+        binary_slopes = np.empty((n_thresholds, p))
+        binary_covs = []
+
+        for j in range(n_thresholds):
+            y_bin = (y > categories[j]).astype(float)
+            # skip if degenerate
+            if y_bin.sum() == 0 or y_bin.sum() == len(y_bin):
+                return nan_result
+            X_c = sm.add_constant(X)
+            with warnings.catch_warnings():
+                warnings.filterwarnings("ignore", category=RuntimeWarning)
+                warnings.filterwarnings("ignore", category=SmConvergenceWarning)
+                logit_res = sm.Logit(y_bin, X_c).fit(disp=0, maxiter=200)
+            # slopes are columns 1..p (skip intercept)
+            binary_slopes[j, :] = logit_res.params[1:]
+            # covariance of slope params (drop intercept row/col)
+            cov_full = np.asarray(logit_res.cov_params())
+            binary_covs.append(cov_full[1:, 1:])
+
+        # Brant χ²: sum over thresholds of
+        #   (β_j − β_pooled)ᵀ V_j⁻¹ (β_j − β_pooled)
+        chi2_total = 0.0
+        df_total = 0
+        for j in range(n_thresholds):
+            diff = binary_slopes[j] - pooled_slopes
+            V_j = binary_covs[j]
+            try:
+                V_inv = np.linalg.inv(V_j)
+            except np.linalg.LinAlgError:
+                return nan_result
+            chi2_total += float(diff @ V_inv @ diff)
+            df_total += p
+
+        p_value = float(sp_stats.chi2.sf(chi2_total, df_total))
+        return {
+            "prop_odds_chi2": round(chi2_total, 4),
+            "prop_odds_df": df_total,
+            "prop_odds_p": round(p_value, 6),
+        }
+    except Exception:
+        return nan_result
+
+
+# ------------------------------------------------------------------ #
 # Aggregate helper
 # ------------------------------------------------------------------ #
 #
@@ -949,15 +1049,63 @@ def compute_all_diagnostics(
             llf = float(ord_model.llf)
             llnull = float(ord_model.llnull)
             pseudo_r2 = 1.0 - llf / llnull if llnull != 0.0 else float("nan")
+
+            # --- Proportional odds (Brant-like) test ---
+            # Compare the pooled proportional-odds model to separate
+            # binary logit models at each threshold.  Under H₀ the
+            # coefficients are equal across thresholds; a significant
+            # chi-squared indicates the proportional odds assumption
+            # is violated.
+            po_result = _proportional_odds_test(X_arr, y_values, ord_model)
+
             result["ordinal_gof"] = {
                 "pseudo_r_squared": pseudo_r2,
                 "log_likelihood": llf,
                 "log_likelihood_null": llnull,
                 "n_categories": len(np.unique(y_values)),
+                **po_result,
             }
         except Exception as exc:
             logger.debug("Ordinal GoF diagnostics failed: %s", exc)
             result["ordinal_gof"] = {
+                "pseudo_r_squared": float("nan"),
+                "log_likelihood": float("nan"),
+                "log_likelihood_null": float("nan"),
+                "n_categories": len(np.unique(y_values)),
+                "warning": f"Diagnostics unavailable: {exc}",
+            }
+    elif model_type == "multinomial":
+        try:
+            from statsmodels.discrete.discrete_model import MNLogit
+
+            with warnings.catch_warnings():
+                warnings.filterwarnings("ignore", category=RuntimeWarning)
+                warnings.filterwarnings("ignore", category=SmConvergenceWarning)
+                X_sm = sm.add_constant(X) if fit_intercept else np.asarray(X)
+                mn_model = MNLogit(y_values, X_sm).fit(disp=0, maxiter=200)
+            llf = float(mn_model.llf)
+            llnull = float(mn_model.llnull)
+            pseudo_r2 = 1.0 - llf / llnull if llnull != 0.0 else float("nan")
+            try:
+                llr_p = float(mn_model.llr_pvalue)
+            except (AttributeError, TypeError):
+                llr_p = float("nan")
+            unique_y, counts = np.unique(y_values, return_counts=True)
+            result["multinomial_gof"] = {
+                "pseudo_r_squared": pseudo_r2,
+                "log_likelihood": llf,
+                "log_likelihood_null": llnull,
+                "n_categories": len(unique_y),
+                "category_counts": dict(
+                    zip(unique_y.tolist(), counts.tolist(), strict=True)
+                ),
+                "aic": float(mn_model.aic),
+                "bic": float(mn_model.bic),
+                "llr_p_value": llr_p,
+            }
+        except Exception as exc:
+            logger.debug("Multinomial GoF diagnostics failed: %s", exc)
+            result["multinomial_gof"] = {
                 "pseudo_r_squared": float("nan"),
                 "log_likelihood": float("nan"),
                 "log_likelihood_null": float("nan"),

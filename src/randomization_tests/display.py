@@ -111,7 +111,7 @@ def print_results_table(
                 f"{'':<{col1}}"
                 f"{chr(0x03C7) + chr(0x00B2) + ' (Pearson):':>{col2 - 11}} {pearson_str:>10}"
             )
-    elif model_type == "ordinal":
+    elif model_type in ("ordinal", "multinomial"):
         print(
             f"{'Pseudo R-sq:':<16}{diag.get('pseudo_r_squared', 'N/A'):<{col1 - 16}}"
             f"{'BIC:':>{col2 - 11}} {diag.get('bic', 'N/A'):>10}"
@@ -145,6 +145,8 @@ def print_results_table(
 
     fc = 25
     stat_label = "t" if model_type == "linear" else "z"
+    if model_type == "multinomial":
+        stat_label = chr(0x03C7) + chr(0x00B2)
     emp_hdr = f"P>|{stat_label}| (Emp)"
     asy_hdr = f"P>|{stat_label}| (Asy)"
     print(f"{'Feature':<{fc}} {'Coef':>12} {emp_hdr:>18} {asy_hdr:>18}")
@@ -261,7 +263,7 @@ def print_joint_results_table(
                 f"{'':<{col1}}"
                 f"{chr(0x03C7) + chr(0x00B2) + ' (Pearson):':>{col2 - 11}} {pearson_str:>10}"
             )
-    elif model_type == "ordinal":
+    elif model_type in ("ordinal", "multinomial"):
         print(
             f"{'Pseudo R-sq:':<16}{diag.get('pseudo_r_squared', 'N/A'):<{col1 - 16}}"
             f"{'BIC:':>{col2 - 11}} {diag.get('bic', 'N/A'):>10}"
@@ -602,6 +604,48 @@ def print_diagnostics_table(
             n_cats = gof.get("n_categories", None)
             n_cats_str = str(n_cats) if n_cats is not None else "N/A"
             print(f"{'  Categories:':<{lw}}{n_cats_str:>10}")
+            # Proportional odds test
+            po_chi2 = gof.get("prop_odds_chi2", None)
+            po_p = gof.get("prop_odds_p", None)
+            if po_chi2 is not None:
+                po_chi2_str = f"{po_chi2:.4f}" if po_chi2 is not None else "N/A"
+                print(
+                    f"{'  Prop. Odds ' + chr(0x03C7) + chr(0x00B2) + ':':<{lw}}"
+                    f"{po_chi2_str:>10}   "
+                    f"p = {_fmt_p(po_p)}"
+                )
+                po_df = gof.get("prop_odds_df", None)
+                if po_df is not None:
+                    print(f"{'  Prop. Odds df:':<{lw}}{po_df:>10}")
+                if po_p is not None and po_p < 0.05:
+                    notes.append(
+                        "Proportional odds "
+                        + chr(0x03C7)
+                        + chr(0x00B2)
+                        + f" p = {po_p:.4f}: the proportional odds "
+                        "assumption may be violated."
+                    )
+    elif model_type == "multinomial":
+        gof = ext.get("multinomial_gof", {})
+        if gof:
+            pr2 = gof.get("pseudo_r_squared", None)
+            pr2_str = f"{pr2:.4f}" if pr2 is not None else "N/A"
+            print(f"{'  Pseudo R-sq:':<{lw}}{pr2_str:>10}")
+            ll = gof.get("log_likelihood", None)
+            ll_str = f"{ll:.4f}" if ll is not None else "N/A"
+            print(f"{'  Log-Likelihood:':<{lw}}{ll_str:>10}")
+            n_cats = gof.get("n_categories", None)
+            n_cats_str = str(n_cats) if n_cats is not None else "N/A"
+            print(f"{'  Categories:':<{lw}}{n_cats_str:>10}")
+            llr_p = gof.get("llr_p_value", None)
+            if llr_p is not None:
+                print(f"{'  LLR p-value:':<{lw}}{_fmt_p(llr_p):>10}")
+            cat_counts = gof.get("category_counts", {})
+            if cat_counts:
+                counts_str = ", ".join(
+                    f"{k}: {v}" for k, v in sorted(cat_counts.items())
+                )
+                print(f"  Category counts:  {counts_str}")
     else:
         dr = ext.get("deviance_residuals", {})
         if dr:
