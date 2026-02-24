@@ -44,12 +44,9 @@ _debug_*.py
 .github/copilot-instructions.md
 
 # Documents and notes
-docs/hypergraph-ecosystem-synergies.md
-docs/hypergraph-exchangeability-rationale.md
-docs/hypergraph-scalability-analysis.md
-docs/User: Permutation testing can also be do.md
-docs/permutation-dedup-performance.md
-Search complete: JAX backend architectur.md
-Untitled-1.md
-Untitled-2.md
-docs/mixed-model-engineering-notes.md
+research/hypergraph-ecosystem-synergies.md
+research/hypergraph-exchangeability-rationale.md
+research/hypergraph-scalability-analysis.md
+research/User: Permutation testing can also be do.md
+research/permutation-dedup-performance.md
+research/mixed-model-engineering-notes.md
