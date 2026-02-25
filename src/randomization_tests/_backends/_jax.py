@@ -3,16 +3,49 @@
 Wraps the autodiff Newton–Raphson logistic solver and ``jnp.linalg``
 OLS path behind the :class:`~._backends.BackendProtocol` interface.
 
-All public methods accept NumPy arrays and return NumPy arrays —
-JAX arrays are materialised at the boundary via ``np.asarray()`` so
-callers never touch JAX types directly.
+Architecture
+~~~~~~~~~~~~
+The module is structured in two layers:
 
+1. **Solver helper functions** (module-level, inside ``if _CAN_IMPORT_JAX``):
+   Pure-JAX JIT-compiled functions for NLL, gradient, Hessian, and
+   Newton–Raphson solvers for each GLM family.  These are the
+   performance-critical kernels compiled to XLA.
+
+2. **JaxBackend class** (``BackendProtocol`` implementation):
+   Thin wrapper that converts NumPy → JAX arrays at the boundary,
+   dispatches to the solver helpers via ``jax.vmap``, and converts
+   JAX arrays back to NumPy on return.  Callers never touch JAX
+   types directly.
+
+NumPy ↔ JAX boundary convention
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+All public methods accept NumPy arrays and return NumPy arrays.
+JAX arrays are materialised at the method boundary:
+
+* **Inbound:** ``jnp.array(X, dtype=jnp.float64)`` — creates a
+  float64 JAX DeviceArray.  The float64 cast is explicit because
+  JAX defaults to float32 (even with ``jax_enable_x64``, the
+  input dtype matters for type promotion).
+* **Outbound:** ``np.asarray(result)`` — zero-copy when backend is
+  CPU, triggers device-to-host transfer on GPU.
+
+Float64 rationale
+~~~~~~~~~~~~~~~~~
 All arithmetic uses **float64** for numerical reliability on
 ill-conditioned Hessians, matching statsmodels and scipy.  On Apple
 Silicon this routes through CPU Accelerate BLAS rather than Metal
 (which lacks float64 support), with no measurable overhead for the
 small matrices typical of GLM regression.
 
+The Newton–Raphson solver requires float64 because the gradient
+noise floor is κ(H) × ε, where κ(H) is the Hessian condition
+number and ε is machine epsilon.  In float32 (~ 6e-8) with
+κ ≈ 10 000, the noise floor is ~ 6e-4 — above any reasonable
+tolerance.  Float64 (ε ~ 1e-16) lowers the floor to ~ 1e-12.
+
+Graceful degradation
+~~~~~~~~~~~~~~~~~~~~
 If JAX is not installed, the :class:`JaxBackend` can still be
 instantiated (for introspection) but ``is_available`` returns
 ``False`` and :func:`resolve_backend` will raise ``ImportError``
@@ -89,8 +122,42 @@ except ImportError:
 # ------------------------------------------------------------------ #
 # JAX helper functions (defined only when JAX is importable)
 # ------------------------------------------------------------------ #
+#
+# All solver helpers below live inside the ``if _CAN_IMPORT_JAX``
+# guard so the module can be imported (and introspected) even when
+# JAX is absent.  Each family follows the same pattern:
+#
+#   1. NLL function (→ scalar) — the objective to minimise.
+#   2. Gradient function (→ vector) — ∇_β NLL.
+#   3. Hessian function (→ matrix) — H = ∇²_β NLL.
+#   4. Newton–Raphson solver — iterates β ← β − H⁻¹g using
+#      ``jax.lax.while_loop`` for dynamic early exit.
+#
+# For families with a canonical link (logistic, Poisson) the
+# gradient and Hessian are coded analytically for clarity and
+# to avoid double-compilation through ``jax.grad(jax.grad(...))``.
+# For ordinal and multinomial, ``jax.grad`` and ``jax.hessian``
+# are used because the closed-form derivatives are unwieldy.
+# ------------------------------------------------------------------ #
 
 if _CAN_IMPORT_JAX:
+    # ============================================================== #
+    # Logistic regression helpers
+    # ============================================================== #
+    #
+    # Binary logistic regression with the canonical logit link:
+    #
+    #   P(y=1 | X) = σ(Xβ)  where σ(z) = 1/(1 + e^{−z})
+    #
+    # NLL uses the numerically stable ``logaddexp`` form to avoid
+    # overflow when |Xβ| is large (common with well-separated data):
+    #
+    #   NLL = Σ_i log(1 + exp(−s_i · X_iβ))  where s_i = 2y_i − 1
+    #
+    # The gradient and Hessian are coded analytically (not via
+    # ``jax.grad``) because the closed forms are simple and avoid
+    # a second tracing pass through the XLA compiler.
+    # -------------------------------------------------------------- #
 
     @jit
     def _logistic_nll(
@@ -224,7 +291,23 @@ if _CAN_IMPORT_JAX:
         _, beta_final, nll_final, converged = jax.lax.while_loop(cond, body, init_state)
         return beta_final, nll_final, converged
 
-    # ---- Poisson helpers -------------------------------------------
+    # ============================================================== #
+    # Poisson regression helpers
+    # ============================================================== #
+    #
+    # Poisson regression with the canonical log link:
+    #
+    #   E(y) = μ = exp(Xβ)
+    #   P(y | μ) = μ^y e^{−μ} / y!
+    #
+    # NLL (dropping the constant log(y!) term):
+    #
+    #   NLL = Σ [exp(Xβ) − y · Xβ]
+    #
+    # The gradient X'(μ − y) and Hessian X' diag(μ) X are coded
+    # analytically.  Warm start uses OLS on the working response
+    # log(y + 0.5) — the standard IRLS initialisation.
+    # -------------------------------------------------------------- #
 
     @jit
     def _poisson_nll(
@@ -331,7 +414,26 @@ if _CAN_IMPORT_JAX:
         _, beta_final, nll_final, converged = jax.lax.while_loop(cond, body, init_state)
         return beta_final, nll_final, converged
 
-    # ---- Negative binomial helpers ---------------------------------
+    # ============================================================== #
+    # Negative Binomial (NB2) regression helpers
+    # ============================================================== #
+    #
+    # NB2 extends Poisson by adding an overdispersion parameter α:
+    #
+    #   E(y) = μ = exp(Xβ)
+    #   Var(y) = μ + α·μ²
+    #
+    # The α parameter is calibrated **once** on the observed data
+    # and **held fixed** across all B permutations (see the NumPy
+    # backend's NB2 section header for the statistical rationale).
+    #
+    # Because α is a Python float (not a JAX tracer), the NLL,
+    # gradient, and Hessian are constructed via **closure factories**
+    # (``_make_negbin_nll(alpha)``, etc.) that capture α as a
+    # compile-time constant.  This lets XLA fold the constant into
+    # the compiled kernel and avoids recompilation when α changes
+    # across different datasets.
+    # -------------------------------------------------------------- #
 
     def _make_negbin_nll(alpha: float) -> Callable[..., Any]:
         """Return a JIT-compiled NB2 NLL function with fixed α.
@@ -481,7 +583,24 @@ if _CAN_IMPORT_JAX:
         _, beta_final, nll_final, converged = jax.lax.while_loop(cond, body, init_state)
         return beta_final, nll_final, converged
 
-    # ---- Ordinal (proportional-odds) helpers -----------------------
+    # ============================================================== #
+    # Ordinal (proportional-odds logistic) regression helpers
+    # ============================================================== #
+    #
+    # The ordered logistic model parameterises cumulative probabilities:
+    #
+    #   P(y ≤ k | X) = σ(α_k − Xβ)    for k = 0, …, K-2
+    #
+    # Parameters are packed as [β₁, …, β_p, α₀, …, α_{K-2}] —
+    # slopes first, thresholds last.  K is a compile-time constant
+    # captured in closures to avoid JAX tracing issues with
+    # dynamic shapes.
+    #
+    # The gradient and Hessian are obtained via ``jax.grad`` and
+    # ``jax.hessian`` (autodiff) because the closed-form derivatives
+    # involve sums over categories with threshold-dependent sigmoid
+    # chains that are error-prone to hand-code.
+    # -------------------------------------------------------------- #
 
     @jit
     def _ordinal_cumulative_probs(
@@ -630,7 +749,28 @@ if _CAN_IMPORT_JAX:
         )
         return params_final, nll_final, converged
 
-    # ---- Multinomial (softmax) helpers -----------------------------
+    # ============================================================== #
+    # Multinomial (softmax) regression helpers
+    # ============================================================== #
+    #
+    # Multinomial logistic (softmax) regression for a nominal outcome
+    # y ∈ {0, 1, …, K-1}.  Category 0 is the reference class;
+    # K-1 sets of coefficients β_k (k = 1, …, K-1) model the
+    # log-odds relative to category 0:
+    #
+    #   log P(y=k|X) / P(y=0|X) = Xβ_k
+    #
+    # Parameters are stored as a flat vector of length (K-1) × p_aug
+    # and reshaped internally to (K-1, p_aug).  K and p_aug are
+    # compile-time constants captured in closures.
+    #
+    # NLL uses ``jax.nn.log_softmax`` for numerical stability
+    # (log-sum-exp trick avoids overflow in exp(η)).
+    #
+    # The Wald χ² extractor follows the same logic as the NumPy
+    # backend's ``_wald_chi2_from_mnlogit`` but is JIT-compiled
+    # and uses ``jax.vmap`` over predictors.
+    # -------------------------------------------------------------- #
 
     def _make_multinomial_nll(K: int) -> Callable[..., Any]:
         """Return JIT-compiled multinomial (softmax) NLL.
@@ -792,7 +932,11 @@ def _check_convergence(converged: np.ndarray, max_iter: int) -> None:
 
     Non-converged permutations are **retained** in the null
     distribution — discarding them would bias the p-value
-    anti-conservatively.  The warning is informational only.
+    anti-conservatively (the null would appear tighter than it
+    actually is, inflating the false-positive rate).  The warning
+    is informational only — the caller should check VIF for
+    multicollinearity or inspect the data for quasi-complete
+    separation if a large fraction fails.
     """
     n_failed = int(np.sum(~converged))
     if n_failed > 0:
@@ -819,10 +963,32 @@ def _check_convergence(converged: np.ndarray, max_iter: int) -> None:
 class JaxBackend:
     """JAX-accelerated compute backend.
 
-    All arithmetic uses float64 for numerical reliability.  Uses
-    ``jax.vmap`` to vectorise Newton–Raphson logistic solves across
-    all *B* permutations in a single XLA kernel launch.  OLS uses
-    ``jnp.linalg.pinv`` for a JIT-compiled batch multiply.
+    Implements :class:`BackendProtocol` using JAX’s XLA compiler,
+    automatic differentiation, and ``vmap`` vectorisation.
+
+    Performance model
+    ~~~~~~~~~~~~~~~~~
+    * **OLS:** Single ``jnp.linalg.pinv`` + BLAS-3 matmul (same
+      algorithmic approach as the NumPy backend, but JIT-compiled).
+    * **GLMs (logistic, Poisson, NB2, ordinal, multinomial):**
+      ``jax.vmap`` maps the Newton–Raphson solver across all B
+      permutations, fusing them into a single XLA kernel launch.
+      This eliminates Python-loop overhead and enables SIMD
+      parallelism across permutations.
+
+    The frozen dataclass has no mutable state — all per-call data
+    flows through method arguments, making instances trivially
+    thread-safe and picklable.
+
+    NumPy ↔ JAX conversion boundary
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    Every public method follows the same pattern:
+
+    1. Convert inputs: ``X_j = jnp.array(X, dtype=jnp.float64)``
+    2. Run JIT-compiled computation
+    3. Convert outputs: ``return np.asarray(result)``
+
+    Callers never see JAX types.
     """
 
     @property
@@ -833,7 +999,14 @@ class JaxBackend:
     def is_available(self) -> bool:  # noqa: PLR6301
         return _CAN_IMPORT_JAX
 
-    # ---- OLS -----------------------------------------------------------
+    # ================================================================ #
+    # OLS — shared X, many Y
+    # ================================================================ #
+    #
+    # JIT-compiled pseudoinverse approach — identical algorithm to the
+    # NumPy backend's batch_ols, but compiled to XLA for potential
+    # fusion with downstream operations.
+    # ---------------------------------------------------------------- #
 
     def batch_ols(
         self,
@@ -856,18 +1029,29 @@ class JaxBackend:
         else:
             X_aug = X
 
-        X_j = jnp.array(X_aug, dtype=jnp.float64)
+        X_j = jnp.array(X_aug, dtype=jnp.float64)  # NumPy → JAX
         Y_j = jnp.array(Y_matrix, dtype=jnp.float64)
 
         @jit
         def _batch_solve(X_mat: jax.Array, Y_mat: jax.Array) -> jax.Array:
+            # Single SVD-based pseudoinverse, then BLAS-3 matmul
+            # for all B right-hand sides simultaneously.
             pinv = jnp.linalg.pinv(X_mat)  # (p+1, n)
             return (pinv @ Y_mat.T).T  # (B, p+1)
 
-        result = np.asarray(_batch_solve(X_j, Y_j))
+        result = np.asarray(_batch_solve(X_j, Y_j))  # JAX → NumPy
         return result[:, 1:] if fit_intercept else result
 
-    # ---- Logistic (shared X, many Y) ----------------------------------
+    # ================================================================ #
+    # Logistic — shared X, many Y (ter Braak path)
+    # ================================================================ #
+    #
+    # ``vmap(_make_newton_solver)`` maps the Newton–Raphson logistic
+    # solver across all B permuted response vectors in a single XLA
+    # kernel launch.  The shared design matrix X_j is captured in the
+    # closure — JAX broadcasts it across the vmapped dimension
+    # without replicating the memory.
+    # ---------------------------------------------------------------- #
 
     def batch_logistic(
         self,
@@ -902,20 +1086,32 @@ class JaxBackend:
         else:
             X_aug = X
 
-        X_j = jnp.array(X_aug, dtype=jnp.float64)
+        X_j = jnp.array(X_aug, dtype=jnp.float64)  # NumPy → JAX
         Y_j = jnp.array(Y_matrix, dtype=jnp.float64)
 
         def _solve_one(
             y_vec: jax.Array,
         ) -> tuple[jax.Array, jax.Array, jax.Array]:
+            # X_j is captured in the closure — shared across all B.
             return _make_newton_solver(X_j, y_vec, max_iter, tol, min_damping)
 
+        # vmap parallelises across the B dimension of Y_j,
+        # fusing B Newton–Raphson solves into one XLA kernel.
         all_betas, _all_nll, all_converged = jit(vmap(_solve_one))(Y_j)
         _check_convergence(np.asarray(all_converged), max_iter)
-        all_coefs = np.asarray(all_betas)
+
+        all_coefs = np.asarray(all_betas)  # JAX → NumPy
         return all_coefs[:, 1:] if fit_intercept else all_coefs
 
-    # ---- Logistic (many X, shared y) -----------------------------------
+    # ================================================================ #
+    # Logistic — many X, shared y (Kennedy path)
+    # ================================================================ #
+    #
+    # Kennedy strategy: each permutation has its own design matrix
+    # (column j replaced with permuted exposure residuals).  The
+    # vmap axis is over X_j (the B dimension), with y_j captured
+    # in the closure.
+    # ---------------------------------------------------------------- #
 
     def batch_logistic_varying_X(
         self,
@@ -951,20 +1147,31 @@ class JaxBackend:
         else:
             X_aug = X_batch
 
-        X_j = jnp.array(X_aug, dtype=jnp.float64)
+        X_j = jnp.array(X_aug, dtype=jnp.float64)  # NumPy → JAX
         y_j = jnp.array(y, dtype=jnp.float64)
 
         def _solve_one(
             X_single: jax.Array,
         ) -> tuple[jax.Array, jax.Array, jax.Array]:
+            # y_j is captured in the closure — shared across all B.
             return _make_newton_solver(X_single, y_j, max_iter, tol, min_damping)
 
+        # vmap over the B dimension of X_j — each permutation gets
+        # its own design matrix.
         all_betas, _all_nll, all_converged = jit(vmap(_solve_one))(X_j)
         _check_convergence(np.asarray(all_converged), max_iter)
-        all_coefs = np.asarray(all_betas)
+
+        all_coefs = np.asarray(all_betas)  # JAX → NumPy
         return all_coefs[:, 1:] if fit_intercept else all_coefs
 
-    # ---- OLS (many X, shared y) ----------------------------------------
+    # ================================================================ #
+    # OLS — many X, shared y (Kennedy path)
+    # ================================================================ #
+    #
+    # vmap over ``jnp.linalg.lstsq`` — each permutation gets its own
+    # design matrix.  Unlike the shared-X OLS path (which uses a
+    # single pseudoinverse), each X_b requires its own decomposition.
+    # ---------------------------------------------------------------- #
 
     def batch_ols_varying_X(
         self,
@@ -994,7 +1201,7 @@ class JaxBackend:
         else:
             X_aug = X_batch
 
-        X_j = jnp.array(X_aug, dtype=jnp.float64)
+        X_j = jnp.array(X_aug, dtype=jnp.float64)  # NumPy → JAX
         y_j = jnp.array(y, dtype=jnp.float64)
 
         @jit
@@ -1003,12 +1210,20 @@ class JaxBackend:
                 coefs, _, _, _ = jnp.linalg.lstsq(X_single, y_vec, rcond=None)
                 return coefs
 
+            # vmap maps the least-squares solve across B design matrices.
             return vmap(_solve_one)(X_all)
 
-        all_coefs = np.asarray(_batch_lstsq(X_j, y_j))
+        all_coefs = np.asarray(_batch_lstsq(X_j, y_j))  # JAX → NumPy
         return all_coefs[:, 1:] if fit_intercept else all_coefs
 
-    # ---- Poisson (shared X, many Y) -----------------------------------
+    # ================================================================ #
+    # Poisson — shared X, many Y (ter Braak path)
+    # ================================================================ #
+    #
+    # Same vmap-over-solvers pattern as logistic.  The Poisson
+    # Newton–Raphson solver uses an OLS warm start on log(y + 0.5)
+    # to avoid overflow when the true intercept is far from zero.
+    # ---------------------------------------------------------------- #
 
     def batch_poisson(
         self,
@@ -1053,10 +1268,13 @@ class JaxBackend:
 
         all_betas, _all_nll, all_converged = jit(vmap(_solve_one))(Y_j)
         _check_convergence(np.asarray(all_converged), max_iter)
-        all_coefs = np.asarray(all_betas)
+
+        all_coefs = np.asarray(all_betas)  # JAX → NumPy
         return all_coefs[:, 1:] if fit_intercept else all_coefs
 
-    # ---- Poisson (many X, shared y) -----------------------------------
+    # ================================================================ #
+    # Poisson — many X, shared y (Kennedy path)
+    # ================================================================ #
 
     def batch_poisson_varying_X(
         self,
@@ -1102,10 +1320,18 @@ class JaxBackend:
 
         all_betas, _all_nll, all_converged = jit(vmap(_solve_one))(X_j)
         _check_convergence(np.asarray(all_converged), max_iter)
-        all_coefs = np.asarray(all_betas)
+        all_coefs = np.asarray(all_betas)  # JAX → NumPy
         return all_coefs[:, 1:] if fit_intercept else all_coefs
 
-    # ---- Negative Binomial (shared X, many Y) -------------------------
+    # ================================================================ #
+    # Negative Binomial (NB2) — shared X, many Y
+    # ================================================================ #
+    #
+    # The NB2 solver is constructed via closure factories that capture
+    # the fixed α as a compile-time constant (see the NB2 helper
+    # section above for details).  vmap maps across B permuted
+    # response vectors.
+    # ---------------------------------------------------------------- #
 
     def batch_negbin(
         self,
@@ -1152,10 +1378,12 @@ class JaxBackend:
 
         all_betas, _all_nll, all_converged = jit(vmap(_solve_one))(Y_j)
         _check_convergence(np.asarray(all_converged), max_iter)
-        all_coefs = np.asarray(all_betas)
+        all_coefs = np.asarray(all_betas)  # JAX → NumPy
         return all_coefs[:, 1:] if fit_intercept else all_coefs
 
-    # ---- Negative Binomial (many X, shared y) -------------------------
+    # ================================================================ #
+    # Negative Binomial (NB2) — many X, shared y (Kennedy path)
+    # ================================================================ #
 
     def batch_negbin_varying_X(
         self,
@@ -1204,7 +1432,18 @@ class JaxBackend:
         all_coefs = np.asarray(all_betas)
         return all_coefs[:, 1:] if fit_intercept else all_coefs
 
-    # ---- Ordinal (shared X, many Y) -----------------------------------
+    # ================================================================ #
+    # Ordinal (Proportional-Odds) — shared X, many Y
+    # ================================================================ #
+    #
+    # The ordinal solver uses ``jax.grad`` and ``jax.hessian`` for
+    # exact derivatives (see the ordinal helper section above).
+    # Parameters are packed as [β, thresholds]; only the first p
+    # entries (slopes) are returned to the caller.
+    #
+    # ``fit_intercept`` is ignored — the threshold parameters serve
+    # as per-category intercepts in the proportional-odds model.
+    # ---------------------------------------------------------------- #
 
     def batch_ordinal(
         self,
@@ -1249,11 +1488,14 @@ class JaxBackend:
 
         all_params, _all_nll, all_converged = jit(vmap(_solve_one))(Y_j)
         _check_convergence(np.asarray(all_converged), max_iter)
-        # Extract only slope coefficients (first p columns)
-        all_coefs = np.asarray(all_params)[:, :n_features]
+        # Extract only slope coefficients (first p columns);
+        # the remaining K-1 entries are threshold parameters.
+        all_coefs = np.asarray(all_params)[:, :n_features]  # JAX → NumPy
         return all_coefs
 
-    # ---- Ordinal (many X, shared y) -----------------------------------
+    # ================================================================ #
+    # Ordinal — many X, shared y (Kennedy path)
+    # ================================================================ #
 
     def batch_ordinal_varying_X(
         self,
@@ -1295,10 +1537,24 @@ class JaxBackend:
 
         all_params, _all_nll, all_converged = jit(vmap(_solve_one))(X_j)
         _check_convergence(np.asarray(all_converged), max_iter)
-        all_coefs = np.asarray(all_params)[:, :n_features]
+        all_coefs = np.asarray(all_params)[:, :n_features]  # JAX → NumPy
         return all_coefs
 
-    # ---- Multinomial (shared X, many Y) --------------------------------
+    # ================================================================ #
+    # Multinomial (Softmax) — shared X, many Y
+    # ================================================================ #
+    #
+    # Multinomial returns per-predictor Wald χ² rather than raw
+    # coefficients (matching ``MultinomialFamily.coefs()`` semantics).
+    # After the Newton–Raphson solve, each permutation’s Hessian is
+    # evaluated at the MLE to compute the covariance matrix, then
+    # the JIT-compiled Wald extractor produces one scalar per slope.
+    #
+    # The Hessian re-evaluation per permutation is necessary because
+    # the NLL Hessian depends on the response y (through the
+    # predicted probabilities at the MLE), so each permutation’s
+    # null-distribution response produces a different covariance.
+    # ---------------------------------------------------------------- #
 
     def batch_multinomial(
         self,
@@ -1358,6 +1614,8 @@ class JaxBackend:
         # Compute Wald χ² per predictor for each permutation.
         # Each permutation needs its own Hessian (evaluated at its MLE
         # with its own y vector) to compute the covariance matrix.
+        # vmap parallelises the Hessian inversion + Wald extraction
+        # across all B permutations in a single XLA kernel.
         def _wald_with_y(params_flat: jax.Array, y_vec: jax.Array) -> jax.Array:
             H = _hess_fn(params_flat, X_j, y_vec)
             cov = jnp.linalg.inv(
@@ -1366,9 +1624,16 @@ class JaxBackend:
             return _wald_fn(params_flat, cov)  # type: ignore[no-any-return]
 
         all_wald = jit(vmap(_wald_with_y))(all_params, Y_j)
-        return np.asarray(all_wald)
+        return np.asarray(all_wald)  # JAX → NumPy
 
-    # ---- Multinomial (many X, shared y) --------------------------------
+    # ================================================================ #
+    # Multinomial — many X, shared y (Kennedy path)
+    # ================================================================ #
+    #
+    # Kennedy strategy: each permutation has its own X.  The Hessian
+    # must be evaluated at each permutation’s (X, MLE) pair because
+    # the Hessian depends on X through the predicted probabilities.
+    # ---------------------------------------------------------------- #
 
     def batch_multinomial_varying_X(
         self,
@@ -1427,7 +1692,8 @@ class JaxBackend:
         all_params, _all_nll, all_converged = jit(vmap(_solve_one))(X_j)
         _check_convergence(np.asarray(all_converged), max_iter)
 
-        # Compute Wald χ² per predictor — each permutation has its own X
+        # Compute Wald χ² per predictor — each permutation has its own X,
+        # so the Hessian depends on both the MLE and the design matrix.
         def _wald_with_X(params_flat: jax.Array, X_single: jax.Array) -> jax.Array:
             H = _hess_fn(params_flat, X_single, y_j)
             cov = jnp.linalg.inv(
@@ -1436,22 +1702,26 @@ class JaxBackend:
             return _wald_fn(params_flat, cov)  # type: ignore[no-any-return]
 
         all_wald = jit(vmap(_wald_with_X))(all_params, X_j)
-        return np.asarray(all_wald)
+        return np.asarray(all_wald)  # JAX → NumPy
 
     # ================================================================ #
     # batch_fit_and_score — shared X, varying Y
     # ================================================================ #
     #
-    # These methods extend the existing ``batch_*`` (shared X, many Y)
-    # methods to return ``(coefs, scores)`` where
-    # ``scores = 2 · NLL_at_convergence`` (deviance).  For the
-    # Kennedy joint and Freedman–Lane joint strategies, only the
-    # **score** is needed; the coefs are returned for protocol
-    # symmetry and potential future use.
+    # Returns ``(coefs, scores)`` where ``scores = 2·NLL`` (deviance).
+    # The 2× factor makes the score directly comparable to the
+    # classical deviance statistic.  For improvement computations
+    # (Δ = S_reduced − S_full), the constant terms in the NLL that
+    # depend only on the data (not the parameters) cancel.
     #
-    # Returning 2·NLL is equivalent to returning deviance for
-    # improvement computations (Δ = S_reduced − S_full) because the
-    # constant terms that differ between NLL and deviance cancel.
+    # Score conventions match the NumPy backend:
+    #   OLS        → RSS (residual sum of squares)
+    #   Logistic   → 2·NLL  (deviance)
+    #   Poisson    → 2·NLL  (deviance)
+    #   NB2        → 2·NLL  (deviance)
+    #   Ordinal    → 2·NLL
+    #   Multinomial→ 2·NLL  (with Wald χ² as "coefs")
+    # ---------------------------------------------------------------- #
 
     def batch_ols_fit_and_score(
         self,
@@ -1665,6 +1935,11 @@ class JaxBackend:
     # ================================================================ #
     # batch_fit_and_score_varying_X — varying X, shared Y
     # ================================================================ #
+    #
+    # Mirror of the ``fit_and_score`` group above, but for Kennedy
+    # strategies where X changes per permutation while y is fixed.
+    # Score conventions are identical.
+    # ---------------------------------------------------------------- #
 
     def batch_ols_fit_and_score_varying_X(
         self,
@@ -1885,19 +2160,25 @@ class JaxBackend:
     # batch_*_paired — both X and Y vary per replicate
     # ================================================================ #
     #
-    # These methods support bootstrap and jackknife loops where each
-    # replicate resamples (or leaves-one-out) *rows*, so both the
+    # These methods support **bootstrap** and **jackknife** loops where
+    # each replicate resamples (or leaves-one-out) *rows*, so both the
     # design matrix X and the response y change simultaneously.
     #
     # Shape convention:
     #   X_batch : (B, n, p) — B design matrices, no intercept column
     #   Y_batch : (B, n)    — B response vectors
     #
-    # Returns:
-    #   coefs : (B, p) — slope coefficients (intercept excluded)
+    # Returns only slope coefficients (no scores) — bootstrap /
+    # jackknife resampling is used for **confidence-interval**
+    # construction, not hypothesis testing.
+    #
+    # ``vmap`` maps over **both** X and Y simultaneously:
+    # ``vmap(_solve_one)(X_j, Y_j)`` — each replicate gets its own
+    # (X, y) pair.
     #
     # For multinomial, coefs are Wald χ² per predictor (matching
-    # MultinomialFamily.coefs() semantics).
+    # ``MultinomialFamily.coefs()`` semantics).
+    # ---------------------------------------------------------------- #
 
     def batch_ols_paired(
         self,

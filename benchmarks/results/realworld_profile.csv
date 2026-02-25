@@ -1,0 +1,148 @@
+scenario,description,generator,n,G,B,min_cell,max_cell,balance,median_time_s,min_time_s,max_time_s,median_peak_memory_MB,B_delivered,valid
+small_rct_3arm,"3-arm RCT: placebo(22), low-dose(18), high-dose(20)",global,60,3,999,18,22,slight-imbalance,0.004064,0.003693,0.004100,1.443893,999,True
+small_rct_3arm,"3-arm RCT: placebo(22), low-dose(18), high-dose(20)",global,60,3,4999,18,22,slight-imbalance,0.019621,0.019509,0.054031,7.640778,4999,True
+small_rct_3arm,"3-arm RCT: placebo(22), low-dose(18), high-dose(20)",global,60,3,9999,18,22,slight-imbalance,0.041330,0.039325,0.041390,14.615578,9999,True
+small_rct_3arm,"3-arm RCT: placebo(22), low-dose(18), high-dose(20)",within,60,3,999,18,22,slight-imbalance,0.004344,0.004259,0.004555,1.597908,999,True
+small_rct_3arm,"3-arm RCT: placebo(22), low-dose(18), high-dose(20)",within,60,3,4999,18,22,slight-imbalance,0.022165,0.021796,0.023042,8.405151,4999,True
+small_rct_3arm,"3-arm RCT: placebo(22), low-dose(18), high-dose(20)",within,60,3,9999,18,22,slight-imbalance,0.045486,0.045282,0.046239,16.142891,9999,True
+small_rct_3arm,"3-arm RCT: placebo(22), low-dose(18), high-dose(20)",two-stage,60,3,999,18,22,slight-imbalance,0.011124,0.010837,0.011154,1.621119,999,True
+small_rct_3arm,"3-arm RCT: placebo(22), low-dose(18), high-dose(20)",two-stage,60,3,4999,18,22,slight-imbalance,0.054479,0.054178,0.054487,8.519661,4999,True
+small_rct_3arm,"3-arm RCT: placebo(22), low-dose(18), high-dose(20)",two-stage,60,3,9999,18,22,slight-imbalance,0.109689,0.108314,0.111736,16.371841,9999,True
+rct_5arm_unbalanced,"5-arm dose-finding: 30, 25, 28, 15, 22",global,120,5,999,15,30,moderate-imbalance,0.005063,0.004999,0.005538,2.816719,999,True
+rct_5arm_unbalanced,"5-arm dose-finding: 30, 25, 28, 15, 22",global,120,5,4999,15,30,moderate-imbalance,0.028106,0.027193,0.028668,14.467407,4999,True
+rct_5arm_unbalanced,"5-arm dose-finding: 30, 25, 28, 15, 22",global,120,5,9999,15,30,moderate-imbalance,0.056440,0.056289,0.057486,28.348030,9999,True
+rct_5arm_unbalanced,"5-arm dose-finding: 30, 25, 28, 15, 22",within,120,5,999,15,30,moderate-imbalance,0.005745,0.005583,0.005954,2.987061,999,True
+rct_5arm_unbalanced,"5-arm dose-finding: 30, 25, 28, 15, 22",within,120,5,4999,15,30,moderate-imbalance,0.031582,0.030436,0.032390,15.309135,4999,True
+rct_5arm_unbalanced,"5-arm dose-finding: 30, 25, 28, 15, 22",within,120,5,9999,15,30,moderate-imbalance,0.062778,0.060552,0.063429,30.028992,9999,True
+rct_5arm_unbalanced,"5-arm dose-finding: 30, 25, 28, 15, 22",two-stage,120,5,999,15,30,moderate-imbalance,0.014310,0.013563,0.014763,3.025047,999,True
+rct_5arm_unbalanced,"5-arm dose-finding: 30, 25, 28, 15, 22",two-stage,120,5,4999,15,30,moderate-imbalance,0.071989,0.071393,0.072900,15.499710,4999,True
+rct_5arm_unbalanced,"5-arm dose-finding: 30, 25, 28, 15, 22",two-stage,120,5,9999,15,30,moderate-imbalance,0.146099,0.142976,0.202101,30.410301,9999,True
+multisite_8sites,8-site trial: sites of 20-40 patients,global,242,8,999,20,40,moderate-imbalance,0.008179,0.007742,0.008272,5.608147,999,True
+multisite_8sites,8-site trial: sites of 20-40 patients,global,242,8,4999,20,40,moderate-imbalance,0.044133,0.043696,0.044811,28.385246,4999,True
+multisite_8sites,8-site trial: sites of 20-40 patients,global,242,8,9999,20,40,moderate-imbalance,0.086981,0.085547,0.087995,56.270683,9999,True
+multisite_8sites,8-site trial: sites of 20-40 patients,within,242,8,999,20,40,moderate-imbalance,0.008927,0.008689,0.009963,5.765308,999,True
+multisite_8sites,8-site trial: sites of 20-40 patients,within,242,8,4999,20,40,moderate-imbalance,0.050068,0.049493,0.050274,29.152760,4999,True
+multisite_8sites,8-site trial: sites of 20-40 patients,within,242,8,9999,20,40,moderate-imbalance,0.102743,0.102674,0.103746,57.801136,9999,True
+multisite_8sites,8-site trial: sites of 20-40 patients,two-stage,242,8,999,20,40,moderate-imbalance,0.020492,0.020012,0.020658,5.825512,999,True
+multisite_8sites,8-site trial: sites of 20-40 patients,two-stage,242,8,4999,20,40,moderate-imbalance,0.105755,0.104698,0.131711,29.457333,4999,True
+multisite_8sites,8-site trial: sites of 20-40 patients,two-stage,242,8,9999,20,40,moderate-imbalance,0.211248,0.207036,0.215187,58.410656,9999,True
+multisite_balanced_8,8-site trial: balanced 30/site (reference),global,240,8,999,30,30,balanced,0.007842,0.007723,0.008054,5.562386,999,True
+multisite_balanced_8,8-site trial: balanced 30/site (reference),global,240,8,4999,30,30,balanced,0.041171,0.040796,0.042259,28.156380,4999,True
+multisite_balanced_8,8-site trial: balanced 30/site (reference),global,240,8,9999,30,30,balanced,0.087727,0.087295,0.089471,55.812935,9999,True
+multisite_balanced_8,8-site trial: balanced 30/site (reference),within,240,8,999,30,30,balanced,0.009314,0.009205,0.009633,5.795719,999,True
+multisite_balanced_8,8-site trial: balanced 30/site (reference),within,240,8,4999,30,30,balanced,0.045539,0.045303,0.048267,29.305241,4999,True
+multisite_balanced_8,8-site trial: balanced 30/site (reference),within,240,8,9999,30,30,balanced,0.098160,0.097380,0.099623,58.106205,9999,True
+multisite_balanced_8,8-site trial: balanced 30/site (reference),between,240,8,999,30,30,balanced,0.020928,0.020626,0.021359,5.634961,999,True
+multisite_balanced_8,8-site trial: balanced 30/site (reference),between,240,8,4999,30,30,balanced,0.103152,0.102166,0.103927,28.503162,4999,True
+multisite_balanced_8,8-site trial: balanced 30/site (reference),between,240,8,9999,30,30,balanced,0.209578,0.208027,0.211202,56.502934,9999,True
+multisite_balanced_8,8-site trial: balanced 30/site (reference),two-stage,240,8,999,30,30,balanced,0.022733,0.021682,0.022895,5.855976,999,True
+multisite_balanced_8,8-site trial: balanced 30/site (reference),two-stage,240,8,4999,30,30,balanced,0.109117,0.108164,0.137468,29.610346,4999,True
+multisite_balanced_8,8-site trial: balanced 30/site (reference),two-stage,240,8,9999,30,30,balanced,0.220182,0.219404,0.223192,58.715778,9999,True
+classroom_12,12 classrooms: 18-30 students each,global,292,12,999,18,30,moderate-imbalance,0.020347,0.019950,0.020620,7.686775,999,True
+classroom_12,12 classrooms: 18-30 students each,global,292,12,4999,18,30,moderate-imbalance,0.107580,0.107353,0.108744,38.779915,4999,True
+classroom_12,12 classrooms: 18-30 students each,global,292,12,9999,18,30,moderate-imbalance,0.219014,0.218366,0.219953,77.060402,9999,True
+classroom_12,12 classrooms: 18-30 students each,within,292,12,999,18,30,moderate-imbalance,0.030518,0.021106,0.078041,7.868607,999,True
+classroom_12,12 classrooms: 18-30 students each,within,292,12,4999,18,30,moderate-imbalance,0.118031,0.117800,0.119527,39.663651,4999,True
+classroom_12,12 classrooms: 18-30 students each,within,292,12,9999,18,30,moderate-imbalance,0.241616,0.239371,0.242206,78.821518,9999,True
+classroom_12,12 classrooms: 18-30 students each,two-stage,292,12,999,18,30,moderate-imbalance,0.038731,0.038151,0.039327,7.958603,999,True
+classroom_12,12 classrooms: 18-30 students each,two-stage,292,12,4999,18,30,moderate-imbalance,0.198128,0.194882,0.198867,40.119858,4999,True
+classroom_12,12 classrooms: 18-30 students each,two-stage,292,12,9999,18,30,moderate-imbalance,0.396633,0.396197,0.398499,79.735489,9999,True
+classroom_balanced_12,12 classrooms: balanced 25/class (reference),global,300,12,999,25,25,balanced,0.024004,0.023823,0.024093,8.083443,999,True
+classroom_balanced_12,12 classrooms: balanced 25/class (reference),global,300,12,4999,25,25,balanced,0.122694,0.122151,0.124930,40.763496,4999,True
+classroom_balanced_12,12 classrooms: balanced 25/class (reference),global,300,12,9999,25,25,balanced,0.254318,0.253677,0.254613,81.027626,9999,True
+classroom_balanced_12,12 classrooms: balanced 25/class (reference),within,300,12,999,25,25,balanced,0.024612,0.024437,0.024970,8.280609,999,True
+classroom_balanced_12,12 classrooms: balanced 25/class (reference),within,300,12,4999,25,25,balanced,0.130535,0.128101,0.131006,41.723602,4999,True
+classroom_balanced_12,12 classrooms: balanced 25/class (reference),within,300,12,9999,25,25,balanced,0.270277,0.267639,0.270450,82.941406,9999,True
+classroom_balanced_12,12 classrooms: balanced 25/class (reference),between,300,12,999,25,25,balanced,0.036831,0.034726,0.036844,8.179260,999,True
+classroom_balanced_12,12 classrooms: balanced 25/class (reference),between,300,12,4999,25,25,balanced,0.179929,0.178584,0.183140,41.225494,4999,True
+classroom_balanced_12,12 classrooms: balanced 25/class (reference),between,300,12,9999,25,25,balanced,0.367151,0.361422,0.391608,81.947525,9999,True
+classroom_balanced_12,12 classrooms: balanced 25/class (reference),two-stage,300,12,999,25,25,balanced,0.041364,0.040638,0.041913,8.370659,999,True
+classroom_balanced_12,12 classrooms: balanced 25/class (reference),two-stage,300,12,4999,25,25,balanced,0.211201,0.208612,0.262971,42.179863,4999,True
+classroom_balanced_12,12 classrooms: balanced 25/class (reference),two-stage,300,12,9999,25,25,balanced,0.422407,0.417151,0.424328,83.855431,9999,True
+cluster_rct_20clinics,"20 clinics: 30-80 patients, high imbalance",global,1041,20,999,30,78,moderate-imbalance,0.259941,0.259939,0.261416,44.824768,999,True
+cluster_rct_20clinics,"20 clinics: 30-80 patients, high imbalance",global,1041,20,4999,30,78,moderate-imbalance,1.334203,1.327869,1.336693,224.492737,4999,True
+cluster_rct_20clinics,"20 clinics: 30-80 patients, high imbalance",global,1041,20,9999,30,78,moderate-imbalance,2.683288,2.677412,2.688917,448.491760,9999,True
+cluster_rct_20clinics,"20 clinics: 30-80 patients, high imbalance",within,1041,20,999,30,78,moderate-imbalance,0.277783,0.277380,0.278093,45.373260,999,True
+cluster_rct_20clinics,"20 clinics: 30-80 patients, high imbalance",within,1041,20,4999,30,78,moderate-imbalance,1.426863,1.425536,1.499768,227.177460,4999,True
+cluster_rct_20clinics,"20 clinics: 30-80 patients, high imbalance",within,1041,20,9999,30,78,moderate-imbalance,2.914289,2.912440,2.973479,453.846771,9999,True
+cluster_rct_20clinics,"20 clinics: 30-80 patients, high imbalance",two-stage,1041,20,999,30,78,moderate-imbalance,0.332470,0.331617,0.337939,45.523315,999,True
+cluster_rct_20clinics,"20 clinics: 30-80 patients, high imbalance",two-stage,1041,20,4999,30,78,moderate-imbalance,1.704062,1.703232,1.705309,227.937866,4999,True
+cluster_rct_20clinics,"20 clinics: 30-80 patients, high imbalance",two-stage,1041,20,9999,30,78,moderate-imbalance,3.447823,3.443041,3.476709,455.370117,9999,True
+cluster_rct_balanced_20,20 clinics: balanced 50/clinic (reference),global,1000,20,999,50,50,balanced,0.247481,0.247227,0.248028,42.791847,999,True
+cluster_rct_balanced_20,20 clinics: balanced 50/clinic (reference),global,1000,20,4999,50,50,balanced,1.261065,1.260154,1.264488,214.326881,4999,True
+cluster_rct_balanced_20,20 clinics: balanced 50/clinic (reference),global,1000,20,9999,50,50,balanced,2.548259,2.542159,2.551370,428.159737,9999,True
+cluster_rct_balanced_20,20 clinics: balanced 50/clinic (reference),within,1000,20,999,50,50,balanced,0.264615,0.263995,0.321767,43.187542,999,True
+cluster_rct_balanced_20,20 clinics: balanced 50/clinic (reference),within,1000,20,4999,50,50,balanced,1.365479,1.364593,1.368112,216.248455,4999,True
+cluster_rct_balanced_20,20 clinics: balanced 50/clinic (reference),within,1000,20,9999,50,50,balanced,2.760594,2.754157,2.764766,431.988659,9999,True
+cluster_rct_balanced_20,20 clinics: balanced 50/clinic (reference),two-stage,1000,20,999,50,50,balanced,0.315661,0.315333,0.316002,43.337662,999,True
+cluster_rct_balanced_20,20 clinics: balanced 50/clinic (reference),two-stage,1000,20,4999,50,50,balanced,1.599950,1.597719,1.676750,217.008926,4999,True
+cluster_rct_balanced_20,20 clinics: balanced 50/clinic (reference),two-stage,1000,20,9999,50,50,balanced,3.248167,3.242464,3.258253,433.512070,9999,True
+survey_30strata,"30 strata: 15-50 observations, heavy imbalance",global,965,30,999,15,50,high-imbalance,0.236644,0.235704,0.239251,41.056427,999,True
+survey_30strata,"30 strata: 15-50 observations, heavy imbalance",global,965,30,4999,15,50,high-imbalance,1.214017,1.213029,1.215948,205.648712,4999,True
+survey_30strata,"30 strata: 15-50 observations, heavy imbalance",global,965,30,9999,15,50,high-imbalance,2.442881,2.442706,2.500239,410.803131,9999,True
+survey_30strata,"30 strata: 15-50 observations, heavy imbalance",within,965,30,999,15,50,high-imbalance,0.254526,0.253302,0.254581,41.401661,999,True
+survey_30strata,"30 strata: 15-50 observations, heavy imbalance",within,965,30,4999,15,50,high-imbalance,1.305575,1.304654,1.310398,207.306202,4999,True
+survey_30strata,"30 strata: 15-50 observations, heavy imbalance",within,965,30,9999,15,50,high-imbalance,2.647871,2.647607,2.650072,414.100978,9999,True
+survey_30strata,"30 strata: 15-50 observations, heavy imbalance",two-stage,965,30,999,15,50,high-imbalance,0.312888,0.310800,0.314212,41.626316,999,True
+survey_30strata,"30 strata: 15-50 observations, heavy imbalance",two-stage,965,30,4999,15,50,high-imbalance,1.599303,1.594320,1.666470,208.446331,4999,True
+survey_30strata,"30 strata: 15-50 observations, heavy imbalance",two-stage,965,30,9999,15,50,high-imbalance,3.247832,3.244620,3.273486,416.385479,9999,True
+balanced_5x200,5 arms × 200 observations: large balanced,global,1000,5,999,200,200,balanced,0.249024,0.244174,0.249928,42.791847,999,True
+balanced_5x200,5 arms × 200 observations: large balanced,global,1000,5,4999,200,200,balanced,1.267281,1.264203,1.268408,214.326881,4999,True
+balanced_5x200,5 arms × 200 observations: large balanced,global,1000,5,9999,200,200,balanced,2.557964,2.551862,2.568867,428.159737,9999,True
+balanced_5x200,5 arms × 200 observations: large balanced,within,1000,5,999,200,200,balanced,0.266513,0.265507,0.267562,44.326458,999,True
+balanced_5x200,5 arms × 200 observations: large balanced,within,1000,5,4999,200,200,balanced,1.372435,1.364386,1.373084,221.965008,4999,True
+balanced_5x200,5 arms × 200 observations: large balanced,within,1000,5,9999,200,200,balanced,2.777189,2.775628,2.787504,443.427258,9999,True
+balanced_5x200,5 arms × 200 observations: large balanced,two-stage,1000,5,999,200,200,balanced,0.309180,0.305520,0.363601,44.364471,999,True
+balanced_5x200,5 arms × 200 observations: large balanced,two-stage,1000,5,4999,200,200,balanced,1.580490,1.577616,1.587512,222.155609,4999,True
+balanced_5x200,5 arms × 200 observations: large balanced,two-stage,1000,5,9999,200,200,balanced,3.203852,3.192496,3.203941,443.808594,9999,True
+balanced_10x100,10 arms × 100 observations: moderate balanced,global,1000,10,999,100,100,balanced,0.248554,0.247259,0.248730,42.791847,999,True
+balanced_10x100,10 arms × 100 observations: moderate balanced,global,1000,10,4999,100,100,balanced,1.270720,1.266654,1.271572,214.326881,4999,True
+balanced_10x100,10 arms × 100 observations: moderate balanced,global,1000,10,9999,100,100,balanced,2.553680,2.553505,2.613623,428.159737,9999,True
+balanced_10x100,10 arms × 100 observations: moderate balanced,within,1000,10,999,100,100,balanced,0.267092,0.266410,0.267410,43.565800,999,True
+balanced_10x100,10 arms × 100 observations: moderate balanced,within,1000,10,4999,100,100,balanced,1.368578,1.367152,1.370680,218.152592,4999,True
+balanced_10x100,10 arms × 100 observations: moderate balanced,within,1000,10,9999,100,100,balanced,2.780451,2.774336,3.011669,435.800144,9999,True
+balanced_10x100,10 arms × 100 observations: moderate balanced,between,1000,10,999,100,100,balanced,0.275084,0.274845,0.278619,42.877586,999,True
+balanced_10x100,10 arms × 100 observations: moderate balanced,between,1000,10,4999,100,100,balanced,1.382945,1.381458,1.396153,214.725544,4999,True
+balanced_10x100,10 arms × 100 observations: moderate balanced,between,1000,10,9999,100,100,balanced,2.783106,2.774864,2.798016,428.940037,9999,True
+balanced_10x100,10 arms × 100 observations: moderate balanced,two-stage,1000,10,999,100,100,balanced,0.310848,0.308270,0.311378,43.641117,999,True
+balanced_10x100,10 arms × 100 observations: moderate balanced,two-stage,1000,10,4999,100,100,balanced,1.592861,1.591606,1.596212,218.533085,4999,True
+balanced_10x100,10 arms × 100 observations: moderate balanced,two-stage,1000,10,9999,100,100,balanced,3.251110,3.223209,3.289855,436.562107,9999,True
+paired_design_30,30 matched pairs (cell size 2): paired t-test,within,60,30,999,2,2,balanced,0.004113,0.004047,0.004138,1.468464,999,True
+paired_design_30,30 matched pairs (cell size 2): paired t-test,within,60,30,4999,2,2,balanced,0.022010,0.021468,0.022585,7.726391,4999,True
+paired_design_30,30 matched pairs (cell size 2): paired t-test,within,60,30,9999,2,2,balanced,0.045005,0.043011,0.045326,14.777485,9999,True
+paired_design_30,30 matched pairs (cell size 2): paired t-test,between,60,30,999,2,2,balanced,0.029732,0.029575,0.029952,1.677395,999,True
+paired_design_30,30 matched pairs (cell size 2): paired t-test,between,60,30,4999,2,2,balanced,0.113805,0.112311,0.114356,8.789783,4999,True
+paired_design_30,30 matched pairs (cell size 2): paired t-test,between,60,30,9999,2,2,balanced,0.223499,0.220009,0.250357,16.909077,9999,True
+paired_design_30,30 matched pairs (cell size 2): paired t-test,two-stage,60,30,999,2,2,balanced,0.033562,0.031317,0.088729,1.693134,999,True
+paired_design_30,30 matched pairs (cell size 2): paired t-test,two-stage,60,30,4999,2,2,balanced,0.114506,0.114443,0.121322,8.866589,4999,True
+paired_design_30,30 matched pairs (cell size 2): paired t-test,two-stage,60,30,9999,2,2,balanced,0.225236,0.222148,0.226473,17.062092,9999,True
+triplet_design_20,20 matched triplets (cell size 3),within,60,20,999,3,3,balanced,0.004080,0.004058,0.004495,1.473087,999,True
+triplet_design_20,20 matched triplets (cell size 3),within,60,20,4999,3,3,balanced,0.021668,0.021284,0.022851,7.761532,4999,True
+triplet_design_20,20 matched triplets (cell size 3),within,60,20,9999,3,3,balanced,0.044397,0.043060,0.044643,14.850773,9999,True
+triplet_design_20,20 matched triplets (cell size 3),between,60,20,999,3,3,balanced,0.022430,0.021991,0.022516,1.599903,999,True
+triplet_design_20,20 matched triplets (cell size 3),between,60,20,4999,3,3,balanced,0.095720,0.095015,0.095921,8.407116,4999,True
+triplet_design_20,20 matched triplets (cell size 3),between,60,20,9999,3,3,balanced,0.181792,0.180966,0.185607,16.144855,9999,True
+triplet_design_20,20 matched triplets (cell size 3),two-stage,60,20,999,3,3,balanced,0.024098,0.023657,0.052059,1.623207,999,True
+triplet_design_20,20 matched triplets (cell size 3),two-stage,60,20,4999,3,3,balanced,0.099578,0.098102,0.101387,8.522003,4999,True
+triplet_design_20,20 matched triplets (cell size 3),two-stage,60,20,9999,3,3,balanced,0.195791,0.195448,0.255730,16.374184,9999,True
+mixed_hospital,"6 hospitals: 2 large(150), 2 mid(80), 2 small(30)",global,520,6,999,30,150,high-imbalance,0.097184,0.095979,0.098713,18.991798,999,True
+mixed_hospital,"6 hospitals: 2 large(150), 2 mid(80), 2 small(30)",global,520,6,4999,30,150,high-imbalance,0.503393,0.501563,0.504586,95.311989,4999,True
+mixed_hospital,"6 hospitals: 2 large(150), 2 mid(80), 2 small(30)",global,520,6,9999,30,150,high-imbalance,1.014652,1.013974,1.015210,190.126289,9999,True
+mixed_hospital,"6 hospitals: 2 large(150), 2 mid(80), 2 small(30)",within,520,6,999,30,150,high-imbalance,0.103048,0.102371,0.103559,19.227093,999,True
+mixed_hospital,"6 hospitals: 2 large(150), 2 mid(80), 2 small(30)",within,520,6,4999,30,150,high-imbalance,0.534424,0.532683,0.534843,96.462811,4999,True
+mixed_hospital,"6 hospitals: 2 large(150), 2 mid(80), 2 small(30)",within,520,6,9999,30,150,high-imbalance,1.086228,1.081297,1.089002,192.421520,9999,True
+mixed_hospital,"6 hospitals: 2 large(150), 2 mid(80), 2 small(30)",two-stage,520,6,999,30,150,high-imbalance,0.136930,0.135509,0.137653,19.272324,999,True
+mixed_hospital,"6 hospitals: 2 large(150), 2 mid(80), 2 small(30)",two-stage,520,6,4999,30,150,high-imbalance,0.696580,0.695068,0.772229,96.691147,4999,True
+mixed_hospital,"6 hospitals: 2 large(150), 2 mid(80), 2 small(30)",two-stage,520,6,9999,30,150,high-imbalance,1.417993,1.415486,1.440856,192.878906,9999,True
+mixed_school_district,"15 schools: 5 large(40), 5 mid(25), 5 small(12)",global,385,15,999,12,40,high-imbalance,0.050281,0.050116,0.051066,12.298035,999,True
+mixed_school_district,"15 schools: 5 large(40), 5 mid(25), 5 small(12)",global,385,15,4999,12,40,high-imbalance,0.274378,0.271971,0.274472,61.839050,4999,True
+mixed_school_district,"15 schools: 5 large(40), 5 mid(25), 5 small(12)",global,385,15,9999,12,40,high-imbalance,0.557029,0.554165,0.608332,123.179382,9999,True
+mixed_school_district,"15 schools: 5 large(40), 5 mid(25), 5 small(12)",within,385,15,999,12,40,high-imbalance,0.054589,0.054307,0.055996,12.397602,999,True
+mixed_school_district,"15 schools: 5 large(40), 5 mid(25), 5 small(12)",within,385,15,4999,12,40,high-imbalance,0.288024,0.286948,0.290703,62.304829,4999,True
+mixed_school_district,"15 schools: 5 large(40), 5 mid(25), 5 small(12)",within,385,15,9999,12,40,high-imbalance,0.588362,0.585853,0.638733,124.102924,9999,True
+mixed_school_district,"15 schools: 5 large(40), 5 mid(25), 5 small(12)",between,385,15,999,12,40,high-imbalance,0.076305,0.073771,0.078470,12.417709,999,True
+mixed_school_district,"15 schools: 5 large(40), 5 mid(25), 5 small(12)",between,385,15,4999,12,40,high-imbalance,0.388619,0.388390,0.389080,62.419643,4999,True
+mixed_school_district,"15 schools: 5 large(40), 5 mid(25), 5 small(12)",between,385,15,9999,12,40,high-imbalance,0.786936,0.785725,0.792837,124.332180,9999,True
+mixed_school_district,"15 schools: 5 large(40), 5 mid(25), 5 small(12)",two-stage,385,15,999,12,40,high-imbalance,0.087040,0.086601,0.089419,12.510151,999,True
+mixed_school_district,"15 schools: 5 large(40), 5 mid(25), 5 small(12)",two-stage,385,15,4999,12,40,high-imbalance,0.441483,0.440007,0.442560,62.875141,4999,True
+mixed_school_district,"15 schools: 5 large(40), 5 mid(25), 5 small(12)",two-stage,385,15,9999,12,40,high-imbalance,0.890908,0.889188,0.918640,125.245518,9999,True

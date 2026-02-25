@@ -22,13 +22,19 @@ strategies receive their indices from this method.
 from __future__ import annotations
 
 import warnings
+from collections.abc import Callable
 from typing import Any
 
 import numpy as np
 import pandas as pd
 
 from .families import ModelFamily, resolve_family
-from .permutations import generate_unique_permutations
+from .permutations import (
+    generate_between_cell_permutations,
+    generate_two_stage_permutations,
+    generate_unique_permutations,
+    generate_within_cell_permutations,
+)
 
 
 class PermutationEngine:
@@ -60,6 +66,9 @@ class PermutationEngine:
         n_jobs: int = 1,
         method: str = "ter_braak",
         backend: str | None = None,
+        groups: np.ndarray | None = None,
+        permutation_strategy: str | None = None,
+        permutation_constraints: Callable[[np.ndarray], np.ndarray] | None = None,
     ) -> None:
         # ---- Family resolution ------------------------------------
         self.family: ModelFamily = resolve_family(family, y_values)
@@ -149,6 +158,13 @@ class PermutationEngine:
             }
 
         # ---- Permutation indices ----------------------------------
+        #
+        # Store groups/strategy/constraints before calling
+        # permute_indices() because _permute_hook reads them.
+        self.groups: np.ndarray | None = groups
+        self.permutation_strategy: str | None = permutation_strategy
+        self._permutation_constraints = permutation_constraints
+
         self.perm_indices: np.ndarray = self.permute_indices(
             n_samples=len(y_values),
             n_permutations=n_permutations,
@@ -188,11 +204,23 @@ class PermutationEngine:
     ) -> np.ndarray:
         """Extension point for exchangeability-constrained permutations.
 
-        Default implementation generates globally-exchangeable
-        permutations via :func:`generate_unique_permutations`.
-        Subclasses override this to restrict permutations within
-        exchangeability cells (v0.4.1) or apply user-supplied
-        constraints.
+        Dispatches permutation generation based on the resolved
+        ``permutation_strategy`` and any family-suggested
+        exchangeability cells:
+
+        1. If ``groups`` is set: use the requested strategy
+           (``"within"``, ``"between"``, or ``"two-stage"``).
+        2. If ``groups`` is ``None``: check
+           ``self.family.exchangeability_cells(X, y)``.  If
+           non-``None``, use within-cell permutations.
+        3. Otherwise: global permutation via
+           :func:`generate_unique_permutations`.
+
+        If a ``permutation_constraints`` callback is set, it is
+        applied as a post-filter.  The engine back-fills gaps by
+        generating more permutations and re-filtering until
+        *n_permutations* are collected (with a max-iterations safety
+        cap).
 
         Args:
             n_samples: Number of observations.
@@ -202,12 +230,122 @@ class PermutationEngine:
         Returns:
             Array of shape ``(B, n_samples)`` with permutation indices.
         """
-        return generate_unique_permutations(
+        # ---- Determine cells and generator -----------------------
+        cells = self.groups
+        strategy = self.permutation_strategy
+
+        # If no explicit groups, consult the family.
+        if cells is None:
+            family_cells = self.family.exchangeability_cells(
+                np.zeros((n_samples, 1)),  # placeholder X
+                np.zeros(n_samples),  # placeholder y
+            )
+            if family_cells is not None:
+                cells = family_cells
+                strategy = "within"
+
+        # ---- Generate indices ------------------------------------
+        indices = self._generate_for_strategy(
+            cells, strategy, n_samples, n_permutations, random_state
+        )
+
+        # ---- Apply callback post-filter --------------------------
+        if self._permutation_constraints is not None:
+            indices = self._apply_constraints(
+                indices, cells, strategy, n_samples, n_permutations, random_state
+            )
+
+        return indices
+
+    def _generate_for_strategy(
+        self,
+        cells: np.ndarray | None,
+        strategy: str | None,
+        n_samples: int,
+        n_permutations: int,
+        random_state: int | None,
+    ) -> np.ndarray:
+        """Route to the correct permutation generator."""
+        if cells is None or strategy is None:
+            return generate_unique_permutations(
+                n_samples=n_samples,
+                n_permutations=n_permutations,
+                random_state=random_state,
+                exclude_identity=True,
+            )
+
+        if strategy == "within":
+            return generate_within_cell_permutations(
+                n_samples=n_samples,
+                n_permutations=n_permutations,
+                cells=cells,
+                random_state=random_state,
+                exclude_identity=True,
+            )
+
+        if strategy == "between":
+            return generate_between_cell_permutations(
+                n_samples=n_samples,
+                n_permutations=n_permutations,
+                cells=cells,
+                random_state=random_state,
+                exclude_identity=True,
+            )
+
+        if strategy == "two-stage":
+            return generate_two_stage_permutations(
+                n_samples=n_samples,
+                n_permutations=n_permutations,
+                cells=cells,
+                random_state=random_state,
+                exclude_identity=True,
+            )
+
+        # Unreachable — strategy is validated upstream.
+        return generate_unique_permutations(  # pragma: no cover
             n_samples=n_samples,
             n_permutations=n_permutations,
             random_state=random_state,
             exclude_identity=True,
         )
+
+    def _apply_constraints(
+        self,
+        indices: np.ndarray,
+        cells: np.ndarray | None,
+        strategy: str | None,
+        n_samples: int,
+        n_permutations: int,
+        random_state: int | None,
+    ) -> np.ndarray:
+        """Apply callback post-filter and back-fill gaps.
+
+        The callback removes rows that violate domain constraints.
+        We regenerate and re-filter until we have enough rows, with
+        a max-iterations safety cap to prevent infinite loops.
+        """
+        assert self._permutation_constraints is not None  # noqa: S101
+        rng_offset = 0
+        max_rounds = 50
+        round_count = 0
+
+        filtered = self._permutation_constraints(indices)
+
+        while filtered.shape[0] < n_permutations and round_count < max_rounds:
+            deficit = n_permutations - filtered.shape[0]
+            # Generate extras with an offset seed for variety.
+            rng_offset += 1
+            extra_seed = (
+                (random_state + rng_offset) if random_state is not None else None
+            )
+            extras = self._generate_for_strategy(
+                cells, strategy, n_samples, deficit * 2, extra_seed
+            )
+            extras_filtered = self._permutation_constraints(extras)
+            filtered = np.concatenate([filtered, extras_filtered], axis=0)
+            round_count += 1
+
+        return filtered[:n_permutations]
 
 
 __all__ = ["PermutationEngine"]

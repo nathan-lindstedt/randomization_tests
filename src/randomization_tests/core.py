@@ -19,6 +19,8 @@ modules under ``_strategies/``.
 from __future__ import annotations
 
 import warnings
+from collections.abc import Callable
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -29,7 +31,11 @@ from ._strategies import resolve_strategy
 from .diagnostics import compute_all_diagnostics
 from .engine import PermutationEngine
 from .families import ModelFamily
+from .permutations import _between_cell_total
 from .pvalues import calculate_p_values
+
+# Valid permutation strategy strings.
+_VALID_STRATEGIES = {"within", "between", "two-stage"}
 
 # ------------------------------------------------------------------ #
 # Public API
@@ -50,6 +56,9 @@ def permutation_test_regression(
     family: str | ModelFamily = "auto",
     n_jobs: int = 1,
     backend: str | None = None,
+    groups: np.ndarray | list[int] | pd.Series | pd.DataFrame | None = None,
+    permutation_strategy: str | None = None,
+    permutation_constraints: Callable[[np.ndarray], np.ndarray] | None = None,
 ) -> IndividualTestResult | JointTestResult:
     """Run a permutation test for regression coefficients.
 
@@ -107,6 +116,23 @@ def permutation_test_regression(
             An explicit value overrides the global setting for this
             call only, enabling test injection and per-call backend
             selection.
+        groups: Exchangeability group labels.  When provided,
+            permutations are constrained to respect group structure
+            rather than shuffling globally.  Accepts a 1-D array-like
+            of integer labels ``(n_samples,)`` or a ``DataFrame``
+            with one or more blocking columns (multi-column DataFrames
+            are cross-classified into integer cell labels).
+        permutation_strategy: Which cell-level permutation strategy
+            to use.  ``"within"`` shuffles only within cells,
+            ``"between"`` permutes entire cells as units, and
+            ``"two-stage"`` composes both.  When ``groups`` is
+            provided without a strategy, defaults to ``"within"``.
+            Cannot be set without ``groups``.
+        permutation_constraints: Optional post-filter callback.
+            Receives a ``(B, n)`` permutation array and must return
+            a ``(B', n)`` array with ``B' ≤ B`` rows.  Used to
+            apply domain-specific constraints that cannot be
+            expressed via cell structure alone.
 
     Returns:
         Typed result object containing coefficients, p-values,
@@ -139,6 +165,15 @@ def permutation_test_regression(
 
     y_values = np.ravel(y)
 
+    # ---- Groups validation ---------------------------------------
+    cells, resolved_strategy = _validate_groups(
+        X, groups, permutation_strategy, n_permutations
+    )
+
+    # ---- Callback validation -------------------------------------
+    if permutation_constraints is not None:
+        _validate_constraints(permutation_constraints, len(y_values))
+
     # ---- Contextual warnings -------------------------------------
     if method in ("kennedy", "kennedy_joint") and not confounders:
         warnings.warn(
@@ -169,6 +204,9 @@ def permutation_test_regression(
         n_jobs=n_jobs,
         method=method,
         backend=backend,
+        groups=cells,
+        permutation_strategy=resolved_strategy,
+        permutation_constraints=permutation_constraints,
     )
 
     # ---- Strategy resolution -------------------------------------
@@ -292,6 +330,271 @@ def _validate_inputs(
 
 
 # ------------------------------------------------------------------ #
+# Groups validation (Step 10a + 11b-d)
+# ------------------------------------------------------------------ #
+
+
+def _validate_groups(
+    X: pd.DataFrame,
+    groups: np.ndarray | list[int] | pd.Series | pd.DataFrame | None,
+    permutation_strategy: str | None,
+    n_permutations: int,
+) -> tuple[np.ndarray | None, str | None]:
+    """Validate and resolve ``groups`` / ``permutation_strategy``.
+
+    Converts heterogeneous group inputs into an integer cell-label
+    array and resolves the strategy string (defaulting to ``"within"``
+    when groups are provided without an explicit strategy).
+
+    Args:
+        X: Feature matrix — used only for its row count.
+        groups: Raw user-supplied group labels (array-like, DataFrame,
+            or ``None``).
+        permutation_strategy: ``"within"``, ``"between"``,
+            ``"two-stage"``, or ``None``.
+        n_permutations: Requested number of permutations (used for
+            minimum-group-count checks).
+
+    Returns:
+        Tuple ``(cells, resolved_strategy)`` where *cells* is an
+        integer array of shape ``(n,)`` or ``None``, and
+        *resolved_strategy* is a string or ``None``.
+
+    Raises:
+        ValueError: If ``permutation_strategy`` is set without
+            ``groups``, if the strategy string is invalid, if
+            ``groups`` has wrong length, or if ``"between"`` is
+            requested with fewer than 5 groups.
+    """
+    n = X.shape[0]
+
+    # ---- Strategy without groups: always an error ----------------
+    if permutation_strategy is not None and groups is None:
+        raise ValueError(
+            f"permutation_strategy={permutation_strategy!r} requires "
+            "groups= to be specified."
+        )
+
+    # ---- No groups: nothing to validate --------------------------
+    if groups is None:
+        return None, None
+
+    # ---- Strategy string validation ------------------------------
+    if permutation_strategy is not None:
+        if permutation_strategy not in _VALID_STRATEGIES:
+            raise ValueError(
+                f"permutation_strategy must be one of "
+                f"{sorted(_VALID_STRATEGIES)}, got "
+                f"{permutation_strategy!r}."
+            )
+        resolved = permutation_strategy
+    else:
+        # Default when groups are provided without explicit strategy.
+        resolved = "within"
+
+    # ---- Convert groups to integer cell labels -------------------
+    if isinstance(groups, pd.DataFrame):
+        if groups.shape[1] == 1:
+            # Single blocking column → extract as 1-D.
+            cells_raw = groups.iloc[:, 0].values
+        else:
+            # Multi-column blocking → cross-classify into unique
+            # integer cell labels (Cartesian product of levels).
+            cells_raw = _cross_classify(groups)
+    elif isinstance(groups, pd.Series):
+        cells_raw = groups.values
+    else:
+        cells_raw = np.asarray(groups)
+
+    cells = _to_integer_labels(cells_raw)
+
+    # ---- Shape check ---------------------------------------------
+    if len(cells) != n:
+        raise ValueError(f"groups has {len(cells)} elements but X has {n} rows.")
+
+    # ---- Strategy-specific guards --------------------------------
+    unique_labels = np.unique(cells)
+    G = len(unique_labels)
+
+    if resolved == "between" and G < 5:
+        raise ValueError(
+            f"permutation_strategy='between' requires at least 5 groups "
+            f"(G={G} gives G!={_factorial_safe(G)}, min p≈"
+            f"{1 / _factorial_safe(G):.4f} — too coarse for α=0.05).  "
+            f"Use 'within' or 'two-stage' for small G, or add more "
+            f"groups."
+        )
+
+    # ---- Between-cell infeasibility (unbalanced cells) -----------
+    #
+    # Between-cell permutations can only swap cells of the same size.
+    # If all cells have unique sizes, no valid permutations exist.
+    # Guide the user to within or two-stage as alternatives.
+    cell_sizes = np.bincount(cells)
+    non_empty_sizes = cell_sizes[cell_sizes > 0].tolist()
+
+    if resolved == "between":
+        between_total = _between_cell_total(non_empty_sizes)
+        between_available = between_total - 1  # excluding identity
+
+        if between_available == 0:
+            raise ValueError(
+                f"permutation_strategy='between' is infeasible: all "
+                f"{G} cells have different sizes "
+                f"({sorted(set(non_empty_sizes))}), so no valid "
+                f"between-cell permutations exist.  Between-cell "
+                f"permutations can only swap cells of the same size.  "
+                f"Use permutation_strategy='within' (shuffles within "
+                f"each cell) or 'two-stage' (composes between- and "
+                f"within-cell shuffles) instead."
+            )
+
+        if between_available < 100:
+            warnings.warn(
+                f"Only {between_available} unique between-cell "
+                f"permutations are available (cells have sizes "
+                f"{sorted(set(non_empty_sizes))}).  Between-cell "
+                f"permutations can only swap same-size cells, limiting "
+                f"the reference distribution.  Consider "
+                f"permutation_strategy='two-stage' for a richer "
+                f"reference set.",
+                UserWarning,
+                stacklevel=3,
+            )
+
+    # ---- Singleton warnings (Step 11b) ---------------------------
+    n_singletons = int(np.sum(cell_sizes == 1))
+
+    if n_singletons > 0 and resolved in ("within", "two-stage"):
+        warnings.warn(
+            f"{n_singletons} cell(s) contain a single observation and "
+            f"contribute nothing to the '{resolved}' within-cell "
+            f"reference distribution.  Their members are never shuffled.",
+            UserWarning,
+            stacklevel=3,
+        )
+
+    # ---- Two-stage imbalance (Step 11d) --------------------------
+    if resolved == "two-stage":
+        ratio = float(max(non_empty_sizes)) / float(min(non_empty_sizes))
+        if ratio > 3.0:
+            warnings.warn(
+                f"Two-stage permutation assumes independence of between-"
+                f"cell and within-cell exchangeability.  Cell sizes are "
+                f"highly unbalanced (max/min = {ratio:.1f} > 3).  "
+                f"Consider 'within' for safer inference.",
+                UserWarning,
+                stacklevel=3,
+            )
+
+    return cells, resolved
+
+
+def _cross_classify(df: pd.DataFrame) -> np.ndarray:
+    """Convert a multi-column DataFrame into integer cell labels.
+
+    Each unique combination of factor levels across all columns gets
+    a unique integer label.  The mapping is deterministic (labels are
+    assigned in the order the combinations first appear).
+
+    Args:
+        df: DataFrame with one or more blocking columns.
+
+    Returns:
+        Integer array of shape ``(n,)`` with cell labels.
+    """
+    # Tuple-ify each row, then map to sequential integers.
+    keys = list(map(tuple, df.values.tolist()))
+    label_map: dict[tuple[Any, ...], int] = {}
+    labels = np.empty(len(keys), dtype=np.intp)
+    for i, key in enumerate(keys):
+        if key not in label_map:
+            label_map[key] = len(label_map)
+        labels[i] = label_map[key]
+    return labels
+
+
+def _to_integer_labels(arr: np.ndarray) -> np.ndarray:
+    """Map arbitrary labels to 0-indexed integers.
+
+    Args:
+        arr: Array of labels (ints, strings, floats, etc.).
+
+    Returns:
+        Integer array ``(n,)`` with values in ``[0, G-1]``.
+    """
+    _, inverse = np.unique(arr, return_inverse=True)
+    return np.asarray(inverse, dtype=np.intp)
+
+
+def _factorial_safe(n: int) -> int:
+    """Compute n! capped at a large sentinel to avoid slowdowns."""
+    import math
+
+    if n > 20:
+        return 10**18  # sentinel — never used in comparisons
+    return math.factorial(n)
+
+
+# ------------------------------------------------------------------ #
+# Callback validation (Step 11a)
+# ------------------------------------------------------------------ #
+
+
+def _validate_constraints(
+    callback: Callable[[np.ndarray], np.ndarray],
+    n_samples: int,
+) -> None:
+    """Validate a user-supplied permutation constraint callback.
+
+    Performs a shape probe: calls the callback on a small test batch
+    to verify it returns an ``np.ndarray`` with the correct second
+    dimension and no more rows than it received.
+
+    Args:
+        callback: The user's constraint function.
+        n_samples: Number of observations (second dimension of the
+            permutation array).
+
+    Raises:
+        TypeError: If *callback* is not callable, or if the probe
+            returns an unexpected type or shape.
+    """
+    if not callable(callback):
+        raise TypeError(
+            f"permutation_constraints must be callable, got {type(callback).__name__}."
+        )
+
+    # Shape probe with a 2-row identity-ish batch.
+    probe = np.tile(np.arange(n_samples, dtype=np.intp), (2, 1))
+    try:
+        result = callback(probe)
+    except Exception as exc:
+        raise TypeError(
+            f"permutation_constraints raised an error on a probe call: {exc}"
+        ) from exc
+
+    if not isinstance(result, np.ndarray):
+        raise TypeError(
+            f"permutation_constraints must return np.ndarray, got "
+            f"{type(result).__name__}."
+        )
+
+    if result.ndim != 2 or result.shape[1] != n_samples:
+        raise TypeError(
+            f"permutation_constraints returned shape {result.shape}, "
+            f"expected (B', {n_samples}) with B' ≤ 2."
+        )
+
+    if result.shape[0] > probe.shape[0]:
+        raise TypeError(
+            f"permutation_constraints returned {result.shape[0]} rows — "
+            f"more than the input ({probe.shape[0]}).  Callbacks must "
+            f"filter (remove rows), not add."
+        )
+
+
+# ------------------------------------------------------------------ #
 # Result packaging helpers
 # ------------------------------------------------------------------ #
 
@@ -341,8 +644,8 @@ def _package_joint_result(
         feature_names=list(X.columns),
         target_name=str(y.columns[0]),
         n_permutations=n_permutations,
-        groups=None,
-        permutation_strategy=None,
+        groups=engine.groups,
+        permutation_strategy=engine.permutation_strategy,
         p_value_threshold_one=p_value_threshold_one,
         p_value_threshold_two=p_value_threshold_two,
         method=method,
@@ -419,8 +722,8 @@ def _package_individual_result(
         feature_names=list(X.columns),
         target_name=str(y.columns[0]),
         n_permutations=n_permutations,
-        groups=None,
-        permutation_strategy=None,
+        groups=engine.groups,
+        permutation_strategy=engine.permutation_strategy,
         diagnostics=engine.diagnostics,
         extended_diagnostics=extended_diagnostics,
     )

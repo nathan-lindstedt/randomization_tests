@@ -1086,3 +1086,404 @@ class TestBackendParameter:
             permutation_test_regression(
                 X, y, n_permutations=20, random_state=0, backend="torch"
             )
+
+
+# ------------------------------------------------------------------ #
+# Groups parameter tests (Step 10f)
+# ------------------------------------------------------------------ #
+
+
+def _make_grouped_data(n_per_group=20, n_groups=5, seed=42):
+    """Create linear data with balanced group labels."""
+    n = n_per_group * n_groups
+    rng = np.random.default_rng(seed)
+    X = pd.DataFrame(
+        {
+            "x1": rng.standard_normal(n),
+            "x2": rng.standard_normal(n),
+        }
+    )
+    y = pd.DataFrame({"y": 2.0 * X["x1"] + rng.standard_normal(n) * 0.5})
+    groups = np.repeat(np.arange(n_groups), n_per_group)
+    return X, y, groups
+
+
+class TestGroupsParameter:
+    """Tests for the ``groups=`` parameter (Step 10f)."""
+
+    def test_groups_wrong_length_raises(self):
+        X, y = _make_linear_data(n=100)
+        groups = np.array([0, 1, 2])
+        with pytest.raises(ValueError, match="groups has 3 elements but X has 100"):
+            permutation_test_regression(
+                X, y, n_permutations=20, random_state=0, groups=groups
+            )
+
+    def test_strategy_without_groups_raises(self):
+        X, y = _make_linear_data()
+        with pytest.raises(ValueError, match="requires groups="):
+            permutation_test_regression(
+                X, y, n_permutations=20, random_state=0, permutation_strategy="within"
+            )
+
+    def test_invalid_strategy_raises(self):
+        X, y, groups = _make_grouped_data()
+        with pytest.raises(ValueError, match="permutation_strategy must be one of"):
+            permutation_test_regression(
+                X,
+                y,
+                n_permutations=20,
+                random_state=0,
+                groups=groups,
+                permutation_strategy="random",
+            )
+
+    def test_between_with_few_groups_raises(self):
+        X, y, groups = _make_grouped_data(n_per_group=25, n_groups=3)
+        with pytest.raises(ValueError, match="requires at least 5 groups"):
+            permutation_test_regression(
+                X,
+                y,
+                n_permutations=20,
+                random_state=0,
+                groups=groups,
+                permutation_strategy="between",
+            )
+
+    def test_between_infeasible_all_unique_sizes_raises(self):
+        """Between-cell raises ValueError when all cells have unique sizes."""
+        rng = np.random.default_rng(0)
+        # 5 groups with sizes 10, 11, 12, 13, 14 — all different
+        sizes = [10, 11, 12, 13, 14]
+        n = sum(sizes)
+        X = pd.DataFrame({"x1": rng.standard_normal(n)})
+        y = pd.DataFrame({"y": rng.standard_normal(n)})
+        groups = np.concatenate([np.full(s, i) for i, s in enumerate(sizes)])
+
+        with pytest.raises(ValueError, match="infeasible.*all.*different sizes"):
+            permutation_test_regression(
+                X,
+                y,
+                n_permutations=20,
+                random_state=0,
+                groups=groups,
+                permutation_strategy="between",
+            )
+
+    def test_between_low_budget_warns(self):
+        """Between-cell warns when few permutations available."""
+        rng = np.random.default_rng(0)
+        # 5 groups: 2 of size 10, 3 of size 12 — between_total = 2!*3! = 12
+        # available = 11 (excluding identity), which is < 100
+        sizes = [10, 10, 12, 12, 12]
+        n = sum(sizes)
+        X = pd.DataFrame({"x1": rng.standard_normal(n)})
+        y = pd.DataFrame({"y": rng.standard_normal(n)})
+        groups = np.concatenate([np.full(s, i) for i, s in enumerate(sizes)])
+
+        with pytest.warns(UserWarning, match="Only.*unique between-cell"):
+            permutation_test_regression(
+                X,
+                y,
+                n_permutations=20,
+                random_state=0,
+                groups=groups,
+                permutation_strategy="between",
+            )
+
+    def test_groups_without_strategy_defaults_to_within(self):
+        X, y, groups = _make_grouped_data()
+        result = permutation_test_regression(
+            X, y, n_permutations=20, random_state=0, groups=groups
+        )
+        assert result.permutation_strategy == "within"
+
+    def test_multi_column_dataframe_cross_classification(self):
+        """Multi-column DataFrame produces cross-classified cells."""
+        n = 100
+        rng = np.random.default_rng(42)
+        X = pd.DataFrame({"x1": rng.standard_normal(n)})
+        y = pd.DataFrame({"y": rng.standard_normal(n)})
+        groups_df = pd.DataFrame(
+            {
+                "block": np.repeat([0, 1], 50),
+                "site": np.tile([0, 1, 2, 3, 4], 20),
+            }
+        )
+        result = permutation_test_regression(
+            X,
+            y,
+            n_permutations=20,
+            random_state=0,
+            groups=groups_df,
+            permutation_strategy="within",
+        )
+        assert result.permutation_strategy == "within"
+        assert result.groups is not None
+        # 2 blocks × 5 sites = 10 unique cells
+        assert len(np.unique(result.groups)) == 10
+
+    def test_single_column_dataframe_extracted(self):
+        """Single-column DataFrame is treated as 1-D."""
+        X, y, groups = _make_grouped_data()
+        groups_df = pd.DataFrame({"group": groups})
+        result = permutation_test_regression(
+            X,
+            y,
+            n_permutations=20,
+            random_state=0,
+            groups=groups_df,
+            permutation_strategy="within",
+        )
+        assert result.permutation_strategy == "within"
+        assert result.groups is not None
+        assert len(np.unique(result.groups)) == 5
+
+    def test_result_fields_populated(self):
+        """Result objects have groups and permutation_strategy set."""
+        X, y, groups = _make_grouped_data()
+        result = permutation_test_regression(
+            X,
+            y,
+            n_permutations=20,
+            random_state=0,
+            groups=groups,
+            permutation_strategy="within",
+        )
+        assert result.groups is not None
+        assert result.permutation_strategy == "within"
+        assert len(result.groups) == len(groups)
+
+    def test_no_groups_result_fields_none(self):
+        """Without groups, result fields remain None."""
+        X, y = _make_linear_data()
+        result = permutation_test_regression(X, y, n_permutations=20, random_state=0)
+        assert result.groups is None
+        assert result.permutation_strategy is None
+
+    def test_between_strategy_end_to_end(self):
+        """Between-cell strategy works end-to-end."""
+        X, y, groups = _make_grouped_data(n_per_group=10, n_groups=6)
+        result = permutation_test_regression(
+            X,
+            y,
+            n_permutations=20,
+            random_state=0,
+            groups=groups,
+            permutation_strategy="between",
+        )
+        assert result.permutation_strategy == "between"
+
+    def test_two_stage_strategy_end_to_end(self):
+        """Two-stage strategy works end-to-end."""
+        X, y, groups = _make_grouped_data()
+        result = permutation_test_regression(
+            X,
+            y,
+            n_permutations=20,
+            random_state=0,
+            groups=groups,
+            permutation_strategy="two-stage",
+        )
+        assert result.permutation_strategy == "two-stage"
+
+    def test_joint_method_with_groups(self):
+        """Groups work with joint methods too."""
+        X, y, groups = _make_grouped_data()
+        result = permutation_test_regression(
+            X,
+            y,
+            n_permutations=20,
+            random_state=0,
+            groups=groups,
+            permutation_strategy="within",
+            method="kennedy_joint",
+            confounders=["x1"],
+        )
+        assert result.permutation_strategy == "within"
+        assert result.groups is not None
+
+
+# ------------------------------------------------------------------ #
+# Callback validation tests (Step 11f)
+# ------------------------------------------------------------------ #
+
+
+class TestCallbackValidation:
+    """Tests for ``permutation_constraints`` callback validation (Step 11a)."""
+
+    def test_non_callable_raises(self):
+        X, y = _make_linear_data()
+        with pytest.raises(TypeError, match="must be callable"):
+            permutation_test_regression(
+                X,
+                y,
+                n_permutations=20,
+                random_state=0,
+                permutation_constraints="not_callable",  # type: ignore[arg-type]
+            )
+
+    def test_wrong_return_type_raises(self):
+        X, y = _make_linear_data()
+
+        def bad_callback(perms: np.ndarray) -> list[int]:
+            return [1, 2, 3]  # type: ignore[return-value]
+
+        with pytest.raises(TypeError, match="must return np.ndarray"):
+            permutation_test_regression(
+                X,
+                y,
+                n_permutations=20,
+                random_state=0,
+                permutation_constraints=bad_callback,  # type: ignore[arg-type]
+            )
+
+    def test_wrong_shape_raises(self):
+        X, y = _make_linear_data()
+
+        def bad_shape(perms: np.ndarray) -> np.ndarray:
+            return perms[:, :5]  # wrong number of columns
+
+        with pytest.raises(TypeError, match="returned shape"):
+            permutation_test_regression(
+                X,
+                y,
+                n_permutations=20,
+                random_state=0,
+                permutation_constraints=bad_shape,
+            )
+
+    def test_valid_callback_applies(self):
+        X, y = _make_linear_data()
+
+        def keep_all(perms: np.ndarray) -> np.ndarray:
+            return perms
+
+        result = permutation_test_regression(
+            X, y, n_permutations=20, random_state=0, permutation_constraints=keep_all
+        )
+        assert result is not None
+
+
+# ------------------------------------------------------------------ #
+# Singleton warnings tests (Step 11f)
+# ------------------------------------------------------------------ #
+
+
+class TestSingletonWarnings:
+    """Tests for singleton cell warnings (Step 11b)."""
+
+    def test_within_with_singleton_warns(self):
+        n = 100
+        rng = np.random.default_rng(42)
+        X = pd.DataFrame({"x1": rng.standard_normal(n)})
+        y = pd.DataFrame({"y": rng.standard_normal(n)})
+        # Make 98 observations in one group and 2 singletons
+        groups = np.zeros(n, dtype=int)
+        groups[-2] = 1
+        groups[-1] = 2
+        with pytest.warns(UserWarning, match="single observation"):
+            permutation_test_regression(
+                X,
+                y,
+                n_permutations=20,
+                random_state=0,
+                groups=groups,
+                permutation_strategy="within",
+            )
+
+    def test_between_with_singleton_no_warning(self):
+        n = 50
+        rng = np.random.default_rng(42)
+        X = pd.DataFrame({"x1": rng.standard_normal(n)})
+        y = pd.DataFrame({"y": rng.standard_normal(n)})
+        groups = np.repeat(np.arange(5), 10)
+        groups[-1] = 5  # one singleton — 6 groups total
+        # Between strategy → no singleton warning
+        import warnings as w
+
+        with w.catch_warnings():
+            w.simplefilter("error", UserWarning)
+            # This should NOT raise — between doesn't warn about singletons
+            # But it might warn about other things, so we just check no
+            # "single observation" warning
+            try:
+                permutation_test_regression(
+                    X,
+                    y,
+                    n_permutations=20,
+                    random_state=0,
+                    groups=groups,
+                    permutation_strategy="between",
+                )
+            except UserWarning as exc:
+                assert "single observation" not in str(exc)
+
+    def test_two_stage_with_singleton_warns(self):
+        n = 16
+        rng = np.random.default_rng(42)
+        X = pd.DataFrame({"x1": rng.standard_normal(n)})
+        y = pd.DataFrame({"y": rng.standard_normal(n)})
+        # 5 groups of size 3 + 1 singleton → max/min = 3.0, not > 3
+        groups = np.array([0, 0, 0, 1, 1, 1, 2, 2, 2, 3, 3, 3, 4, 4, 4, 5])
+        with pytest.warns(UserWarning, match="single observation"):
+            permutation_test_regression(
+                X,
+                y,
+                n_permutations=20,
+                random_state=0,
+                groups=groups,
+                permutation_strategy="two-stage",
+            )
+
+
+# ------------------------------------------------------------------ #
+# Two-stage imbalance tests (Step 11f)
+# ------------------------------------------------------------------ #
+
+
+class TestTwoStageImbalance:
+    """Tests for two-stage imbalance warnings (Step 11d)."""
+
+    def test_unbalanced_warns(self):
+        """Groups of sizes [2, 2, 20, ...] → warn about ratio > 3."""
+        rng = np.random.default_rng(42)
+        n = 60
+        X = pd.DataFrame({"x1": rng.standard_normal(n)})
+        y = pd.DataFrame({"y": rng.standard_normal(n)})
+        # 3 groups: sizes 2, 2, 56 → max/min = 28
+        groups = np.zeros(n, dtype=int)
+        groups[:2] = 0
+        groups[2:4] = 1
+        groups[4:] = 2
+        # Also expect singleton warning since groups 0,1 have size 2
+        # but the key check is the imbalance warning
+        with pytest.warns(UserWarning, match="unbalanced"):
+            permutation_test_regression(
+                X,
+                y,
+                n_permutations=20,
+                random_state=0,
+                groups=groups,
+                permutation_strategy="two-stage",
+            )
+
+    def test_balanced_no_imbalance_warning(self):
+        """Balanced groups → no imbalance warning."""
+        X, y, groups = _make_grouped_data()
+        # Should not warn about imbalance
+        import warnings as w
+
+        with w.catch_warnings():
+            w.simplefilter("error", UserWarning)
+            try:
+                permutation_test_regression(
+                    X,
+                    y,
+                    n_permutations=20,
+                    random_state=0,
+                    groups=groups,
+                    permutation_strategy="two-stage",
+                )
+            except UserWarning as exc:
+                assert "unbalanced" not in str(exc)

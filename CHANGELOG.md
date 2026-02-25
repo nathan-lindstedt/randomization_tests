@@ -5,6 +5,98 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.1] - Unreleased
+
+### Added
+
+- **`groups=` parameter** on `permutation_test_regression()`:
+  accepts array-like integer labels, `pd.Series`, or `pd.DataFrame`
+  (single-column extracted as 1-D; multi-column cross-classified into
+  integer cell labels).  When provided, permutations respect group
+  structure instead of shuffling globally.
+- **`permutation_strategy=` parameter**: `"within"` (default when
+  `groups` is provided), `"between"`, or `"two-stage"`.  Controls
+  how permutations interact with exchangeability cells.
+- **`permutation_constraints=` callback parameter**: optional
+  post-filter that receives `(B, n)` and returns `(B', n)`.  Engine
+  back-fills gaps by generating more permutations and re-filtering.
+  Validated on construction via shape probe.
+- **Three new permutation generators** in `permutations.py`:
+  `generate_within_cell_permutations()`,
+  `generate_between_cell_permutations()`,
+  `generate_two_stage_permutations()`.  All support hash-based dedup,
+  identity exclusion, budget capping with warnings, and
+  reproducibility via `random_state`.
+- **`_validate_groups()` and `_validate_constraints()`** in `core.py`:
+  input validation for group labels, strategy strings, callback
+  shape probing, singleton cell warnings, two-stage imbalance
+  warnings, and minimum-group-count enforcement (G ≥ 5 for
+  `"between"`).
+- **Engine dispatch** in `engine.py`: `_permute_hook()` now routes
+  to cell-constrained generators based on `permutation_strategy`,
+  falls back to `family.exchangeability_cells()` when no explicit
+  `groups` are provided, and applies callback post-filters.
+- **Result wiring**: `IndividualTestResult.groups`,
+  `.permutation_strategy` and `JointTestResult.groups`,
+  `.permutation_strategy` are now populated from the engine instead
+  of hard-coded to `None`.
+- **48 new tests** across `test_permutations.py` (23),
+  `test_core.py` (21), and `test_engine.py` (4) covering generators,
+  validation, dispatch, budget warnings, singleton warnings,
+  imbalance warnings, callback validation, and end-to-end integration.
+- **Mixed-radix Lehmer-code sampling** for within-cell and two-stage
+  (balanced) generators: when the composite reference set
+  ∏ n_c! ≤ 50,000, permutation ranks are sampled without replacement
+  via the factorial number system — zero collisions, exact enumeration
+  when B ≥ available.  New `_unrank_within_cell()` helper decomposes
+  composite ranks into per-cell sub-permutations.
+- **Vectorised batch generation** for within-cell permutations:
+  large-cell regimes (∏ n_c! > threshold) now generate all B
+  candidates in one `np.tile` + per-cell `rng.permuted(axis=1)` call
+  with post-hoc hash dedup, replacing one-at-a-time Python loop.
+- **Safety cap on global generator gap-fill**: the previously
+  unbounded `while count < n_permutations` gap-fill loop in
+  `generate_unique_permutations` now has a `max_attempts` bound,
+  preventing hangs in degenerate edge cases.
+- **19 new tests** for the new code paths: `TestUnrankWithinCell` (4),
+  `TestWithinCellLehmerPath` (4), `TestWithinCellVectorisedPath` (4),
+  `TestTwoStageLehmerPath` (5), `TestGlobalGapFillCap` (2).
+- **Cell generator benchmark** (`benchmarks/profile_cell_generators.py`):
+  26-scenario timing harness for all four generators with `--tag`
+  support for before/after comparison.
+- **Between-cell infeasibility validation** in `core.py`:
+  `permutation_strategy='between'` now raises a `ValueError` with
+  actionable guidance when all cells have unique sizes (no valid
+  permutations exist), and emits a `UserWarning` when fewer than 100
+  between-cell permutations are available, directing users to
+  `'within'` or `'two-stage'` as alternatives.
+- **End-to-end engine benchmark** (`benchmarks/profile_endtoend.py`):
+  measures full `permutation_test_regression()` pipeline wall time
+  across 14 scenarios varying predictor count (p=1–20), sample size
+  (n=100–1000), model family (linear, logistic, Poisson), and
+  permutation strategy (global, within, two-stage).  Generates 3
+  charts: time vs. p, strategy overhead ratio, family comparison.
+- **2 new tests** in `test_core.py`:
+  `test_between_infeasible_all_unique_sizes_raises` and
+  `test_between_low_budget_warns` covering the new validation logic.
+
+### Changed
+
+- `PermutationEngine.__init__()` accepts three new keyword arguments
+  (`groups`, `permutation_strategy`, `permutation_constraints`) and
+  stores them as instance attributes before permutation generation.
+- `_permute_hook()` rewritten from simple `generate_unique_permutations`
+  passthrough to full strategy dispatcher with family cell fallback.
+- `permutations.py` module docstring expanded to document all 6
+  generation strategies (3 global + 3 cell-constrained).
+- **Two-stage within-cell shuffle vectorised**: the B×G Python loop
+  that applied per-row `rng.permutation()` within each cell is
+  replaced by a G-iteration loop using `rng.permuted(block, axis=1)`
+  — all B rows shuffled at C-level in a single call per cell.
+  Speedups: `paired_design_30` 8.2× (1.84s → 0.23s),
+  `triplet_design_20` 6.1× (1.19s → 0.20s), large-n designs
+  1.1–1.5× at B=9,999.
+
 ## [0.4.0] - Unreleased
 
 ### Added

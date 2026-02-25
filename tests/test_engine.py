@@ -670,3 +670,75 @@ class TestBackendInjection:
             PermutationEngine(
                 X, y, n_permutations=_N_PERMS, random_state=_SEED, backend="torch"
             )
+
+
+# ------------------------------------------------------------------ #
+# Groups dispatch tests (Step 10f)
+# ------------------------------------------------------------------ #
+
+
+class TestGroupsDispatch:
+    """Tests for groups/strategy dispatch in PermutationEngine."""
+
+    def test_no_groups_global_permutation(self, linear_data):
+        """Without groups, engine generates global permutations."""
+        X, y = linear_data
+        engine = PermutationEngine(X, y, n_permutations=_N_PERMS, random_state=_SEED)
+        assert engine.groups is None
+        assert engine.permutation_strategy is None
+        assert engine.perm_indices.shape == (_N_PERMS, len(y))
+
+    def test_within_groups_dispatch(self, linear_data):
+        """With groups and 'within', perm indices respect cell boundaries."""
+        X, y = linear_data
+        n = len(y)
+        groups = np.repeat(np.arange(5), n // 5)
+        engine = PermutationEngine(
+            X,
+            y,
+            n_permutations=_N_PERMS,
+            random_state=_SEED,
+            groups=groups,
+            permutation_strategy="within",
+        )
+        assert engine.groups is not None
+        assert engine.permutation_strategy == "within"
+        # Verify cell boundary preservation
+        for row in engine.perm_indices:
+            for g in range(5):
+                cell_mask = groups == g
+                cell_indices = set(np.where(cell_mask)[0].tolist())
+                permuted = set(row[cell_mask].tolist())
+                assert permuted == cell_indices
+
+    def test_between_groups_dispatch(self, linear_data):
+        """Between strategy preserves intra-cell ordering."""
+        X, y = linear_data
+        n = len(y)
+        groups = np.repeat(np.arange(5), n // 5)
+        engine = PermutationEngine(
+            X,
+            y,
+            n_permutations=_N_PERMS,
+            random_state=_SEED,
+            groups=groups,
+            permutation_strategy="between",
+        )
+        assert engine.permutation_strategy == "between"
+        assert engine.perm_indices.shape[0] == _N_PERMS
+
+    def test_result_fields_populated(self, linear_data):
+        """Engine stores groups and strategy."""
+        X, y = linear_data
+        n = len(y)
+        groups = np.repeat(np.arange(5), n // 5)
+        engine = PermutationEngine(
+            X,
+            y,
+            n_permutations=_N_PERMS,
+            random_state=_SEED,
+            groups=groups,
+            permutation_strategy="within",
+        )
+        np.testing.assert_array_equal(engine.groups, groups)
+        assert engine.permutation_strategy == "within"

@@ -1,0 +1,25 @@
+v0.4.1: exchangeability cells — groups=, within/between/two-stage permutations
+
+Steps 10-11 complete:
+- groups= parameter on permutation_test_regression() with within/between/two-stage strategies
+- generate_within_cell_permutations() with Lehmer-code exhaustive enumeration for small cells
+- generate_between_cell_permutations() with index remapping for unbalanced groups
+- generate_two_stage_permutations() composing between + within
+- Engine _permute_hook() dispatches based on groups/strategy/family.exchangeability_cells()
+- Validation guardrails: callback validation, singleton warnings, budget checks, imbalance warnings
+- Two-stage vectorization via pre-composed index arrays (no per-permutation Python loops)
+- Cycling bug fix for within-cell generator with infeasible between-cell combinations
+- Between-cell infeasibility validation with clear error messages
+
+Benchmarks:
+- End-to-end profiling across all 6 families and 3 strategies
+- Real-world scenario profiling (clinical trial, education, manufacturing)
+- Updated dedup profiling with cell generator comparisons
+
+Housekeeping:
+- Plan steps 5-11 crossed off
+- ROADMAP cleaned (removed pre-v0.4.0 completed sections)
+- Verify gates moved to tests/verify_gates/
+- Version 0.4.1
+
+745 tests passing, 0 failures
