@@ -51,10 +51,11 @@ was added to the `ModelFamily` protocol in v0.3.0 Step 6b
 (stabilisation) as a no-op stub returning `None` (global
 exchangeability) on all six families (linear, logistic, Poisson,
 negative binomial, ordinal, multinomial).  This release fills it in
-with real cell structures.  Similarly, `calibrate()` (v0.3.0 Step 7, NB) is
-currently called via `hasattr` in `core.py`; the
-`PermutationEngine` (Step 9) will formalise this as a constructor
-hook.  The duck-typed `model_fit_metric()` and `null_fit_metric()`
+with real cell structures.  `calibrate()` is now a formal
+`ModelFamily` protocol method (Step 14a) called unconditionally by
+`PermutationEngine.__init__`; the former `hasattr` guard has been
+removed.  All six concrete families are sealed with `@final`.
+The duck-typed `model_fit_metric()` and `null_fit_metric()`
 on ordinal and multinomial families are replaced by new `score()`
 and `null_score()` protocol methods, eliminating the `hasattr`
 branching in Kennedy joint.

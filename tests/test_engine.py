@@ -201,7 +201,7 @@ class TestEngineConstruction:
 
 
 class TestEngineCalibration:
-    """Verify calibrate() is called during construction."""
+    """Verify calibrate() is called unconditionally during construction."""
 
     def test_nb_alpha_is_set(self, count_data):
         X, y = count_data
@@ -216,7 +216,8 @@ class TestEngineCalibration:
         assert engine.family.alpha is not None
         assert engine.family.alpha > 0
 
-    def test_linear_has_no_alpha(self, linear_data):
+    def test_linear_calibrate_is_noop(self, linear_data):
+        """LinearFamily.calibrate() returns self — engine still works."""
         X, y = linear_data
         engine = PermutationEngine(
             X,
@@ -225,7 +226,49 @@ class TestEngineCalibration:
             n_permutations=_N_PERMS,
             random_state=_SEED,
         )
+        # calibrate() was called (unconditionally) but linear has no alpha
         assert not hasattr(engine.family, "alpha")
+        assert engine.family.name == "linear"
+
+    def test_calibrate_called_unconditionally(self, linear_data):
+        """Wrapping family tracks whether calibrate() was invoked.
+
+        ``LinearFamily`` is ``@final`` — subclassing is not permitted.
+        Instead, we wrap a real ``LinearFamily`` in a lightweight
+        delegation class that satisfies the ``ModelFamily`` protocol
+        structurally and intercepts ``calibrate()`` to set a flag.
+        """
+        X, y = linear_data
+
+        class _TrackingFamily:
+            """Delegation wrapper that logs calibrate() calls.
+
+            Returns ``self`` so the engine stores this wrapper (not the
+            inner family) as ``engine.family``, preserving the flag.
+            """
+
+            def __init__(self) -> None:
+                self._inner = LinearFamily()
+                self.calibrate_called: bool = False
+
+            def __getattr__(self, name: str):
+                # Delegate everything except calibrate to the inner family.
+                return getattr(self._inner, name)
+
+            def calibrate(self, X, y, fit_intercept=True):
+                self.calibrate_called = True
+                # Return self (not inner) so the engine keeps our wrapper.
+                return self
+
+        family = _TrackingFamily()
+        engine = PermutationEngine(
+            X,
+            y,
+            family=family,
+            n_permutations=_N_PERMS,
+            random_state=_SEED,
+        )
+        assert engine.family.calibrate_called
 
 
 # ------------------------------------------------------------------ #

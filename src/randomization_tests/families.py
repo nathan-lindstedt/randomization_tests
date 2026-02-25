@@ -34,7 +34,7 @@ from __future__ import annotations
 
 import warnings
 from dataclasses import dataclass
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Protocol, final, runtime_checkable
 
 import numpy as np
 import statsmodels.api as sm
@@ -47,6 +47,7 @@ from statsmodels.tools.sm_exceptions import (
     HessianInversionWarning,
     PerfectSeparationWarning,
 )
+from typing_extensions import Self
 
 # ------------------------------------------------------------------ #
 # Display helpers
@@ -491,6 +492,16 @@ class ModelFamily(Protocol):
         ...
 
     # ---- Exchangeability (v0.4.0 forward-compat) -------------------
+    #
+    # Protocol default: return ``None`` (global exchangeability).
+    #
+    # NOTE on structural subtyping: ``@runtime_checkable`` Protocol
+    # methods with default bodies are NOT inherited by concrete classes
+    # that satisfy the protocol structurally (i.e. through duck typing
+    # rather than explicit subclassing).  Every concrete family must
+    # therefore define its own ``exchangeability_cells()`` explicitly,
+    # even if it just returns ``None``.  The protocol body here exists
+    # solely as documentation of the default semantics.
 
     def exchangeability_cells(
         self,
@@ -517,6 +528,45 @@ class ModelFamily(Protocol):
             exchangeability.
         """
         ...
+
+    # ---- Calibration -----------------------------------------------
+    #
+    # Protocol default: return ``self`` (no calibration needed).
+    #
+    # Same structural-subtyping caveat as ``exchangeability_cells()``
+    # above — every concrete ``@final`` family must define its own
+    # ``calibrate()`` explicitly.  Five of the six families are true
+    # no-ops (return ``self``); ``NegativeBinomialFamily`` is the
+    # only family that performs substantive calibration (estimating
+    # the dispersion parameter α via MLE).
+
+    def calibrate(
+        self,
+        X: np.ndarray,
+        y: np.ndarray,
+        fit_intercept: bool = True,
+    ) -> Self:
+        """Estimate nuisance parameters from the observed data.
+
+        Called once by ``PermutationEngine.__init__`` before the
+        permutation loop.  Families that need data-driven calibration
+        (e.g. negative binomial α, mixed-effects variance ratios γ̂)
+        override this to return a **new** instance with calibrated
+        state baked in.  Families that need no calibration inherit
+        the default no-op, which returns ``self``.
+
+        The method is **idempotent**: calling it on an already-
+        calibrated instance returns ``self`` unchanged.
+
+        Args:
+            X: Design matrix ``(n, p)`` — no intercept column.
+            y: Response vector ``(n,)``.
+            fit_intercept: Whether the model includes an intercept.
+
+        Returns:
+            A calibrated family instance (possibly ``self``).
+        """
+        return self
 
     def batch_fit(
         self,
@@ -681,6 +731,7 @@ class ModelFamily(Protocol):
 # variant.
 
 
+@final
 @dataclass(frozen=True)
 class _InterceptOnlyOLS:
     """Lightweight stub for the intercept-only OLS model (0 features).
@@ -701,7 +752,7 @@ class _InterceptOnlyOLS:
     intercept_: float
     coef_: np.ndarray  # always shape (0,)
 
-    def predict(self, X: np.ndarray) -> np.ndarray:  # noqa: ARG002
+    def predict(self, X: np.ndarray) -> np.ndarray:
         """Return a constant prediction vector (intercept only)."""
         n = X.shape[0]
         return np.full(n, self.intercept_)
@@ -713,6 +764,19 @@ def _make_intercept_only_ols(y: np.ndarray, fit_intercept: bool) -> _InterceptOn
     return _InterceptOnlyOLS(intercept_=intercept, coef_=np.empty(0))
 
 
+# Each concrete family is ``@final`` — these are sealed leaf
+# implementations of the ``ModelFamily`` protocol.  The protocol
+# itself is the extension point: new model types implement the
+# protocol directly rather than subclassing an existing family.
+# ``@final`` tells mypy (and human readers) that no subclasses
+# exist, which:
+#   1. Documents intent — families are not designed for inheritance.
+#   2. Makes ``Self`` resolve to the exact class, eliminating
+#      ``# type: ignore[return-value]`` on ``calibrate()`` returns.
+#   3. Has zero runtime cost — it is purely a static-analysis marker.
+
+
+@final
 @dataclass(frozen=True)
 class LinearFamily:
     """OLS linear regression family.
@@ -808,7 +872,7 @@ class LinearFamily:
         self,
         X: np.ndarray,
         y: np.ndarray,
-        fit_intercept: bool,  # noqa: ARG002
+        fit_intercept: bool,
     ) -> dict[str, Any]:
         """Compute Breusch-Pagan heteroscedasticity test."""
         from .diagnostics import compute_breusch_pagan
@@ -1071,11 +1135,33 @@ class LinearFamily:
 
     def exchangeability_cells(
         self,
-        X: np.ndarray,  # noqa: ARG002
-        y: np.ndarray,  # noqa: ARG002
+        X: np.ndarray,
+        y: np.ndarray,
     ) -> np.ndarray | None:
         """Linear models assume globally exchangeable residuals."""
         return None
+
+    # ---- Calibration -----------------------------------------------
+    #
+    # No-op: OLS has no nuisance parameters.  The Gauss–Markov
+    # assumptions (linearity, exogeneity, spherical errors) are
+    # sufficient — no data-driven calibration step is needed.
+    #
+    # This explicit override is required because ``ModelFamily`` is a
+    # structural (duck-typed) ``Protocol``, not a base class.  Default
+    # method bodies on a Protocol are not inherited by structural
+    # subtypes; only classes that *explicitly subclass* the Protocol
+    # would inherit them.  Since all families are ``@final`` sealed
+    # implementations, each must provide its own ``calibrate()``.
+
+    def calibrate(
+        self,
+        X: np.ndarray,
+        y: np.ndarray,
+        fit_intercept: bool = True,
+    ) -> Self:
+        """No-op — linear models have no nuisance parameters."""
+        return self
 
     # ---- Batch fitting (hot loop) ----------------------------------
     #
@@ -1256,6 +1342,7 @@ class LinearFamily:
 # precisely the situations where the permutation test adds value.
 
 
+@final
 @dataclass(frozen=True)
 class LogisticFamily:
     """Logistic regression family for binary outcomes.
@@ -1348,7 +1435,7 @@ class LogisticFamily:
         self,
         X: np.ndarray,
         y: np.ndarray,
-        fit_intercept: bool,  # noqa: ARG002
+        fit_intercept: bool,
     ) -> dict[str, Any]:
         """Compute deviance residual diagnostics for logistic models."""
         from .diagnostics import compute_deviance_residual_diagnostics
@@ -1651,11 +1738,29 @@ class LogisticFamily:
 
     def exchangeability_cells(
         self,
-        X: np.ndarray,  # noqa: ARG002
-        y: np.ndarray,  # noqa: ARG002
+        X: np.ndarray,
+        y: np.ndarray,
     ) -> np.ndarray | None:
         """Logistic models assume globally exchangeable residuals."""
         return None
+
+    # ---- Calibration -----------------------------------------------
+    #
+    # No-op: logistic regression has no nuisance parameters.  The
+    # Bernoulli likelihood is fully specified by β; there is no
+    # dispersion or scale parameter to estimate.
+    #
+    # Explicit override required by structural subtyping — see the
+    # ``LinearFamily.calibrate()`` comment for the full rationale.
+
+    def calibrate(
+        self,
+        X: np.ndarray,
+        y: np.ndarray,
+        fit_intercept: bool = True,
+    ) -> Self:
+        """No-op — logistic models have no nuisance parameters."""
+        return self
 
     # ---- Batch fitting (hot loop) ----------------------------------
     #
@@ -1878,6 +1983,7 @@ class LogisticFamily:
 # aggregated warning is emitted after the loop.
 
 
+@final
 @dataclass(frozen=True)
 class PoissonFamily:
     """Poisson regression family for count outcomes.
@@ -2284,11 +2390,30 @@ class PoissonFamily:
 
     def exchangeability_cells(
         self,
-        X: np.ndarray,  # noqa: ARG002
-        y: np.ndarray,  # noqa: ARG002
+        X: np.ndarray,
+        y: np.ndarray,
     ) -> np.ndarray | None:
         """Poisson models assume globally exchangeable residuals."""
         return None
+
+    # ---- Calibration -----------------------------------------------
+    #
+    # No-op: the Poisson GLM has no dispersion parameter.  The
+    # variance function Var(Y) = μ is fully determined by the mean;
+    # equi-dispersion is assumed.  If overdispersion is present,
+    # ``NegativeBinomialFamily`` should be used instead.
+    #
+    # Explicit override required by structural subtyping — see the
+    # ``LinearFamily.calibrate()`` comment for the full rationale.
+
+    def calibrate(
+        self,
+        X: np.ndarray,
+        y: np.ndarray,
+        fit_intercept: bool = True,
+    ) -> Self:
+        """No-op — Poisson models have no nuisance parameters."""
+        return self
 
     # ---- Batch fitting (hot loop) ----------------------------------
     #
@@ -2499,6 +2624,7 @@ class PoissonFamily:
 # with ``sm.families.NegativeBinomial`` and fixed α.
 
 
+@final
 @dataclass(frozen=True)
 class NegativeBinomialFamily:
     """Negative binomial regression family for overdispersed count outcomes.
@@ -2654,65 +2780,6 @@ class NegativeBinomialFamily:
                 }
             }
 
-    # ---- Internal helpers ------------------------------------------
-
-    def _nb_family(self, alpha: float) -> sm.families.NegativeBinomial:
-        """Create a statsmodels NB2 family object with fixed α."""
-        return sm.families.NegativeBinomial(alpha=alpha)
-
-    def _require_alpha(self, method: str) -> float:
-        """Return α or raise if uncalibrated."""
-        if self.alpha is None:
-            msg = (
-                f"NegativeBinomialFamily.{method} requires α to be "
-                "estimated first.  Call calibrate() on the observed data "
-                "before running permutations."
-            )
-            raise RuntimeError(msg)
-        return self.alpha
-
-    # ---- Calibration (nuisance-parameter estimation) ---------------
-
-    def calibrate(
-        self,
-        X: np.ndarray,
-        y: np.ndarray,
-        fit_intercept: bool = True,
-    ) -> ModelFamily:
-        """Estimate dispersion α from the observed data.
-
-        Uses ``sm.NegativeBinomial(y, X).fit()`` which jointly
-        estimates β and ln(α) via MLE, then extracts
-        ``α = exp(ln_alpha)``.
-
-        Returns a **new** ``NegativeBinomialFamily(alpha=α_hat)``
-        instance.  If ``self.alpha`` is already set (either by
-        construction or a prior call), returns ``self`` — making
-        this method **idempotent**.
-
-        In v0.4.0+ this hook will be called by
-        ``PermutationEngine.__init__`` before the permutation loop,
-        keeping nuisance-parameter estimation orthogonal to
-        ``exchangeability_cells()``.
-
-        Args:
-            X: Design matrix ``(n, p)`` — no intercept column.
-            y: Response vector ``(n,)``.
-            fit_intercept: Whether the model includes an intercept.
-
-        Returns:
-            A calibrated ``NegativeBinomialFamily`` with α resolved.
-        """
-        if self.alpha is not None:
-            return self
-        X_sm = sm.add_constant(X) if fit_intercept else np.asarray(X)
-        with warnings.catch_warnings():
-            warnings.filterwarnings("ignore", category=SmConvergenceWarning)
-            warnings.filterwarnings("ignore", category=RuntimeWarning)
-            nb_model = sm.NegativeBinomial(y, X_sm).fit(disp=0, maxiter=200)
-        alpha_hat = float(np.exp(nb_model.lnalpha))
-        return NegativeBinomialFamily(alpha=alpha_hat)
-
     # ---- Validation ------------------------------------------------
 
     def validate_y(self, y: np.ndarray) -> None:
@@ -2756,7 +2823,7 @@ class NegativeBinomialFamily:
             model = sm.GLM(y, X_sm, family=self._nb_family(alpha)).fit(disp=0)
         return model
 
-    def predict(self, model: Any, X: np.ndarray) -> np.ndarray:  # noqa: ARG002
+    def predict(self, model: Any, X: np.ndarray) -> np.ndarray:
         """Return predicted mean μ̂ on the response scale."""
         return np.asarray(model.fittedvalues)
 
@@ -2767,7 +2834,7 @@ class NegativeBinomialFamily:
             return params[1:]
         return params
 
-    def residuals(self, model: Any, X: np.ndarray, y: np.ndarray) -> np.ndarray:  # noqa: ARG002
+    def residuals(self, model: Any, X: np.ndarray, y: np.ndarray) -> np.ndarray:
         """Response-scale residuals: ``e = y − μ̂``.
 
         Same rationale as PoissonFamily — response-scale residuals are
@@ -2932,11 +2999,88 @@ class NegativeBinomialFamily:
 
     def exchangeability_cells(
         self,
-        X: np.ndarray,  # noqa: ARG002
-        y: np.ndarray,  # noqa: ARG002
+        X: np.ndarray,
+        y: np.ndarray,
     ) -> np.ndarray | None:
         """NB models assume globally exchangeable residuals."""
         return None
+
+    # ---- Internal helpers ------------------------------------------
+    #
+    # Private methods for managing the NB2 dispersion parameter α.
+    # ``_nb_family`` wraps the statsmodels family constructor;
+    # ``_require_alpha`` enforces that calibration has occurred before
+    # any fitting method that needs α.
+
+    def _nb_family(self, alpha: float) -> sm.families.NegativeBinomial:
+        """Create a statsmodels NB2 family object with fixed α."""
+        return sm.families.NegativeBinomial(alpha=alpha)
+
+    def _require_alpha(self, method: str) -> float:
+        """Return α or raise if uncalibrated."""
+        if self.alpha is None:
+            msg = (
+                f"NegativeBinomialFamily.{method} requires α to be "
+                "estimated first.  Call calibrate() on the observed data "
+                "before running permutations."
+            )
+            raise RuntimeError(msg)
+        return self.alpha
+
+    # ---- Calibration -----------------------------------------------
+    #
+    # Unlike the five no-op families, NB calibration is substantive:
+    # it estimates the dispersion parameter α via MLE on the observed
+    # data.  This is the only family where ``calibrate()`` returns a
+    # **new** frozen instance rather than ``self``.
+    #
+    # α is estimated once and held fixed for all B permutation refits.
+    # Re-estimating per-permutation would be (a) expensive (each MLE
+    # is a Newton–Raphson solve), (b) unnecessary (α is a nuisance
+    # parameter, not a test target), and (c) unstable (extreme
+    # permuted Y vectors can push α to degenerate values).
+
+    def calibrate(
+        self,
+        X: np.ndarray,
+        y: np.ndarray,
+        fit_intercept: bool = True,
+    ) -> Self:
+        """Estimate dispersion α from the observed data.
+
+        Uses ``sm.NegativeBinomial(y, X).fit()`` which jointly
+        estimates β and ln(α) via MLE, then extracts
+        ``α = exp(ln_alpha)``.
+
+        Returns a **new** ``NegativeBinomialFamily(alpha=α_hat)``
+        instance.  If ``self.alpha`` is already set (either by
+        construction or a prior call), returns ``self`` — making
+        this method **idempotent**.
+
+        Called by ``PermutationEngine.__init__`` before the
+        permutation loop, keeping nuisance-parameter estimation
+        orthogonal to ``exchangeability_cells()``.
+
+        Args:
+            X: Design matrix ``(n, p)`` — no intercept column.
+            y: Response vector ``(n,)``.
+            fit_intercept: Whether the model includes an intercept.
+
+        Returns:
+            A calibrated ``NegativeBinomialFamily`` with α resolved.
+        """
+        if self.alpha is not None:
+            return self
+        X_sm = sm.add_constant(X) if fit_intercept else np.asarray(X)
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", category=SmConvergenceWarning)
+            warnings.filterwarnings("ignore", category=RuntimeWarning)
+            nb_model = sm.NegativeBinomial(y, X_sm).fit(disp=0, maxiter=200)
+        alpha_hat = float(np.exp(nb_model.lnalpha))
+        # ``@final`` makes ``Self ≡ NegativeBinomialFamily``, so
+        # returning a new instance of the same class satisfies the
+        # ``-> Self`` annotation without a type: ignore.
+        return NegativeBinomialFamily(alpha=alpha_hat)
 
     # ---- Batch fitting (hot loop) ----------------------------------
     #
@@ -3177,6 +3321,7 @@ class NegativeBinomialFamily:
 #    to converge for ordinal models.  BFGS converges reliably.
 
 
+@final
 @dataclass(frozen=True)
 class OrdinalFamily:
     """Ordinal regression (proportional-odds logistic) family.
@@ -3297,7 +3442,7 @@ class OrdinalFamily:
         self,
         X: np.ndarray,
         y: np.ndarray,
-        fit_intercept: bool,  # noqa: ARG002
+        fit_intercept: bool,
     ) -> dict[str, Any]:
         """Compute ordinal goodness-of-fit and proportional odds test."""
         from statsmodels.miscmodels.ordinal_model import OrderedModel
@@ -3371,7 +3516,7 @@ class OrdinalFamily:
         self,
         X: np.ndarray,
         y: np.ndarray,
-        fit_intercept: bool = True,  # noqa: ARG002
+        fit_intercept: bool = True,
     ) -> Any:
         """Fit a proportional-odds logistic regression via BFGS.
 
@@ -3397,7 +3542,7 @@ class OrdinalFamily:
             model = OrderedModel(y_arr, X_arr, distr="logit").fit(disp=0, method="bfgs")
         return model
 
-    def predict(self, model: Any, X: np.ndarray) -> np.ndarray:  # noqa: ARG002
+    def predict(self, model: Any, X: np.ndarray) -> np.ndarray:
         """Return expected value E[Y|X] = Σ k·P(Y=k|X).
 
         The returned vector has shape ``(n,)`` rather than a
@@ -3517,7 +3662,7 @@ class OrdinalFamily:
     # The analytical formula is exact and has been validated against
     # the ``model.llnull`` attribute from a full ordinal fit.
 
-    def score(self, model: Any, X: np.ndarray, y: np.ndarray) -> float:  # noqa: ARG002
+    def score(self, model: Any, X: np.ndarray, y: np.ndarray) -> float:
         """Deviance from a fitted ordinal model: ``−2 · ℓ(model)``.
 
         The log-likelihood ℓ is stored on the fitted
@@ -3527,7 +3672,7 @@ class OrdinalFamily:
         """
         return -2.0 * float(model.llf)
 
-    def null_score(self, y: np.ndarray, fit_intercept: bool = True) -> float:  # noqa: ARG002
+    def null_score(self, y: np.ndarray, fit_intercept: bool = True) -> float:
         """Deviance of the thresholds-only (no predictors) ordinal model.
 
         Computed analytically from empirical category proportions
@@ -3619,11 +3764,29 @@ class OrdinalFamily:
 
     def exchangeability_cells(
         self,
-        X: np.ndarray,  # noqa: ARG002
-        y: np.ndarray,  # noqa: ARG002
+        X: np.ndarray,
+        y: np.ndarray,
     ) -> np.ndarray | None:
         """Ordinal models assume globally exchangeable responses."""
         return None
+
+    # ---- Calibration -----------------------------------------------
+    #
+    # No-op: proportional-odds ordinal regression has threshold
+    # parameters α_k, but these are estimated jointly with β during
+    # each fit; no pre-calibration step is needed.
+    #
+    # Explicit override required by structural subtyping — see the
+    # ``LinearFamily.calibrate()`` comment for the full rationale.
+
+    def calibrate(
+        self,
+        X: np.ndarray,
+        y: np.ndarray,
+        fit_intercept: bool = True,
+    ) -> Self:
+        """No-op — ordinal models have no nuisance parameters."""
+        return self
 
     # ---- Batch fitting (hot loop) ----------------------------------
     #
@@ -3873,6 +4036,8 @@ class OrdinalFamily:
 #    null_fit_metric methods.  Same pattern as OrdinalFamily.
 
 
+@final
+@dataclass(frozen=True)
 class MultinomialFamily:
     """Multinomial logistic regression (softmax) family.
 
@@ -4080,7 +4245,7 @@ class MultinomialFamily:
             model = MNLogit(y_arr, X_sm).fit(disp=0, maxiter=200)
         return model
 
-    def predict(self, model: Any, X: np.ndarray) -> np.ndarray:  # noqa: ARG002
+    def predict(self, model: Any, X: np.ndarray) -> np.ndarray:
         """Return predicted class probabilities as expected value E[Y|X].
 
         The returned vector has shape ``(n,)`` — the expected value
@@ -4230,7 +4395,7 @@ class MultinomialFamily:
     # The result has been validated against ``model.llnull`` from
     # full multinomial fits.
 
-    def score(self, model: Any, X: np.ndarray, y: np.ndarray) -> float:  # noqa: ARG002
+    def score(self, model: Any, X: np.ndarray, y: np.ndarray) -> float:
         """Deviance from a fitted multinomial model: ``−2 · ℓ(model)``.
 
         The log-likelihood ℓ is stored on the fitted ``MNLogit``
@@ -4341,11 +4506,29 @@ class MultinomialFamily:
 
     def exchangeability_cells(
         self,
-        X: np.ndarray,  # noqa: ARG002
-        y: np.ndarray,  # noqa: ARG002
+        X: np.ndarray,
+        y: np.ndarray,
     ) -> np.ndarray | None:
         """Multinomial models assume globally exchangeable responses."""
         return None
+
+    # ---- Calibration -----------------------------------------------
+    #
+    # No-op: multinomial logistic regression (softmax) has no
+    # dispersion or scale parameter.  The categorical distribution
+    # is fully specified by the class probabilities P(Y=k|X).
+    #
+    # Explicit override required by structural subtyping — see the
+    # ``LinearFamily.calibrate()`` comment for the full rationale.
+
+    def calibrate(
+        self,
+        X: np.ndarray,
+        y: np.ndarray,
+        fit_intercept: bool = True,
+    ) -> Self:
+        """No-op — multinomial models have no nuisance parameters."""
+        return self
 
     # ---- Batch fitting (hot loop) ----------------------------------
     #

@@ -73,11 +73,10 @@ class PermutationEngine:
         # ---- Family resolution ------------------------------------
         self.family: ModelFamily = resolve_family(family, y_values)
 
-        # Calibrate nuisance parameters if the family supports it.
-        if hasattr(self.family, "calibrate"):
-            self.family = self.family.calibrate(
-                X.to_numpy().astype(float), y_values, fit_intercept
-            )
+        # Calibrate nuisance parameters (protocol method, no-op default).
+        self.family = self.family.calibrate(
+            X.to_numpy().astype(float), y_values, fit_intercept
+        )
 
         # Validate Y against the family's constraints.
         # Skip only for "auto" — auto-detection is mechanically

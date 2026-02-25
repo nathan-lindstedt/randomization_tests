@@ -2412,3 +2412,70 @@ class TestNullScore:
         family = LinearFamily()
         expected = family.fit_metric(y, np.zeros(n))
         assert family.null_score(y, fit_intercept=False) == pytest.approx(expected)
+
+
+# ------------------------------------------------------------------ #
+# calibrate() — protocol method
+# ------------------------------------------------------------------ #
+
+
+class TestCalibrate:
+    """Verify calibrate() is a protocol method with correct semantics."""
+
+    _NO_OP_FAMILIES = [
+        LinearFamily,
+        LogisticFamily,
+        PoissonFamily,
+        OrdinalFamily,
+        MultinomialFamily,
+    ]
+
+    @pytest.fixture()
+    def continuous_data(self, rng):
+        n, p = 80, 2
+        X = rng.standard_normal((n, p))
+        y = X @ [1.0, -0.5] + rng.standard_normal(n)
+        return X, y
+
+    @pytest.fixture()
+    def count_data(self, rng):
+        n, p = 100, 2
+        X = rng.standard_normal((n, p))
+        y = rng.poisson(lam=3.0, size=n).astype(float)
+        return X, y
+
+    def test_exists_on_all_families(self):
+        """Every family must have a callable calibrate() method."""
+        for cls in [*self._NO_OP_FAMILIES, NegativeBinomialFamily]:
+            family = cls()
+            assert callable(getattr(family, "calibrate", None))
+
+    @pytest.mark.parametrize("cls", _NO_OP_FAMILIES)
+    def test_no_op_returns_self(self, cls, continuous_data):
+        """Families with no calibration return self unchanged."""
+        X, y = continuous_data
+        family = cls()
+        result = family.calibrate(X, y, fit_intercept=True)
+        assert result is family
+
+    def test_nb_returns_calibrated_instance(self, count_data):
+        """NegativeBinomialFamily.calibrate() returns new instance with alpha."""
+        X, y = count_data
+        family = NegativeBinomialFamily()
+        assert family.alpha is None
+        calibrated = family.calibrate(X, y, fit_intercept=True)
+        assert calibrated is not family
+        assert calibrated.alpha is not None
+        assert calibrated.alpha > 0
+
+    def test_nb_idempotent(self, count_data):
+        """Calling calibrate() on an already-calibrated NB returns self."""
+        X, y = count_data
+        family = NegativeBinomialFamily(alpha=1.5)
+        result = family.calibrate(X, y, fit_intercept=True)
+        assert result is family
+        assert result.alpha == 1.5
+
+    def test_protocol_conformance(self):
+        """calibrate() is on the ModelFamily protocol."""
+        assert hasattr(ModelFamily, "calibrate")

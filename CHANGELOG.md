@@ -96,6 +96,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Speedups: `paired_design_30` 8.2× (1.84s → 0.23s),
   `triplet_design_20` 6.1× (1.19s → 0.20s), large-n designs
   1.1–1.5× at B=9,999.
+- **`@final` decorators on all 6 family classes** and
+  `_InterceptOnlyOLS`: marks them as non-subclassable, enabling
+  mypy to resolve `Self` as the exact concrete type (eliminates the
+  `type: ignore[return-value]` on `NegativeBinomialFamily.calibrate()`).
+- **`@dataclass(frozen=True)` added to `MultinomialFamily`**:
+  aligns with the other 5 families that already had it, providing
+  consistent `__eq__`, `__hash__`, and immutability semantics.
+- **`NegativeBinomialFamily` method ordering normalised**: Internal
+  helpers and Calibration sections moved to match all other families'
+  canonical section order (Display → Validation → Single-model →
+  Permutation → Scoring → Diagnostics → Exchangeability → Calibration
+  → Batch fitting).
+- **Comprehensive structural-subtyping comments** added to
+  `ModelFamily` protocol methods (`exchangeability_cells()`,
+  `calibrate()`) and all 5 no-op `calibrate()` implementations,
+  explaining why explicit overrides are required under duck-typed
+  Protocol semantics.
+- **`_TrackingFamily` in `test_engine.py`** rewritten from
+  `LinearFamily` subclass to delegation wrapper, compatible with
+  `@final` sealing.
+- **37 unnecessary `# noqa: ARG002` annotations removed** from
+  `families.py`: the `ARG` rule set is not enabled in the project's
+  ruff configuration, so these annotations were inert.
 
 ## [0.4.0] - Unreleased
 
