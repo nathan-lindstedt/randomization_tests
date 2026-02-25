@@ -568,6 +568,83 @@ class ModelFamily(Protocol):
         """
         ...
 
+    def batch_fit_and_score(
+        self,
+        X: np.ndarray,
+        Y_matrix: np.ndarray,
+        fit_intercept: bool,
+        **kwargs: Any,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Batch-fit returning both coefficients and model scores.
+
+        Identical to :meth:`batch_fit` but additionally returns a
+        scalar score per permutation (deviance, RSS, or −2·ℓ).
+        Used by the Freedman–Lane joint strategy to avoid a
+        sequential ``fit()`` + ``score()`` loop.
+
+        Args:
+            X: Design matrix ``(n, p)``.
+            Y_matrix: Permuted responses ``(B, n)``.
+            fit_intercept: Whether to include an intercept.
+            **kwargs: Backend-specific options.
+
+        Returns:
+            ``(coefs, scores)`` where ``coefs`` is ``(B, p)`` and
+            ``scores`` is ``(B,)``.
+        """
+        ...
+
+    def batch_fit_and_score_varying_X(
+        self,
+        X_batch: np.ndarray,
+        y: np.ndarray,
+        fit_intercept: bool,
+        **kwargs: Any,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Batch-fit (varying X) returning coefficients and scores.
+
+        Identical to :meth:`batch_fit_varying_X` but additionally
+        returns a scalar score per permutation.  Used by the Kennedy
+        joint strategy to avoid a sequential fit-and-score loop.
+
+        Args:
+            X_batch: Design matrices ``(B, n, p)``.
+            y: Shared response ``(n,)``.
+            fit_intercept: Whether to include an intercept.
+            **kwargs: Backend-specific options.
+
+        Returns:
+            ``(coefs, scores)`` where ``coefs`` is ``(B, p)`` and
+            ``scores`` is ``(B,)``.
+        """
+        ...
+
+    def batch_fit_paired(
+        self,
+        X_batch: np.ndarray,
+        Y_batch: np.ndarray,
+        fit_intercept: bool,
+        **kwargs: Any,
+    ) -> np.ndarray:
+        """Batch-fit the model where both X and Y vary per replicate.
+
+        Used by bootstrap and jackknife loops in confounder analysis
+        where row resampling changes both the design matrix and the
+        response vector simultaneously.
+
+        Args:
+            X_batch: Design matrices ``(B, n, p)`` — no intercept.
+            Y_batch: Response vectors ``(B, n)``.
+            fit_intercept: Whether to include an intercept.
+            **kwargs: Backend-specific options (e.g. ``max_iter``,
+                ``tol`` for iterative solvers).
+
+        Returns:
+            Coefficient matrix ``(B, p)`` where ``result[b]``
+            contains the slope coefficients for the b-th replicate.
+        """
+        ...
+
 
 # ------------------------------------------------------------------ #
 # LinearFamily
@@ -1072,6 +1149,67 @@ class LinearFamily:
             )
         return np.asarray(
             backend.batch_ols_varying_X(X_batch, y, fit_intercept=fit_intercept)
+        )
+
+    def batch_fit_and_score(
+        self,
+        X: np.ndarray,
+        Y_matrix: np.ndarray,
+        fit_intercept: bool,
+        **kwargs: Any,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Batch OLS returning ``(coefs, RSS)``."""
+        from ._backends import resolve_backend
+
+        backend = kwargs.pop("backend", None)
+        kwargs.pop("n_jobs", None)
+        if backend is None:
+            backend = resolve_backend()
+        coefs, scores = backend.batch_ols_fit_and_score(
+            X, Y_matrix, fit_intercept=fit_intercept
+        )
+        return np.asarray(coefs), np.asarray(scores)
+
+    def batch_fit_and_score_varying_X(
+        self,
+        X_batch: np.ndarray,
+        y: np.ndarray,
+        fit_intercept: bool,
+        **kwargs: Any,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Batch OLS (varying X) returning ``(coefs, RSS)``."""
+        from ._backends import resolve_backend
+
+        backend = kwargs.pop("backend", None)
+        n_jobs = kwargs.pop("n_jobs", 1)
+        if backend is None:
+            backend = resolve_backend()
+        if backend.name == "numpy":
+            coefs, scores = backend.batch_ols_fit_and_score_varying_X(
+                X_batch, y, fit_intercept=fit_intercept, n_jobs=n_jobs
+            )
+        else:
+            coefs, scores = backend.batch_ols_fit_and_score_varying_X(
+                X_batch, y, fit_intercept=fit_intercept
+            )
+        return np.asarray(coefs), np.asarray(scores)
+
+    def batch_fit_paired(
+        self,
+        X_batch: np.ndarray,
+        Y_batch: np.ndarray,
+        fit_intercept: bool,
+        **kwargs: Any,
+    ) -> np.ndarray:
+        """Batch OLS where both X and Y vary per replicate."""
+        from ._backends import resolve_backend
+
+        backend = kwargs.pop("backend", None)
+        kwargs.pop("n_jobs", None)
+        if backend is None:
+            backend = resolve_backend()
+        return np.asarray(
+            backend.batch_ols_paired(X_batch, Y_batch, fit_intercept=fit_intercept)
         )
 
 
@@ -1613,6 +1751,87 @@ class LogisticFamily:
             )
         )
 
+    def batch_fit_and_score(
+        self,
+        X: np.ndarray,
+        Y_matrix: np.ndarray,
+        fit_intercept: bool,
+        **kwargs: Any,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Batch logistic returning ``(coefs, deviance)``."""
+        from ._backends import resolve_backend
+
+        backend = kwargs.pop("backend", None)
+        n_jobs = kwargs.pop("n_jobs", 1)
+        if backend is None:
+            backend = resolve_backend()
+        if backend.name == "numpy":
+            coefs, scores = backend.batch_logistic_fit_and_score(
+                X, Y_matrix, fit_intercept=fit_intercept, n_jobs=n_jobs, **kwargs
+            )
+        else:
+            coefs, scores = backend.batch_logistic_fit_and_score(
+                X, Y_matrix, fit_intercept=fit_intercept, **kwargs
+            )
+        return np.asarray(coefs), np.asarray(scores)
+
+    def batch_fit_and_score_varying_X(
+        self,
+        X_batch: np.ndarray,
+        y: np.ndarray,
+        fit_intercept: bool,
+        **kwargs: Any,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Batch logistic (varying X) returning ``(coefs, deviance)``."""
+        from ._backends import resolve_backend
+
+        backend = kwargs.pop("backend", None)
+        n_jobs = kwargs.pop("n_jobs", 1)
+        if backend is None:
+            backend = resolve_backend()
+        if backend.name == "numpy":
+            coefs, scores = backend.batch_logistic_fit_and_score_varying_X(
+                X_batch, y, fit_intercept=fit_intercept, n_jobs=n_jobs, **kwargs
+            )
+        else:
+            coefs, scores = backend.batch_logistic_fit_and_score_varying_X(
+                X_batch, y, fit_intercept=fit_intercept, **kwargs
+            )
+        return np.asarray(coefs), np.asarray(scores)
+
+    def batch_fit_paired(
+        self,
+        X_batch: np.ndarray,
+        Y_batch: np.ndarray,
+        fit_intercept: bool,
+        **kwargs: Any,
+    ) -> np.ndarray:
+        """Batch logistic where both X and Y vary per replicate."""
+        from ._backends import resolve_backend
+
+        backend = kwargs.pop("backend", None)
+        n_jobs = kwargs.pop("n_jobs", 1)
+        if backend is None:
+            backend = resolve_backend()
+        if backend.name == "numpy":
+            return np.asarray(
+                backend.batch_logistic_paired(
+                    X_batch,
+                    Y_batch,
+                    fit_intercept=fit_intercept,
+                    n_jobs=n_jobs,
+                    **kwargs,
+                )
+            )
+        return np.asarray(
+            backend.batch_logistic_paired(
+                X_batch,
+                Y_batch,
+                fit_intercept=fit_intercept,
+                **kwargs,
+            )
+        )
+
 
 # ------------------------------------------------------------------ #
 # PoissonFamily
@@ -2149,6 +2368,87 @@ class PoissonFamily:
             backend.batch_poisson_varying_X(
                 X_batch,
                 y,
+                fit_intercept=fit_intercept,
+                **kwargs,
+            )
+        )
+
+    def batch_fit_and_score(
+        self,
+        X: np.ndarray,
+        Y_matrix: np.ndarray,
+        fit_intercept: bool,
+        **kwargs: Any,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Batch Poisson returning ``(coefs, deviance)``."""
+        from ._backends import resolve_backend
+
+        backend = kwargs.pop("backend", None)
+        n_jobs = kwargs.pop("n_jobs", 1)
+        if backend is None:
+            backend = resolve_backend()
+        if backend.name == "numpy":
+            coefs, scores = backend.batch_poisson_fit_and_score(
+                X, Y_matrix, fit_intercept=fit_intercept, n_jobs=n_jobs, **kwargs
+            )
+        else:
+            coefs, scores = backend.batch_poisson_fit_and_score(
+                X, Y_matrix, fit_intercept=fit_intercept, **kwargs
+            )
+        return np.asarray(coefs), np.asarray(scores)
+
+    def batch_fit_and_score_varying_X(
+        self,
+        X_batch: np.ndarray,
+        y: np.ndarray,
+        fit_intercept: bool,
+        **kwargs: Any,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Batch Poisson (varying X) returning ``(coefs, deviance)``."""
+        from ._backends import resolve_backend
+
+        backend = kwargs.pop("backend", None)
+        n_jobs = kwargs.pop("n_jobs", 1)
+        if backend is None:
+            backend = resolve_backend()
+        if backend.name == "numpy":
+            coefs, scores = backend.batch_poisson_fit_and_score_varying_X(
+                X_batch, y, fit_intercept=fit_intercept, n_jobs=n_jobs, **kwargs
+            )
+        else:
+            coefs, scores = backend.batch_poisson_fit_and_score_varying_X(
+                X_batch, y, fit_intercept=fit_intercept, **kwargs
+            )
+        return np.asarray(coefs), np.asarray(scores)
+
+    def batch_fit_paired(
+        self,
+        X_batch: np.ndarray,
+        Y_batch: np.ndarray,
+        fit_intercept: bool,
+        **kwargs: Any,
+    ) -> np.ndarray:
+        """Batch Poisson where both X and Y vary per replicate."""
+        from ._backends import resolve_backend
+
+        backend = kwargs.pop("backend", None)
+        n_jobs = kwargs.pop("n_jobs", 1)
+        if backend is None:
+            backend = resolve_backend()
+        if backend.name == "numpy":
+            return np.asarray(
+                backend.batch_poisson_paired(
+                    X_batch,
+                    Y_batch,
+                    fit_intercept=fit_intercept,
+                    n_jobs=n_jobs,
+                    **kwargs,
+                )
+            )
+        return np.asarray(
+            backend.batch_poisson_paired(
+                X_batch,
+                Y_batch,
                 fit_intercept=fit_intercept,
                 **kwargs,
             )
@@ -2723,6 +3023,113 @@ class NegativeBinomialFamily:
             backend.batch_negbin_varying_X(
                 X_batch,
                 y,
+                fit_intercept=fit_intercept,
+                alpha=alpha,
+                **kwargs,
+            )
+        )
+
+    def batch_fit_and_score(
+        self,
+        X: np.ndarray,
+        Y_matrix: np.ndarray,
+        fit_intercept: bool,
+        **kwargs: Any,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Batch NB returning ``(coefs, deviance)``."""
+        alpha = self._require_alpha("batch_fit_and_score")
+
+        from ._backends import resolve_backend
+
+        backend = kwargs.pop("backend", None)
+        n_jobs = kwargs.pop("n_jobs", 1)
+        if backend is None:
+            backend = resolve_backend()
+        if backend.name == "numpy":
+            coefs, scores = backend.batch_negbin_fit_and_score(
+                X,
+                Y_matrix,
+                fit_intercept=fit_intercept,
+                alpha=alpha,
+                n_jobs=n_jobs,
+                **kwargs,
+            )
+        else:
+            coefs, scores = backend.batch_negbin_fit_and_score(
+                X,
+                Y_matrix,
+                fit_intercept=fit_intercept,
+                alpha=alpha,
+                **kwargs,
+            )
+        return np.asarray(coefs), np.asarray(scores)
+
+    def batch_fit_and_score_varying_X(
+        self,
+        X_batch: np.ndarray,
+        y: np.ndarray,
+        fit_intercept: bool,
+        **kwargs: Any,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Batch NB (varying X) returning ``(coefs, deviance)``."""
+        alpha = self._require_alpha("batch_fit_and_score_varying_X")
+
+        from ._backends import resolve_backend
+
+        backend = kwargs.pop("backend", None)
+        n_jobs = kwargs.pop("n_jobs", 1)
+        if backend is None:
+            backend = resolve_backend()
+        if backend.name == "numpy":
+            coefs, scores = backend.batch_negbin_fit_and_score_varying_X(
+                X_batch,
+                y,
+                fit_intercept=fit_intercept,
+                alpha=alpha,
+                n_jobs=n_jobs,
+                **kwargs,
+            )
+        else:
+            coefs, scores = backend.batch_negbin_fit_and_score_varying_X(
+                X_batch,
+                y,
+                fit_intercept=fit_intercept,
+                alpha=alpha,
+                **kwargs,
+            )
+        return np.asarray(coefs), np.asarray(scores)
+
+    def batch_fit_paired(
+        self,
+        X_batch: np.ndarray,
+        Y_batch: np.ndarray,
+        fit_intercept: bool,
+        **kwargs: Any,
+    ) -> np.ndarray:
+        """Batch NB2 where both X and Y vary per replicate."""
+        alpha = self._require_alpha("batch_fit_paired")
+
+        from ._backends import resolve_backend
+
+        backend = kwargs.pop("backend", None)
+        n_jobs = kwargs.pop("n_jobs", 1)
+        if backend is None:
+            backend = resolve_backend()
+        if backend.name == "numpy":
+            return np.asarray(
+                backend.batch_negbin_paired(
+                    X_batch,
+                    Y_batch,
+                    fit_intercept=fit_intercept,
+                    alpha=alpha,
+                    n_jobs=n_jobs,
+                    **kwargs,
+                )
+            )
+        return np.asarray(
+            backend.batch_negbin_paired(
+                X_batch,
+                Y_batch,
                 fit_intercept=fit_intercept,
                 alpha=alpha,
                 **kwargs,
@@ -3313,6 +3720,117 @@ class OrdinalFamily:
             backend.batch_ordinal_varying_X(
                 X_batch,
                 y,
+                fit_intercept=fit_intercept,
+                K=K,
+                **kwargs,
+            )
+        )
+
+    def batch_fit_and_score(
+        self,
+        X: np.ndarray,
+        Y_matrix: np.ndarray,
+        fit_intercept: bool,
+        **kwargs: Any,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Batch ordinal returning ``(coefs, −2·llf)``."""
+        from ._backends import resolve_backend
+
+        backend = kwargs.pop("backend", None)
+        n_jobs = kwargs.pop("n_jobs", 1)
+        if backend is None:
+            backend = resolve_backend()
+
+        K = int(len(np.unique(Y_matrix)))
+
+        if backend.name == "numpy":
+            coefs, scores = backend.batch_ordinal_fit_and_score(
+                X,
+                Y_matrix,
+                fit_intercept=fit_intercept,
+                K=K,
+                n_jobs=n_jobs,
+                **kwargs,
+            )
+        else:
+            coefs, scores = backend.batch_ordinal_fit_and_score(
+                X,
+                Y_matrix,
+                fit_intercept=fit_intercept,
+                K=K,
+                **kwargs,
+            )
+        return np.asarray(coefs), np.asarray(scores)
+
+    def batch_fit_and_score_varying_X(
+        self,
+        X_batch: np.ndarray,
+        y: np.ndarray,
+        fit_intercept: bool,
+        **kwargs: Any,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Batch ordinal (varying X) returning ``(coefs, −2·llf)``."""
+        from ._backends import resolve_backend
+
+        backend = kwargs.pop("backend", None)
+        n_jobs = kwargs.pop("n_jobs", 1)
+        if backend is None:
+            backend = resolve_backend()
+
+        K = int(len(np.unique(y)))
+
+        if backend.name == "numpy":
+            coefs, scores = backend.batch_ordinal_fit_and_score_varying_X(
+                X_batch,
+                y,
+                fit_intercept=fit_intercept,
+                K=K,
+                n_jobs=n_jobs,
+                **kwargs,
+            )
+        else:
+            coefs, scores = backend.batch_ordinal_fit_and_score_varying_X(
+                X_batch,
+                y,
+                fit_intercept=fit_intercept,
+                K=K,
+                **kwargs,
+            )
+        return np.asarray(coefs), np.asarray(scores)
+
+    def batch_fit_paired(
+        self,
+        X_batch: np.ndarray,
+        Y_batch: np.ndarray,
+        fit_intercept: bool,
+        **kwargs: Any,
+    ) -> np.ndarray:
+        """Batch ordinal where both X and Y vary per replicate."""
+        from ._backends import resolve_backend
+
+        backend = kwargs.pop("backend", None)
+        n_jobs = kwargs.pop("n_jobs", 1)
+        if backend is None:
+            backend = resolve_backend()
+
+        # Infer K from the full Y_batch (all replicates).
+        K = int(len(np.unique(Y_batch)))
+
+        if backend.name == "numpy":
+            return np.asarray(
+                backend.batch_ordinal_paired(
+                    X_batch,
+                    Y_batch,
+                    fit_intercept=fit_intercept,
+                    K=K,
+                    n_jobs=n_jobs,
+                    **kwargs,
+                )
+            )
+        return np.asarray(
+            backend.batch_ordinal_paired(
+                X_batch,
+                Y_batch,
                 fit_intercept=fit_intercept,
                 K=K,
                 **kwargs,
@@ -3922,6 +4440,116 @@ class MultinomialFamily:
             backend.batch_multinomial_varying_X(
                 X_batch,
                 y,
+                fit_intercept=fit_intercept,
+                K=K,
+                **kwargs,
+            )
+        )
+
+    def batch_fit_and_score(
+        self,
+        X: np.ndarray,
+        Y_matrix: np.ndarray,
+        fit_intercept: bool,
+        **kwargs: Any,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Batch multinomial returning ``(wald_chi2, −2·llf)``."""
+        from ._backends import resolve_backend
+
+        backend = kwargs.pop("backend", None)
+        n_jobs = kwargs.pop("n_jobs", 1)
+        if backend is None:
+            backend = resolve_backend()
+
+        K = int(len(np.unique(Y_matrix)))
+
+        if backend.name == "numpy":
+            coefs, scores = backend.batch_multinomial_fit_and_score(
+                X,
+                Y_matrix,
+                fit_intercept=fit_intercept,
+                K=K,
+                n_jobs=n_jobs,
+                **kwargs,
+            )
+        else:
+            coefs, scores = backend.batch_multinomial_fit_and_score(
+                X,
+                Y_matrix,
+                fit_intercept=fit_intercept,
+                K=K,
+                **kwargs,
+            )
+        return np.asarray(coefs), np.asarray(scores)
+
+    def batch_fit_and_score_varying_X(
+        self,
+        X_batch: np.ndarray,
+        y: np.ndarray,
+        fit_intercept: bool,
+        **kwargs: Any,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Batch multinomial (varying X) returning ``(wald_chi2, −2·llf)``."""
+        from ._backends import resolve_backend
+
+        backend = kwargs.pop("backend", None)
+        n_jobs = kwargs.pop("n_jobs", 1)
+        if backend is None:
+            backend = resolve_backend()
+
+        K = int(len(np.unique(y)))
+
+        if backend.name == "numpy":
+            coefs, scores = backend.batch_multinomial_fit_and_score_varying_X(
+                X_batch,
+                y,
+                fit_intercept=fit_intercept,
+                K=K,
+                n_jobs=n_jobs,
+                **kwargs,
+            )
+        else:
+            coefs, scores = backend.batch_multinomial_fit_and_score_varying_X(
+                X_batch,
+                y,
+                fit_intercept=fit_intercept,
+                K=K,
+                **kwargs,
+            )
+        return np.asarray(coefs), np.asarray(scores)
+
+    def batch_fit_paired(
+        self,
+        X_batch: np.ndarray,
+        Y_batch: np.ndarray,
+        fit_intercept: bool,
+        **kwargs: Any,
+    ) -> np.ndarray:
+        """Batch multinomial where both X and Y vary per replicate."""
+        from ._backends import resolve_backend
+
+        backend = kwargs.pop("backend", None)
+        n_jobs = kwargs.pop("n_jobs", 1)
+        if backend is None:
+            backend = resolve_backend()
+
+        K = int(len(np.unique(Y_batch)))
+
+        if backend.name == "numpy":
+            return np.asarray(
+                backend.batch_multinomial_paired(
+                    X_batch,
+                    Y_batch,
+                    fit_intercept=fit_intercept,
+                    K=K,
+                    n_jobs=n_jobs,
+                    **kwargs,
+                )
+            )
+        return np.asarray(
+            backend.batch_multinomial_paired(
+                X_batch,
+                Y_batch,
                 fit_intercept=fit_intercept,
                 K=K,
                 **kwargs,

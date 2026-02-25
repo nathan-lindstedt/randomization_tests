@@ -291,45 +291,36 @@ class KennedyJointStrategy:
                 x_hat = np.zeros_like(X_target)
         x_resids = X_target - x_hat
 
-        # --- Permutation loop ---
+        # --- Permutation loop (vectorised via batch backend) ---
+        # Build the full (B, n, p_full) batch of permuted designs in
+        # one vectorised operation, then delegate to the family's
+        # batch_fit_and_score_varying_X() which dispatches to the
+        # JAX vmap or NumPy parallel backend.
+        #
         # For each permutation b:
-        #   1. Shuffle exposure residual rows: e*_X = e_X[π_b]
-        #   2. Reconstruct features: X* = X̂ + e*_X
-        #   3. Fit full model on (X*, Z) and compute S(full*)
-        #   4. Δ*_b = S(reduced) − S(full*)
-        # base_metric is constant across permutations (the reduced
-        # model doesn’t depend on the features being tested).
-        def _joint_one_perm(idx: np.ndarray) -> float:
-            # Reconstruct: X* = X̂ + e_X[π] — predicted part plus
-            # permuted residuals.  Row-wise shuffle keeps the column
-            # correlation structure of (X_1, …, X_q) intact.
-            x_star = x_hat + x_resids[idx]  # (n, q)
-            # Reassemble full design by appending confounders.
-            perm_features = np.hstack([x_star, Z]) if Z.shape[1] > 0 else x_star
-            # Fit the full model on permuted features.
-            perm_model = family.fit(perm_features, y_values, fit_intercept)
-            # Δ*_b = S(reduced) − S(full*) — same formula as Δ_obs.
-            return float(
-                base_metric - family.score(perm_model, perm_features, y_values)
-            )
+        #   X*_b = x_hat + e_X[perm_b]   (reconstructed features)
+        #   full_b = [X*_b | Z]          (appending confounders)
+        #
+        # The batch call returns (coefs, scores) where
+        # scores[b] = S(full model fitted on (full_b, y))
+        # and perm_improvements = base_metric - scores.
 
-        # Execute the permutation loop, optionally in parallel.
-        if n_jobs == 1:
-            perm_improvements = np.zeros(n_perm)
-            for i in range(n_perm):
-                perm_improvements[i] = _joint_one_perm(perm_indices[i])
+        # Vectorised reconstruction: (B, n, q) = (1,n,q) + (B,n,q)
+        x_star_batch = x_hat[np.newaxis, :, :] + x_resids[perm_indices]
+
+        # Append confounders to each permuted design matrix.
+        if Z.shape[1] > 0:
+            Z_tiled = np.broadcast_to(
+                Z[np.newaxis, :, :], (n_perm, n, Z.shape[1])
+            ).copy()
+            X_batch = np.concatenate([x_star_batch, Z_tiled], axis=2)  # (B, n, q + q_z)
         else:
-            from joblib import Parallel, delayed
+            X_batch = x_star_batch  # (B, n, q)
 
-            # prefer="threads" because the heavy lifting (NumPy
-            # linear algebra, statsmodels C extensions) releases
-            # the GIL, making threads more efficient than processes
-            # (no serialisation overhead for large arrays).
-            perm_improvements = np.array(
-                Parallel(n_jobs=n_jobs, prefer="threads")(
-                    delayed(_joint_one_perm)(perm_indices[i]) for i in range(n_perm)
-                )
-            )
+        _, perm_scores = family.batch_fit_and_score_varying_X(
+            X_batch, y_values, fit_intercept, n_jobs=n_jobs
+        )
+        perm_improvements = base_metric - perm_scores
 
         return (
             obs_improvement,

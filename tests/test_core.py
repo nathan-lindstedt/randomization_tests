@@ -1063,3 +1063,26 @@ class TestResultDictProvenance:
         )
         assert result.family.name == "logistic"
         assert result["backend"] == "numpy"
+
+
+# ------------------------------------------------------------------ #
+# TestBackendParameter
+# ------------------------------------------------------------------ #
+
+
+class TestBackendParameter:
+    """The ``backend=`` parameter injects a specific backend per call."""
+
+    def test_explicit_numpy_via_parameter(self):
+        X, y = _make_linear_data()
+        result = permutation_test_regression(
+            X, y, n_permutations=20, random_state=0, backend="numpy"
+        )
+        assert result["backend"] == "numpy"
+
+    def test_unknown_backend_raises(self):
+        X, y = _make_linear_data()
+        with pytest.raises(ValueError, match="Unknown backend"):
+            permutation_test_regression(
+                X, y, n_permutations=20, random_state=0, backend="torch"
+            )

@@ -640,3 +640,33 @@ class TestFamilyInstancePassthrough:
                 random_state=_SEED,
             )
         mock_vy.assert_not_called()
+
+
+# ------------------------------------------------------------------ #
+# TestBackendInjection
+# ------------------------------------------------------------------ #
+
+
+class TestBackendInjection:
+    """Backend injection via the ``backend=`` parameter."""
+
+    def test_explicit_numpy_backend(self, linear_data):
+        X, y = linear_data
+        engine = PermutationEngine(
+            X, y, n_permutations=_N_PERMS, random_state=_SEED, backend="numpy"
+        )
+        assert engine.backend_name == "numpy"
+
+    def test_none_backend_uses_default(self, linear_data):
+        X, y = linear_data
+        engine = PermutationEngine(
+            X, y, n_permutations=_N_PERMS, random_state=_SEED, backend=None
+        )
+        assert engine.backend_name in ("numpy", "jax")
+
+    def test_unknown_backend_raises(self, linear_data):
+        X, y = linear_data
+        with pytest.raises(ValueError, match="Unknown backend"):
+            PermutationEngine(
+                X, y, n_permutations=_N_PERMS, random_state=_SEED, backend="torch"
+            )

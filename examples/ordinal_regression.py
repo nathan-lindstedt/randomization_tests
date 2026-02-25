@@ -10,7 +10,7 @@ Demonstrates:
 - Freedman-Lane rejection with informative error message
 - Direct ``ModelFamily`` protocol usage (fit / predict / coefs /
   diagnostics / classical_p_values / batch_fit)
-- Duck-typed ``model_fit_metric`` / ``null_fit_metric`` for joint test
+- ``score`` / ``null_score`` for joint-test deviance
 
 **Why only three methods?**
 
@@ -160,7 +160,7 @@ print_diagnostics_table(results_kennedy)
 # ============================================================================
 
 print("\n" + "=" * 80)
-print("Kennedy joint method (model_fit_metric duck-type)")
+print("Kennedy joint method (score / null_score)")
 print("=" * 80)
 
 with warnings.catch_warnings():
@@ -221,11 +221,11 @@ print(f"✓ fit: {len(fam.coefs(model))} slope coefficients")
 preds = fam.predict(model, X_np)
 print(f"✓ predict: E[Y|X] range = [{preds.min():.2f}, {preds.max():.2f}]")
 
-# Model-based fit metric (duck-typed)
-deviance = fam.model_fit_metric(model)
-null_deviance = fam.null_fit_metric(model)
-print(f"✓ model_fit_metric: -2·llf = {deviance:.2f}")
-print(f"✓ null_fit_metric: -2·llnull = {null_deviance:.2f}")
+# score / null_score — deviance
+deviance = fam.score(model, X_np, y_np)
+null_deviance = fam.null_score(y_np)
+print(f"✓ score: -2·llf = {deviance:.2f}")
+print(f"✓ null_score: -2·llnull = {null_deviance:.2f}")
 print(f"  Improvement: {null_deviance - deviance:.2f}")
 
 # Diagnostics

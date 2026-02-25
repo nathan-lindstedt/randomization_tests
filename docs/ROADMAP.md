@@ -640,7 +640,7 @@ compiler (which dispatches to the engine per equation).
 - [X] `PermutationEngine` accepts a `ModelFamily`, backend, and
   permutation configuration (method, n_permutations, n_jobs,
   seed) at construction time.
-- [ ] Widen the public `family` parameter from `str` to
+- [X] Widen the public `family` parameter from `str` to
   `str | ModelFamily` so users can pass pre-configured family
   instances (e.g. `NegativeBinomialFamily(alpha=2.0)`) directly
   to `permutation_test_regression()`.  Resolution is centralized
@@ -669,10 +669,10 @@ compiler (which dispatches to the engine per equation).
 Depends on Step 9 (`PermutationEngine` accepts a backend at
 construction time).
 
-- [ ] Add an optional `backend=` parameter to
+- [X] Add an optional `backend=` parameter to
   `permutation_test_regression()` (default: `None` → auto-resolve
   via `resolve_backend()`).
-- [ ] When a backend is supplied explicitly, skip auto-resolution.
+- [X] When a backend is supplied explicitly, skip auto-resolution.
   This enables tests to inject a mock or stub backend without
   monkeypatching global state.
 - [ ] Document the pattern for writing tests with mock backends.
@@ -846,21 +846,77 @@ Deferred from v0.3.0 audit.  Three related problems resolved together:
   thresholds/intercept-only model and return `−2 × llf`.  This
   replaces the `null_fit_metric()` duck-typed method.
 
-- [ ] Add `fit_reduced()` module-level function in `families.py`
+- [X] Add `fit_reduced()` module-level function in `families.py`
   (alongside `resolve_family()`) returning
   `(model | None, predictions)`.
-- [ ] Add `score(model, X, y)` to the `ModelFamily` protocol and
+- [X] Add `score(model, X, y)` to the `ModelFamily` protocol and
   implement on all 6 families.
-- [ ] Add `null_score(y, fit_intercept)` to the `ModelFamily` protocol
+- [X] Add `null_score(y, fit_intercept)` to the `ModelFamily` protocol
   and implement on all 6 families.
-- [ ] Refactor all four strategy files to use `fit_reduced()` and
+- [X] Refactor all four strategy files to use `fit_reduced()` and
   `family.score()` / `family.null_score()`.
-- [ ] Remove duck-typed `model_fit_metric()` and `null_fit_metric()`
+- [X] Remove duck-typed `model_fit_metric()` and `null_fit_metric()`
   from `OrdinalFamily` and `MultinomialFamily` (subsumed by
   `score()` and `null_score()`).
 - [ ] Performance: the reduced model is fitted once and cached,
   avoiding redundant refits when the same reduced model applies to
   multiple exposure variables.
+
+### `batch_fit_paired` — confounder bootstrap/jackknife vectorisation
+
+The `mediation_analysis()` bootstrap loop (1,000 iterations) and the
+`_bca_ci()` jackknife loop (*n* iterations) call `family.fit()`
+sequentially for every replicate.  For non-linear families (ordinal,
+multinomial, negative binomial) with large *n*, this is the dominant
+bottleneck — e.g. ordinal with *n*=500 and 5 candidate confounders
+requires ~7,500 individual BFGS fits.
+
+A new `batch_fit_paired(X_batch, Y_batch, fit_intercept, **kwargs)`
+method where **both** X and Y vary per replicate (unlike
+`batch_fit` which holds Y fixed) provides the exactly the semantics
+needed for bootstrap (resampled rows affect both X and Y) and
+jackknife (leave-one-out affects both).
+
+- [X] Add 6 `batch_*_paired` methods to `_backends/_jax.py` using
+  `vmap(_solve_one, in_axes=(0, 0))` over both X and Y.
+- [X] Add 6 `batch_*_paired` fallback methods to `_backends/_numpy.py`
+  with sequential loop and `n_jobs` support.
+- [X] Add `batch_fit_paired()` to the `ModelFamily` protocol and
+  implement on all 6 families.
+- [X] Refactor `confounders.py` bootstrap loop: pre-build
+  `XM_boot = xm_full[boot_idx]` (B, n, 2) and
+  `Y_boot = y_values[boot_idx]` (B, n), single call to
+  `fam.batch_fit_paired()`.
+- [X] Refactor `confounders.py` jackknife loop: build leave-one-out
+  index array (n, n−1), same pattern.
+- [X] Fix 15 solver return-type annotations in `_jax.py` (5 solver
+  functions + 10 `_solve_one` inner functions) from 2-tuple to
+  3-tuple `(beta, nll, converged)`.
+- [X] 6 new tests in `TestBatchFitPaired` verifying shape,
+  finiteness, and correctness for all families.
+
+### `batch_fit_and_score` — Kennedy joint vectorisation
+
+The Kennedy joint strategy needs to fit a full model per permutation
+and compute a deviance score.  `batch_fit_and_score()` and
+`batch_fit_and_score_varying_X()` combine fitting and scoring in a
+single vectorised call, avoiding the overhead of separate
+`fit()` + `score()` per permutation.
+
+- [X] Add `batch_fit_and_score()` to backends, protocol, and all 6
+  families (fixed X, permuted Y).
+- [X] Add `batch_fit_and_score_varying_X()` to backends, protocol,
+  and all 6 families (both X and Y vary per permutation).
+- [X] Refactor Kennedy joint strategy to use
+  `batch_fit_and_score_varying_X()`.
+- [X] Refactor Freedman-Lane joint strategy to use
+  `batch_fit_and_score()`.
+
+### `backend=` parameter on `PermutationEngine`
+
+- [X] Add `backend=` parameter to `PermutationEngine` constructor
+  and `permutation_test_regression()`.  When supplied, skip
+  auto-resolution via `resolve_backend()`.
 
 ### Display refactor — family-driven formatting
 

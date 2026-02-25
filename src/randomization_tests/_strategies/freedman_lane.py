@@ -256,52 +256,40 @@ class FreedmanLaneJointStrategy:
         # the residuals that will be permuted.
         full_resids = family.residuals(full_model, X_np, y_values)  # (n,)
 
-        # --- Permutation loop ---
+        # --- Permutation loop (vectorised via batch backend) ---
+        # Build Y*_batch in one vectorised call, then use
+        # batch_fit_and_score() to refit BOTH reduced and full
+        # models across all permutations simultaneously.
+        #
         # For each permutation b:
-        #   1. Permute full-model residuals: e*_b = e[π_b]
-        #   2. Reconstruct: Y*_b = ŷ_Z + e*_b
-        #   3. Refit BOTH reduced and full models on Y*_b
-        #   4. Δ*_b = M(Y*_b, ŷ*_Z) − M(Y*_b, ŷ*_full)
-        # Note: BOTH models are refit because Y* differs per
-        # permutation, so the reduced model’s fit also changes.
-        def _fl_joint_one_perm(idx: np.ndarray) -> float:
-            # Permute residuals for this single permutation.
-            perm_resids = full_resids[idx]  # (n,)
-            # Reconstruct Y*: reduced predictions + permuted noise.
-            y_star = family.reconstruct_y(
-                preds_reduced[np.newaxis, :],  # (1, n)
-                perm_resids[np.newaxis, :],  # (1, n)
-                rng,
-            ).ravel()  # (n,)
+        #   1. Permute residuals: e*_b = e[perm_b]
+        #   2. Reconstruct: Y*_b = preds_reduced + e*_b
+        #   3. batch-fit reduced (Z, Y*_batch) -> reduced_scores
+        #   4. batch-fit full  (X, Y*_batch) -> full_scores
+        #   5. perm_improvements = reduced_scores - full_scores
+        #
+        # The score values (2*NLL / deviance / RSS) differ from
+        # fit_metric by a y-dependent constant that cancels in
+        # the improvement delta = S_reduced - S_full.
 
-            # Refit reduced model on Y* to get M(Y*, ŷ*_Z).
-            _, red_preds_star = fit_reduced(family, Z, y_star, fit_intercept)
-            metric_red = family.fit_metric(y_star, red_preds_star)
+        # Vectorised reconstruction: (B, n)
+        perm_resids_batch = full_resids[perm_indices]  # (B, n)
+        preds_reduced_tiled = np.broadcast_to(preds_reduced[np.newaxis, :], (n_perm, n))
+        Y_star_batch = family.reconstruct_y(
+            preds_reduced_tiled, perm_resids_batch, rng
+        )  # (B, n)
 
-            # Refit full model on Y* to get M(Y*, ŷ*_full).
-            full_model_star = family.fit(X_np, y_star, fit_intercept)
-            full_preds_star = family.predict(full_model_star, X_np)  # ŷ*_full
-            metric_full = family.fit_metric(y_star, full_preds_star)
+        # Batch-fit reduced model (Z, Y*) for all permutations.
+        _, reduced_scores = family.batch_fit_and_score(
+            Z, Y_star_batch, fit_intercept, n_jobs=n_jobs
+        )
 
-            # Δ*_b = M_reduced − M_full (positive means features help).
-            return float(metric_red - metric_full)
+        # Batch-fit full model (X_np, Y*) for all permutations.
+        _, full_scores = family.batch_fit_and_score(
+            X_np, Y_star_batch, fit_intercept, n_jobs=n_jobs
+        )
 
-        # Execute the permutation loop, optionally in parallel.
-        if n_jobs == 1:
-            perm_improvements = np.zeros(n_perm)
-            for i in range(n_perm):
-                perm_improvements[i] = _fl_joint_one_perm(perm_indices[i])
-        else:
-            from joblib import Parallel, delayed
-
-            # prefer="threads" because the heavy lifting (NumPy
-            # linear algebra, statsmodels C extensions) releases
-            # the GIL, making threads more efficient than processes.
-            perm_improvements = np.array(
-                Parallel(n_jobs=n_jobs, prefer="threads")(
-                    delayed(_fl_joint_one_perm)(perm_indices[i]) for i in range(n_perm)
-                )
-            )
+        perm_improvements = reduced_scores - full_scores
 
         return (
             obs_improvement,

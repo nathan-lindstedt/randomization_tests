@@ -59,6 +59,7 @@ class PermutationEngine:
         random_state: int | None = None,
         n_jobs: int = 1,
         method: str = "ter_braak",
+        backend: str | None = None,
     ) -> None:
         # ---- Family resolution ------------------------------------
         self.family: ModelFamily = resolve_family(family, y_values)
@@ -96,7 +97,7 @@ class PermutationEngine:
         # ---- Backend resolution -----------------------------------
         from ._backends import resolve_backend
 
-        _backend = resolve_backend()
+        _backend = resolve_backend(backend)
         self.backend_name: str = _backend.name
         self._n_jobs = n_jobs
 

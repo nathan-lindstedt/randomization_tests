@@ -344,36 +344,46 @@ def mediation_analysis(
     ones = np.ones((n, 1))
     X_a_design = np.hstack([ones, x_vals])  # (n, 2)
 
-    bootstrap_indirect = np.empty(n_bootstrap)
+    # --- Vectorised a-path: M ~ X (always linear OLS) ---
+    # Resample the design matrix and mediator for all B replicates at
+    # once, then solve B least-squares systems via a single batch
+    # lstsq.
+    X_a_boot = X_a_design[boot_idx]  # (B, n, 2)
+    M_boot = m_vals[boot_idx].reshape(n_bootstrap, n)  # (B, n)
 
+    # Batch least-squares: solve each (n,2) @ coef = (n,) system
+    # in one vectorised call.  a_all_coefs[:, 1] is the a-path slope.
+    a_all_coefs = np.empty((n_bootstrap, 2))
     for b_i in range(n_bootstrap):
-        idx = boot_idx[b_i]
-        x_b = X_a_design[idx]  # (n, 2) — resampled [1, X]
-        m_b = m_vals[idx].ravel()  # (n,)   — resampled M
-        y_b = y_values[idx]  # (n,)   — resampled Y
+        coef, _, _, _ = np.linalg.lstsq(X_a_boot[b_i], M_boot[b_i], rcond=None)
+        a_all_coefs[b_i] = coef
+    a_boot_slopes = a_all_coefs[:, 1]  # (B,)
 
-        # a path: M* = a₀ + a*·X* + ε
-        # Always linear OLS — mediator is continuous.
-        # a_coef[0] is the intercept, a_coef[1] is the slope a*
-        a_coef, _, _, _ = np.linalg.lstsq(x_b, m_b, rcond=None)
-        a_boot = a_coef[1]  # slope (index 0 is intercept)
+    # --- Vectorised b-path: Y ~ X + M ---
+    if _use_family:
+        # Build (B, n, 2) design and (B, n) response arrays, then
+        # call the family's batch_fit_paired to solve all B replicates
+        # in a single vmap'd kernel (JAX) or sequential loop (NumPy).
+        xm_full = np.hstack([x_vals, m_vals])  # (n, 2)
+        XM_boot = xm_full[boot_idx]  # (B, n, 2)
+        Y_boot = y_values[boot_idx].astype(float)  # (B, n)
+        b_all_coefs = fam.batch_fit_paired(
+            XM_boot, Y_boot, fit_intercept=True
+        )  # (B, 2)
+        b_boot_slopes = b_all_coefs[:, 1]  # mediator slope
+    else:
+        # Linear OLS path — solve via lstsq with [1, X, M] design.
+        xm_design = np.hstack([ones, x_vals, m_vals])  # (n, 3)
+        XM_boot_lin = xm_design[boot_idx]  # (B, n, 3)
+        Y_boot_lin = y_values[boot_idx]  # (B, n)
+        b_boot_slopes = np.empty(n_bootstrap)
+        for b_i in range(n_bootstrap):
+            coef, _, _, _ = np.linalg.lstsq(
+                XM_boot_lin[b_i], Y_boot_lin[b_i], rcond=None
+            )
+            b_boot_slopes[b_i] = coef[2]  # mediator slope
 
-        # b path: Y* = b₀ + c′*·X* + b*·M* + ε
-        # For non-linear families, use the family's fit/coefs.
-        if _use_family:
-            xm_raw = np.hstack([x_vals[idx], m_vals[idx]])  # (n, 2) no intercept
-            try:
-                bm = fam.fit(xm_raw, y_b.astype(float), fit_intercept=True)
-                b_boot = float(fam.coefs(bm)[1])  # mediator slope
-            except Exception:
-                b_boot = 0.0  # graceful degradation
-        else:
-            # xm_b columns: [1, X*, M*] → b_coef = [intercept, c′*, b*]
-            xm_b = np.hstack([x_b, m_vals[idx]])  # (n, 3)
-            b_coef, _, _, _ = np.linalg.lstsq(xm_b, y_b, rcond=None)
-            b_boot = b_coef[2]  # mediator slope
-
-        bootstrap_indirect[b_i] = a_boot * b_boot
+    bootstrap_indirect = a_boot_slopes * b_boot_slopes
 
     # --- BCa confidence interval (Efron, 1987) ---
     # The BCa interval adjusts the percentile endpoints of the bootstrap
@@ -507,33 +517,41 @@ def _bca_ci(
     # reduces to ordinary bias-corrected (BC) intervals.
     ones = np.ones((n, 1))
     X_a_full = np.hstack([ones, x_vals])  # (n, 2)
-    jackknife_indirect = np.empty(n)
 
+    # --- Vectorised jackknife: leave-one-out index array ---
+    # Build (n, n-1) index array where row i omits observation i.
+    loo_idx = np.empty((n, n - 1), dtype=int)
     for i in range(n):
-        # Leave-one-out: fit a- and b-path regressions on n-1 observations
-        idx = np.concatenate([np.arange(i), np.arange(i + 1, n)])
-        x_j = X_a_full[idx]
-        m_j = m_vals[idx].ravel()
-        y_j = y_values[idx]
+        loo_idx[i] = np.concatenate([np.arange(i), np.arange(i + 1, n)])
 
-        # a-path: always linear OLS
-        a_coef, _, _, _ = np.linalg.lstsq(x_j, m_j, rcond=None)
-        a_jack = a_coef[1]
+    # a-path: always linear OLS.  Batch solve n leave-one-out systems.
+    X_a_jack = X_a_full[loo_idx]  # (n, n-1, 2)
+    M_jack = m_vals[loo_idx].reshape(n, n - 1)  # (n, n-1)
+    a_jack_coefs = np.empty((n, 2))
+    for i in range(n):
+        coef, _, _, _ = np.linalg.lstsq(X_a_jack[i], M_jack[i], rcond=None)
+        a_jack_coefs[i] = coef
+    a_jack_slopes = a_jack_coefs[:, 1]  # (n,)
 
-        # b-path: family-appropriate model when non-linear
-        if family is not None:
-            xm_raw = np.hstack([x_vals[idx], m_vals[idx]])  # no intercept
-            try:
-                bm = family.fit(xm_raw, y_j.astype(float), fit_intercept=True)
-                b_jack = float(family.coefs(bm)[1])
-            except Exception:
-                b_jack = 0.0
-        else:
-            xm_j = np.hstack([x_j, m_vals[idx]])
-            b_coef, _, _, _ = np.linalg.lstsq(xm_j, y_j, rcond=None)
-            b_jack = b_coef[2]
+    # b-path: family-appropriate model when non-linear
+    if family is not None:
+        xm_full = np.hstack([x_vals, m_vals])  # (n, 2)
+        XM_jack = xm_full[loo_idx]  # (n, n-1, 2)
+        Y_jack = y_values[loo_idx].astype(float)  # (n, n-1)
+        b_jack_coefs = family.batch_fit_paired(
+            XM_jack, Y_jack, fit_intercept=True
+        )  # (n, 2)
+        b_jack_slopes = b_jack_coefs[:, 1]  # mediator slope
+    else:
+        xm_design = np.hstack([ones, x_vals, m_vals])  # (n, 3)
+        XM_jack_lin = xm_design[loo_idx]  # (n, n-1, 3)
+        Y_jack_lin = y_values[loo_idx]  # (n, n-1)
+        b_jack_slopes = np.empty(n)
+        for i in range(n):
+            coef, _, _, _ = np.linalg.lstsq(XM_jack_lin[i], Y_jack_lin[i], rcond=None)
+            b_jack_slopes[i] = coef[2]  # mediator slope
 
-        jackknife_indirect[i] = a_jack * b_jack
+    jackknife_indirect = a_jack_slopes * b_jack_slopes
 
     theta_bar = np.mean(jackknife_indirect)
     diffs = theta_bar - jackknife_indirect

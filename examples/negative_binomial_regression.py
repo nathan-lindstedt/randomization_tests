@@ -204,8 +204,9 @@ if predictors_with_confounders:
 # Direct NegativeBinomialFamily protocol usage
 # ============================================================================
 
+X_np = X.values.astype(float)
 n = len(y_arr)
-p = X.shape[1]
+p = X_np.shape[1]
 family = NegativeBinomialFamily()
 
 print(f"\n{'=' * 60}")
@@ -222,20 +223,20 @@ print("  validate_y:         passed")
 
 # calibrate — estimate α from the observed data
 print(f"  alpha (before):     {family.alpha}")
-calibrated = family.calibrate(X, y_arr, fit_intercept=True)
+calibrated = family.calibrate(X_np, y_arr, fit_intercept=True)
 assert isinstance(calibrated, NegativeBinomialFamily)
 print(f"  alpha (after):      {calibrated.alpha:.4f}")
 
 # Idempotency check
-recalibrated = calibrated.calibrate(X, y_arr, fit_intercept=True)
+recalibrated = calibrated.calibrate(X_np, y_arr, fit_intercept=True)
 assert recalibrated is calibrated
 print("  idempotent:         True (recalibrate returns self)")
 
 # fit / predict / coefs / residuals (using calibrated instance)
-model = calibrated.fit(X, y_arr, fit_intercept=True)
-preds = calibrated.predict(model, X)
+model = calibrated.fit(X_np, y_arr, fit_intercept=True)
+preds = calibrated.predict(model, X_np)
 coefs = calibrated.coefs(model)
-resids = calibrated.residuals(model, X, y_arr)
+resids = calibrated.residuals(model, X_np, y_arr)
 print(f"  coefs:              {np.round(coefs, 4)}")
 print(f"  mean |residual|:    {np.mean(np.abs(resids)):.4f}")
 
@@ -253,18 +254,18 @@ print(f"  reconstruct_y:      shape={y_star.shape}, mean={np.mean(y_star):.4f}")
 n_batch = 50
 perm_indices = np.array([rng2.permutation(n) for _ in range(n_batch)])
 Y_matrix = y_arr[perm_indices]
-batch_coefs = calibrated.batch_fit(X, Y_matrix, fit_intercept=True)
+batch_coefs = calibrated.batch_fit(X_np, Y_matrix, fit_intercept=True)
 print(f"  batch_fit:          shape={batch_coefs.shape} (B={n_batch}, p={p})")
 
 # diagnostics
-diag = calibrated.diagnostics(X, y_arr, fit_intercept=True)
+diag = calibrated.diagnostics(X_np, y_arr, fit_intercept=True)
 print(f"  diagnostics:        deviance={diag['deviance']}, α={diag['alpha']}")
 
 # classical_p_values
-p_classical = calibrated.classical_p_values(X, y_arr, fit_intercept=True)
+p_classical = calibrated.classical_p_values(X_np, y_arr, fit_intercept=True)
 print(f"  classical_p_values: {np.round(p_classical, 6)}")
 
 # exchangeability_cells (v0.4.0 stub)
-cells = calibrated.exchangeability_cells(X, y_arr)
+cells = calibrated.exchangeability_cells(X_np, y_arr)
 assert cells is None
 print("  exchangeability:    None (global)")

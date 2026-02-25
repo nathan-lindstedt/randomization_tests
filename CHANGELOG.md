@@ -5,6 +5,67 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - Unreleased
+
+### Added
+
+- **`score()` / `null_score()` protocol methods:**
+  `score(model, X, y) -> float` returns a deviance-like scalar for the
+  fitted model (prediction-based families use `fit_metric`, model-object
+  families use `−2 × llf`).  `null_score(y, fit_intercept) -> float`
+  returns the null-model baseline.  Eliminates all `hasattr` /
+  `model_fit_metric` / `null_fit_metric` duck-typing on `OrdinalFamily`
+  and `MultinomialFamily`.  Implemented on all 6 families.
+- **`fit_reduced()` module-level function** (in `families.py`):
+  centralises the "fit confounders-only or fall back to intercept-only
+  predictions" logic previously duplicated in four strategy files.
+- **`batch_fit_and_score()` / `batch_fit_and_score_varying_X()`:**
+  new protocol methods combining fitting and scoring in a single
+  vectorised call.  Used by Kennedy joint
+  (`batch_fit_and_score_varying_X`) and Freedman-Lane joint
+  (`batch_fit_and_score`) strategies.  JAX backend uses `vmap`; NumPy
+  backend uses sequential loop with `n_jobs` support.
+- **`batch_fit_paired()` — confounder bootstrap/jackknife vectorisation:**
+  new `batch_fit_paired(X_batch, Y_batch, fit_intercept)` method where
+  both X and Y vary per replicate (bootstrap resamples or jackknife
+  leave-one-out).  JAX backend uses `vmap(_solve_one, in_axes=(0, 0))`.
+  `confounders.py` bootstrap loop (1,000 iterations) and jackknife
+  loop (*n* iterations) refactored from sequential `fit()` calls to
+  single `batch_fit_paired()` calls.  6 new JAX methods, 6 NumPy
+  fallbacks, protocol + 6 family implementations.
+- **`backend=` parameter** on `permutation_test_regression()` /
+  `PermutationEngine`: `"numpy"`, `"jax"`, or `None` (auto-resolve).
+  Enables test injection and per-call backend selection.
+- **`family: str | ModelFamily`** parameter widening: users can pass
+  pre-configured family instances (e.g.
+  `NegativeBinomialFamily(alpha=2.0)`) directly.  `resolve_family()`
+  returns instances as-is (pass-through).
+- **6 new `TestBatchFitPaired` tests** verifying shape, finiteness,
+  and correctness for all families (linear, logistic, Poisson, negative
+  binomial, ordinal, multinomial).
+
+### Changed
+
+- All four strategy files (`ter_braak.py`, `kennedy.py`,
+  `freedman_lane.py`) refactored to use `fit_reduced()` and
+  `family.score()` / `family.null_score()`.
+- Kennedy joint strategy uses `batch_fit_and_score_varying_X()`.
+- Freedman-Lane joint strategy uses `batch_fit_and_score()`.
+- `confounders.py` bootstrap and jackknife loops vectorised via
+  `batch_fit_paired()` (was sequential `fit()` per replicate).
+
+### Fixed
+
+- **JAX solver return-type annotations:** 15 annotations in `_jax.py`
+  corrected from 2-tuple to 3-tuple `(beta, nll, converged)` — 5
+  solver function signatures + 10 `_solve_one` inner functions.
+
+### Removed
+
+- Duck-typed `model_fit_metric()` and `null_fit_metric()` from
+  `OrdinalFamily` and `MultinomialFamily` (subsumed by `score()` and
+  `null_score()`).
+
 ## [0.3.0] - 2026-02-23
 
 ### Added

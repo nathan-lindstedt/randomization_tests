@@ -128,7 +128,7 @@ if _CAN_IMPORT_JAX:
         max_iter: int,
         tol: float,
         min_damping: float = _MIN_DAMPING,
-    ) -> tuple[jnp.ndarray, jnp.ndarray]:
+    ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
         """Newton–Raphson logistic solve with early stopping.
 
         Uses ``jax.lax.while_loop`` for dynamic early exit — the
@@ -221,10 +221,8 @@ if _CAN_IMPORT_JAX:
             )
             return (i + 1, beta_new, nll_new, converged)
 
-        _, beta_final, _nll_final, converged = jax.lax.while_loop(
-            cond, body, init_state
-        )
-        return beta_final, converged
+        _, beta_final, nll_final, converged = jax.lax.while_loop(cond, body, init_state)
+        return beta_final, nll_final, converged
 
     # ---- Poisson helpers -------------------------------------------
 
@@ -268,7 +266,7 @@ if _CAN_IMPORT_JAX:
         max_iter: int,
         tol: float,
         min_damping: float = _MIN_DAMPING,
-    ) -> tuple[jnp.ndarray, jnp.ndarray]:
+    ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
         """Newton–Raphson Poisson solve with early stopping.
 
         Uses ``jax.lax.while_loop`` for dynamic early exit — the
@@ -330,10 +328,8 @@ if _CAN_IMPORT_JAX:
             )
             return (i + 1, beta_new, nll_new, converged)
 
-        _, beta_final, _nll_final, converged = jax.lax.while_loop(
-            cond, body, init_state
-        )
-        return beta_final, converged
+        _, beta_final, nll_final, converged = jax.lax.while_loop(cond, body, init_state)
+        return beta_final, nll_final, converged
 
     # ---- Negative binomial helpers ---------------------------------
 
@@ -425,7 +421,7 @@ if _CAN_IMPORT_JAX:
         max_iter: int,
         tol: float,
         min_damping: float = _MIN_DAMPING,
-    ) -> tuple[jnp.ndarray, jnp.ndarray]:
+    ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
         """Newton–Raphson NB2 solve with early stopping and fixed α.
 
         Initialises β via OLS on the log-link working response
@@ -482,10 +478,8 @@ if _CAN_IMPORT_JAX:
             )
             return (i + 1, beta_new, nll_new, converged)
 
-        _, beta_final, _nll_final, converged = jax.lax.while_loop(
-            cond, body, init_state
-        )
-        return beta_final, converged
+        _, beta_final, nll_final, converged = jax.lax.while_loop(cond, body, init_state)
+        return beta_final, nll_final, converged
 
     # ---- Ordinal (proportional-odds) helpers -----------------------
 
@@ -563,7 +557,7 @@ if _CAN_IMPORT_JAX:
         max_iter: int,
         tol: float,
         min_damping: float = _MIN_DAMPING,
-    ) -> tuple[jnp.ndarray, jnp.ndarray]:
+    ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
         """Newton–Raphson ordinal solve using autodiff.
 
         Uses ``jax.grad`` and ``jax.hessian`` for exact derivatives
@@ -631,10 +625,10 @@ if _CAN_IMPORT_JAX:
             )
             return (i + 1, params_new, nll_new, converged)
 
-        _, params_final, _nll_final, converged = jax.lax.while_loop(
+        _, params_final, nll_final, converged = jax.lax.while_loop(
             cond, body, init_state
         )
-        return params_final, converged
+        return params_final, nll_final, converged
 
     # ---- Multinomial (softmax) helpers -----------------------------
 
@@ -680,7 +674,7 @@ if _CAN_IMPORT_JAX:
         max_iter: int,
         tol: float,
         min_damping: float = _MIN_DAMPING,
-    ) -> tuple[jnp.ndarray, jnp.ndarray]:
+    ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
         """Newton–Raphson multinomial solve using autodiff.
 
         Uses ``jax.grad`` and ``jax.hessian`` for exact derivatives
@@ -739,10 +733,10 @@ if _CAN_IMPORT_JAX:
             )
             return (i + 1, params_new, nll_new, converged)
 
-        _, params_final, _nll_final, converged = jax.lax.while_loop(
+        _, params_final, nll_final, converged = jax.lax.while_loop(
             cond, body, init_state
         )
-        return params_final, converged
+        return params_final, nll_final, converged
 
     def _make_multinomial_wald_chi2(
         K: int,
@@ -913,10 +907,10 @@ class JaxBackend:
 
         def _solve_one(
             y_vec: jax.Array,
-        ) -> tuple[jax.Array, jax.Array]:
+        ) -> tuple[jax.Array, jax.Array, jax.Array]:
             return _make_newton_solver(X_j, y_vec, max_iter, tol, min_damping)
 
-        all_betas, all_converged = jit(vmap(_solve_one))(Y_j)
+        all_betas, _all_nll, all_converged = jit(vmap(_solve_one))(Y_j)
         _check_convergence(np.asarray(all_converged), max_iter)
         all_coefs = np.asarray(all_betas)
         return all_coefs[:, 1:] if fit_intercept else all_coefs
@@ -962,10 +956,10 @@ class JaxBackend:
 
         def _solve_one(
             X_single: jax.Array,
-        ) -> tuple[jax.Array, jax.Array]:
+        ) -> tuple[jax.Array, jax.Array, jax.Array]:
             return _make_newton_solver(X_single, y_j, max_iter, tol, min_damping)
 
-        all_betas, all_converged = jit(vmap(_solve_one))(X_j)
+        all_betas, _all_nll, all_converged = jit(vmap(_solve_one))(X_j)
         _check_convergence(np.asarray(all_converged), max_iter)
         all_coefs = np.asarray(all_betas)
         return all_coefs[:, 1:] if fit_intercept else all_coefs
@@ -1054,10 +1048,10 @@ class JaxBackend:
 
         def _solve_one(
             y_vec: jax.Array,
-        ) -> tuple[jax.Array, jax.Array]:
+        ) -> tuple[jax.Array, jax.Array, jax.Array]:
             return _make_poisson_solver(X_j, y_vec, max_iter, tol, min_damping)
 
-        all_betas, all_converged = jit(vmap(_solve_one))(Y_j)
+        all_betas, _all_nll, all_converged = jit(vmap(_solve_one))(Y_j)
         _check_convergence(np.asarray(all_converged), max_iter)
         all_coefs = np.asarray(all_betas)
         return all_coefs[:, 1:] if fit_intercept else all_coefs
@@ -1103,10 +1097,10 @@ class JaxBackend:
 
         def _solve_one(
             X_single: jax.Array,
-        ) -> tuple[jax.Array, jax.Array]:
+        ) -> tuple[jax.Array, jax.Array, jax.Array]:
             return _make_poisson_solver(X_single, y_j, max_iter, tol, min_damping)
 
-        all_betas, all_converged = jit(vmap(_solve_one))(X_j)
+        all_betas, _all_nll, all_converged = jit(vmap(_solve_one))(X_j)
         _check_convergence(np.asarray(all_converged), max_iter)
         all_coefs = np.asarray(all_betas)
         return all_coefs[:, 1:] if fit_intercept else all_coefs
@@ -1153,10 +1147,10 @@ class JaxBackend:
 
         def _solve_one(
             y_vec: jax.Array,
-        ) -> tuple[jax.Array, jax.Array]:
+        ) -> tuple[jax.Array, jax.Array, jax.Array]:
             return _make_negbin_solver(X_j, y_vec, alpha, max_iter, tol, min_damping)
 
-        all_betas, all_converged = jit(vmap(_solve_one))(Y_j)
+        all_betas, _all_nll, all_converged = jit(vmap(_solve_one))(Y_j)
         _check_convergence(np.asarray(all_converged), max_iter)
         all_coefs = np.asarray(all_betas)
         return all_coefs[:, 1:] if fit_intercept else all_coefs
@@ -1202,10 +1196,10 @@ class JaxBackend:
 
         def _solve_one(
             X_single: jax.Array,
-        ) -> tuple[jax.Array, jax.Array]:
+        ) -> tuple[jax.Array, jax.Array, jax.Array]:
             return _make_negbin_solver(X_single, y_j, alpha, max_iter, tol, min_damping)
 
-        all_betas, all_converged = jit(vmap(_solve_one))(X_j)
+        all_betas, _all_nll, all_converged = jit(vmap(_solve_one))(X_j)
         _check_convergence(np.asarray(all_converged), max_iter)
         all_coefs = np.asarray(all_betas)
         return all_coefs[:, 1:] if fit_intercept else all_coefs
@@ -1250,10 +1244,10 @@ class JaxBackend:
 
         def _solve_one(
             y_vec: jax.Array,
-        ) -> tuple[jax.Array, jax.Array]:
+        ) -> tuple[jax.Array, jax.Array, jax.Array]:
             return _make_ordinal_solver(X_j, y_vec, K, max_iter, tol, min_damping)
 
-        all_params, all_converged = jit(vmap(_solve_one))(Y_j)
+        all_params, _all_nll, all_converged = jit(vmap(_solve_one))(Y_j)
         _check_convergence(np.asarray(all_converged), max_iter)
         # Extract only slope coefficients (first p columns)
         all_coefs = np.asarray(all_params)[:, :n_features]
@@ -1296,10 +1290,10 @@ class JaxBackend:
 
         def _solve_one(
             X_single: jax.Array,
-        ) -> tuple[jax.Array, jax.Array]:
+        ) -> tuple[jax.Array, jax.Array, jax.Array]:
             return _make_ordinal_solver(X_single, y_j, K, max_iter, tol, min_damping)
 
-        all_params, all_converged = jit(vmap(_solve_one))(X_j)
+        all_params, _all_nll, all_converged = jit(vmap(_solve_one))(X_j)
         _check_convergence(np.asarray(all_converged), max_iter)
         all_coefs = np.asarray(all_params)[:, :n_features]
         return all_coefs
@@ -1355,10 +1349,10 @@ class JaxBackend:
 
         def _solve_one(
             y_vec: jax.Array,
-        ) -> tuple[jax.Array, jax.Array]:
+        ) -> tuple[jax.Array, jax.Array, jax.Array]:
             return _make_multinomial_solver(X_j, y_vec, K, max_iter, tol, min_damping)
 
-        all_params, all_converged = jit(vmap(_solve_one))(Y_j)
+        all_params, _all_nll, all_converged = jit(vmap(_solve_one))(Y_j)
         _check_convergence(np.asarray(all_converged), max_iter)
 
         # Compute Wald χ² per predictor for each permutation.
@@ -1425,12 +1419,12 @@ class JaxBackend:
 
         def _solve_one(
             X_single: jax.Array,
-        ) -> tuple[jax.Array, jax.Array]:
+        ) -> tuple[jax.Array, jax.Array, jax.Array]:
             return _make_multinomial_solver(
                 X_single, y_j, K, max_iter, tol, min_damping
             )
 
-        all_params, all_converged = jit(vmap(_solve_one))(X_j)
+        all_params, _all_nll, all_converged = jit(vmap(_solve_one))(X_j)
         _check_convergence(np.asarray(all_converged), max_iter)
 
         # Compute Wald χ² per predictor — each permutation has its own X
@@ -1442,4 +1436,751 @@ class JaxBackend:
             return _wald_fn(params_flat, cov)  # type: ignore[no-any-return]
 
         all_wald = jit(vmap(_wald_with_X))(all_params, X_j)
+        return np.asarray(all_wald)
+
+    # ================================================================ #
+    # batch_fit_and_score — shared X, varying Y
+    # ================================================================ #
+    #
+    # These methods extend the existing ``batch_*`` (shared X, many Y)
+    # methods to return ``(coefs, scores)`` where
+    # ``scores = 2 · NLL_at_convergence`` (deviance).  For the
+    # Kennedy joint and Freedman–Lane joint strategies, only the
+    # **score** is needed; the coefs are returned for protocol
+    # symmetry and potential future use.
+    #
+    # Returning 2·NLL is equivalent to returning deviance for
+    # improvement computations (Δ = S_reduced − S_full) because the
+    # constant terms that differ between NLL and deviance cancel.
+
+    def batch_ols_fit_and_score(
+        self,
+        X: np.ndarray,
+        Y_matrix: np.ndarray,
+        fit_intercept: bool = True,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Batch OLS returning ``(coefs, RSS)``."""
+        if fit_intercept:
+            ones = np.ones((X.shape[0], 1), dtype=X.dtype)
+            X_aug = np.hstack([ones, X])
+        else:
+            X_aug = X
+
+        X_j = jnp.array(X_aug, dtype=jnp.float64)
+        Y_j = jnp.array(Y_matrix, dtype=jnp.float64)
+
+        @jit
+        def _batch_solve_with_rss(
+            X_mat: jax.Array,
+            Y_mat: jax.Array,
+        ) -> tuple[jax.Array, jax.Array]:
+            pinv = jnp.linalg.pinv(X_mat)
+            coefs_all = (pinv @ Y_mat.T).T  # (B, p_aug)
+
+            def _rss_one(coefs: jax.Array, y_vec: jax.Array) -> jax.Array:
+                resid = y_vec - X_mat @ coefs
+                return jnp.sum(resid**2)
+
+            rss = vmap(_rss_one)(coefs_all, Y_mat)
+            return coefs_all, rss
+
+        all_coefs, all_rss = _batch_solve_with_rss(X_j, Y_j)
+        all_coefs = np.asarray(all_coefs)
+        coefs = all_coefs[:, 1:] if fit_intercept else all_coefs
+        return coefs, np.asarray(all_rss)
+
+    def batch_logistic_fit_and_score(
+        self,
+        X: np.ndarray,
+        Y_matrix: np.ndarray,
+        fit_intercept: bool = True,
+        **kwargs: Any,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Batch logistic returning ``(coefs, 2·NLL)``."""
+        max_iter: int = kwargs.get("max_iter", 100)
+        tol: float = kwargs.get("tol", _DEFAULT_TOL)
+        min_damping: float = kwargs.get("min_damping", _MIN_DAMPING)
+
+        if fit_intercept:
+            ones = np.ones((X.shape[0], 1), dtype=X.dtype)
+            X_aug = np.hstack([ones, X])
+        else:
+            X_aug = X
+
+        X_j = jnp.array(X_aug, dtype=jnp.float64)
+        Y_j = jnp.array(Y_matrix, dtype=jnp.float64)
+
+        def _solve_one(
+            y_vec: jax.Array,
+        ) -> tuple[jax.Array, jax.Array, jax.Array]:
+            return _make_newton_solver(X_j, y_vec, max_iter, tol, min_damping)
+
+        all_betas, all_nll, all_converged = jit(vmap(_solve_one))(Y_j)
+        _check_convergence(np.asarray(all_converged), max_iter)
+        all_coefs = np.asarray(all_betas)
+        coefs = all_coefs[:, 1:] if fit_intercept else all_coefs
+        return coefs, 2.0 * np.asarray(all_nll)
+
+    def batch_poisson_fit_and_score(
+        self,
+        X: np.ndarray,
+        Y_matrix: np.ndarray,
+        fit_intercept: bool = True,
+        **kwargs: Any,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Batch Poisson returning ``(coefs, 2·NLL)``."""
+        max_iter: int = kwargs.get("max_iter", 100)
+        tol: float = kwargs.get("tol", _DEFAULT_TOL)
+        min_damping: float = kwargs.get("min_damping", _MIN_DAMPING)
+
+        if fit_intercept:
+            ones = np.ones((X.shape[0], 1), dtype=X.dtype)
+            X_aug = np.hstack([ones, X])
+        else:
+            X_aug = X
+
+        X_j = jnp.array(X_aug, dtype=jnp.float64)
+        Y_j = jnp.array(Y_matrix, dtype=jnp.float64)
+
+        def _solve_one(
+            y_vec: jax.Array,
+        ) -> tuple[jax.Array, jax.Array, jax.Array]:
+            return _make_poisson_solver(X_j, y_vec, max_iter, tol, min_damping)
+
+        all_betas, all_nll, all_converged = jit(vmap(_solve_one))(Y_j)
+        _check_convergence(np.asarray(all_converged), max_iter)
+        all_coefs = np.asarray(all_betas)
+        coefs = all_coefs[:, 1:] if fit_intercept else all_coefs
+        return coefs, 2.0 * np.asarray(all_nll)
+
+    def batch_negbin_fit_and_score(
+        self,
+        X: np.ndarray,
+        Y_matrix: np.ndarray,
+        fit_intercept: bool = True,
+        **kwargs: Any,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Batch NB2 returning ``(coefs, 2·NLL)``."""
+        alpha: float = kwargs["alpha"]
+        max_iter: int = kwargs.get("max_iter", 100)
+        tol: float = kwargs.get("tol", _DEFAULT_TOL)
+        min_damping: float = kwargs.get("min_damping", _MIN_DAMPING)
+
+        if fit_intercept:
+            ones = np.ones((X.shape[0], 1), dtype=X.dtype)
+            X_aug = np.hstack([ones, X])
+        else:
+            X_aug = X
+
+        X_j = jnp.array(X_aug, dtype=jnp.float64)
+        Y_j = jnp.array(Y_matrix, dtype=jnp.float64)
+
+        def _solve_one(
+            y_vec: jax.Array,
+        ) -> tuple[jax.Array, jax.Array, jax.Array]:
+            return _make_negbin_solver(X_j, y_vec, alpha, max_iter, tol, min_damping)
+
+        all_betas, all_nll, all_converged = jit(vmap(_solve_one))(Y_j)
+        _check_convergence(np.asarray(all_converged), max_iter)
+        all_coefs = np.asarray(all_betas)
+        coefs = all_coefs[:, 1:] if fit_intercept else all_coefs
+        return coefs, 2.0 * np.asarray(all_nll)
+
+    def batch_ordinal_fit_and_score(
+        self,
+        X: np.ndarray,
+        Y_matrix: np.ndarray,
+        fit_intercept: bool = True,
+        **kwargs: Any,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Batch ordinal returning ``(coefs, 2·NLL)``."""
+        K: int = kwargs["K"]
+        max_iter: int = kwargs.get("max_iter", 100)
+        tol: float = kwargs.get("tol", _DEFAULT_TOL)
+        min_damping: float = kwargs.get("min_damping", _MIN_DAMPING)
+
+        X_j = jnp.array(X, dtype=jnp.float64)
+        Y_j = jnp.array(Y_matrix, dtype=jnp.float64)
+        n_features = X.shape[1]
+
+        def _solve_one(
+            y_vec: jax.Array,
+        ) -> tuple[jax.Array, jax.Array, jax.Array]:
+            return _make_ordinal_solver(X_j, y_vec, K, max_iter, tol, min_damping)
+
+        all_params, all_nll, all_converged = jit(vmap(_solve_one))(Y_j)
+        _check_convergence(np.asarray(all_converged), max_iter)
+        all_coefs = np.asarray(all_params)[:, :n_features]
+        return all_coefs, 2.0 * np.asarray(all_nll)
+
+    def batch_multinomial_fit_and_score(
+        self,
+        X: np.ndarray,
+        Y_matrix: np.ndarray,
+        fit_intercept: bool = True,
+        **kwargs: Any,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Batch multinomial returning ``(wald_chi2, 2·NLL)``."""
+        K: int = kwargs["K"]
+        max_iter: int = kwargs.get("max_iter", 100)
+        tol: float = kwargs.get("tol", _DEFAULT_TOL)
+        min_damping: float = kwargs.get("min_damping", _MIN_DAMPING)
+
+        if fit_intercept:
+            ones = np.ones((X.shape[0], 1), dtype=X.dtype)
+            X_aug = np.hstack([ones, X])
+        else:
+            X_aug = X
+
+        X_j = jnp.array(X_aug, dtype=jnp.float64)
+        Y_j = jnp.array(Y_matrix, dtype=jnp.float64)
+        p_aug = X_aug.shape[1]
+        n_params = (K - 1) * p_aug
+
+        _nll = _make_multinomial_nll(K)
+        _hess_fn = jit(jax.hessian(_nll))
+        _wald_fn = _make_multinomial_wald_chi2(K, p_aug, fit_intercept)
+
+        def _solve_one(
+            y_vec: jax.Array,
+        ) -> tuple[jax.Array, jax.Array, jax.Array]:
+            return _make_multinomial_solver(X_j, y_vec, K, max_iter, tol, min_damping)
+
+        all_params, all_nll, all_converged = jit(vmap(_solve_one))(Y_j)
+        _check_convergence(np.asarray(all_converged), max_iter)
+
+        def _wald_with_y(
+            params_flat: jax.Array,
+            y_vec: jax.Array,
+        ) -> jax.Array:
+            H = _hess_fn(params_flat, X_j, y_vec)
+            cov = jnp.linalg.inv(
+                H + _MIN_DAMPING * jnp.eye(n_params, dtype=jnp.float64)
+            )
+            return _wald_fn(params_flat, cov)  # type: ignore[no-any-return]
+
+        all_wald = jit(vmap(_wald_with_y))(all_params, Y_j)
+        return np.asarray(all_wald), 2.0 * np.asarray(all_nll)
+
+    # ================================================================ #
+    # batch_fit_and_score_varying_X — varying X, shared Y
+    # ================================================================ #
+
+    def batch_ols_fit_and_score_varying_X(
+        self,
+        X_batch: np.ndarray,
+        y: np.ndarray,
+        fit_intercept: bool = True,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Batch OLS (varying X) returning ``(coefs, RSS)``."""
+        if fit_intercept:
+            B, n, _ = X_batch.shape
+            ones = np.ones((B, n, 1), dtype=X_batch.dtype)
+            X_aug = np.concatenate([ones, X_batch], axis=2)
+        else:
+            X_aug = X_batch
+
+        X_j = jnp.array(X_aug, dtype=jnp.float64)
+        y_j = jnp.array(y, dtype=jnp.float64)
+
+        @jit
+        def _batch_lstsq_with_rss(
+            X_all: jax.Array,
+            y_vec: jax.Array,
+        ) -> tuple[jax.Array, jax.Array]:
+            def _solve_one(
+                X_single: jax.Array,
+            ) -> tuple[jax.Array, jax.Array]:
+                coefs, _, _, _ = jnp.linalg.lstsq(X_single, y_vec, rcond=None)
+                resid = y_vec - X_single @ coefs
+                return coefs, jnp.sum(resid**2)
+
+            return vmap(_solve_one)(X_all)
+
+        all_coefs, all_rss = _batch_lstsq_with_rss(X_j, y_j)
+        all_coefs = np.asarray(all_coefs)
+        coefs = all_coefs[:, 1:] if fit_intercept else all_coefs
+        return coefs, np.asarray(all_rss)
+
+    def batch_logistic_fit_and_score_varying_X(
+        self,
+        X_batch: np.ndarray,
+        y: np.ndarray,
+        fit_intercept: bool = True,
+        **kwargs: Any,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Batch logistic (varying X) returning ``(coefs, 2·NLL)``."""
+        max_iter: int = kwargs.get("max_iter", 100)
+        tol: float = kwargs.get("tol", _DEFAULT_TOL)
+        min_damping: float = kwargs.get("min_damping", _MIN_DAMPING)
+
+        if fit_intercept:
+            B, n, _ = X_batch.shape
+            ones = np.ones((B, n, 1), dtype=X_batch.dtype)
+            X_aug = np.concatenate([ones, X_batch], axis=2)
+        else:
+            X_aug = X_batch
+
+        X_j = jnp.array(X_aug, dtype=jnp.float64)
+        y_j = jnp.array(y, dtype=jnp.float64)
+
+        def _solve_one(
+            X_single: jax.Array,
+        ) -> tuple[jax.Array, jax.Array, jax.Array]:
+            return _make_newton_solver(X_single, y_j, max_iter, tol, min_damping)
+
+        all_betas, all_nll, all_converged = jit(vmap(_solve_one))(X_j)
+        _check_convergence(np.asarray(all_converged), max_iter)
+        all_coefs = np.asarray(all_betas)
+        coefs = all_coefs[:, 1:] if fit_intercept else all_coefs
+        return coefs, 2.0 * np.asarray(all_nll)
+
+    def batch_poisson_fit_and_score_varying_X(
+        self,
+        X_batch: np.ndarray,
+        y: np.ndarray,
+        fit_intercept: bool = True,
+        **kwargs: Any,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Batch Poisson (varying X) returning ``(coefs, 2·NLL)``."""
+        max_iter: int = kwargs.get("max_iter", 100)
+        tol: float = kwargs.get("tol", _DEFAULT_TOL)
+        min_damping: float = kwargs.get("min_damping", _MIN_DAMPING)
+
+        if fit_intercept:
+            B, n, _ = X_batch.shape
+            ones = np.ones((B, n, 1), dtype=X_batch.dtype)
+            X_aug = np.concatenate([ones, X_batch], axis=2)
+        else:
+            X_aug = X_batch
+
+        X_j = jnp.array(X_aug, dtype=jnp.float64)
+        y_j = jnp.array(y, dtype=jnp.float64)
+
+        def _solve_one(
+            X_single: jax.Array,
+        ) -> tuple[jax.Array, jax.Array, jax.Array]:
+            return _make_poisson_solver(X_single, y_j, max_iter, tol, min_damping)
+
+        all_betas, all_nll, all_converged = jit(vmap(_solve_one))(X_j)
+        _check_convergence(np.asarray(all_converged), max_iter)
+        all_coefs = np.asarray(all_betas)
+        coefs = all_coefs[:, 1:] if fit_intercept else all_coefs
+        return coefs, 2.0 * np.asarray(all_nll)
+
+    def batch_negbin_fit_and_score_varying_X(
+        self,
+        X_batch: np.ndarray,
+        y: np.ndarray,
+        fit_intercept: bool = True,
+        **kwargs: Any,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Batch NB2 (varying X) returning ``(coefs, 2·NLL)``."""
+        alpha: float = kwargs["alpha"]
+        max_iter: int = kwargs.get("max_iter", 100)
+        tol: float = kwargs.get("tol", _DEFAULT_TOL)
+        min_damping: float = kwargs.get("min_damping", _MIN_DAMPING)
+
+        if fit_intercept:
+            B, n, _ = X_batch.shape
+            ones = np.ones((B, n, 1), dtype=X_batch.dtype)
+            X_aug = np.concatenate([ones, X_batch], axis=2)
+        else:
+            X_aug = X_batch
+
+        X_j = jnp.array(X_aug, dtype=jnp.float64)
+        y_j = jnp.array(y, dtype=jnp.float64)
+
+        def _solve_one(
+            X_single: jax.Array,
+        ) -> tuple[jax.Array, jax.Array, jax.Array]:
+            return _make_negbin_solver(X_single, y_j, alpha, max_iter, tol, min_damping)
+
+        all_betas, all_nll, all_converged = jit(vmap(_solve_one))(X_j)
+        _check_convergence(np.asarray(all_converged), max_iter)
+        all_coefs = np.asarray(all_betas)
+        coefs = all_coefs[:, 1:] if fit_intercept else all_coefs
+        return coefs, 2.0 * np.asarray(all_nll)
+
+    def batch_ordinal_fit_and_score_varying_X(
+        self,
+        X_batch: np.ndarray,
+        y: np.ndarray,
+        fit_intercept: bool = True,
+        **kwargs: Any,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Batch ordinal (varying X) returning ``(coefs, 2·NLL)``."""
+        K: int = kwargs["K"]
+        max_iter: int = kwargs.get("max_iter", 100)
+        tol: float = kwargs.get("tol", _DEFAULT_TOL)
+        min_damping: float = kwargs.get("min_damping", _MIN_DAMPING)
+
+        X_j = jnp.array(X_batch, dtype=jnp.float64)
+        y_j = jnp.array(y, dtype=jnp.float64)
+        n_features = X_batch.shape[2]
+
+        def _solve_one(
+            X_single: jax.Array,
+        ) -> tuple[jax.Array, jax.Array, jax.Array]:
+            return _make_ordinal_solver(X_single, y_j, K, max_iter, tol, min_damping)
+
+        all_params, all_nll, all_converged = jit(vmap(_solve_one))(X_j)
+        _check_convergence(np.asarray(all_converged), max_iter)
+        all_coefs = np.asarray(all_params)[:, :n_features]
+        return all_coefs, 2.0 * np.asarray(all_nll)
+
+    def batch_multinomial_fit_and_score_varying_X(
+        self,
+        X_batch: np.ndarray,
+        y: np.ndarray,
+        fit_intercept: bool = True,
+        **kwargs: Any,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Batch multinomial (varying X) returning ``(wald_chi2, 2·NLL)``."""
+        K: int = kwargs["K"]
+        max_iter: int = kwargs.get("max_iter", 100)
+        tol: float = kwargs.get("tol", _DEFAULT_TOL)
+        min_damping: float = kwargs.get("min_damping", _MIN_DAMPING)
+
+        if fit_intercept:
+            B, n, _ = X_batch.shape
+            ones = np.ones((B, n, 1), dtype=X_batch.dtype)
+            X_aug = np.concatenate([ones, X_batch], axis=2)
+        else:
+            X_aug = X_batch
+
+        X_j = jnp.array(X_aug, dtype=jnp.float64)
+        y_j = jnp.array(y, dtype=jnp.float64)
+        p_aug = X_aug.shape[2]
+        n_params = (K - 1) * p_aug
+
+        _nll = _make_multinomial_nll(K)
+        _hess_fn = jit(jax.hessian(_nll))
+        _wald_fn = _make_multinomial_wald_chi2(K, p_aug, fit_intercept)
+
+        def _solve_one(
+            X_single: jax.Array,
+        ) -> tuple[jax.Array, jax.Array, jax.Array]:
+            return _make_multinomial_solver(
+                X_single, y_j, K, max_iter, tol, min_damping
+            )
+
+        all_params, all_nll, all_converged = jit(vmap(_solve_one))(X_j)
+        _check_convergence(np.asarray(all_converged), max_iter)
+
+        def _wald_with_X(
+            params_flat: jax.Array,
+            X_single: jax.Array,
+        ) -> jax.Array:
+            H = _hess_fn(params_flat, X_single, y_j)
+            cov = jnp.linalg.inv(
+                H + _MIN_DAMPING * jnp.eye(n_params, dtype=jnp.float64)
+            )
+            return _wald_fn(params_flat, cov)  # type: ignore[no-any-return]
+
+        all_wald = jit(vmap(_wald_with_X))(all_params, X_j)
+        return np.asarray(all_wald), 2.0 * np.asarray(all_nll)
+
+    # ================================================================ #
+    # batch_*_paired — both X and Y vary per replicate
+    # ================================================================ #
+    #
+    # These methods support bootstrap and jackknife loops where each
+    # replicate resamples (or leaves-one-out) *rows*, so both the
+    # design matrix X and the response y change simultaneously.
+    #
+    # Shape convention:
+    #   X_batch : (B, n, p) — B design matrices, no intercept column
+    #   Y_batch : (B, n)    — B response vectors
+    #
+    # Returns:
+    #   coefs : (B, p) — slope coefficients (intercept excluded)
+    #
+    # For multinomial, coefs are Wald χ² per predictor (matching
+    # MultinomialFamily.coefs() semantics).
+
+    def batch_ols_paired(
+        self,
+        X_batch: np.ndarray,
+        Y_batch: np.ndarray,
+        fit_intercept: bool = True,
+    ) -> np.ndarray:
+        """Batch OLS where both X and Y vary per replicate.
+
+        Args:
+            X_batch: Design matrices ``(B, n, p)`` — no intercept.
+            Y_batch: Response vectors ``(B, n)``.
+            fit_intercept: Prepend intercept column.
+
+        Returns:
+            Slope coefficients ``(B, p)`` (intercept excluded).
+        """
+        if fit_intercept:
+            B, n, _ = X_batch.shape
+            ones = np.ones((B, n, 1), dtype=X_batch.dtype)
+            X_aug = np.concatenate([ones, X_batch], axis=2)
+        else:
+            X_aug = X_batch
+
+        X_j = jnp.array(X_aug, dtype=jnp.float64)
+        Y_j = jnp.array(Y_batch, dtype=jnp.float64)
+
+        @jit
+        def _batch_solve(
+            X_all: jax.Array,
+            Y_all: jax.Array,
+        ) -> jax.Array:
+            def _solve_one(
+                X_single: jax.Array,
+                y_vec: jax.Array,
+            ) -> jax.Array:
+                coefs, _, _, _ = jnp.linalg.lstsq(X_single, y_vec, rcond=None)
+                return coefs
+
+            return vmap(_solve_one)(X_all, Y_all)
+
+        all_coefs = np.asarray(_batch_solve(X_j, Y_j))
+        return all_coefs[:, 1:] if fit_intercept else all_coefs
+
+    def batch_logistic_paired(
+        self,
+        X_batch: np.ndarray,
+        Y_batch: np.ndarray,
+        fit_intercept: bool = True,
+        **kwargs: Any,
+    ) -> np.ndarray:
+        """Batch logistic where both X and Y vary per replicate.
+
+        Args:
+            X_batch: Design matrices ``(B, n, p)`` — no intercept.
+            Y_batch: Binary response vectors ``(B, n)``.
+            fit_intercept: Prepend intercept column.
+            **kwargs: ``max_iter``, ``tol``, ``min_damping``.
+
+        Returns:
+            Slope coefficients ``(B, p)`` (intercept excluded).
+        """
+        max_iter: int = kwargs.get("max_iter", 100)
+        tol: float = kwargs.get("tol", _DEFAULT_TOL)
+        min_damping: float = kwargs.get("min_damping", _MIN_DAMPING)
+
+        if fit_intercept:
+            B, n, _ = X_batch.shape
+            ones = np.ones((B, n, 1), dtype=X_batch.dtype)
+            X_aug = np.concatenate([ones, X_batch], axis=2)
+        else:
+            X_aug = X_batch
+
+        X_j = jnp.array(X_aug, dtype=jnp.float64)
+        Y_j = jnp.array(Y_batch, dtype=jnp.float64)
+
+        def _solve_one(
+            X_single: jax.Array,
+            y_vec: jax.Array,
+        ) -> tuple[jax.Array, jax.Array, jax.Array]:
+            return _make_newton_solver(X_single, y_vec, max_iter, tol, min_damping)
+
+        all_betas, _all_nll, all_converged = jit(vmap(_solve_one))(X_j, Y_j)
+        _check_convergence(np.asarray(all_converged), max_iter)
+        all_coefs = np.asarray(all_betas)
+        return all_coefs[:, 1:] if fit_intercept else all_coefs
+
+    def batch_poisson_paired(
+        self,
+        X_batch: np.ndarray,
+        Y_batch: np.ndarray,
+        fit_intercept: bool = True,
+        **kwargs: Any,
+    ) -> np.ndarray:
+        """Batch Poisson where both X and Y vary per replicate.
+
+        Args:
+            X_batch: Design matrices ``(B, n, p)`` — no intercept.
+            Y_batch: Count response vectors ``(B, n)``.
+            fit_intercept: Prepend intercept column.
+            **kwargs: ``max_iter``, ``tol``, ``min_damping``.
+
+        Returns:
+            Slope coefficients ``(B, p)`` (intercept excluded).
+        """
+        max_iter: int = kwargs.get("max_iter", 100)
+        tol: float = kwargs.get("tol", _DEFAULT_TOL)
+        min_damping: float = kwargs.get("min_damping", _MIN_DAMPING)
+
+        if fit_intercept:
+            B, n, _ = X_batch.shape
+            ones = np.ones((B, n, 1), dtype=X_batch.dtype)
+            X_aug = np.concatenate([ones, X_batch], axis=2)
+        else:
+            X_aug = X_batch
+
+        X_j = jnp.array(X_aug, dtype=jnp.float64)
+        Y_j = jnp.array(Y_batch, dtype=jnp.float64)
+
+        def _solve_one(
+            X_single: jax.Array,
+            y_vec: jax.Array,
+        ) -> tuple[jax.Array, jax.Array, jax.Array]:
+            return _make_poisson_solver(X_single, y_vec, max_iter, tol, min_damping)
+
+        all_betas, _all_nll, all_converged = jit(vmap(_solve_one))(X_j, Y_j)
+        _check_convergence(np.asarray(all_converged), max_iter)
+        all_coefs = np.asarray(all_betas)
+        return all_coefs[:, 1:] if fit_intercept else all_coefs
+
+    def batch_negbin_paired(
+        self,
+        X_batch: np.ndarray,
+        Y_batch: np.ndarray,
+        fit_intercept: bool = True,
+        **kwargs: Any,
+    ) -> np.ndarray:
+        """Batch NB2 where both X and Y vary per replicate.
+
+        Args:
+            X_batch: Design matrices ``(B, n, p)`` — no intercept.
+            Y_batch: Count response vectors ``(B, n)``.
+            fit_intercept: Prepend intercept column.
+            **kwargs: ``alpha`` (required), ``max_iter``, ``tol``,
+                ``min_damping``.
+
+        Returns:
+            Slope coefficients ``(B, p)`` (intercept excluded).
+        """
+        alpha: float = kwargs["alpha"]
+        max_iter: int = kwargs.get("max_iter", 100)
+        tol: float = kwargs.get("tol", _DEFAULT_TOL)
+        min_damping: float = kwargs.get("min_damping", _MIN_DAMPING)
+
+        if fit_intercept:
+            B, n, _ = X_batch.shape
+            ones = np.ones((B, n, 1), dtype=X_batch.dtype)
+            X_aug = np.concatenate([ones, X_batch], axis=2)
+        else:
+            X_aug = X_batch
+
+        X_j = jnp.array(X_aug, dtype=jnp.float64)
+        Y_j = jnp.array(Y_batch, dtype=jnp.float64)
+
+        def _solve_one(
+            X_single: jax.Array,
+            y_vec: jax.Array,
+        ) -> tuple[jax.Array, jax.Array, jax.Array]:
+            return _make_negbin_solver(
+                X_single, y_vec, alpha, max_iter, tol, min_damping
+            )
+
+        all_betas, _all_nll, all_converged = jit(vmap(_solve_one))(X_j, Y_j)
+        _check_convergence(np.asarray(all_converged), max_iter)
+        all_coefs = np.asarray(all_betas)
+        return all_coefs[:, 1:] if fit_intercept else all_coefs
+
+    def batch_ordinal_paired(
+        self,
+        X_batch: np.ndarray,
+        Y_batch: np.ndarray,
+        fit_intercept: bool = True,
+        **kwargs: Any,
+    ) -> np.ndarray:
+        """Batch ordinal where both X and Y vary per replicate.
+
+        Args:
+            X_batch: Design matrices ``(B, n, p)`` — no intercept.
+            Y_batch: Ordinal response vectors ``(B, n)``,
+                integer-coded 0 … K-1.
+            fit_intercept: Ignored (protocol compatibility).
+            **kwargs: ``K`` (required), ``max_iter``, ``tol``,
+                ``min_damping``.
+
+        Returns:
+            Slope coefficients ``(B, p)`` (thresholds excluded).
+        """
+        K: int = kwargs["K"]
+        max_iter: int = kwargs.get("max_iter", 100)
+        tol: float = kwargs.get("tol", _DEFAULT_TOL)
+        min_damping: float = kwargs.get("min_damping", _MIN_DAMPING)
+
+        X_j = jnp.array(X_batch, dtype=jnp.float64)
+        Y_j = jnp.array(Y_batch, dtype=jnp.float64)
+        n_features = X_batch.shape[2]
+
+        def _solve_one(
+            X_single: jax.Array,
+            y_vec: jax.Array,
+        ) -> tuple[jax.Array, jax.Array, jax.Array]:
+            return _make_ordinal_solver(X_single, y_vec, K, max_iter, tol, min_damping)
+
+        all_params, _all_nll, all_converged = jit(vmap(_solve_one))(X_j, Y_j)
+        _check_convergence(np.asarray(all_converged), max_iter)
+        all_coefs = np.asarray(all_params)[:, :n_features]
+        return all_coefs
+
+    def batch_multinomial_paired(
+        self,
+        X_batch: np.ndarray,
+        Y_batch: np.ndarray,
+        fit_intercept: bool = True,
+        **kwargs: Any,
+    ) -> np.ndarray:
+        """Batch multinomial where both X and Y vary per replicate.
+
+        Returns per-predictor Wald χ² statistics (matching
+        ``MultinomialFamily.coefs()`` semantics).
+
+        Args:
+            X_batch: Design matrices ``(B, n, p)`` — no intercept.
+            Y_batch: Nominal response vectors ``(B, n)``,
+                integer-coded 0 … K-1.
+            fit_intercept: Prepend intercept column.
+            **kwargs: ``K`` (required), ``max_iter``, ``tol``,
+                ``min_damping``.
+
+        Returns:
+            Wald χ² statistics ``(B, p)`` — one scalar per slope
+            predictor per replicate (intercept excluded).
+        """
+        K: int = kwargs["K"]
+        max_iter: int = kwargs.get("max_iter", 100)
+        tol: float = kwargs.get("tol", _DEFAULT_TOL)
+        min_damping: float = kwargs.get("min_damping", _MIN_DAMPING)
+
+        if fit_intercept:
+            B, n, _ = X_batch.shape
+            ones = np.ones((B, n, 1), dtype=X_batch.dtype)
+            X_aug = np.concatenate([ones, X_batch], axis=2)
+        else:
+            X_aug = X_batch
+
+        X_j = jnp.array(X_aug, dtype=jnp.float64)
+        Y_j = jnp.array(Y_batch, dtype=jnp.float64)
+        p_aug = X_aug.shape[2]
+        n_params = (K - 1) * p_aug
+
+        _nll = _make_multinomial_nll(K)
+        _hess_fn = jit(jax.hessian(_nll))
+        _wald_fn = _make_multinomial_wald_chi2(K, p_aug, fit_intercept)
+
+        def _solve_one(
+            X_single: jax.Array,
+            y_vec: jax.Array,
+        ) -> tuple[jax.Array, jax.Array, jax.Array]:
+            return _make_multinomial_solver(
+                X_single, y_vec, K, max_iter, tol, min_damping
+            )
+
+        all_params, _all_nll, all_converged = jit(vmap(_solve_one))(X_j, Y_j)
+        _check_convergence(np.asarray(all_converged), max_iter)
+
+        def _wald_paired(
+            params_flat: jax.Array,
+            X_single: jax.Array,
+            y_vec: jax.Array,
+        ) -> jax.Array:
+            H = _hess_fn(params_flat, X_single, y_vec)
+            cov = jnp.linalg.inv(
+                H + _MIN_DAMPING * jnp.eye(n_params, dtype=jnp.float64)
+            )
+            return _wald_fn(params_flat, cov)  # type: ignore[no-any-return]
+
+        all_wald = jit(vmap(_wald_paired))(all_params, X_j, Y_j)
         return np.asarray(all_wald)

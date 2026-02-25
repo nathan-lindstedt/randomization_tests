@@ -201,9 +201,9 @@ print(f"  category_coefs:     shape={cat_coefs.shape}")
 for j in range(cat_coefs.shape[0]):
     print(f"    {selected_features[j]}: {np.round(cat_coefs[j], 4)}")
 
-# model_fit_metric / null_fit_metric — deviance (duck-typed)
-dev = family.model_fit_metric(model)
-dev_null = family.null_fit_metric(model)
+# score / null_score — deviance
+dev = family.score(model, X_np, y_np)
+dev_null = family.null_score(y_np)
 print(f"  deviance (full):    {dev:.2f}")
 print(f"  deviance (null):    {dev_null:.2f}")
 

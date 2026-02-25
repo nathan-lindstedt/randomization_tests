@@ -1,12 +1,25 @@
-Step 8: permute_hook() extension point
+Step 9: score/null_score, fit_reduced, batch infrastructure, backend param, batch_fit_paired
 
-- Convert permute_indices from @staticmethod to instance method
-- Add _permute_hook() as the extension point for v0.4.1
-  exchangeability-constrained permutations
-- permute_indices delegates to _permute_hook; subclasses override
-  _permute_hook to restrict permutations within cells
-- Update TestPermuteIndices (5 tests) from static to instance calls
-- Add test_permute_indices_is_instance_method
-- Add test_permute_hook_override (subclass override proof)
+Protocol additions:
+- score(model, X, y) and null_score(y, fit_intercept) on all 6 families;
+  eliminates duck-typed model_fit_metric/null_fit_metric
+- fit_reduced() module-level function centralising reduced-model fitting
+- batch_fit_and_score() / batch_fit_and_score_varying_X() for Kennedy
+  and Freedman-Lane joint strategies
+- batch_fit_paired(X_batch, Y_batch) where both X and Y vary per
+  replicate — JAX vmap over paired (X, y) batches
 
-650 tests pass (648 + 2 new), mypy + ruff clean.
+Engine + API:
+- family parameter widened from str to str | ModelFamily
+- backend= parameter on permutation_test_regression / PermutationEngine
+
+Confounder optimisation:
+- Bootstrap loop (1000 iters) and jackknife loop (n iters) in
+  confounders.py refactored from sequential fit() to single
+  batch_fit_paired() calls — order-of-magnitude speedup for
+  non-linear families (ordinal, multinomial, negbin)
+
+Fixes:
+- 15 JAX solver return-type annotations corrected (2-tuple to 3-tuple)
+
+Tests: 675 passed. mypy clean. ruff clean.

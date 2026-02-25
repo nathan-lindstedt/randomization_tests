@@ -49,6 +49,7 @@ def permutation_test_regression(
     fit_intercept: bool = True,
     family: str | ModelFamily = "auto",
     n_jobs: int = 1,
+    backend: str | None = None,
 ) -> IndividualTestResult | JointTestResult:
     """Run a permutation test for regression coefficients.
 
@@ -100,6 +101,12 @@ def permutation_test_regression(
             L-BFGS solver release the GIL.  Ignored when the JAX
             backend is active (JAX uses its own ``vmap``
             vectorisation).
+        backend: ``"numpy"``, ``"jax"``, or ``None`` (default).
+            When ``None``, the global policy from
+            :func:`~randomization_tests.set_backend` is used.
+            An explicit value overrides the global setting for this
+            call only, enabling test injection and per-call backend
+            selection.
 
     Returns:
         Typed result object containing coefficients, p-values,
@@ -161,6 +168,7 @@ def permutation_test_regression(
         random_state=random_state,
         n_jobs=n_jobs,
         method=method,
+        backend=backend,
     )
 
     # ---- Strategy resolution -------------------------------------
