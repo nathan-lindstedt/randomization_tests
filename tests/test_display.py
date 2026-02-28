@@ -28,10 +28,11 @@ class TestPrintResultsTable:
     def test_prints_without_error(self, capsys):
         results = SimpleNamespace(
             model_coefs=[1.0, 2.0],
-            permuted_p_values=["0.01 (**)", "0.5 (ns)"],
-            classic_p_values=["0.01 (**)", "0.45 (ns)"],
+            permuted_p_values=["0.01  (**)", "0.5  (ns)"],
+            classic_p_values=["0.01  (**)", "0.45  (ns)"],
             p_value_threshold_one=0.05,
             p_value_threshold_two=0.01,
+            p_value_threshold_three=0.001,
             method="ter_braak",
             family=LinearFamily(),
             feature_names=["x1", "x2"],
@@ -56,10 +57,11 @@ class TestPrintResultsTable:
         """Notes section appears for Kennedy without confounders."""
         results = SimpleNamespace(
             model_coefs=[1.0],
-            permuted_p_values=["0.01 (**)"],
-            classic_p_values=["0.01 (**)"],
+            permuted_p_values=["0.01  (**)"],
+            classic_p_values=["0.01  (**)"],
             p_value_threshold_one=0.05,
             p_value_threshold_two=0.01,
+            p_value_threshold_three=0.001,
             method="kennedy",
             confounders=[],
             family=LinearFamily(),
@@ -81,10 +83,11 @@ class TestPrintResultsTable:
         """Notes section absent for Kennedy with confounders."""
         results = SimpleNamespace(
             model_coefs=[1.0],
-            permuted_p_values=["0.01 (**)"],
-            classic_p_values=["0.01 (**)"],
+            permuted_p_values=["0.01  (**)"],
+            classic_p_values=["0.01  (**)"],
             p_value_threshold_one=0.05,
             p_value_threshold_two=0.01,
+            p_value_threshold_three=0.001,
             method="kennedy",
             confounders=["x2"],
             family=LinearFamily(),
@@ -105,10 +108,11 @@ class TestPrintResultsTable:
         """Notes section absent for ter Braak method."""
         results = SimpleNamespace(
             model_coefs=[1.0],
-            permuted_p_values=["0.01 (**)"],
-            classic_p_values=["0.01 (**)"],
+            permuted_p_values=["0.01  (**)"],
+            classic_p_values=["0.01  (**)"],
             p_value_threshold_one=0.05,
             p_value_threshold_two=0.01,
+            p_value_threshold_three=0.001,
             method="ter_braak",
             family=LinearFamily(),
             feature_names=["x1"],
@@ -130,7 +134,7 @@ class TestPrintJointResultsTable:
         results = SimpleNamespace(
             observed_improvement=12.34,
             p_value=0.002,
-            p_value_str="0.002 (**)",
+            p_value_str="0.002  (**)",
             metric_type="RSS Reduction",
             family=LinearFamily(),
             feature_names=["x1", "x2"],
@@ -139,6 +143,7 @@ class TestPrintJointResultsTable:
             confounders=[],
             p_value_threshold_one=0.05,
             p_value_threshold_two=0.01,
+            p_value_threshold_three=0.001,
             method="kennedy_joint",
             diagnostics={
                 "n_observations": 100,
@@ -161,7 +166,7 @@ class TestPrintJointResultsTable:
         results = SimpleNamespace(
             observed_improvement=5.0,
             p_value=0.04,
-            p_value_str="0.04 (*)",
+            p_value_str="0.04   (*)",
             metric_type="RSS Reduction",
             family=LinearFamily(),
             feature_names=["x1"],
@@ -170,6 +175,7 @@ class TestPrintJointResultsTable:
             confounders=[],
             p_value_threshold_one=0.05,
             p_value_threshold_two=0.01,
+            p_value_threshold_three=0.001,
             method="kennedy_joint",
             diagnostics={
                 "n_observations": 50,
@@ -188,7 +194,7 @@ class TestPrintJointResultsTable:
         results = SimpleNamespace(
             observed_improvement=5.0,
             p_value=0.04,
-            p_value_str="0.04 (*)",
+            p_value_str="0.04   (*)",
             metric_type="RSS Reduction",
             family=LinearFamily(),
             feature_names=["x1"],
@@ -197,6 +203,7 @@ class TestPrintJointResultsTable:
             confounders=["x2"],
             p_value_threshold_one=0.05,
             p_value_threshold_two=0.01,
+            p_value_threshold_three=0.001,
             method="kennedy_joint",
             diagnostics={
                 "n_observations": 50,

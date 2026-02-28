@@ -60,6 +60,7 @@ def calculate_p_values(
     precision: int = 3,
     p_value_threshold_one: float = 0.05,
     p_value_threshold_two: float = 0.01,
+    p_value_threshold_three: float = 0.001,
     fit_intercept: bool = True,
     *,
     family: ModelFamily,
@@ -84,6 +85,7 @@ def calculate_p_values(
         precision: Decimal places for rounding.
         p_value_threshold_one: First significance threshold.
         p_value_threshold_two: Second significance threshold.
+        p_value_threshold_three: Third significance threshold.
         fit_intercept: Whether an intercept was included in the model.
             When True (default), ``sm.add_constant`` prepends an
             intercept column for the statsmodels fit and the first
@@ -139,11 +141,13 @@ def calculate_p_values(
     def _fmt(p: float) -> str:
         rounded = np.round(p, precision)
         val = f"{rounded:.{precision}f}"
-        if p < p_value_threshold_two:
-            return f"{val} (**)"
+        if p < p_value_threshold_three:
+            return f"{val} (***)"
+        elif p < p_value_threshold_two:
+            return f"{val}  (**)"
         elif p < p_value_threshold_one:
-            return f"{val} (*)"
-        return f"{val} (ns)"
+            return f"{val}   (*)"
+        return f"{val}  (ns)"
 
     permuted_p_values = [_fmt(p) for p in raw_p]
     classic_p_values = [_fmt(p) for p in raw_classic_p]

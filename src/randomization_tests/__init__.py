@@ -11,8 +11,11 @@ Public API:
         mediation_analysis
         screen_potential_confounders
         print_confounder_table
+        print_dataset_info_table
         print_diagnostics_table
+        print_family_info_table
         print_joint_results_table
+        print_protocol_usage_table
         print_results_table
         calculate_p_values
         generate_unique_permutations
@@ -20,17 +23,22 @@ Public API:
         set_backend
         ModelFamily
         LinearFamily
+        LinearMixedFamily
         LogisticFamily
+        LogisticMixedFamily
         MultinomialFamily
         NegativeBinomialFamily
         OrdinalFamily
         PoissonFamily
+        PoissonMixedFamily
         resolve_family
         register_family
         PermutationEngine
+        FitContext
 """
 
 from ._config import get_backend, set_backend
+from ._context import FitContext
 from ._results import IndividualTestResult, JointTestResult
 from .confounders import (
     identify_confounders,
@@ -40,8 +48,11 @@ from .confounders import (
 from .core import permutation_test_regression
 from .display import (
     print_confounder_table,
+    print_dataset_info_table,
     print_diagnostics_table,
+    print_family_info_table,
     print_joint_results_table,
+    print_protocol_usage_table,
     print_results_table,
 )
 from .engine import PermutationEngine
@@ -56,19 +67,24 @@ from .families import (
     register_family,
     resolve_family,
 )
+from .families_mixed import LinearMixedFamily, LogisticMixedFamily, PoissonMixedFamily
 from .permutations import generate_unique_permutations
 from .pvalues import calculate_p_values
 
 __all__ = [
     "IndividualTestResult",
     "JointTestResult",
+    "FitContext",
     "permutation_test_regression",
     "identify_confounders",
     "mediation_analysis",
     "screen_potential_confounders",
     "print_confounder_table",
+    "print_dataset_info_table",
     "print_diagnostics_table",
+    "print_family_info_table",
     "print_joint_results_table",
+    "print_protocol_usage_table",
     "print_results_table",
     "calculate_p_values",
     "generate_unique_permutations",
@@ -76,11 +92,14 @@ __all__ = [
     "set_backend",
     "ModelFamily",
     "LinearFamily",
+    "LinearMixedFamily",
     "LogisticFamily",
+    "LogisticMixedFamily",
     "MultinomialFamily",
     "NegativeBinomialFamily",
     "OrdinalFamily",
     "PoissonFamily",
+    "PoissonMixedFamily",
     "resolve_family",
     "register_family",
     "PermutationEngine",

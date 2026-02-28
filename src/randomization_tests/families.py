@@ -545,6 +545,7 @@ class ModelFamily(Protocol):
         X: np.ndarray,
         y: np.ndarray,
         fit_intercept: bool = True,
+        **kwargs: Any,
     ) -> Self:
         """Estimate nuisance parameters from the observed data.
 
@@ -562,11 +563,64 @@ class ModelFamily(Protocol):
             X: Design matrix ``(n, p)`` — no intercept column.
             y: Response vector ``(n,)``.
             fit_intercept: Whether the model includes an intercept.
+            **kwargs: Extra keyword arguments (e.g. ``groups=`` for
+                mixed-effects families).  Ignored by families that
+                do not need them.
 
         Returns:
             A calibrated family instance (possibly ``self``).
         """
         return self
+
+    # ---- Score projection ------------------------------------------
+    #
+    # Used by the score strategy (``method="score"``) to compute
+    # permuted test statistics via a single matmul per feature.
+    # Families that support score projection override this method;
+    # unsupported families keep the default ``NotImplementedError``.
+
+    def score_project(
+        self,
+        X: np.ndarray,
+        feature_idx: int,
+        residuals: np.ndarray,
+        perm_indices: np.ndarray,
+        *,
+        fit_intercept: bool = True,
+    ) -> np.ndarray:
+        """Project permuted residuals onto feature *j* via a single matmul.
+
+        Computes the varying part of the permuted coefficient for
+        feature *feature_idx*::
+
+            raw_scores[b] = projection_row @ residuals[perm_indices[b]]
+
+        where ``projection_row`` is the j-th row of the projection
+        matrix (pseudoinverse for OLS, GLS projection A for LMM,
+        or one-step corrector for GLMM).
+
+        The score strategy adds a constant offset to these raw scores
+        to produce coefficient-scale values compatible with the
+        existing p-value computation.
+
+        Args:
+            X: Full design matrix ``(n, p)`` — no intercept column.
+            feature_idx: Zero-based index of the feature being tested.
+            residuals: Reduced-model residuals ``(n,)``.
+            perm_indices: Permutation indices ``(B, n)``.
+            fit_intercept: Whether the model includes an intercept.
+
+        Returns:
+            Raw score array of shape ``(B,)``.
+
+        Raises:
+            NotImplementedError: If the family does not support
+                score projection.
+        """
+        raise NotImplementedError(
+            f"score_project() not implemented for family='{self.name}'. "
+            f"Use method='ter_braak' or method='freedman_lane' instead."
+        )
 
     def batch_fit(
         self,
@@ -968,6 +1022,37 @@ class LinearFamily:
         """
         return np.asarray(y - self.predict(model, X))  # shape: (n,)
 
+    # ---- Score projection ------------------------------------------
+
+    def score_project(
+        self,
+        X: np.ndarray,
+        feature_idx: int,
+        residuals: np.ndarray,
+        perm_indices: np.ndarray,
+        *,
+        fit_intercept: bool = True,
+    ) -> np.ndarray:
+        """Score projection via OLS pseudoinverse row.
+
+        Computes ``pinv(X_aug)[j] @ residuals[perm_indices]`` for
+        all B permutations simultaneously — a single matmul.
+
+        This is mathematically equivalent to the coefficient from
+        ``batch_fit(X, Y*)[:, j]`` where ``Y* = ŷ_red + e_π``,
+        up to a constant offset that the score strategy adds.
+        """
+        if fit_intercept:
+            X_full = np.column_stack([np.ones(X.shape[0]), X])
+            j = feature_idx + 1  # account for intercept column
+        else:
+            X_full = X
+            j = feature_idx
+        pinv = np.linalg.pinv(X_full)
+        projection_row = pinv[j]  # (n,) — j-th row of pseudoinverse
+        E_pi = residuals[perm_indices]  # (B, n)
+        return np.asarray(E_pi @ projection_row)  # (B,)
+
     # ---- Permutation helpers ---------------------------------------
     #
     # ``reconstruct_y`` and ``fit_metric`` are called inside the
@@ -1159,6 +1244,7 @@ class LinearFamily:
         X: np.ndarray,
         y: np.ndarray,
         fit_intercept: bool = True,
+        **kwargs: Any,
     ) -> Self:
         """No-op — linear models have no nuisance parameters."""
         return self
@@ -1541,6 +1627,23 @@ class LogisticFamily:
         """
         return np.asarray(y - self.predict(model, X))  # shape: (n,)
 
+    # ---- Score projection ------------------------------------------
+
+    def score_project(
+        self,
+        X: np.ndarray,
+        feature_idx: int,
+        residuals: np.ndarray,
+        perm_indices: np.ndarray,
+        *,
+        fit_intercept: bool = True,
+    ) -> np.ndarray:
+        """Not implemented — logistic score projection requires Plan C."""
+        raise NotImplementedError(
+            f"score_project() not implemented for family='{self.name}'. "
+            f"Use method='ter_braak' or method='freedman_lane' instead."
+        )
+
     # ---- Permutation helpers ---------------------------------------
     #
     # The logistic reconstruction pipeline has three stages:
@@ -1758,6 +1861,7 @@ class LogisticFamily:
         X: np.ndarray,
         y: np.ndarray,
         fit_intercept: bool = True,
+        **kwargs: Any,
     ) -> Self:
         """No-op — logistic models have no nuisance parameters."""
         return self
@@ -2209,6 +2313,23 @@ class PoissonFamily:
         """
         return np.asarray(y - model.fittedvalues)
 
+    # ---- Score projection ------------------------------------------
+
+    def score_project(
+        self,
+        X: np.ndarray,
+        feature_idx: int,
+        residuals: np.ndarray,
+        perm_indices: np.ndarray,
+        *,
+        fit_intercept: bool = True,
+    ) -> np.ndarray:
+        """Not implemented — Poisson score projection requires Plan C."""
+        raise NotImplementedError(
+            f"score_project() not implemented for family='{self.name}'. "
+            f"Use method='ter_braak' or method='freedman_lane' instead."
+        )
+
     # ---- Permutation helpers ---------------------------------------
     #
     # ``reconstruct_y`` uses Poisson sampling (not rounding) to
@@ -2411,6 +2532,7 @@ class PoissonFamily:
         X: np.ndarray,
         y: np.ndarray,
         fit_intercept: bool = True,
+        **kwargs: Any,
     ) -> Self:
         """No-op — Poisson models have no nuisance parameters."""
         return self
@@ -2843,6 +2965,23 @@ class NegativeBinomialFamily:
         """
         return np.asarray(y - model.fittedvalues)
 
+    # ---- Score projection ------------------------------------------
+
+    def score_project(
+        self,
+        X: np.ndarray,
+        feature_idx: int,
+        residuals: np.ndarray,
+        perm_indices: np.ndarray,
+        *,
+        fit_intercept: bool = True,
+    ) -> np.ndarray:
+        """Not implemented — negative-binomial score projection requires Plan C."""
+        raise NotImplementedError(
+            f"score_project() not implemented for family='{self.name}'. "
+            f"Use method='ter_braak' or method='freedman_lane' instead."
+        )
+
     # ---- Permutation helpers ---------------------------------------
 
     def reconstruct_y(
@@ -3045,6 +3184,7 @@ class NegativeBinomialFamily:
         X: np.ndarray,
         y: np.ndarray,
         fit_intercept: bool = True,
+        **kwargs: Any,
     ) -> Self:
         """Estimate dispersion α from the observed data.
 
@@ -3065,6 +3205,7 @@ class NegativeBinomialFamily:
             X: Design matrix ``(n, p)`` — no intercept column.
             y: Response vector ``(n,)``.
             fit_intercept: Whether the model includes an intercept.
+            **kwargs: Ignored (accepted for protocol compatibility).
 
         Returns:
             A calibrated ``NegativeBinomialFamily`` with α resolved.
@@ -3580,6 +3721,23 @@ class OrdinalFamily:
         )
         raise NotImplementedError(msg)
 
+    # ---- Score projection ------------------------------------------
+
+    def score_project(
+        self,
+        X: np.ndarray,
+        feature_idx: int,
+        residuals: np.ndarray,
+        perm_indices: np.ndarray,
+        *,
+        fit_intercept: bool = True,
+    ) -> np.ndarray:
+        """Not implemented — ordinal score projection requires Plan C."""
+        raise NotImplementedError(
+            f"score_project() not implemented for family='{self.name}'. "
+            f"Use method='ter_braak' or method='freedman_lane' instead."
+        )
+
     # ---- Permutation helpers ---------------------------------------
 
     def reconstruct_y(
@@ -3784,6 +3942,7 @@ class OrdinalFamily:
         X: np.ndarray,
         y: np.ndarray,
         fit_intercept: bool = True,
+        **kwargs: Any,
     ) -> Self:
         """No-op — ordinal models have no nuisance parameters."""
         return self
@@ -4318,6 +4477,23 @@ class MultinomialFamily:
         )
         raise NotImplementedError(msg)
 
+    # ---- Score projection ------------------------------------------
+
+    def score_project(
+        self,
+        X: np.ndarray,
+        feature_idx: int,
+        residuals: np.ndarray,
+        perm_indices: np.ndarray,
+        *,
+        fit_intercept: bool = True,
+    ) -> np.ndarray:
+        """Not implemented — multinomial score projection requires Plan C."""
+        raise NotImplementedError(
+            f"score_project() not implemented for family='{self.name}'. "
+            f"Use method='ter_braak' or method='freedman_lane' instead."
+        )
+
     # ---- Permutation helpers ---------------------------------------
 
     def reconstruct_y(
@@ -4526,6 +4702,7 @@ class MultinomialFamily:
         X: np.ndarray,
         y: np.ndarray,
         fit_intercept: bool = True,
+        **kwargs: Any,
     ) -> Self:
         """No-op — multinomial models have no nuisance parameters."""
         return self

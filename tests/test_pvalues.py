@@ -69,8 +69,8 @@ class TestCalculatePValues:
         emp, *_ = calculate_p_values(
             X, y, permuted_coefs, model_coefs, family=LinearFamily()
         )
-        # x1 should be significant
-        assert "(**)" in emp[0] or "(*)" in emp[0]
+        # x1 should be significant (at least one star)
+        assert "(*)" in emp[0] or "(**)" in emp[0] or "(***)" in emp[0]
 
     def test_p_values_never_zero(self):
         """Phipson & Smyth correction ensures p > 0."""
@@ -92,4 +92,4 @@ class TestCalculatePValues:
             X, y, permuted_coefs, model_coefs, family=LinearFamily()
         )
         for pv in emp + asy:
-            assert "(*)" in pv or "(**)" in pv or "(ns)" in pv
+            assert "(*)" in pv or "(**)" in pv or "(***)" in pv or "(ns)" in pv

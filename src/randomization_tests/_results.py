@@ -22,12 +22,13 @@ mutated after creation.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, fields
+from dataclasses import dataclass, field, fields
 from typing import TYPE_CHECKING, Any, ClassVar
 
 import numpy as np
 
 if TYPE_CHECKING:
+    from ._context import FitContext
     from .families import ModelFamily
 
 # ------------------------------------------------------------------ #
@@ -81,6 +82,9 @@ class _DictAccessMixin:
         "family": lambda f: f.name,
     }
 
+    # Fields to exclude from to_dict() serialisation.
+    _EXCLUDE_FROM_DICT: ClassVar[frozenset[str]] = frozenset({"context"})
+
     def __getitem__(self, key: str) -> Any:
         """Attribute lookup via bracket syntax."""
         try:
@@ -111,6 +115,8 @@ class _DictAccessMixin:
         """
         result: dict[str, Any] = {}
         for f in fields(self):  # type: ignore[arg-type]
+            if f.name in self._EXCLUDE_FROM_DICT:
+                continue
             val = getattr(self, f.name)
             if f.name in self._SERIALIZERS:
                 val = self._SERIALIZERS[f.name](val)
@@ -161,6 +167,9 @@ class IndividualTestResult(_DictAccessMixin):
     p_value_threshold_two: float
     """Second significance level (default 0.01)."""
 
+    p_value_threshold_three: float
+    """Third significance level (default 0.001)."""
+
     # ---- Metadata --------------------------------------------------
     method: str
     """Permutation method used (e.g. ``"ter_braak"``)."""
@@ -195,6 +204,12 @@ class IndividualTestResult(_DictAccessMixin):
 
     extended_diagnostics: dict[str, Any]
     """Per-predictor diagnostics (VIF, standardised coefs, etc.)."""
+
+    # ---- Computation context (not serialised) ----------------------
+    context: FitContext | None = field(default=None, repr=False, compare=False)
+    """Pipeline computation context.  Carries intermediate artifacts
+    (predictions, residuals, fit metric, etc.) for downstream display
+    and debugging.  Excluded from ``to_dict()`` serialisation."""
 
 
 # ------------------------------------------------------------------ #
@@ -265,9 +280,18 @@ class JointTestResult(_DictAccessMixin):
     p_value_threshold_two: float
     """Second significance level."""
 
+    p_value_threshold_three: float
+    """Third significance level."""
+
     # ---- Method & diagnostics --------------------------------------
     method: str
     """Permutation method used."""
 
     diagnostics: dict[str, Any]
     """Model diagnostics from statsmodels."""
+
+    # ---- Computation context (not serialised) ----------------------
+    context: FitContext | None = field(default=None, repr=False, compare=False)
+    """Pipeline computation context.  Carries intermediate artifacts
+    (predictions, residuals, fit metric, etc.) for downstream display
+    and debugging.  Excluded from ``to_dict()`` serialisation."""

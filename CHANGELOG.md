@@ -79,8 +79,111 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **2 new tests** in `test_core.py`:
   `test_between_infeasible_all_unique_sizes_raises` and
   `test_between_low_budget_warns` covering the new validation logic.
+- **Residual-based permutation for `LinearMixedFamily`**: the
+  mixed-effects family supports the full residual-based permutation
+  pipeline (ter Braak 1992, Freedman–Lane 1983).  `fit()` rebuilds
+  the GLS projection on the fly from stored Henderson components
+  (`C₂₂`, `Z`) when called with a reduced design matrix, keeping
+  REML variance components fixed — no per-permutation re-solve.
+- **Manly (1997) fallback warning**: families with
+  `direct_permutation = True` (ordinal, multinomial) now emit a
+  `UserWarning` when the ter Braak strategy falls back to direct Y
+  permutation, explaining the power implications (marginal vs partial
+  association) and suggesting the Kennedy method as an alternative.
+- **`examples/linear_multilevel_regression.py`**: new example script
+  using the Parkinsons Telemonitoring dataset (UCI ID=189) —
+  demonstrates `family="linear_mixed"` with ter Braak and
+  Freedman–Lane, external validation against statsmodels MixedLM
+  (β̂, σ², τ², ICC agree), direct `LinearMixedFamily` protocol
+  usage, and random slopes for time-varying disease progression.
+- **Score projection strategy** (`method="score"`,
+  `method="score_joint"`, `method="score_exact"`): batch permutation
+  via a single matmul per feature instead of refitting B times.
+  `score_project()` added to `ModelFamily` protocol (default raises
+  `NotImplementedError`), implemented on `LinearFamily` (OLS
+  pseudoinverse row) and `LinearMixedFamily` (GLS projection A row).
+  All 5 GLM families (`LogisticFamily`, `PoissonFamily`,
+  `NegativeBinomialFamily`, `OrdinalFamily`, `MultinomialFamily`)
+  implement the protocol method with `NotImplementedError` to satisfy
+  structural subtyping.  Three strategy classes in
+  `_strategies/score.py`: `ScoreIndividualStrategy` (per-feature
+  coefficient-scale results with constant offset),
+  `ScoreJointStrategy` (RSS reduction via `batch_fit_and_score`),
+  and `ScoreExactStrategy` (Plan C placeholder).  Engine guard
+  rejects score methods for families without `score_project()`.
+  Confounder masking extended to `method="score"`.  n_jobs warning
+  extended to cover score methods on linear family.
+  `LinearMixedFamily.batch_fit_and_score` now falls back to OLS
+  when X dimensions don't match the calibrated projection (enables
+  joint tests with reduced confounder-only model).
+- **37 new tests** in `tests/test_score_strategy.py`: protocol
+  conformance, registry wiring, linear individual (result type,
+  p-value range, power detection, null non-rejection), LMM individual,
+  Score ≡ ter Braak equivalence (linear), Score ≡ Freedman–Lane
+  equivalence (LMM, exact p-value match with and without confounders),
+  linear joint, LMM joint, unsupported family rejection (logistic,
+  Poisson), `score_exact` placeholder, confounder masking, n_jobs
+  warning, determinism.
+- **`LogisticMixedFamily`** (`family="logistic_mixed"`): GLMM for
+  clustered binary data via Laplace approximation.  Inner IRLS
+  pre-scales by √W to reuse unweighted Henderson algebra from LMM.
+  Outer θ optimisation plugs a Laplace NLL into the existing
+  `_reml_newton_solve()` — no new solver code.  Supports random
+  intercepts/slopes, crossed designs, and arbitrary nesting.
+  Diagnostics: AUC, deviance, variance components, ICC, random-effect
+  covariance recovery.  Permutation via `method="score"` (one-step
+  corrector) or `method="score_exact"` (PQL-fixed vmap).
+- **`PoissonMixedFamily`** (`family="poisson_mixed"`): GLMM for
+  clustered count data via Laplace approximation.  Same architecture
+  as `LogisticMixedFamily` — only the conditional NLL and working
+  response/weight functions differ.  Diagnostics: pseudo-R², deviance,
+  overdispersion (Pearson dispersion), variance components, ICC.
+- **Laplace solver** (`_build_laplace_nll` + `_laplace_solve` in
+  `_backends/_jax.py`): generic two-loop Laplace engine.  Outer
+  Newton via `_reml_newton_solve()`, inner IRLS unrolled for
+  `jax.grad`/`jax.hessian` differentiability.  Returns `LaplaceResult`
+  dataclass with β̂, û, W, μ̂, V⁻¹ diagonal, Fisher information.
+- **`_fit_glm_irls()`** (`_backends/_jax.py`): robust pure-NumPy GLM
+  solver with η-clipping, weight capping, Hessian modification, and
+  step-halving line search.  Used as reliable initialisation for
+  Laplace and as a standalone solver for GLMM diagnostics.
+- **`_pql_fixed_irls_vmap()`** (`_backends/_jax.py`): pure JAX
+  function running full IRLS at fixed Γ⁻¹ via `jax.vmap`.  Takes
+  `(B, n)` permuted y, returns `(B, p)` β̂.  20 unrolled iterations,
+  same Henderson algebra/η-clipping/weight-capping as
+  `_build_laplace_nll`.
+- **`ScoreExactStrategy`** (`method="score_exact"`) in
+  `_strategies/score.py`: PQL-fixed exact permutation for GLMM
+  families.  Validates family via `log_chol` attribute, rebuilds
+  Γ⁻¹ from stored log-Cholesky params, single vmap call on full
+  model, extracts slope coefficients with confounder masking.
+  Rejects non-GLMM families with `ValueError`.
+- **164 new GLMM tests** in `tests/test_families_mixed.py`: protocol
+  conformance, Laplace accuracy vs R `glmer()` references, IRLS
+  pre-scaling verification, calibration round-trip, residual
+  properties, diagnostics completeness, display formatting,
+  exchangeability cells, crossed designs, one-step corrector validity
+  (KS uniformity), end-to-end integration with
+  `permutation_test_regression()`, PQL-fixed smoke tests.
 
 ### Changed
+
+- **`_reml_newton_solve` LM-Nielsen damping cap**: `lambda_max`
+  changed from `0.5 * spectral_norm` to `1e16 * spectral_norm`.
+  The previous cap permanently trapped the solver when the Laplace
+  NLL was highly non-quadratic (λ at cap, ρ < 0 every iteration,
+  zero accepted steps).  Nielsen (1999) places no upper bound on λ;
+  `1e16 ×` is a pure overflow guard that never constrains in
+  practice.  No regression on REML (792 non-GLMM tests pass).
+- **`np.where` eager-evaluation fix** in GLMM `fit_metric` methods:
+  both `LogisticMixedFamily.fit_metric` and
+  `PoissonMixedFamily.fit_metric` wrap `np.log` calls in
+  `np.errstate(divide="ignore", invalid="ignore")` to suppress
+  `log(0)` warnings from NumPy's eager evaluation of both branches
+  in `np.where`.
+- **`ScoreExactStrategy`** upgraded from Plan C placeholder
+  (`NotImplementedError`) to full PQL-fixed implementation.
+  Non-GLMM families now raise `ValueError` (not `NotImplementedError`).
 
 - `PermutationEngine.__init__()` accepts three new keyword arguments
   (`groups`, `permutation_strategy`, `permutation_constraints`) and

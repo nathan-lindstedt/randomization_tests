@@ -258,6 +258,7 @@ _INDIVIDUAL_FIELDS = {
     "raw_classic_p",
     "p_value_threshold_one",
     "p_value_threshold_two",
+    "p_value_threshold_three",
     "method",
     "confounders",
     "family",
@@ -288,6 +289,7 @@ _JOINT_FIELDS = {
     "permutation_strategy",
     "p_value_threshold_one",
     "p_value_threshold_two",
+    "p_value_threshold_three",
     "method",
     "diagnostics",
 }
@@ -776,6 +778,7 @@ class TestNegBinIntegration:
 # ---- Ordinal integration ----
 
 
+@pytest.mark.filterwarnings("ignore:family='ordinal'.*direct Y permutation:UserWarning")
 class TestOrdinalIntegration:
     """Integration tests for ordinal family across supported methods.
 
@@ -860,6 +863,9 @@ class TestOrdinalIntegration:
 # ---- Multinomial integration ----
 
 
+@pytest.mark.filterwarnings(
+    "ignore:family='multinomial'.*direct Y permutation:UserWarning"
+)
 class TestMultinomialIntegration:
     """Integration tests for multinomial family across supported methods.
 
@@ -994,6 +1000,7 @@ class TestConfounderFamilyIntegration:
 # ---- Cross-family field consistency ----
 
 
+@pytest.mark.filterwarnings("ignore:family=.*direct Y permutation:UserWarning")
 class TestCrossFamilyConsistency:
     """Verify result schema consistency across all families."""
 

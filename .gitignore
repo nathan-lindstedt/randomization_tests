@@ -38,6 +38,7 @@ htmlcov/
 
 # Debug / scratch
 _debug_*.py
+_smoke_*.py
 
 # Prompts / planning
 .github/prompts/

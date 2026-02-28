@@ -97,17 +97,19 @@ _family = resolve_family("ordinal")
 # ter Braak (1992) — direct Y permutation (Manly 1997)
 # ============================================================================
 
-print("\n" + "=" * 80)
-print("ter Braak method (direct Y permutation)")
-print("=" * 80)
-
 with warnings.catch_warnings():
     warnings.filterwarnings("ignore", message="Inverting hessian")
     results_ter_braak = permutation_test_regression(
         X, y, method="ter_braak", family="ordinal", n_permutations=199
     )
-print_results_table(results_ter_braak)
-print_diagnostics_table(results_ter_braak)
+print_results_table(
+    results_ter_braak,
+    title="ter Braak (1992) Permutation Test (family='ordinal')",
+)
+print_diagnostics_table(
+    results_ter_braak,
+    title="ter Braak (1992) Extended Diagnostics (family='ordinal')",
+)
 
 # ============================================================================
 # Confounder analysis
@@ -138,10 +140,6 @@ print(f"\nUsing confounders: {confounders}")
 # Kennedy (1995) individual — exposure-residual permutation
 # ============================================================================
 
-print("\n" + "=" * 80)
-print("Kennedy individual method")
-print("=" * 80)
-
 with warnings.catch_warnings():
     warnings.filterwarnings("ignore", message="Inverting hessian")
     results_kennedy = permutation_test_regression(
@@ -152,16 +150,18 @@ with warnings.catch_warnings():
         confounders=confounders,
         n_permutations=199,
     )
-print_results_table(results_kennedy)
-print_diagnostics_table(results_kennedy)
+print_results_table(
+    results_kennedy,
+    title="Kennedy (1995) Individual Permutation Test (family='ordinal')",
+)
+print_diagnostics_table(
+    results_kennedy,
+    title="Kennedy (1995) Individual Diagnostics (family='ordinal')",
+)
 
 # ============================================================================
 # Kennedy (1995) joint — collective predictive improvement
 # ============================================================================
-
-print("\n" + "=" * 80)
-print("Kennedy joint method (score / null_score)")
-print("=" * 80)
 
 with warnings.catch_warnings():
     warnings.filterwarnings("ignore", message="Inverting hessian")
@@ -173,7 +173,10 @@ with warnings.catch_warnings():
         confounders=confounders,
         n_permutations=199,
     )
-print_joint_results_table(results_joint)
+print_joint_results_table(
+    results_joint,
+    title="Kennedy (1995) Joint Permutation Test (family='ordinal')",
+)
 
 # ============================================================================
 # Freedman-Lane rejection (expected ValueError)

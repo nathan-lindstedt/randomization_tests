@@ -332,6 +332,67 @@ class BackendProtocol(Protocol):
         """
         ...
 
+    def batch_mixed_lm(
+        self,
+        X: np.ndarray,
+        Y_matrix: np.ndarray,
+        fit_intercept: bool = True,
+        **kwargs: Any,
+    ) -> np.ndarray:
+        """Batch linear mixed model: shared *X*, many *Y* vectors.
+
+        Uses a pre-computed GLS projection matrix ``A`` (passed via
+        ``kwargs["projection_A"]``) from REML calibration.  The
+        projection is σ²-free, so the same ``A @ yₚ`` matmul that
+        OLS uses with ``pinv(X)`` yields GLS-equivalent coefficients
+        for every permuted response simultaneously.
+
+        Args:
+            X: Design matrix ``(n, p)`` — no intercept column.
+                Not used directly (projection already encodes X),
+                but accepted for protocol compatibility.
+            Y_matrix: Permuted responses ``(B, n)``.
+            fit_intercept: Whether the projection includes an
+                intercept (first row of ``A``).  If ``True``,
+                the intercept coefficient is dropped from output.
+            **kwargs: ``projection_A`` (required) — ``(p, n)``
+                GLS projection from REML calibration.
+
+        Returns:
+            Slope coefficients ``(B, p)`` (intercept excluded
+            when ``fit_intercept=True``).
+        """
+        ...
+
+    def batch_mixed_lm_varying_X(
+        self,
+        X_batch: np.ndarray,
+        y: np.ndarray,
+        fit_intercept: bool = True,
+        **kwargs: Any,
+    ) -> np.ndarray:
+        """Batch linear mixed model: many *X* matrices, shared *y*.
+
+        Kennedy individual path — each permutation has its own
+        design matrix (column *j* replaced with permuted exposure
+        residuals).  The GLS projection ``A`` must be rebuilt for
+        each ``X_b`` because it depends on ``X``.  Variance
+        components (encoded in ``C22``) are fixed from calibration.
+
+        Args:
+            X_batch: Design matrices ``(B, n, p)`` — no intercept.
+            y: Shared continuous response ``(n,)``.
+            fit_intercept: Prepend intercept column.
+            **kwargs: ``Z`` (required) — ``(n, q)`` RE design
+                matrix.  ``C22`` (required) — ``(q, q)``
+                Henderson C₂₂ = Z'Z + Γ⁻¹ from calibration.
+
+        Returns:
+            Slope coefficients ``(B, p)`` (intercept excluded
+            when ``fit_intercept=True``).
+        """
+        ...
+
 
 # ------------------------------------------------------------------ #
 # Backend resolution

@@ -26,6 +26,7 @@ import numpy as np
 import pandas as pd
 
 from ._compat import DataFrameLike, _ensure_pandas_df
+from ._context import FitContext
 from ._results import IndividualTestResult, JointTestResult
 from ._strategies import resolve_strategy
 from .diagnostics import compute_all_diagnostics
@@ -49,6 +50,7 @@ def permutation_test_regression(
     precision: int = 3,
     p_value_threshold_one: float = 0.05,
     p_value_threshold_two: float = 0.01,
+    p_value_threshold_three: float = 0.001,
     method: str = "ter_braak",
     confounders: list[str] | None = None,
     random_state: int | None = None,
@@ -59,6 +61,7 @@ def permutation_test_regression(
     groups: np.ndarray | list[int] | pd.Series | pd.DataFrame | None = None,
     permutation_strategy: str | None = None,
     permutation_constraints: Callable[[np.ndarray], np.ndarray] | None = None,
+    random_slopes: list[int] | dict[str, list[int]] | None = None,
 ) -> IndividualTestResult | JointTestResult:
     """Run a permutation test for regression coefficients.
 
@@ -78,6 +81,7 @@ def permutation_test_regression(
         precision: Decimal places for reported p-values.
         p_value_threshold_one: First significance level.
         p_value_threshold_two: Second significance level.
+        p_value_threshold_three: Third significance level.
         method: One of ``'ter_braak'``, ``'kennedy'``,
             ``'kennedy_joint'``, ``'freedman_lane'``, or
             ``'freedman_lane_joint'``.
@@ -193,6 +197,13 @@ def permutation_test_regression(
             stacklevel=2,
         )
 
+    # ---- Context accumulator -----------------------------------
+    ctx = FitContext()
+    ctx.target_name = str(y.columns[0])
+    ctx.method = method
+    ctx.n_permutations = n_permutations
+    ctx.confounders = confounders or []
+
     # ---- Engine (family + backend + observed model + perm indices) -
     engine = PermutationEngine(
         X,
@@ -207,6 +218,8 @@ def permutation_test_regression(
         groups=cells,
         permutation_strategy=resolved_strategy,
         permutation_constraints=permutation_constraints,
+        random_slopes=random_slopes,
+        ctx=ctx,
     )
 
     # ---- Strategy resolution -------------------------------------
@@ -245,6 +258,7 @@ def permutation_test_regression(
             precision=precision,
             p_value_threshold_one=p_value_threshold_one,
             p_value_threshold_two=p_value_threshold_two,
+            p_value_threshold_three=p_value_threshold_three,
             n_permutations=n_permutations,
         )
 
@@ -259,6 +273,7 @@ def permutation_test_regression(
         precision=precision,
         p_value_threshold_one=p_value_threshold_one,
         p_value_threshold_two=p_value_threshold_two,
+        p_value_threshold_three=p_value_threshold_three,
         n_permutations=n_permutations,
         fit_intercept=fit_intercept,
     )
@@ -610,6 +625,7 @@ def _package_joint_result(
     precision: int,
     p_value_threshold_one: float,
     p_value_threshold_two: float,
+    p_value_threshold_three: float,
     n_permutations: int,
 ) -> JointTestResult:
     """Build a :class:`JointTestResult` from a joint strategy's output."""
@@ -624,14 +640,19 @@ def _package_joint_result(
     )
     rounded = np.round(p_value, precision)  # round to display precision
     val = f"{rounded:.{precision}f}"  # fixed-width string representation
-    if p_value < p_value_threshold_two:
-        p_value_str = f"{val} (**)"  # highly significant
+    if p_value < p_value_threshold_three:
+        p_value_str = f"{val} (***)"  # very highly significant
+    elif p_value < p_value_threshold_two:
+        p_value_str = f"{val}  (**)"  # highly significant
     elif p_value < p_value_threshold_one:
-        p_value_str = f"{val} (*)"  # significant
+        p_value_str = f"{val}   (*)"  # significant
     else:
-        p_value_str = f"{val} (ns)"  # not significant
+        p_value_str = f"{val}  (ns)"  # not significant
 
-    return JointTestResult(
+    # Populate context with batch-fit stats.
+    engine.ctx.batch_shape = (len(perm_improvements), 1)
+
+    result = JointTestResult(
         observed_improvement=obs_improvement,
         permuted_improvements=perm_improvements.tolist(),
         p_value=p_value,
@@ -648,9 +669,12 @@ def _package_joint_result(
         permutation_strategy=engine.permutation_strategy,
         p_value_threshold_one=p_value_threshold_one,
         p_value_threshold_two=p_value_threshold_two,
+        p_value_threshold_three=p_value_threshold_three,
         method=method,
         diagnostics=engine.diagnostics,
+        context=engine.ctx,
     )
+    return result
 
 
 def _package_individual_result(
@@ -665,6 +689,7 @@ def _package_individual_result(
     precision: int,
     p_value_threshold_one: float,
     p_value_threshold_two: float,
+    p_value_threshold_three: float,
     n_permutations: int,
     fit_intercept: bool,
 ) -> IndividualTestResult:
@@ -678,13 +703,14 @@ def _package_individual_result(
             precision,
             p_value_threshold_one,
             p_value_threshold_two,
+            p_value_threshold_three,
             fit_intercept=fit_intercept,
             family=engine.family,
         )
     )
 
-    # Mask confounder p-values for Kennedy / Freedman–Lane individual.
-    if method in ("kennedy", "freedman_lane") and confounders:
+    # Mask confounder p-values for Kennedy / Freedman–Lane / score individual.
+    if method in ("kennedy", "freedman_lane", "score") and confounders:
         for i, col in enumerate(X.columns):
             if col in confounders:
                 permuted_p_values[i] = "N/A (confounder)"
@@ -706,7 +732,14 @@ def _package_individual_result(
         fit_intercept=fit_intercept,
     )
 
-    return IndividualTestResult(
+    # Populate context with remaining pipeline artifacts.
+    engine.ctx.classical_p_values = raw_classic_p
+    engine.ctx.extended_diagnostics = extended_diagnostics
+    engine.ctx.batch_shape = permuted_coefs.shape
+    n_nan = int(np.sum(np.any(np.isnan(permuted_coefs), axis=1)))
+    engine.ctx.convergence_count = permuted_coefs.shape[0] - n_nan
+
+    result = IndividualTestResult(
         model_coefs=engine.model_coefs.tolist(),
         permuted_coefs=permuted_coefs.tolist(),
         permuted_p_values=permuted_p_values,
@@ -715,6 +748,7 @@ def _package_individual_result(
         raw_classic_p=raw_classic_p,
         p_value_threshold_one=p_value_threshold_one,
         p_value_threshold_two=p_value_threshold_two,
+        p_value_threshold_three=p_value_threshold_three,
         method=method,
         confounders=confounders or [],
         family=engine.family,
@@ -726,4 +760,6 @@ def _package_individual_result(
         permutation_strategy=engine.permutation_strategy,
         diagnostics=engine.diagnostics,
         extended_diagnostics=extended_diagnostics,
+        context=engine.ctx,
     )
+    return result

@@ -28,8 +28,11 @@ from randomization_tests import (
     identify_confounders,
     permutation_test_regression,
     print_confounder_table,
+    print_dataset_info_table,
     print_diagnostics_table,
+    print_family_info_table,
     print_joint_results_table,
+    print_protocol_usage_table,
     print_results_table,
     resolve_family,
 )
@@ -62,32 +65,39 @@ X = pd.DataFrame(
 )
 y = y_sub.copy()
 
-print(f"Dataset: {abalone.metadata.name}")
-print(f"Subset:  n={len(X)}, p={X.shape[1]}")
-print(f"Target:  '{y.columns[0]}' (growth-ring count)")
-print(f"Y range: [{y.values.min()}, {y.values.max()}]")
-print(f"Y mean:  {y.values.mean():.1f}")
-print(
-    f"Y var:   {y.values.var():.1f}  (var/mean ≈ {y.values.var() / y.values.mean():.2f})"
+print_dataset_info_table(
+    name=abalone.metadata.name,
+    n_observations=len(X),
+    n_features=X.shape[1],
+    feature_names=list(X.columns),
+    target_name=y.columns[0],
+    target_description="growth-ring count",
+    y_range=(int(y.values.min()), int(y.values.max())),
+    y_mean=float(y.values.mean()),
+    y_var=float(y.values.var()),
 )
-print()
 
 # ============================================================================
-# Verify resolve_family does NOT auto-detect "poisson" (Step 22 pending)
+# Family resolution
 # ============================================================================
 
-auto_family = resolve_family("auto", np.ravel(y))
+with warnings.catch_warnings(record=True) as caught:
+    warnings.simplefilter("always")
+    auto_family = resolve_family("auto", np.ravel(y))
 assert auto_family.name == "linear", (
     f"Expected 'linear' from auto-detection (count auto-detect not yet "
     f"implemented), got {auto_family.name!r}"
 )
-print(f"resolve_family('auto', y) → {auto_family.name!r} (count auto-detect pending)")
 
 # Explicit selection required for Poisson.
 poisson_family = resolve_family("poisson", np.ravel(y))
 assert poisson_family.name == "poisson"
-print(f"resolve_family('poisson', y) → {poisson_family.name!r}")
-print()
+
+print_family_info_table(
+    auto_family=auto_family,
+    explicit_family=poisson_family,
+    advisory=[str(w.message) for w in caught],
+)
 
 # ============================================================================
 # ter Braak (1992) — family="poisson" (explicit)
@@ -177,7 +187,9 @@ print_joint_results_table(
 
 all_confounder_results = {}
 for predictor in X.columns:
-    all_confounder_results[predictor] = identify_confounders(X, y, predictor=predictor)
+    all_confounder_results[predictor] = identify_confounders(
+        X, y, predictor=predictor, family="poisson"
+    )
 
 print_confounder_table(
     all_confounder_results,
@@ -230,38 +242,22 @@ family = PoissonFamily()
 X_np = X.values.astype(float)
 y_np = np.ravel(y).astype(float)
 
-print(f"\n{'=' * 60}")
-print("Direct PoissonFamily protocol usage")
-print(f"{'=' * 60}")
-print(f"  name:               {family.name}")
-print(f"  residual_type:      {family.residual_type}")
-print(f"  direct_permutation: {family.direct_permutation}")
-print(f"  metric_label:       {family.metric_label}")
-
 # validate_y — should pass for non-negative integer counts
 family.validate_y(y_np)
-print("  validate_y:         passed")
 
 # fit / predict / coefs / residuals
 model = family.fit(X_np, y_np, fit_intercept=True)
 preds = family.predict(model, X_np)
 coefs = family.coefs(model)
 resids = family.residuals(model, X_np, y_np)
-print(f"  coefs:              {np.round(coefs, 4)}")
-print(f"  mean |residual|:    {np.mean(np.abs(resids)):.4f}")
-print(f"  pred range:         [{preds.min():.2f}, {preds.max():.2f}]")
 
 # fit_metric (deviance)
 deviance = family.fit_metric(y_np, preds)
-print(f"  deviance:           {deviance:.2f}")
 
 # reconstruct_y — Poisson sampling (stochastic!)
 rng = np.random.default_rng(42)
 perm_resids = rng.permutation(resids)
 y_star = family.reconstruct_y(preds[np.newaxis, :], perm_resids[np.newaxis, :], rng)
-print(f"  reconstruct_y:      shape={y_star.shape}, dtype={y_star.dtype}")
-print(f"  Y* range:           [{y_star.min()}, {y_star.max()}]")
-print(f"  Y* mean:            {y_star.mean():.1f}")
 
 # batch_fit — Poisson GLM on B permuted Y vectors via joblib
 n_batch = 50
@@ -270,29 +266,24 @@ Y_matrix = y_np[perm_indices]  # shape (B, n)
 with warnings.catch_warnings():
     warnings.filterwarnings("ignore", category=UserWarning)
     batch_coefs = family.batch_fit(X_np, Y_matrix, fit_intercept=True)
-print(
-    f"  batch_fit:          shape={batch_coefs.shape} (B={n_batch}, p={X_np.shape[1]})"
-)
 n_nan = int(np.sum(np.any(np.isnan(batch_coefs), axis=1)))
-print(f"  convergence:        {n_batch - n_nan}/{n_batch} fits converged")
 
 # diagnostics — Poisson GLM summary via statsmodels
 diag = family.diagnostics(X_np, y_np, fit_intercept=True)
-print("  diagnostics:")
-print(f"    deviance:         {diag['deviance']:.2f}")
-print(f"    pearson_chi2:     {diag['pearson_chi2']:.2f}")
-print(f"    dispersion:       {diag['dispersion']:.4f}")
-print(f"    AIC:              {diag['aic']:.2f}")
-print(f"    BIC:              {diag['bic']:.2f}")
 if diag["dispersion"] > 1.5:
-    print("    ⚠ Overdispersion detected — consider family='negative_binomial'")
+    dispersion_status = (
+        "⚠ OVERDISPERSION DETECTED — CONSIDER family='negative_binomial'"
+    )
 else:
-    print("    ✓ No overdispersion (good Poisson fit)")
+    dispersion_status = "✓ NO OVERDISPERSION (GOOD POISSON FIT)"
 
 # classical_p_values — Wald z-test via statsmodels
 p_classical = family.classical_p_values(X_np, y_np, fit_intercept=True)
-print(f"  classical_p_values: {np.round(p_classical, 6)}")
 
 # exchangeability_cells — stub (returns None for global exchangeability)
 cells = family.exchangeability_cells(X_np, y_np)
-print(f"  exchangeability:    {'global (None)' if cells is None else cells}")
+
+print_protocol_usage_table(
+    results_ter_braak,
+    title="Direct PoissonFamily Protocol Usage",
+)

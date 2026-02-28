@@ -104,6 +104,7 @@ def _ensure_registry() -> None:
 
     from .freedman_lane import FreedmanLaneIndividualStrategy, FreedmanLaneJointStrategy
     from .kennedy import KennedyIndividualStrategy, KennedyJointStrategy
+    from .score import ScoreExactStrategy, ScoreIndividualStrategy, ScoreJointStrategy
     from .ter_braak import TerBraakStrategy
 
     _STRATEGY_REGISTRY.update(
@@ -113,6 +114,9 @@ def _ensure_registry() -> None:
             "kennedy_joint": KennedyJointStrategy,
             "freedman_lane": FreedmanLaneIndividualStrategy,
             "freedman_lane_joint": FreedmanLaneJointStrategy,
+            "score": ScoreIndividualStrategy,
+            "score_joint": ScoreJointStrategy,
+            "score_exact": ScoreExactStrategy,
         }
     )
 
@@ -123,7 +127,8 @@ def resolve_strategy(method: str) -> PermutationStrategy:
     Args:
         method: One of ``"ter_braak"``, ``"kennedy"``,
             ``"kennedy_joint"``, ``"freedman_lane"``,
-            ``"freedman_lane_joint"``.
+            ``"freedman_lane_joint"``, ``"score"``,
+            ``"score_joint"``, ``"score_exact"``.
 
     Raises:
         ValueError: If *method* is not recognised.

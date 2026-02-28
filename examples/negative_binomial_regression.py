@@ -209,9 +209,9 @@ n = len(y_arr)
 p = X_np.shape[1]
 family = NegativeBinomialFamily()
 
-print(f"\n{'=' * 60}")
+print(f"\n{'=' * 80}")
 print("Direct NegativeBinomialFamily protocol usage")
-print(f"{'=' * 60}")
+print(f"{'=' * 80}")
 print(f"  name:               {family.name}")
 print(f"  residual_type:      {family.residual_type}")
 print(f"  direct_permutation: {family.direct_permutation}")

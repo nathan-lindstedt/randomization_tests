@@ -652,6 +652,9 @@ def identify_confounders(
     X = _ensure_pandas_df(X, name="X")
     y = _ensure_pandas_df(y, name="y")
 
+    # Resolve family once to avoid repeated warnings in the loop below.
+    resolved_family = resolve_family(family, np.ravel(y))
+
     screening = screen_potential_confounders(
         X,
         y,
@@ -674,7 +677,7 @@ def identify_confounders(
             n_bootstrap=n_bootstrap,
             confidence_level=confidence_level,
             random_state=random_state,
-            family=family,
+            family=resolved_family,
         )
         mediation_results[candidate] = med
         if med["is_mediator"]:

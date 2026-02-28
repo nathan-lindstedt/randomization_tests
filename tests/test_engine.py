@@ -255,7 +255,7 @@ class TestEngineCalibration:
                 # Delegate everything except calibrate to the inner family.
                 return getattr(self._inner, name)
 
-            def calibrate(self, X, y, fit_intercept=True):
+            def calibrate(self, X, y, fit_intercept=True, **kwargs):
                 self.calibrate_called = True
                 # Return self (not inner) so the engine keeps our wrapper.
                 return self

@@ -267,6 +267,76 @@ MultinomialFamily.null_score(y: np.ndarray, fit_intercept: bool = True) -> float
 
 Returns the intercept‑only deviance from a fitted `MNLogit` null model.
 
+### `LinearMixedFamily`
+
+Linear mixed‑effects model (LMM) with Henderson REML estimation.
+
+- `residual_type = "raw"` — conditional (BLUP) residuals.
+- `direct_permutation = False`.
+- `metric_label = "RSS Reduction"`.
+- Calibrated via `calibrate(X, y, fit_intercept, groups=...)`.
+  Builds random‑effects design Z from group labels, estimates
+  variance components via LM-Nielsen Newton on REML NLL.
+- `score_project()` uses cached GLS projection A row for O(n·B)
+  batch permutation.
+- `batch_fit` uses A @ Y — single matmul for all B permutations.
+- `exchangeability_cells` returns first‑factor group labels.
+- Diagnostics: marginal/conditional R², variance components, ICC.
+
+**Supported methods:** `ter_braak`, `freedman_lane`,
+`freedman_lane_joint`, `score`, `score_joint`.
+
+Requires `groups=` keyword (via `FitContext` or direct `calibrate()`
+call).
+
+### `LogisticMixedFamily`
+
+Logistic GLMM for clustered binary `{0, 1}` outcomes via Laplace
+approximation.
+
+- `residual_type = "deviance"` — deviance residuals conditional on û.
+- `direct_permutation = False`.
+- `stat_label = "z"`.
+- Calibrated via `calibrate(X, y, fit_intercept, groups=...)`.
+  Inner IRLS pre‑scales by √W to reuse Henderson algebra; outer
+  θ optimisation via `_reml_newton_solve()` on Laplace NLL.
+- `score_project()` uses one‑step Le Cam corrector — O(n·B) matmul,
+  no IRLS in the permutation loop.
+- `reconstruct_y` draws `Y* ~ Bern(clip(ŷ + π(e)))`.
+- `exchangeability_cells` returns first‑factor group labels.
+- Diagnostics: AUC, deviance, variance components, ICC,
+  random‑effect covariance recovery.
+
+**Supported methods:** `score`, `score_exact`.
+
+**Rejected methods:** `ter_braak`, `freedman_lane`, `kennedy` raise
+`ValueError` — GLMM families require score‑based permutation.
+
+Requires `groups=` keyword.
+
+### `PoissonMixedFamily`
+
+Poisson GLMM for clustered non‑negative integer count outcomes via
+Laplace approximation.
+
+- `residual_type = "deviance"` — deviance residuals conditional on û.
+- `direct_permutation = False`.
+- `stat_label = "z"`.
+- Same architecture as `LogisticMixedFamily` — only the conditional
+  NLL and IRLS working response/weight functions differ.
+- `score_project()` uses one‑step Le Cam corrector.
+- `reconstruct_y` draws `Y* ~ Poisson(max(ŷ + π(e), ε))`.
+- `exchangeability_cells` returns first‑factor group labels.
+- Diagnostics: pseudo‑R², deviance, Pearson overdispersion (χ²/df),
+  variance components, ICC.
+
+**Supported methods:** `score`, `score_exact`.
+
+**Rejected methods:** `ter_braak`, `freedman_lane`, `kennedy` raise
+`ValueError`.
+
+Requires `groups=` keyword.
+
 ### `resolve_family`
 
 ```python
@@ -284,6 +354,9 @@ Resolve a family string to a `ModelFamily` instance.
 | `"negative_binomial"` | `NegativeBinomialFamily()` (uncalibrated; α estimated during calibration). |
 | `"ordinal"` | `OrdinalFamily()`. Requires ≥ 3 categories; supports ter Braak, Kennedy only. |
 | `"multinomial"` | `MultinomialFamily()`. Requires ≥ 3 unordered categories; supports ter Braak, Kennedy only. |
+| `"linear_mixed"` | `LinearMixedFamily()`. Requires `groups=`. |
+| `"logistic_mixed"` | `LogisticMixedFamily()`. Requires `groups=`; supports score methods only. |
+| `"poisson_mixed"` | `PoissonMixedFamily()`. Requires `groups=`; supports score methods only. |
 
 **Raises:** `ValueError` for unrecognised family strings.
 

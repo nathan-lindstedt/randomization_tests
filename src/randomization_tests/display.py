@@ -17,9 +17,12 @@ from __future__ import annotations
 import textwrap
 from typing import TYPE_CHECKING
 
+import numpy as np
+
 from randomization_tests.families import ModelFamily
 
 if TYPE_CHECKING:
+    from ._context import FitContext
     from ._results import IndividualTestResult, JointTestResult
 
 
@@ -28,6 +31,19 @@ def _truncate(name: str, max_len: int) -> str:
     if len(name) <= max_len:
         return name
     return name[: max_len - 3] + "..."
+
+
+def _fmt_diag_val(val: object) -> str:
+    """Format a diagnostic value for display.
+
+    Converts ``nan`` floats and ``None`` to ``'N/A'``.  Leaves
+    strings and other values as-is via ``str()``.
+    """
+    if val is None:
+        return "N/A"
+    if isinstance(val, float) and (val != val):  # nan check
+        return "N/A"
+    return str(val)
 
 
 def _wrap(text: str, width: int = 80, indent: int = 2) -> str:
@@ -100,20 +116,21 @@ def print_results_table(
         f"{'Model Type:':<16}{family.name:<{col1 - 16}}"
         f"{'No. Features:':>{col2 - 11}} {diag.get('n_features', 'N/A'):>10}"
     )
+    aic_str = _fmt_diag_val(diag.get("aic", "N/A"))
     print(
         f"{'Method:':<16}{results.method:<{col1 - 16}}"
-        f"{'AIC:':>{col2 - 11}} {diag.get('aic', 'N/A'):>10}"
+        f"{'AIC:':>{col2 - 11}} {aic_str:>10}"
     )
 
     _render_header_rows(family.display_header(diag), col1, col2)
 
     print("-" * 80)
 
-    fc = 25
+    fc = 22
     stat_label = family.stat_label
     emp_hdr = f"P>|{stat_label}| (Emp)"
     asy_hdr = f"P>|{stat_label}| (Asy)"
-    print(f"{'Feature':<{fc}} {'Coef':>12} {emp_hdr:>18} {asy_hdr:>18}")
+    print(f"{'Feature':<{fc}}{'Coef':>9}  {emp_hdr:>23} {asy_hdr:>23}")
     print("-" * 80)
 
     coefs = results.model_coefs
@@ -122,8 +139,8 @@ def print_results_table(
 
     for i, feat in enumerate(feature_names):
         trunc_feat = _truncate(feat, fc)
-        coef_str = f"{coefs[i]:>12.4f}"
-        print(f"{trunc_feat:<{fc}} {coef_str} {emp_p[i]:>18} {asy_p[i]:>18}")
+        coef_str = f"{coefs[i]:>9.4f}"
+        print(f"{trunc_feat:<{fc}}{coef_str}  {emp_p[i]:>23} {asy_p[i]:>23}")
 
     # ── Notes ──────────────────────────────────────────────────── #
     # Kennedy / Freedman–Lane without confounders is valid but unusual —
@@ -147,8 +164,9 @@ def print_results_table(
 
     print("=" * 80)
     print(
-        f"(*) p < {results.p_value_threshold_one}   "
+        f"(***) p < {results.p_value_threshold_three}   "
         f"(**) p < {results.p_value_threshold_two}   "
+        f"(*) p < {results.p_value_threshold_one}   "
         f"(ns) p >= {results.p_value_threshold_one}"
     )
     print()
@@ -192,9 +210,10 @@ def print_joint_results_table(
         f"{'Model Type:':<16}{family.name:<{col1 - 16}}"
         f"{'No. Features:':>{col2 - 11}} {diag.get('n_features', 'N/A'):>10}"
     )
+    aic_str = _fmt_diag_val(diag.get("aic", "N/A"))
     print(
         f"{'Method:':<16}{results.method:<{col1 - 16}}"
-        f"{'AIC:':>{col2 - 11}} {diag.get('aic', 'N/A'):>10}"
+        f"{'AIC:':>{col2 - 11}} {aic_str:>10}"
     )
 
     _render_header_rows(family.display_header(diag), col1, col2)
@@ -233,8 +252,9 @@ def print_joint_results_table(
 
     print("=" * 80)
     print(
-        f"(*) p < {results.p_value_threshold_one}   "
+        f"(***) p < {results.p_value_threshold_three}   "
         f"(**) p < {results.p_value_threshold_two}   "
+        f"(*) p < {results.p_value_threshold_one}   "
         f"(ns) p >= {results.p_value_threshold_one}"
     )
     print("Omnibus test: single p-value for all tested features combined.")
@@ -315,19 +335,19 @@ def print_diagnostics_table(
         _exp_hdr = "Exp R\u00b2"
         print(
             f"{'Feature':<{fc}}"
-            f"{'Std Coef':>9} "
-            f"{'VIF':>9} "
-            f"{'MC SE':>9} "
-            f"{_exp_hdr:>7}   "
-            f"{'Emp vs Asy':>10}"
+            f"{'Std Coef':>10} "
+            f"{'VIF':>8} "
+            f"{'MC SE':>10} "
+            f"{_exp_hdr:>8}  "
+            f"{'Emp vs Asy':>14}"
         )
     else:
         print(
             f"{'Feature':<{fc}}"
-            f"{'Std Coef':>9} "
-            f"{'VIF':>9} "
-            f"{'MC SE':>9}   "
-            f"{'Emp vs Asy':>10}"
+            f"{'Std Coef':>10} "
+            f"{'VIF':>10} "
+            f"{'MC SE':>12} "
+            f"{'Emp vs Asy':>18}"
         )
     print("-" * W)
 
@@ -350,32 +370,41 @@ def print_diagnostics_table(
 
         # Standardized coefficient
         if i < len(std_coefs):
-            std_c = f"{std_coefs[i]:>9.4f}"
+            std_c = f"{std_coefs[i]:>10.4f}"
         else:
-            std_c = f"{'':>9}"
+            std_c = f"{'':>10}"
 
         # VIF — flag problematic values for Notes
         if i < len(vifs):
             v = vifs[i]
-            vif_str = f"{v:>9.2f}" if v < 1000 else f"{'> 1000':>9}"
+            if show_exp_r2:
+                vif_str = f"{v:>8.2f}" if v < 1000 else f"{'> 1000':>8}"
+            else:
+                vif_str = f"{v:>10.2f}" if v < 1000 else f"{'> 1000':>10}"
             if v > 10:
                 vif_problems.append((feat, v, "severe"))
             elif v > 5:
                 vif_problems.append((feat, v, "moderate"))
         else:
-            vif_str = f"{'':>9}"
+            vif_str = f"{'':>10}" if not show_exp_r2 else f"{'':>8}"
 
         # Monte Carlo SE — 4 dp sufficient for precision assessment.
         # Confounders have no permutation distribution, so their MC SE
         # is NaN; display an em dash instead of a bare "nan".
         if i < len(mc_ses):
             mc_val = mc_ses[i]
-            if isinstance(mc_val, float) and mc_val != mc_val:  # NaN check
-                mc_str = f"{'—':>9}"
+            if show_exp_r2:
+                if isinstance(mc_val, float) and mc_val != mc_val:  # NaN check
+                    mc_str = f"{'—':>10}"
+                else:
+                    mc_str = f"{mc_val:>10.4f}"
             else:
-                mc_str = f"{mc_val:>9.4f}"
+                if isinstance(mc_val, float) and mc_val != mc_val:  # NaN check
+                    mc_str = f"{'—':>12}"
+                else:
+                    mc_str = f"{mc_val:>12.4f}"
         else:
-            mc_str = f"{'':>9}"
+            mc_str = f"{'':>12}" if not show_exp_r2 else f"{'':>10}"
 
         # Exposure R² (Kennedy only)
         # For non-confounder features, this is the R² from regressing
@@ -389,9 +418,9 @@ def print_diagnostics_table(
             if er2 is None:
                 # Confounder — not part of the hypothesis; exposure
                 # R² is undefined for controls.
-                er2_str = f"{'—':>7}"
+                er2_str = f"{'—':>8}"
             else:
-                er2_str = f"{er2:>7.4f}"
+                er2_str = f"{er2:>8.4f}"
                 if er2 > 0.99:
                     exp_r2_problems.append((feat, er2))
 
@@ -399,12 +428,13 @@ def print_diagnostics_table(
         flag = div_flags[i] if i < len(div_flags) else ""
         if flag:
             has_divergent = True
-        div_str = f"{flag:>10}"
 
         if show_exp_r2:
-            print(f"{trunc_feat:<{fc}}{std_c} {vif_str} {mc_str} {er2_str}   {div_str}")
+            div_str = f"{flag:>14}"
+            print(f"{trunc_feat:<{fc}}{std_c} {vif_str} {mc_str} {er2_str}  {div_str}")
         else:
-            print(f"{trunc_feat:<{fc}}{std_c} {vif_str} {mc_str}   {div_str}")
+            div_str = f"{flag:>18}"
+            print(f"{trunc_feat:<{fc}}{std_c} {vif_str} {mc_str} {div_str}")
 
     # ── Legend ──────────────────────────────────────────────────── #
 
@@ -445,7 +475,7 @@ def print_diagnostics_table(
 
     # ── Model-level Diagnostics ────────────────────────────────── #
 
-    lw = 28  # label column width (including 2-space indent)
+    lw = 28  # label column width (not counting 2-space indent)
 
     print("-" * W)
     print("Model-level Diagnostics")
@@ -453,7 +483,7 @@ def print_diagnostics_table(
 
     diag_lines, diag_notes = family.display_diagnostics(ext)
     for label, value in diag_lines:
-        print(f"{'  ' + label:<{lw}}{value}")
+        print(f"  {label:<{lw}}{value}")
     notes.extend(diag_notes)
 
     # Cook's distance
@@ -461,8 +491,9 @@ def print_diagnostics_table(
     if cd:
         n_inf = cd.get("n_influential", 0)
         thresh = cd.get("threshold", 0)
-        cd_label = "  Cook's D (> 4/n):"
-        print(f"{cd_label:<{lw}}{n_inf:>10}   threshold = {thresh:.4f}")
+        cd_val = f"{n_inf}   threshold = {thresh:.4f}"
+        cd_label = "Cook's D (> 4/n):"
+        print(f"  {cd_label:<{lw}}{cd_val}")
         if isinstance(n_inf, (int, float)) and n_inf > 0:
             notes.append(
                 f"{int(n_inf)} obs. with Cook's D > {thresh:.4f} "
@@ -474,7 +505,7 @@ def print_diagnostics_table(
     pc = ext.get("permutation_coverage", {})
     if pc:
         cov_str = pc.get("coverage_str", "N/A")
-        print(f"{'  Permutation coverage:':<{lw}}{cov_str}")
+        print(f"  {'Permutation coverage:':<{lw}}{cov_str}")
 
     # ── Notes ──────────────────────────────────────────────────── #
 
@@ -671,6 +702,326 @@ def print_confounder_table(
         print("-" * W)
         for note in notes:
             print(_wrap(f"  [!] {note}", width=W, indent=6))
+
+    print("=" * W)
+    print()
+
+
+def print_dataset_info_table(
+    *,
+    name: str,
+    n_observations: int,
+    n_features: int,
+    feature_names: list[str] | None = None,
+    target_name: str | None = None,
+    target_description: str | None = None,
+    y_range: tuple[float, float] | None = None,
+    y_mean: float | None = None,
+    y_var: float | None = None,
+    extra_stats: dict[str, str] | None = None,
+    title: str = "Dataset Information",
+) -> None:
+    """Print dataset metadata in a formatted ASCII table.
+
+    Displays dataset name, dimensions, feature names, target variable
+    information, and optional outcome statistics in a bordered table
+    matching the visual style of other ``print_*`` functions.
+
+    Args:
+        name: Dataset name (e.g., ``'Abalone'``).
+        n_observations: Number of observations (rows).
+        n_features: Number of features (columns in X).
+        feature_names: Optional list of feature names. If provided,
+            they are displayed as a comma-separated list, truncated
+            if too long.
+        target_name: Optional name of the target variable (e.g.,
+            ``'Rings'``).
+        target_description: Optional description of the target (e.g.,
+            ``'growth-ring count'``).
+        y_range: Optional tuple ``(min, max)`` of outcome values.
+        y_mean: Optional mean of the outcome.
+        y_var: Optional variance of the outcome.
+        extra_stats: Optional dict of additional statistics to display
+            as ``{label: value}`` pairs (e.g., ``{'Var/Mean': '1.05'}``).
+        title: Title for the output table.
+    """
+    W = 80
+    lw = 20  # label column width
+
+    # ── Title ──────────────────────────────────────────────────── #
+
+    print("=" * W)
+    for line in textwrap.wrap(title, width=W - 2):
+        print(f"{line:^{W}}")
+    print("=" * W)
+
+    # ── Dataset info ───────────────────────────────────────────── #
+
+    print(f"  {'Dataset:':<{lw}}{name}")
+    print(f"  {'No. Observations:':<{lw}}{n_observations}")
+
+    if feature_names:
+        feat_str = ", ".join(feature_names)
+        # 2 (indent) + lw (label) + len(n_features digits) + len(" (") + len(")") = overhead
+        prefix = f"{n_features} ("
+        max_feat_len = W - 2 - lw - len(prefix) - 1  # -1 for closing ")"
+        if len(feat_str) > max_feat_len:
+            feat_str = feat_str[: max_feat_len - 3] + "..."
+        print(f"  {'No. Features:':<{lw}}{prefix}{feat_str})")
+    else:
+        print(f"  {'No. Features:':<{lw}}{n_features}")
+
+    if target_name:
+        if target_description:
+            print(f"  {'Target:':<{lw}}{target_name} ({target_description})")
+        else:
+            print(f"  {'Target:':<{lw}}{target_name}")
+
+    # ── Outcome statistics ─────────────────────────────────────── #
+
+    has_y_stats = y_range is not None or y_mean is not None or y_var is not None
+    if has_y_stats or extra_stats:
+        print("-" * W)
+
+    if y_range is not None:
+        print(f"  {'Y Range:':<{lw}}[{y_range[0]}, {y_range[1]}]")
+
+    if y_mean is not None:
+        print(f"  {'Y Mean:':<{lw}}{y_mean:.4f}")
+
+    if y_var is not None:
+        if y_mean is not None and y_mean != 0:
+            var_mean_ratio = y_var / y_mean
+            print(
+                f"  {'Y Variance:':<{lw}}{y_var:.4f}  (var/mean = {var_mean_ratio:.2f})"
+            )
+        else:
+            print(f"  {'Y Variance:':<{lw}}{y_var:.4f}")
+
+    if extra_stats:
+        for label, value in extra_stats.items():
+            print(f"  {label + ':':<{lw}}{value}")
+
+    print("=" * W)
+    print()
+
+
+def print_family_info_table(
+    *,
+    auto_family: ModelFamily | None = None,
+    explicit_family: ModelFamily | None = None,
+    advisory: list[str] | None = None,
+    title: str = "Family Resolution",
+) -> None:
+    """Print family resolution and properties in a formatted ASCII table.
+
+    Shows the result of auto-detection (if performed), the explicitly
+    selected family, and key family properties.  Any advisory messages
+    (e.g. warnings captured from ``resolve_family``) are displayed as
+    clean notes inside the table instead of raw stderr warnings.
+
+    Args:
+        auto_family: Family instance returned by
+            ``resolve_family("auto", y)``.  Omit if auto-detection
+            was not tested.
+        explicit_family: Family instance actually used for analysis
+            (e.g. ``resolve_family("poisson", y)``).  Omit if only
+            auto-detection is shown.
+        advisory: Optional list of advisory strings (e.g. captured
+            warning messages) to display in the Notes section.
+        title: Title for the output table.
+    """
+    W = 80
+    lw = 22  # label column width
+
+    family = explicit_family or auto_family
+    if family is None:
+        return
+
+    # ── Title ──────────────────────────────────────────────────── #
+
+    print("=" * W)
+    for line in textwrap.wrap(title, width=W - 2):
+        print(f"{line:^{W}}")
+    print("=" * W)
+
+    # ── Resolution results ─────────────────────────────────────── #
+
+    if auto_family is not None:
+        print(f"  {'Auto-detect:':<{lw}}{auto_family.name!r}")
+
+    if explicit_family is not None:
+        print(f"  {'Explicit:':<{lw}}{explicit_family.name!r}")
+
+    # ── Family properties ──────────────────────────────────────── #
+
+    print("-" * W)
+    print(f"  {'Residual Type:':<{lw}}{family.residual_type}")
+    print(f"  {'Direct Permutation:':<{lw}}{family.direct_permutation}")
+    print(f"  {'Metric Label:':<{lw}}{family.metric_label}")
+
+    # ── Notes ──────────────────────────────────────────────────── #
+
+    if advisory:
+        print("-" * W)
+        print("Notes")
+        print("-" * W)
+        for note in advisory:
+            print(_wrap(f"  [!] {note}", width=W, indent=6))
+
+    print("=" * W)
+    print()
+
+
+def print_protocol_usage_table(
+    result: IndividualTestResult | JointTestResult,
+    *,
+    title: str | None = None,
+) -> None:
+    """Print observed-model artifacts from a completed test result.
+
+    Reads the :attr:`FitContext` attached to *result* and renders
+    family properties, observed-fit artifacts (coefficients,
+    predictions, residuals, fit metric), model diagnostics, and
+    inference metadata in a formatted ASCII table.
+
+    All data comes from the pipeline's natural computation — nothing
+    is re-computed.
+
+    Args:
+        result: A completed ``IndividualTestResult`` or
+            ``JointTestResult`` with a ``.context`` attribute.
+        title: Optional override for the table title.  Defaults to
+            ``"<FamilyName> Protocol Summary"``.
+
+    Raises:
+        ValueError: If *result* has no attached context.
+    """
+    ctx: FitContext | None = getattr(result, "context", None)
+    if ctx is None:
+        raise ValueError(
+            "Result has no attached FitContext.  Ensure the result was "
+            "produced by permutation_test_regression()."
+        )
+
+    W = 80
+    lw = 22  # label column width
+    family_name = ctx.family_name or "Unknown"
+
+    if title is None:
+        title = f"{family_name.title()}Family Protocol Summary"
+
+    # ── Title ──────────────────────────────────────────────────── #
+
+    print("=" * W)
+    for line in textwrap.wrap(title, width=W - 2):
+        print(f"{line:^{W}}")
+    print("=" * W)
+
+    # ── Family properties ─────────────────────────────────────── #
+
+    print(f"  {'Name:':<{lw}}{family_name}")
+    print(f"  {'Residual Type:':<{lw}}{ctx.residual_type or 'N/A'}")
+    print(f"  {'Direct Permutation:':<{lw}}{ctx.direct_permutation}")
+    print(f"  {'Metric Label:':<{lw}}{ctx.metric_label or 'N/A'}")
+
+    # ── Observed fit ───────────────────────────────────────────── #
+
+    print("-" * W)
+    print("  Observed Fit")
+    print("-" * W)
+
+    # Coefficients with feature names
+    if ctx.coefficients is not None:
+        coefs = ctx.coefficients
+        names = ctx.feature_names or [f"x{i}" for i in range(len(coefs))]
+        print(
+            f"    {'Coefs:':<{lw}}{np.array2string(coefs, precision=4, suppress_small=True)}"
+        )
+        for _i, (name, c) in enumerate(zip(names, coefs, strict=False)):
+            trunc_name = _truncate(name, 20)
+            print(f"      {trunc_name + ':':<{lw}}{c:.6f}")
+
+    # Predictions
+    if ctx.predictions is not None:
+        preds = ctx.predictions
+        print(f"    {'Pred Range:':<{lw}}[{preds.min():.4f}, {preds.max():.4f}]")
+        print(f"    {'Pred Mean:':<{lw}}{preds.mean():.4f}")
+
+    # Residuals (may be None for direct-permutation families)
+    if ctx.residuals is not None:
+        resids = ctx.residuals
+        print(f"    {'Mean |Residual|:':<{lw}}{np.mean(np.abs(resids)):.4f}")
+    elif ctx.direct_permutation:
+        print(f"    {'Residuals:':<{lw}}N/A (direct permutation)")
+
+    # Fit metric
+    if ctx.fit_metric_value is not None:
+        label = ctx.metric_label or "Fit Metric"
+        print(f"    {label + ':':<{lw}}{ctx.fit_metric_value:.4f}")
+
+    # ── Diagnostics ────────────────────────────────────────────── #
+
+    if ctx.diagnostics:
+        print("-" * W)
+        print("  Diagnostics")
+        print("-" * W)
+        for key, val in ctx.diagnostics.items():
+            display_key = key.replace("_", " ").title()
+            if isinstance(val, float):
+                print(f"    {display_key + ':':<{lw}}{val:.4f}")
+            else:
+                print(f"    {display_key + ':':<{lw}}{val}")
+
+    # ── Inference ──────────────────────────────────────────────── #
+
+    print("-" * W)
+    print("  Inference")
+    print("-" * W)
+
+    if ctx.classical_p_values is not None:
+        p_vals = ctx.classical_p_values
+        print(
+            f"    {'Classical P-values:':<{lw}}{np.array2string(p_vals, precision=6, suppress_small=True)}"
+        )
+    else:
+        # Fall back to result's own classical p-values
+        if hasattr(result, "raw_classic_p"):
+            p_vals = result.raw_classic_p
+            print(
+                f"    {'Classical P-values:':<{lw}}{np.array2string(p_vals, precision=6, suppress_small=True)}"
+            )
+
+    cells = ctx.exchangeability_cells
+    if cells is None:
+        print(f"    {'Exchangeability:':<{lw}}global (None)")
+    else:
+        n_cells = len(np.unique(cells))
+        print(f"    {'Exchangeability:':<{lw}}{n_cells} cell(s)")
+
+    # ── Permutation metadata ───────────────────────────────────── #
+
+    print("-" * W)
+    print("  Permutation Config")
+    print("-" * W)
+
+    print(f"    {'Method:':<{lw}}{ctx.method or result.method}")
+    print(f"    {'Backend:':<{lw}}{ctx.backend or 'N/A'}")
+    print(f"    {'N Permutations:':<{lw}}{ctx.n_permutations or result.n_permutations}")
+    if ctx.permutation_strategy:
+        print(f"    {'Strategy:':<{lw}}{ctx.permutation_strategy}")
+    if ctx.confounders:
+        print(f"    {'Confounders:':<{lw}}{', '.join(ctx.confounders)}")
+
+    # Batch-fit convergence
+    if ctx.batch_shape is not None:
+        B, p = ctx.batch_shape
+        print(f"    {'Batch Shape:':<{lw}}({B}, {p})")
+    if ctx.convergence_count is not None and ctx.batch_shape is not None:
+        total = ctx.batch_shape[0]
+        print(
+            f"    {'Convergence:':<{lw}}{ctx.convergence_count}/{total} fits converged"
+        )
 
     print("=" * W)
     print()

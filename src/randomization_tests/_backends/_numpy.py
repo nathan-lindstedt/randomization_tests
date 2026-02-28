@@ -1761,6 +1761,101 @@ class NumpyBackend:
         )
         return np.asarray(np.vstack(coefs_list))
 
+    # ---- Linear mixed model (shared X, many Y) ----------------------
+
+    def batch_mixed_lm(
+        self,
+        X: np.ndarray,
+        Y_matrix: np.ndarray,
+        fit_intercept: bool = True,
+        **kwargs: Any,
+    ) -> np.ndarray:
+        """Batch LMM via pre-computed GLS projection.
+
+        Uses the same ``A @ Y.T`` matmul as the JAX path — the
+        projection matrix ``A`` is computed during REML calibration
+        (by the JAX backend or statsmodels fallback) and passed via
+        ``kwargs``.
+
+        Args:
+            X: Design matrix ``(n, p)`` — accepted for protocol
+                compatibility but not used directly.
+            Y_matrix: Permuted responses ``(B, n)``.
+            fit_intercept: Whether the projection includes an
+                intercept row.
+            **kwargs: ``projection_A`` (required) — ``(p, n)``
+                GLS projection from REML calibration.
+
+        Returns:
+            Slope coefficients ``(B, p)`` (intercept excluded).
+        """
+        projection_A: np.ndarray = kwargs["projection_A"]
+        all_coefs: np.ndarray = np.asarray(Y_matrix @ projection_A.T)  # (B, p)
+        coefs = all_coefs[:, 1:] if fit_intercept else all_coefs
+        return np.asarray(coefs)
+
+    # ---- Linear mixed model (many X, shared y) ----------------------
+
+    def batch_mixed_lm_varying_X(
+        self,
+        X_batch: np.ndarray,
+        y: np.ndarray,
+        fit_intercept: bool = True,
+        **kwargs: Any,
+    ) -> np.ndarray:
+        """Batch LMM with per-permutation design matrices.
+
+        Kennedy individual linear mixed path.  Variance components
+        (encoded in ``C22``) are fixed from calibration; only the
+        GLS projection changes per permutation.
+
+        Pre-computes ``C₂₂⁻¹ Z'`` once, then loops over B design
+        matrices rebuilding ``A_b`` and extracting ``β̂_b = A_b y``.
+
+        Args:
+            X_batch: Design matrices ``(B, n, p)`` — no intercept.
+            y: Shared continuous response ``(n,)``.
+            fit_intercept: Prepend intercept column.
+            **kwargs: ``Z`` (required), ``C22`` (required),
+                ``n_jobs`` (default 1).
+
+        Returns:
+            Slope coefficients ``(B, p)`` (intercept excluded).
+        """
+        Z: np.ndarray = kwargs["Z"]
+        C22: np.ndarray = kwargs["C22"]
+        n_jobs: int = kwargs.get("n_jobs", 1)
+
+        B, n, p = X_batch.shape
+
+        # Pre-compute invariant: C₂₂⁻¹ Z'  (q, n)
+        C22_inv_Zt = np.linalg.solve(C22, Z.T)
+
+        def _solve_one(b: int) -> np.ndarray:
+            X_b = X_batch[b]
+            if fit_intercept:
+                X_aug = np.column_stack([np.ones(n), X_b])
+            else:
+                X_aug = np.asarray(X_b, dtype=float)
+            XtZ = X_aug.T @ Z  # (p_aug, q)
+            C22_inv_ZtX = C22_inv_Zt @ X_aug  # (q, p_aug)
+            S = X_aug.T @ X_aug - XtZ @ C22_inv_ZtX  # (p_aug, p_aug)
+            Xt_Vtilde_inv = X_aug.T - XtZ @ C22_inv_Zt  # (p_aug, n)
+            A = np.linalg.solve(S, Xt_Vtilde_inv)  # (p_aug, n)
+            coefs: np.ndarray = np.asarray(A @ y)  # (p_aug,)
+            return coefs[1:] if fit_intercept else coefs
+
+        if n_jobs == 1:
+            result = np.empty((B, p))
+            for b in range(B):
+                result[b] = _solve_one(b)
+            return result
+
+        coefs_list = Parallel(n_jobs=n_jobs, prefer="threads")(
+            delayed(_solve_one)(b) for b in range(B)
+        )
+        return np.asarray(np.vstack(coefs_list))
+
 
 # ------------------------------------------------------------------ #
 # Multinomial Wald χ² helper

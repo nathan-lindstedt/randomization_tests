@@ -303,14 +303,64 @@ public entry point** rather than as a `method` on
 Depends on exchangeability cells (permutation must respect the
 nesting structure that the random effects encode).
 
-- [ ] Integration with statsmodels `MixedLM` (linear) and a suitable
-  backend for generalised linear mixed models (GLMM) as new
-  `ModelFamily` implementations.
-- [ ] The permutation target becomes the conditional residual (BLUP
+- [X] `LinearMixedFamily` in `families_mixed.py` with Henderson REML
+  solver using **L-BFGS-B** (`scipy.optimize.minimize` + `jax.grad`).
+  Block-diagonal Cholesky parameterisation: each factor k has a
+  d_k × d_k covariance Σ_k = L_k L_kᵀ with log-Cholesky vector
+  θ_k = vech(L_k).  Supports random intercepts (d_k=1) and random
+  slopes (d_k>1) with arbitrary nesting/crossing.  L-BFGS-B was
+  chosen over Newton–Raphson (which diverges for d_k>1 due to
+  indefinite Hessian at θ=0), EM, AI-REML, and Hybrid EM→Newton
+  after a 5-solver benchmark (`benchmarks/compare_reml_solvers.py`).
+  61 mixed-model tests pass.
+- [X] Projection matrix A = (X'Ṽ⁻¹X)⁻¹ X'Ṽ⁻¹ for batch
+  permutation testing via single matmul β̂_Π = A @ E_π — same
+  architecture as `batch_ols`.  σ² cancels from A entirely.
+- [X] The permutation target is the conditional residual (BLUP
   residual) under the reduced model, with random-effect structure held
   fixed across permutations.
-- [ ] Diagnostics: marginal and conditional R², random-effect variance
+- [X] Diagnostics: marginal and conditional R², random-effect variance
   components, ICC.
+- [X] Faithful ter Braak (1992) and Freedman–Lane (1983) support:
+  `fit()` rebuilds the GLS projection via Woodbury when called with
+  a reduced X (different column count), keeping REML variance
+  components fixed.  `direct_permutation = False`.
+- [X] Example script: `examples/linear_multilevel_regression.py`
+  using Parkinsons Telemonitoring (UCI ID=189) — external validation
+  against statsmodels MixedLM, ter Braak + Freedman–Lane, random
+  slopes demo.
+- [X] Manly (1997) fallback warning for direct-permutation families
+  (ordinal, multinomial) when ter Braak is requested.
+- [ ] Integration with statsmodels `MixedLM` (linear) as an
+  alternative backend for the NumPy path.
+- [X] Generalised linear mixed models (GLMM) as additional
+  `ModelFamily` implementations (`LogisticMixedFamily`,
+  `PoissonMixedFamily`) via Laplace approximation with Henderson
+  IRLS inner loop and `_reml_newton_solve` outer loop.  164 new
+  tests.  Permutation via `method="score"` (one-step corrector) or
+  `method="score_exact"` (PQL-fixed vmap).
+
+### Score projection strategy
+
+Batch permutation via a single matmul per feature — no iterative
+solver in the permutation loop.  For LMM, this produces bit-for-bit
+identical p-values to Freedman–Lane.  For future GLMM families, this
+is the primary permutation mechanism with a one-step corrector for
+second-order accuracy.
+
+- [X] `score_project()` protocol method on `ModelFamily` with
+  `NotImplementedError` default; implemented on `LinearFamily` (OLS
+  pseudoinverse row) and `LinearMixedFamily` (GLS projection A row).
+- [X] `ScoreIndividualStrategy` (`method="score"`) — per-feature
+  score projection with constant offset for coefficient-scale output.
+- [X] `ScoreJointStrategy` (`method="score_joint"`) — RSS reduction
+  via `batch_fit_and_score`.
+- [X] `ScoreExactStrategy` (`method="score_exact"`) — PQL-fixed
+  vmap for GLMM families (full IRLS at fixed Γ⁻¹ via `jax.vmap`).
+- [X] Engine guard rejects score methods for unsupported families.
+- [X] 37 new tests: equivalence with ter Braak (linear) and
+  Freedman–Lane (LMM), protocol conformance, registry wiring,
+  confounder masking, n_jobs warning, determinism.
 
 ### Longitudinal / panel data
 

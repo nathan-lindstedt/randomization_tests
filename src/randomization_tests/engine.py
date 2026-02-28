@@ -28,6 +28,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from ._context import FitContext
 from .families import ModelFamily, resolve_family
 from .permutations import (
     generate_between_cell_permutations,
@@ -69,14 +70,46 @@ class PermutationEngine:
         groups: np.ndarray | None = None,
         permutation_strategy: str | None = None,
         permutation_constraints: Callable[[np.ndarray], np.ndarray] | None = None,
+        random_slopes: list[int] | dict[str, list[int]] | None = None,
+        ctx: FitContext | None = None,
     ) -> None:
+        # ---- Context accumulator ----------------------------------
+        self.ctx: FitContext = ctx if ctx is not None else FitContext()
+
+        # Populate input artifacts.
+        self.ctx.X = X.values.astype(float)
+        self.ctx.y = y_values.copy()
+        self.ctx.feature_names = list(X.columns)
+        self.ctx.target_name = str(X.columns[0]) if hasattr(X, "columns") else None
+
         # ---- Family resolution ------------------------------------
         self.family: ModelFamily = resolve_family(family, y_values)
 
         # Calibrate nuisance parameters (protocol method, no-op default).
         self.family = self.family.calibrate(
-            X.to_numpy().astype(float), y_values, fit_intercept
+            X.to_numpy().astype(float),
+            y_values,
+            fit_intercept,
+            groups=groups,
+            random_slopes=random_slopes,
         )
+
+        # Populate family properties on context.
+        self.ctx.family = self.family
+        self.ctx.family_name = self.family.name
+        self.ctx.residual_type = self.family.residual_type
+        self.ctx.direct_permutation = self.family.direct_permutation
+        self.ctx.metric_label = self.family.metric_label
+
+        # Populate LMM-specific context fields from calibrated family.
+        if hasattr(self.family, "_groups_arr") and self.family._groups_arr is not None:
+            self.ctx.groups_arr = self.family._groups_arr
+        if hasattr(self.family, "_exog_re_kw"):
+            self.ctx.exog_re_kw = self.family._exog_re_kw
+        if hasattr(self.family, "_sm_model"):
+            self.ctx.sm_mixed_model = self.family._sm_model
+        if hasattr(self.family, "_raw_groups"):
+            self.ctx.raw_groups = self.family._raw_groups
 
         # Validate Y against the family's constraints.
         # Skip only for "auto" — auto-detection is mechanically
@@ -102,6 +135,25 @@ class PermutationEngine:
             )
             raise ValueError(msg)
 
+        # Reject score methods for families without score_project().
+        if method in ("score", "score_joint", "score_exact"):
+            try:
+                self.family.score_project(
+                    np.zeros((2, 1)),
+                    0,
+                    np.zeros(2),
+                    np.arange(2, dtype=np.intp).reshape(1, -1),
+                )
+            except NotImplementedError:
+                raise ValueError(
+                    f"method='{method}' requires family='{self.family.name}' "
+                    f"to implement score_project().  Supported families: "
+                    f"'linear', 'linear_mixed'.  Use method='ter_braak' or "
+                    f"method='freedman_lane' instead."
+                ) from None
+            except Exception:
+                pass  # probe raised for other reasons (e.g. not calibrated) — OK
+
         # ---- Backend resolution -----------------------------------
         from ._backends import resolve_backend
 
@@ -125,14 +177,14 @@ class PermutationEngine:
             n_jobs != 1
             and self.backend_name == "numpy"
             and self.family.name == "linear"
-            and method in ("ter_braak", "freedman_lane")
+            and method in ("ter_braak", "freedman_lane", "score", "score_joint")
         ):
             warnings.warn(
-                "n_jobs has no effect for linear ter_braak/freedman_lane "
-                "because OLS batch fitting is already a single vectorised "
-                "BLAS operation (pinv @ Y.T).  Falling back to n_jobs=1.  "
-                "n_jobs provides genuine parallelism for logistic families, "
-                "Kennedy individual, and joint methods.",
+                "n_jobs has no effect for linear ter_braak/freedman_lane/"
+                "score because OLS batch fitting is already a single "
+                "vectorised BLAS operation (pinv @ Y.T).  Falling back "
+                "to n_jobs=1.  n_jobs provides genuine parallelism for "
+                "logistic families, Kennedy individual, and joint methods.",
                 UserWarning,
                 stacklevel=3,
             )
@@ -142,6 +194,36 @@ class PermutationEngine:
         X_np = X.values.astype(float)
         observed_model = self.family.fit(X_np, y_values, fit_intercept)
         self.model_coefs: np.ndarray = self.family.coefs(observed_model)
+
+        # Populate observed-fit artifacts on context.
+        self.ctx.observed_model = observed_model
+        self.ctx.coefficients = self.model_coefs.copy()
+        self.ctx.predictions = self.family.predict(observed_model, X_np)
+
+        # Residuals — not available for direct-permutation families.
+        if not self.family.direct_permutation:
+            try:
+                self.ctx.residuals = self.family.residuals(
+                    observed_model, X_np, y_values
+                )
+            except (NotImplementedError, Exception):
+                self.ctx.residuals = None
+        else:
+            self.ctx.residuals = None
+
+        # Fit metric — not available for all families.
+        if self.ctx.predictions is not None:
+            try:
+                self.ctx.fit_metric_value = float(
+                    self.family.fit_metric(y_values, self.ctx.predictions)
+                )
+            except (NotImplementedError, Exception):
+                self.ctx.fit_metric_value = None
+
+        # Exchangeability cells.
+        self.ctx.exchangeability_cells = self.family.exchangeability_cells(
+            X_np, y_values
+        )
 
         # Model diagnostics — wrapped in try/except for degenerate data.
         # Each family's diagnostics() method handles its own warning
@@ -156,6 +238,8 @@ class PermutationEngine:
                 "n_features": X_np.shape[1],
             }
 
+        self.ctx.diagnostics = self.diagnostics
+
         # ---- Permutation indices ----------------------------------
         #
         # Store groups/strategy/constraints before calling
@@ -163,6 +247,11 @@ class PermutationEngine:
         self.groups: np.ndarray | None = groups
         self.permutation_strategy: str | None = permutation_strategy
         self._permutation_constraints = permutation_constraints
+
+        # Populate permutation metadata on context.
+        self.ctx.backend = self.backend_name
+        self.ctx.groups = groups
+        self.ctx.permutation_strategy = permutation_strategy
 
         self.perm_indices: np.ndarray = self.permute_indices(
             n_samples=len(y_values),
@@ -210,7 +299,8 @@ class PermutationEngine:
         1. If ``groups`` is set: use the requested strategy
            (``"within"``, ``"between"``, or ``"two-stage"``).
         2. If ``groups`` is ``None``: check
-           ``self.family.exchangeability_cells(X, y)``.  If
+           ``self.ctx.exchangeability_cells`` (pre-computed from
+           real data during the observed-fit phase).  If
            non-``None``, use within-cell permutations.
         3. Otherwise: global permutation via
            :func:`generate_unique_permutations`.
@@ -233,12 +323,14 @@ class PermutationEngine:
         cells = self.groups
         strategy = self.permutation_strategy
 
-        # If no explicit groups, consult the family.
+        # If no explicit groups, use the exchangeability cells that
+        # were already computed from real data during the observed-
+        # fit phase (stored on the context).  This avoids the
+        # previous approach of calling exchangeability_cells() with
+        # placeholder zeros — which only worked by accident for
+        # families that ignore X and y in that method.
         if cells is None:
-            family_cells = self.family.exchangeability_cells(
-                np.zeros((n_samples, 1)),  # placeholder X
-                np.zeros(n_samples),  # placeholder y
-            )
+            family_cells = self.ctx.exchangeability_cells
             if family_cells is not None:
                 cells = family_cells
                 strategy = "within"

@@ -34,6 +34,7 @@ Reference:
 
 from __future__ import annotations
 
+import warnings
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -94,6 +95,19 @@ class TerBraakStrategy:
         # the unexplained part, so it tests marginal rather than
         # partial association.
         if family.direct_permutation:
+            warnings.warn(
+                f"family='{family.name}' does not support residual-based "
+                f"permutation (residuals are not well-defined for this "
+                f"model type).  Falling back to direct Y permutation "
+                f"(Manly 1997), which tests marginal rather than partial "
+                f"association and may have lower power than the residual-"
+                f"based ter Braak (1992) procedure.  Consider the Kennedy "
+                f"method as an alternative — it permutes exposure-model "
+                f"residuals (linear OLS) and does not require response-"
+                f"model residuals.",
+                UserWarning,
+                stacklevel=4,
+            )
             # Fancy-index y_values with the (B, n) permutation matrix
             # to produce B shuffled response vectors simultaneously.
             Y_perm = y_values[perm_indices]  # (B, n)
