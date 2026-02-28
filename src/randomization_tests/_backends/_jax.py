@@ -2226,6 +2226,65 @@ def _check_convergence(converged: np.ndarray, max_iter: int) -> None:
 
 
 # ------------------------------------------------------------------ #
+# Intercept augmentation / stripping helpers
+# ------------------------------------------------------------------ #
+#
+# Factored out of the 30+ batch_* methods to eliminate per-method
+# boilerplate.  These are NumPy-level operations (pre-conversion to
+# JAX), so they live outside the ``if _CAN_IMPORT_JAX`` guard.
+# ------------------------------------------------------------------ #
+
+
+def _augment_intercept_2d(X: np.ndarray, fit_intercept: bool) -> np.ndarray:
+    """Prepend a ones column to a 2-D design matrix.
+
+    Args:
+        X: Design matrix ``(n, p)``.
+        fit_intercept: If ``False``, return *X* unchanged.
+
+    Returns:
+        ``(n, p+1)`` with intercept column when ``fit_intercept``
+        is ``True``, else the original ``(n, p)`` array.
+    """
+    if fit_intercept:
+        return np.hstack([np.ones((X.shape[0], 1), dtype=X.dtype), X])
+    return X
+
+
+def _augment_intercept_3d(X_batch: np.ndarray, fit_intercept: bool) -> np.ndarray:
+    """Prepend a ones column to each matrix in a 3-D batch.
+
+    Args:
+        X_batch: Design matrices ``(B, n, p)``.
+        fit_intercept: If ``False``, return *X_batch* unchanged.
+
+    Returns:
+        ``(B, n, p+1)`` with intercept column when ``fit_intercept``
+        is ``True``, else the original ``(B, n, p)`` array.
+    """
+    if fit_intercept:
+        B, n, _ = X_batch.shape
+        return np.concatenate(
+            [np.ones((B, n, 1), dtype=X_batch.dtype), X_batch], axis=2
+        )
+    return X_batch
+
+
+def _strip_intercept(coefs: np.ndarray, fit_intercept: bool) -> np.ndarray:
+    """Remove the intercept column from a batch coefficient matrix.
+
+    Args:
+        coefs: Coefficients ``(B, p+1)`` (including intercept) or
+            ``(B, p)`` (without).
+        fit_intercept: Whether an intercept column is present.
+
+    Returns:
+        ``(B, p)`` slope coefficients.
+    """
+    return coefs[:, 1:] if fit_intercept else coefs
+
+
+# ------------------------------------------------------------------ #
 # JaxBackend
 # ------------------------------------------------------------------ #
 
@@ -2271,6 +2330,206 @@ class JaxBackend:
         return _CAN_IMPORT_JAX
 
     # ================================================================ #
+    # Generic batch helpers (dispatch layer)
+    # ================================================================ #
+    #
+    # Three private methods — one per vmap pattern — that factor out
+    # the boilerplate shared by all GLM ``batch_*`` methods:
+    #
+    #   _batch_shared_X   — shared X, many Y   (ter Braak)
+    #   _batch_varying_X  — many X, shared y   (Kennedy)
+    #   _batch_paired     — both X and Y vary   (bootstrap/jackknife)
+    #
+    # Each accepts a **normalised solver function** with signature:
+    #
+    #   (X_jax, y_jax, max_iter, tol, min_damping) → (params, nll, converged)
+    #
+    # Family-specific parameters (alpha, K, …) must be bound in the
+    # solver closure *before* passing it here.  The generic helpers
+    # handle intercept augmentation, NumPy↔JAX conversion, vmap/jit
+    # dispatch, convergence checking, intercept stripping, and the
+    # optional ``return_nll`` flag.
+    #
+    # ``coef_slice`` overrides the default intercept-stripping logic
+    # for families that pack extra parameters (e.g. ordinal packs
+    # [slopes, thresholds] and needs ``slice(0, n_features)``).
+    # ---------------------------------------------------------------- #
+
+    def _batch_shared_X(
+        self,
+        solver_fn: Callable[..., Any],
+        X: np.ndarray,
+        Y_matrix: np.ndarray,
+        fit_intercept: bool,
+        return_nll: bool,
+        coef_slice: slice | None = None,
+        **kwargs: Any,
+    ) -> np.ndarray | tuple[np.ndarray, np.ndarray]:
+        """Shared X, many Y — ter Braak / Freedman–Lane pattern.
+
+        ``vmap`` maps *solver_fn* across the B dimension of
+        *Y_matrix*.  The shared design matrix X is captured in the
+        closure.
+
+        Args:
+            solver_fn: Normalised solver ``(X, y, max_iter, tol,
+                min_damping) → (params, nll, converged)``.
+            X: Design matrix ``(n, p)`` — no intercept column.
+            Y_matrix: Permuted responses ``(B, n)``.
+            fit_intercept: Prepend intercept column.
+            return_nll: If ``True``, also return ``2·NLL``.
+            coef_slice: Optional slice applied to the parameter
+                vector *instead of* intercept stripping.
+            **kwargs: Forwarded; ``max_iter``, ``tol``,
+                ``min_damping`` are read with defaults.
+
+        Returns:
+            Slope coefficients ``(B, p)``, or
+            ``(coefs, 2·NLL)`` when ``return_nll`` is ``True``.
+        """
+        max_iter: int = kwargs.get("max_iter", 100)
+        tol: float = kwargs.get("tol", _DEFAULT_TOL)
+        min_damping: float = kwargs.get("min_damping", _MIN_DAMPING)
+
+        X_aug = _augment_intercept_2d(X, fit_intercept)
+        X_j = jnp.array(X_aug, dtype=jnp.float64)
+        Y_j = jnp.array(Y_matrix, dtype=jnp.float64)
+
+        def _solve_one(
+            y_vec: jax.Array,
+        ) -> tuple[jax.Array, jax.Array, jax.Array]:
+            return solver_fn(X_j, y_vec, max_iter, tol, min_damping)  # type: ignore[no-any-return]
+
+        all_params, all_nll, all_converged = jit(vmap(_solve_one))(Y_j)
+        _check_convergence(np.asarray(all_converged), max_iter)
+
+        coefs = np.asarray(all_params)
+        if coef_slice is not None:
+            coefs = coefs[:, coef_slice]
+        else:
+            coefs = _strip_intercept(coefs, fit_intercept)
+
+        if return_nll:
+            return coefs, 2.0 * np.asarray(all_nll)
+        return coefs
+
+    def _batch_varying_X(
+        self,
+        solver_fn: Callable[..., Any],
+        X_batch: np.ndarray,
+        y: np.ndarray,
+        fit_intercept: bool,
+        return_nll: bool,
+        coef_slice: slice | None = None,
+        **kwargs: Any,
+    ) -> np.ndarray | tuple[np.ndarray, np.ndarray]:
+        """Many X, shared y — Kennedy pattern.
+
+        ``vmap`` maps *solver_fn* across the B dimension of
+        *X_batch*.  The shared response *y* is captured in the
+        closure.
+
+        Args:
+            solver_fn: Normalised solver ``(X, y, max_iter, tol,
+                min_damping) → (params, nll, converged)``.
+            X_batch: Design matrices ``(B, n, p)`` — no intercept.
+            y: Shared response ``(n,)``.
+            fit_intercept: Prepend intercept column.
+            return_nll: If ``True``, also return ``2·NLL``.
+            coef_slice: Optional slice applied to the parameter
+                vector *instead of* intercept stripping.
+            **kwargs: Forwarded; ``max_iter``, ``tol``,
+                ``min_damping`` are read with defaults.
+
+        Returns:
+            Slope coefficients ``(B, p)``, or
+            ``(coefs, 2·NLL)`` when ``return_nll`` is ``True``.
+        """
+        max_iter: int = kwargs.get("max_iter", 100)
+        tol: float = kwargs.get("tol", _DEFAULT_TOL)
+        min_damping: float = kwargs.get("min_damping", _MIN_DAMPING)
+
+        X_aug = _augment_intercept_3d(X_batch, fit_intercept)
+        X_j = jnp.array(X_aug, dtype=jnp.float64)
+        y_j = jnp.array(y, dtype=jnp.float64)
+
+        def _solve_one(
+            X_single: jax.Array,
+        ) -> tuple[jax.Array, jax.Array, jax.Array]:
+            return solver_fn(X_single, y_j, max_iter, tol, min_damping)  # type: ignore[no-any-return]
+
+        all_params, all_nll, all_converged = jit(vmap(_solve_one))(X_j)
+        _check_convergence(np.asarray(all_converged), max_iter)
+
+        coefs = np.asarray(all_params)
+        if coef_slice is not None:
+            coefs = coefs[:, coef_slice]
+        else:
+            coefs = _strip_intercept(coefs, fit_intercept)
+
+        if return_nll:
+            return coefs, 2.0 * np.asarray(all_nll)
+        return coefs
+
+    def _batch_paired(
+        self,
+        solver_fn: Callable[..., Any],
+        X_batch: np.ndarray,
+        Y_batch: np.ndarray,
+        fit_intercept: bool,
+        return_nll: bool,
+        coef_slice: slice | None = None,
+        **kwargs: Any,
+    ) -> np.ndarray | tuple[np.ndarray, np.ndarray]:
+        """Both X and Y vary — bootstrap / jackknife pattern.
+
+        ``vmap`` maps *solver_fn* across both *X_batch* and
+        *Y_batch* simultaneously.
+
+        Args:
+            solver_fn: Normalised solver ``(X, y, max_iter, tol,
+                min_damping) → (params, nll, converged)``.
+            X_batch: Design matrices ``(B, n, p)`` — no intercept.
+            Y_batch: Response vectors ``(B, n)``.
+            fit_intercept: Prepend intercept column.
+            return_nll: If ``True``, also return ``2·NLL``.
+            coef_slice: Optional slice applied to the parameter
+                vector *instead of* intercept stripping.
+            **kwargs: Forwarded; ``max_iter``, ``tol``,
+                ``min_damping`` are read with defaults.
+
+        Returns:
+            Slope coefficients ``(B, p)``, or
+            ``(coefs, 2·NLL)`` when ``return_nll`` is ``True``.
+        """
+        max_iter: int = kwargs.get("max_iter", 100)
+        tol: float = kwargs.get("tol", _DEFAULT_TOL)
+        min_damping: float = kwargs.get("min_damping", _MIN_DAMPING)
+
+        X_aug = _augment_intercept_3d(X_batch, fit_intercept)
+        X_j = jnp.array(X_aug, dtype=jnp.float64)
+        Y_j = jnp.array(Y_batch, dtype=jnp.float64)
+
+        def _solve_one(
+            X_single: jax.Array,
+            y_vec: jax.Array,
+        ) -> tuple[jax.Array, jax.Array, jax.Array]:
+            return solver_fn(X_single, y_vec, max_iter, tol, min_damping)  # type: ignore[no-any-return]
+
+        all_params, all_nll, all_converged = jit(vmap(_solve_one))(X_j, Y_j)
+        _check_convergence(np.asarray(all_converged), max_iter)
+
+        coefs = np.asarray(all_params)
+        if coef_slice is not None:
+            coefs = coefs[:, coef_slice]
+        else:
+            coefs = _strip_intercept(coefs, fit_intercept)
+
+        if return_nll:
+            return coefs, 2.0 * np.asarray(all_nll)
+        return coefs
+
+    # ================================================================ #
     # OLS — shared X, many Y
     # ================================================================ #
     #
@@ -2295,10 +2554,7 @@ class JaxBackend:
         Returns:
             Slope coefficients ``(B, p)`` (intercept excluded).
         """
-        if fit_intercept:
-            X_aug = np.column_stack([np.ones(X.shape[0]), X])
-        else:
-            X_aug = X
+        X_aug = _augment_intercept_2d(X, fit_intercept)
 
         X_j = jnp.array(X_aug, dtype=jnp.float64)  # NumPy → JAX
         Y_j = jnp.array(Y_matrix, dtype=jnp.float64)
@@ -2311,18 +2567,11 @@ class JaxBackend:
             return (pinv @ Y_mat.T).T  # (B, p+1)
 
         result = np.asarray(_batch_solve(X_j, Y_j))  # JAX → NumPy
-        return result[:, 1:] if fit_intercept else result
+        return _strip_intercept(result, fit_intercept)
 
     # ================================================================ #
-    # Logistic — shared X, many Y (ter Braak path)
+    # Logistic — delegates to generic batch helpers
     # ================================================================ #
-    #
-    # ``vmap(_make_newton_solver)`` maps the Newton–Raphson logistic
-    # solver across all B permuted response vectors in a single XLA
-    # kernel launch.  The shared design matrix X_j is captured in the
-    # closure — JAX broadcasts it across the vmapped dimension
-    # without replicating the memory.
-    # ---------------------------------------------------------------- #
 
     def batch_logistic(
         self,
@@ -2333,56 +2582,18 @@ class JaxBackend:
     ) -> np.ndarray:
         """Batch logistic via vmap'd Newton–Raphson.
 
-        Shared design matrix *X*, multiple binary response vectors
-        *Y* (ter Braak logistic path).
-
         Args:
-            X: Design matrix ``(n, p)`` — no intercept column.
+            X: Design matrix ``(n, p)``.
             Y_matrix: Permuted binary responses ``(B, n)``.
             fit_intercept: Prepend intercept column.
-            **kwargs: ``max_iter`` (default 100), ``tol`` (default
-                :data:`_DEFAULT_TOL`), ``min_damping`` (default
-                :data:`_MIN_DAMPING`).
+            **kwargs: ``max_iter``, ``tol``, ``min_damping``.
 
         Returns:
-            Slope coefficients ``(B, p)`` (intercept excluded).
+            Slope coefficients ``(B, p)``.
         """
-        max_iter: int = kwargs.get("max_iter", 100)
-        tol: float = kwargs.get("tol", _DEFAULT_TOL)
-        min_damping: float = kwargs.get("min_damping", _MIN_DAMPING)
-
-        if fit_intercept:
-            ones = np.ones((X.shape[0], 1), dtype=X.dtype)
-            X_aug = np.hstack([ones, X])
-        else:
-            X_aug = X
-
-        X_j = jnp.array(X_aug, dtype=jnp.float64)  # NumPy → JAX
-        Y_j = jnp.array(Y_matrix, dtype=jnp.float64)
-
-        def _solve_one(
-            y_vec: jax.Array,
-        ) -> tuple[jax.Array, jax.Array, jax.Array]:
-            # X_j is captured in the closure — shared across all B.
-            return _make_newton_solver(X_j, y_vec, max_iter, tol, min_damping)
-
-        # vmap parallelises across the B dimension of Y_j,
-        # fusing B Newton–Raphson solves into one XLA kernel.
-        all_betas, _all_nll, all_converged = jit(vmap(_solve_one))(Y_j)
-        _check_convergence(np.asarray(all_converged), max_iter)
-
-        all_coefs = np.asarray(all_betas)  # JAX → NumPy
-        return all_coefs[:, 1:] if fit_intercept else all_coefs
-
-    # ================================================================ #
-    # Logistic — many X, shared y (Kennedy path)
-    # ================================================================ #
-    #
-    # Kennedy strategy: each permutation has its own design matrix
-    # (column j replaced with permuted exposure residuals).  The
-    # vmap axis is over X_j (the B dimension), with y_j captured
-    # in the closure.
-    # ---------------------------------------------------------------- #
+        return self._batch_shared_X(  # type: ignore[return-value]
+            _make_newton_solver, X, Y_matrix, fit_intercept, False, **kwargs
+        )
 
     def batch_logistic_varying_X(
         self,
@@ -2393,47 +2604,18 @@ class JaxBackend:
     ) -> np.ndarray:
         """Batch logistic with per-permutation design matrices.
 
-        Kennedy individual logistic path — each permutation replaces
-        one column of *X* with permuted exposure residuals.
-
         Args:
-            X_batch: Design matrices ``(B, n, p)`` — no intercept.
+            X_batch: Design matrices ``(B, n, p)``.
             y: Shared binary response ``(n,)``.
             fit_intercept: Prepend intercept column.
-            **kwargs: ``max_iter`` (default 100), ``tol`` (default
-                :data:`_DEFAULT_TOL`), ``min_damping`` (default
-                :data:`_MIN_DAMPING`).
+            **kwargs: ``max_iter``, ``tol``, ``min_damping``.
 
         Returns:
-            Slope coefficients ``(B, p)`` (intercept excluded).
+            Slope coefficients ``(B, p)``.
         """
-        max_iter: int = kwargs.get("max_iter", 100)
-        tol: float = kwargs.get("tol", _DEFAULT_TOL)
-        min_damping: float = kwargs.get("min_damping", _MIN_DAMPING)
-
-        if fit_intercept:
-            B, n, _ = X_batch.shape
-            ones = np.ones((B, n, 1), dtype=X_batch.dtype)
-            X_aug = np.concatenate([ones, X_batch], axis=2)
-        else:
-            X_aug = X_batch
-
-        X_j = jnp.array(X_aug, dtype=jnp.float64)  # NumPy → JAX
-        y_j = jnp.array(y, dtype=jnp.float64)
-
-        def _solve_one(
-            X_single: jax.Array,
-        ) -> tuple[jax.Array, jax.Array, jax.Array]:
-            # y_j is captured in the closure — shared across all B.
-            return _make_newton_solver(X_single, y_j, max_iter, tol, min_damping)
-
-        # vmap over the B dimension of X_j — each permutation gets
-        # its own design matrix.
-        all_betas, _all_nll, all_converged = jit(vmap(_solve_one))(X_j)
-        _check_convergence(np.asarray(all_converged), max_iter)
-
-        all_coefs = np.asarray(all_betas)  # JAX → NumPy
-        return all_coefs[:, 1:] if fit_intercept else all_coefs
+        return self._batch_varying_X(  # type: ignore[return-value]
+            _make_newton_solver, X_batch, y, fit_intercept, False, **kwargs
+        )
 
     # ================================================================ #
     # OLS — many X, shared y (Kennedy path)
@@ -2465,12 +2647,7 @@ class JaxBackend:
         Returns:
             Slope coefficients ``(B, p)`` (intercept excluded).
         """
-        if fit_intercept:
-            B, n, _ = X_batch.shape
-            ones = np.ones((B, n, 1), dtype=X_batch.dtype)
-            X_aug = np.concatenate([ones, X_batch], axis=2)
-        else:
-            X_aug = X_batch
+        X_aug = _augment_intercept_3d(X_batch, fit_intercept)
 
         X_j = jnp.array(X_aug, dtype=jnp.float64)  # NumPy → JAX
         y_j = jnp.array(y, dtype=jnp.float64)
@@ -2485,16 +2662,11 @@ class JaxBackend:
             return vmap(_solve_one)(X_all)
 
         all_coefs = np.asarray(_batch_lstsq(X_j, y_j))  # JAX → NumPy
-        return all_coefs[:, 1:] if fit_intercept else all_coefs
+        return _strip_intercept(all_coefs, fit_intercept)
 
     # ================================================================ #
-    # Poisson — shared X, many Y (ter Braak path)
+    # Poisson — delegates to generic batch helpers
     # ================================================================ #
-    #
-    # Same vmap-over-solvers pattern as logistic.  The Poisson
-    # Newton–Raphson solver uses an OLS warm start on log(y + 0.5)
-    # to avoid overflow when the true intercept is far from zero.
-    # ---------------------------------------------------------------- #
 
     def batch_poisson(
         self,
@@ -2505,47 +2677,18 @@ class JaxBackend:
     ) -> np.ndarray:
         """Batch Poisson via vmap'd Newton–Raphson.
 
-        Shared design matrix *X*, multiple count response vectors
-        *Y* (ter Braak Poisson path).
-
         Args:
-            X: Design matrix ``(n, p)`` — no intercept column.
+            X: Design matrix ``(n, p)``.
             Y_matrix: Permuted count responses ``(B, n)``.
             fit_intercept: Prepend intercept column.
-            **kwargs: ``max_iter`` (default 100), ``tol`` (default
-                :data:`_DEFAULT_TOL`), ``min_damping`` (default
-                :data:`_MIN_DAMPING`).
+            **kwargs: ``max_iter``, ``tol``, ``min_damping``.
 
         Returns:
-            Slope coefficients ``(B, p)`` (intercept excluded).
+            Slope coefficients ``(B, p)``.
         """
-        max_iter: int = kwargs.get("max_iter", 100)
-        tol: float = kwargs.get("tol", _DEFAULT_TOL)
-        min_damping: float = kwargs.get("min_damping", _MIN_DAMPING)
-
-        if fit_intercept:
-            ones = np.ones((X.shape[0], 1), dtype=X.dtype)
-            X_aug = np.hstack([ones, X])
-        else:
-            X_aug = X
-
-        X_j = jnp.array(X_aug, dtype=jnp.float64)
-        Y_j = jnp.array(Y_matrix, dtype=jnp.float64)
-
-        def _solve_one(
-            y_vec: jax.Array,
-        ) -> tuple[jax.Array, jax.Array, jax.Array]:
-            return _make_poisson_solver(X_j, y_vec, max_iter, tol, min_damping)
-
-        all_betas, _all_nll, all_converged = jit(vmap(_solve_one))(Y_j)
-        _check_convergence(np.asarray(all_converged), max_iter)
-
-        all_coefs = np.asarray(all_betas)  # JAX → NumPy
-        return all_coefs[:, 1:] if fit_intercept else all_coefs
-
-    # ================================================================ #
-    # Poisson — many X, shared y (Kennedy path)
-    # ================================================================ #
+        return self._batch_shared_X(  # type: ignore[return-value]
+            _make_poisson_solver, X, Y_matrix, fit_intercept, False, **kwargs
+        )
 
     def batch_poisson_varying_X(
         self,
@@ -2556,52 +2699,25 @@ class JaxBackend:
     ) -> np.ndarray:
         """Batch Poisson with per-permutation design matrices.
 
-        Kennedy individual Poisson path — each permutation replaces
-        one column of *X* with permuted exposure residuals.
-
         Args:
-            X_batch: Design matrices ``(B, n, p)`` — no intercept.
+            X_batch: Design matrices ``(B, n, p)``.
             y: Shared count response ``(n,)``.
             fit_intercept: Prepend intercept column.
-            **kwargs: ``max_iter`` (default 100), ``tol`` (default
-                :data:`_DEFAULT_TOL`), ``min_damping`` (default
-                :data:`_MIN_DAMPING`).
+            **kwargs: ``max_iter``, ``tol``, ``min_damping``.
 
         Returns:
-            Slope coefficients ``(B, p)`` (intercept excluded).
+            Slope coefficients ``(B, p)``.
         """
-        max_iter: int = kwargs.get("max_iter", 100)
-        tol: float = kwargs.get("tol", _DEFAULT_TOL)
-        min_damping: float = kwargs.get("min_damping", _MIN_DAMPING)
-
-        if fit_intercept:
-            B, n, _ = X_batch.shape
-            ones = np.ones((B, n, 1), dtype=X_batch.dtype)
-            X_aug = np.concatenate([ones, X_batch], axis=2)
-        else:
-            X_aug = X_batch
-
-        X_j = jnp.array(X_aug, dtype=jnp.float64)
-        y_j = jnp.array(y, dtype=jnp.float64)
-
-        def _solve_one(
-            X_single: jax.Array,
-        ) -> tuple[jax.Array, jax.Array, jax.Array]:
-            return _make_poisson_solver(X_single, y_j, max_iter, tol, min_damping)
-
-        all_betas, _all_nll, all_converged = jit(vmap(_solve_one))(X_j)
-        _check_convergence(np.asarray(all_converged), max_iter)
-        all_coefs = np.asarray(all_betas)  # JAX → NumPy
-        return all_coefs[:, 1:] if fit_intercept else all_coefs
+        return self._batch_varying_X(  # type: ignore[return-value]
+            _make_poisson_solver, X_batch, y, fit_intercept, False, **kwargs
+        )
 
     # ================================================================ #
-    # Negative Binomial (NB2) — shared X, many Y
+    # NB2 — delegates to generic batch helpers
     # ================================================================ #
     #
-    # The NB2 solver is constructed via closure factories that capture
-    # the fixed α as a compile-time constant (see the NB2 helper
-    # section above for details).  vmap maps across B permuted
-    # response vectors.
+    # NB2 requires an ``alpha`` (dispersion) kwarg bound into the
+    # solver closure before passing to the generic helpers.
     # ---------------------------------------------------------------- #
 
     def batch_negbin(
@@ -2613,48 +2729,24 @@ class JaxBackend:
     ) -> np.ndarray:
         """Batch NB2 via vmap'd Newton–Raphson with fixed α.
 
-        Shared design matrix *X*, multiple count response vectors
-        *Y*.  The dispersion parameter α must be supplied via
-        kwargs (estimated once on the observed data).
-
         Args:
-            X: Design matrix ``(n, p)`` — no intercept column.
+            X: Design matrix ``(n, p)``.
             Y_matrix: Permuted count responses ``(B, n)``.
             fit_intercept: Prepend intercept column.
-            **kwargs: ``alpha`` (required), ``max_iter`` (default
-                100), ``tol`` (default :data:`_DEFAULT_TOL`),
-                ``min_damping`` (default :data:`_MIN_DAMPING`).
+            **kwargs: ``alpha`` (required), ``max_iter``, ``tol``,
+                ``min_damping``.
 
         Returns:
-            Slope coefficients ``(B, p)`` (intercept excluded).
+            Slope coefficients ``(B, p)``.
         """
         alpha: float = kwargs["alpha"]
-        max_iter: int = kwargs.get("max_iter", 100)
-        tol: float = kwargs.get("tol", _DEFAULT_TOL)
-        min_damping: float = kwargs.get("min_damping", _MIN_DAMPING)
 
-        if fit_intercept:
-            ones = np.ones((X.shape[0], 1), dtype=X.dtype)
-            X_aug = np.hstack([ones, X])
-        else:
-            X_aug = X
+        def solver(X: Any, y: Any, mi: Any, t: Any, md: Any) -> Any:
+            return _make_negbin_solver(X, y, alpha, mi, t, md)
 
-        X_j = jnp.array(X_aug, dtype=jnp.float64)
-        Y_j = jnp.array(Y_matrix, dtype=jnp.float64)
-
-        def _solve_one(
-            y_vec: jax.Array,
-        ) -> tuple[jax.Array, jax.Array, jax.Array]:
-            return _make_negbin_solver(X_j, y_vec, alpha, max_iter, tol, min_damping)
-
-        all_betas, _all_nll, all_converged = jit(vmap(_solve_one))(Y_j)
-        _check_convergence(np.asarray(all_converged), max_iter)
-        all_coefs = np.asarray(all_betas)  # JAX → NumPy
-        return all_coefs[:, 1:] if fit_intercept else all_coefs
-
-    # ================================================================ #
-    # Negative Binomial (NB2) — many X, shared y (Kennedy path)
-    # ================================================================ #
+        return self._batch_shared_X(  # type: ignore[return-value]
+            solver, X, Y_matrix, fit_intercept, False, **kwargs
+        )
 
     def batch_negbin_varying_X(
         self,
@@ -2663,57 +2755,34 @@ class JaxBackend:
         fit_intercept: bool = True,
         **kwargs: Any,
     ) -> np.ndarray:
-        """Batch NB2 with per-permutation design matrices and fixed α.
-
-        Kennedy individual NB path.
+        """Batch NB2 with per-permutation design matrices.
 
         Args:
-            X_batch: Design matrices ``(B, n, p)`` — no intercept.
+            X_batch: Design matrices ``(B, n, p)``.
             y: Shared count response ``(n,)``.
             fit_intercept: Prepend intercept column.
-            **kwargs: ``alpha`` (required), ``max_iter`` (default
-                100), ``tol`` (default :data:`_DEFAULT_TOL`),
-                ``min_damping`` (default :data:`_MIN_DAMPING`).
+            **kwargs: ``alpha`` (required), ``max_iter``, ``tol``,
+                ``min_damping``.
 
         Returns:
-            Slope coefficients ``(B, p)`` (intercept excluded).
+            Slope coefficients ``(B, p)``.
         """
         alpha: float = kwargs["alpha"]
-        max_iter: int = kwargs.get("max_iter", 100)
-        tol: float = kwargs.get("tol", _DEFAULT_TOL)
-        min_damping: float = kwargs.get("min_damping", _MIN_DAMPING)
 
-        if fit_intercept:
-            B, n, _ = X_batch.shape
-            ones = np.ones((B, n, 1), dtype=X_batch.dtype)
-            X_aug = np.concatenate([ones, X_batch], axis=2)
-        else:
-            X_aug = X_batch
+        def solver(X: Any, y: Any, mi: Any, t: Any, md: Any) -> Any:
+            return _make_negbin_solver(X, y, alpha, mi, t, md)
 
-        X_j = jnp.array(X_aug, dtype=jnp.float64)
-        y_j = jnp.array(y, dtype=jnp.float64)
-
-        def _solve_one(
-            X_single: jax.Array,
-        ) -> tuple[jax.Array, jax.Array, jax.Array]:
-            return _make_negbin_solver(X_single, y_j, alpha, max_iter, tol, min_damping)
-
-        all_betas, _all_nll, all_converged = jit(vmap(_solve_one))(X_j)
-        _check_convergence(np.asarray(all_converged), max_iter)
-        all_coefs = np.asarray(all_betas)
-        return all_coefs[:, 1:] if fit_intercept else all_coefs
+        return self._batch_varying_X(  # type: ignore[return-value]
+            solver, X_batch, y, fit_intercept, False, **kwargs
+        )
 
     # ================================================================ #
-    # Ordinal (Proportional-Odds) — shared X, many Y
+    # Ordinal — delegates to generic batch helpers
     # ================================================================ #
     #
-    # The ordinal solver uses ``jax.grad`` and ``jax.hessian`` for
-    # exact derivatives (see the ordinal helper section above).
-    # Parameters are packed as [β, thresholds]; only the first p
-    # entries (slopes) are returned to the caller.
-    #
-    # ``fit_intercept`` is ignored — the threshold parameters serve
-    # as per-category intercepts in the proportional-odds model.
+    # Ordinal packs parameters as [slopes, thresholds].  We pass
+    # ``fit_intercept=False`` (thresholds serve as intercepts) and
+    # ``coef_slice=slice(0, n_features)`` to extract only slopes.
     # ---------------------------------------------------------------- #
 
     def batch_ordinal(
@@ -2725,48 +2794,31 @@ class JaxBackend:
     ) -> np.ndarray:
         """Batch ordinal via vmap'd Newton–Raphson with autodiff.
 
-        Shared design matrix *X*, multiple ordinal response vectors
-        *Y* (ter Braak direct-permutation path).
-
         Args:
-            X: Design matrix ``(n, p)`` — no intercept column.
-                ``fit_intercept`` is ignored (thresholds serve as
-                intercepts in ordinal models).
-            Y_matrix: Permuted ordinal responses ``(B, n)``,
-                integer-coded 0 … K-1.
-            fit_intercept: Ignored (protocol compatibility).
-            **kwargs: ``K`` (number of categories, required),
-                ``max_iter`` (default 100), ``tol`` (default
-                :data:`_DEFAULT_TOL`), ``min_damping`` (default
-                :data:`_MIN_DAMPING`).
+            X: Design matrix ``(n, p)``.
+            Y_matrix: Permuted ordinal responses ``(B, n)``.
+            fit_intercept: Ignored (thresholds serve as intercepts).
+            **kwargs: ``K`` (required), ``max_iter``, ``tol``,
+                ``min_damping``.
 
         Returns:
-            Slope coefficients ``(B, p)`` (thresholds excluded).
+            Slope coefficients ``(B, p)``.
         """
         K: int = kwargs["K"]
-        max_iter: int = kwargs.get("max_iter", 100)
-        tol: float = kwargs.get("tol", _DEFAULT_TOL)
-        min_damping: float = kwargs.get("min_damping", _MIN_DAMPING)
-
-        X_j = jnp.array(X, dtype=jnp.float64)
-        Y_j = jnp.array(Y_matrix, dtype=jnp.float64)
         n_features = X.shape[1]
 
-        def _solve_one(
-            y_vec: jax.Array,
-        ) -> tuple[jax.Array, jax.Array, jax.Array]:
-            return _make_ordinal_solver(X_j, y_vec, K, max_iter, tol, min_damping)
+        def solver(X: Any, y: Any, mi: Any, t: Any, md: Any) -> Any:
+            return _make_ordinal_solver(X, y, K, mi, t, md)
 
-        all_params, _all_nll, all_converged = jit(vmap(_solve_one))(Y_j)
-        _check_convergence(np.asarray(all_converged), max_iter)
-        # Extract only slope coefficients (first p columns);
-        # the remaining K-1 entries are threshold parameters.
-        all_coefs = np.asarray(all_params)[:, :n_features]  # JAX → NumPy
-        return all_coefs
-
-    # ================================================================ #
-    # Ordinal — many X, shared y (Kennedy path)
-    # ================================================================ #
+        return self._batch_shared_X(  # type: ignore[return-value]
+            solver,
+            X,
+            Y_matrix,
+            False,
+            False,
+            coef_slice=slice(0, n_features),
+            **kwargs,
+        )
 
     def batch_ordinal_varying_X(
         self,
@@ -2777,39 +2829,31 @@ class JaxBackend:
     ) -> np.ndarray:
         """Batch ordinal with per-permutation design matrices.
 
-        Kennedy individual ordinal path.
-
         Args:
-            X_batch: Design matrices ``(B, n, p)`` — no intercept.
-            y: Shared ordinal response ``(n,)``, integer-coded
-                0 … K-1.
-            fit_intercept: Ignored (protocol compatibility).
-            **kwargs: ``K`` (number of categories, required),
-                ``max_iter`` (default 100), ``tol`` (default
-                :data:`_DEFAULT_TOL`), ``min_damping`` (default
-                :data:`_MIN_DAMPING`).
+            X_batch: Design matrices ``(B, n, p)``.
+            y: Shared ordinal response ``(n,)``.
+            fit_intercept: Ignored (thresholds serve as intercepts).
+            **kwargs: ``K`` (required), ``max_iter``, ``tol``,
+                ``min_damping``.
 
         Returns:
-            Slope coefficients ``(B, p)`` (thresholds excluded).
+            Slope coefficients ``(B, p)``.
         """
         K: int = kwargs["K"]
-        max_iter: int = kwargs.get("max_iter", 100)
-        tol: float = kwargs.get("tol", _DEFAULT_TOL)
-        min_damping: float = kwargs.get("min_damping", _MIN_DAMPING)
-
-        X_j = jnp.array(X_batch, dtype=jnp.float64)
-        y_j = jnp.array(y, dtype=jnp.float64)
         n_features = X_batch.shape[2]
 
-        def _solve_one(
-            X_single: jax.Array,
-        ) -> tuple[jax.Array, jax.Array, jax.Array]:
-            return _make_ordinal_solver(X_single, y_j, K, max_iter, tol, min_damping)
+        def solver(X: Any, y: Any, mi: Any, t: Any, md: Any) -> Any:
+            return _make_ordinal_solver(X, y, K, mi, t, md)
 
-        all_params, _all_nll, all_converged = jit(vmap(_solve_one))(X_j)
-        _check_convergence(np.asarray(all_converged), max_iter)
-        all_coefs = np.asarray(all_params)[:, :n_features]  # JAX → NumPy
-        return all_coefs
+        return self._batch_varying_X(  # type: ignore[return-value]
+            solver,
+            X_batch,
+            y,
+            False,
+            False,
+            coef_slice=slice(0, n_features),
+            **kwargs,
+        )
 
     # ================================================================ #
     # Multinomial (Softmax) — shared X, many Y
@@ -2859,11 +2903,7 @@ class JaxBackend:
         tol: float = kwargs.get("tol", _DEFAULT_TOL)
         min_damping: float = kwargs.get("min_damping", _MIN_DAMPING)
 
-        if fit_intercept:
-            ones = np.ones((X.shape[0], 1), dtype=X.dtype)
-            X_aug = np.hstack([ones, X])
-        else:
-            X_aug = X
+        X_aug = _augment_intercept_2d(X, fit_intercept)
 
         X_j = jnp.array(X_aug, dtype=jnp.float64)
         Y_j = jnp.array(Y_matrix, dtype=jnp.float64)
@@ -2937,12 +2977,7 @@ class JaxBackend:
         tol: float = kwargs.get("tol", _DEFAULT_TOL)
         min_damping: float = kwargs.get("min_damping", _MIN_DAMPING)
 
-        if fit_intercept:
-            B, n, _ = X_batch.shape
-            ones = np.ones((B, n, 1), dtype=X_batch.dtype)
-            X_aug = np.concatenate([ones, X_batch], axis=2)
-        else:
-            X_aug = X_batch
+        X_aug = _augment_intercept_3d(X_batch, fit_intercept)
 
         X_j = jnp.array(X_aug, dtype=jnp.float64)
         y_j = jnp.array(y, dtype=jnp.float64)
@@ -3001,11 +3036,7 @@ class JaxBackend:
         fit_intercept: bool = True,
     ) -> tuple[np.ndarray, np.ndarray]:
         """Batch OLS returning ``(coefs, RSS)``."""
-        if fit_intercept:
-            ones = np.ones((X.shape[0], 1), dtype=X.dtype)
-            X_aug = np.hstack([ones, X])
-        else:
-            X_aug = X
+        X_aug = _augment_intercept_2d(X, fit_intercept)
 
         X_j = jnp.array(X_aug, dtype=jnp.float64)
         Y_j = jnp.array(Y_matrix, dtype=jnp.float64)
@@ -3027,7 +3058,7 @@ class JaxBackend:
 
         all_coefs, all_rss = _batch_solve_with_rss(X_j, Y_j)
         all_coefs = np.asarray(all_coefs)
-        coefs = all_coefs[:, 1:] if fit_intercept else all_coefs
+        coefs = _strip_intercept(all_coefs, fit_intercept)
         return coefs, np.asarray(all_rss)
 
     def batch_logistic_fit_and_score(
@@ -3038,29 +3069,9 @@ class JaxBackend:
         **kwargs: Any,
     ) -> tuple[np.ndarray, np.ndarray]:
         """Batch logistic returning ``(coefs, 2·NLL)``."""
-        max_iter: int = kwargs.get("max_iter", 100)
-        tol: float = kwargs.get("tol", _DEFAULT_TOL)
-        min_damping: float = kwargs.get("min_damping", _MIN_DAMPING)
-
-        if fit_intercept:
-            ones = np.ones((X.shape[0], 1), dtype=X.dtype)
-            X_aug = np.hstack([ones, X])
-        else:
-            X_aug = X
-
-        X_j = jnp.array(X_aug, dtype=jnp.float64)
-        Y_j = jnp.array(Y_matrix, dtype=jnp.float64)
-
-        def _solve_one(
-            y_vec: jax.Array,
-        ) -> tuple[jax.Array, jax.Array, jax.Array]:
-            return _make_newton_solver(X_j, y_vec, max_iter, tol, min_damping)
-
-        all_betas, all_nll, all_converged = jit(vmap(_solve_one))(Y_j)
-        _check_convergence(np.asarray(all_converged), max_iter)
-        all_coefs = np.asarray(all_betas)
-        coefs = all_coefs[:, 1:] if fit_intercept else all_coefs
-        return coefs, 2.0 * np.asarray(all_nll)
+        return self._batch_shared_X(  # type: ignore[return-value]
+            _make_newton_solver, X, Y_matrix, fit_intercept, True, **kwargs
+        )
 
     def batch_poisson_fit_and_score(
         self,
@@ -3070,29 +3081,9 @@ class JaxBackend:
         **kwargs: Any,
     ) -> tuple[np.ndarray, np.ndarray]:
         """Batch Poisson returning ``(coefs, 2·NLL)``."""
-        max_iter: int = kwargs.get("max_iter", 100)
-        tol: float = kwargs.get("tol", _DEFAULT_TOL)
-        min_damping: float = kwargs.get("min_damping", _MIN_DAMPING)
-
-        if fit_intercept:
-            ones = np.ones((X.shape[0], 1), dtype=X.dtype)
-            X_aug = np.hstack([ones, X])
-        else:
-            X_aug = X
-
-        X_j = jnp.array(X_aug, dtype=jnp.float64)
-        Y_j = jnp.array(Y_matrix, dtype=jnp.float64)
-
-        def _solve_one(
-            y_vec: jax.Array,
-        ) -> tuple[jax.Array, jax.Array, jax.Array]:
-            return _make_poisson_solver(X_j, y_vec, max_iter, tol, min_damping)
-
-        all_betas, all_nll, all_converged = jit(vmap(_solve_one))(Y_j)
-        _check_convergence(np.asarray(all_converged), max_iter)
-        all_coefs = np.asarray(all_betas)
-        coefs = all_coefs[:, 1:] if fit_intercept else all_coefs
-        return coefs, 2.0 * np.asarray(all_nll)
+        return self._batch_shared_X(  # type: ignore[return-value]
+            _make_poisson_solver, X, Y_matrix, fit_intercept, True, **kwargs
+        )
 
     def batch_negbin_fit_and_score(
         self,
@@ -3103,29 +3094,13 @@ class JaxBackend:
     ) -> tuple[np.ndarray, np.ndarray]:
         """Batch NB2 returning ``(coefs, 2·NLL)``."""
         alpha: float = kwargs["alpha"]
-        max_iter: int = kwargs.get("max_iter", 100)
-        tol: float = kwargs.get("tol", _DEFAULT_TOL)
-        min_damping: float = kwargs.get("min_damping", _MIN_DAMPING)
 
-        if fit_intercept:
-            ones = np.ones((X.shape[0], 1), dtype=X.dtype)
-            X_aug = np.hstack([ones, X])
-        else:
-            X_aug = X
+        def solver(X: Any, y: Any, mi: Any, t: Any, md: Any) -> Any:
+            return _make_negbin_solver(X, y, alpha, mi, t, md)
 
-        X_j = jnp.array(X_aug, dtype=jnp.float64)
-        Y_j = jnp.array(Y_matrix, dtype=jnp.float64)
-
-        def _solve_one(
-            y_vec: jax.Array,
-        ) -> tuple[jax.Array, jax.Array, jax.Array]:
-            return _make_negbin_solver(X_j, y_vec, alpha, max_iter, tol, min_damping)
-
-        all_betas, all_nll, all_converged = jit(vmap(_solve_one))(Y_j)
-        _check_convergence(np.asarray(all_converged), max_iter)
-        all_coefs = np.asarray(all_betas)
-        coefs = all_coefs[:, 1:] if fit_intercept else all_coefs
-        return coefs, 2.0 * np.asarray(all_nll)
+        return self._batch_shared_X(  # type: ignore[return-value]
+            solver, X, Y_matrix, fit_intercept, True, **kwargs
+        )
 
     def batch_ordinal_fit_and_score(
         self,
@@ -3136,23 +3111,20 @@ class JaxBackend:
     ) -> tuple[np.ndarray, np.ndarray]:
         """Batch ordinal returning ``(coefs, 2·NLL)``."""
         K: int = kwargs["K"]
-        max_iter: int = kwargs.get("max_iter", 100)
-        tol: float = kwargs.get("tol", _DEFAULT_TOL)
-        min_damping: float = kwargs.get("min_damping", _MIN_DAMPING)
-
-        X_j = jnp.array(X, dtype=jnp.float64)
-        Y_j = jnp.array(Y_matrix, dtype=jnp.float64)
         n_features = X.shape[1]
 
-        def _solve_one(
-            y_vec: jax.Array,
-        ) -> tuple[jax.Array, jax.Array, jax.Array]:
-            return _make_ordinal_solver(X_j, y_vec, K, max_iter, tol, min_damping)
+        def solver(X: Any, y: Any, mi: Any, t: Any, md: Any) -> Any:
+            return _make_ordinal_solver(X, y, K, mi, t, md)
 
-        all_params, all_nll, all_converged = jit(vmap(_solve_one))(Y_j)
-        _check_convergence(np.asarray(all_converged), max_iter)
-        all_coefs = np.asarray(all_params)[:, :n_features]
-        return all_coefs, 2.0 * np.asarray(all_nll)
+        return self._batch_shared_X(  # type: ignore[return-value]
+            solver,
+            X,
+            Y_matrix,
+            False,
+            True,
+            coef_slice=slice(0, n_features),
+            **kwargs,
+        )
 
     def batch_multinomial_fit_and_score(
         self,
@@ -3167,11 +3139,7 @@ class JaxBackend:
         tol: float = kwargs.get("tol", _DEFAULT_TOL)
         min_damping: float = kwargs.get("min_damping", _MIN_DAMPING)
 
-        if fit_intercept:
-            ones = np.ones((X.shape[0], 1), dtype=X.dtype)
-            X_aug = np.hstack([ones, X])
-        else:
-            X_aug = X
+        X_aug = _augment_intercept_2d(X, fit_intercept)
 
         X_j = jnp.array(X_aug, dtype=jnp.float64)
         Y_j = jnp.array(Y_matrix, dtype=jnp.float64)
@@ -3219,12 +3187,7 @@ class JaxBackend:
         fit_intercept: bool = True,
     ) -> tuple[np.ndarray, np.ndarray]:
         """Batch OLS (varying X) returning ``(coefs, RSS)``."""
-        if fit_intercept:
-            B, n, _ = X_batch.shape
-            ones = np.ones((B, n, 1), dtype=X_batch.dtype)
-            X_aug = np.concatenate([ones, X_batch], axis=2)
-        else:
-            X_aug = X_batch
+        X_aug = _augment_intercept_3d(X_batch, fit_intercept)
 
         X_j = jnp.array(X_aug, dtype=jnp.float64)
         y_j = jnp.array(y, dtype=jnp.float64)
@@ -3245,7 +3208,7 @@ class JaxBackend:
 
         all_coefs, all_rss = _batch_lstsq_with_rss(X_j, y_j)
         all_coefs = np.asarray(all_coefs)
-        coefs = all_coefs[:, 1:] if fit_intercept else all_coefs
+        coefs = _strip_intercept(all_coefs, fit_intercept)
         return coefs, np.asarray(all_rss)
 
     def batch_logistic_fit_and_score_varying_X(
@@ -3256,30 +3219,9 @@ class JaxBackend:
         **kwargs: Any,
     ) -> tuple[np.ndarray, np.ndarray]:
         """Batch logistic (varying X) returning ``(coefs, 2·NLL)``."""
-        max_iter: int = kwargs.get("max_iter", 100)
-        tol: float = kwargs.get("tol", _DEFAULT_TOL)
-        min_damping: float = kwargs.get("min_damping", _MIN_DAMPING)
-
-        if fit_intercept:
-            B, n, _ = X_batch.shape
-            ones = np.ones((B, n, 1), dtype=X_batch.dtype)
-            X_aug = np.concatenate([ones, X_batch], axis=2)
-        else:
-            X_aug = X_batch
-
-        X_j = jnp.array(X_aug, dtype=jnp.float64)
-        y_j = jnp.array(y, dtype=jnp.float64)
-
-        def _solve_one(
-            X_single: jax.Array,
-        ) -> tuple[jax.Array, jax.Array, jax.Array]:
-            return _make_newton_solver(X_single, y_j, max_iter, tol, min_damping)
-
-        all_betas, all_nll, all_converged = jit(vmap(_solve_one))(X_j)
-        _check_convergence(np.asarray(all_converged), max_iter)
-        all_coefs = np.asarray(all_betas)
-        coefs = all_coefs[:, 1:] if fit_intercept else all_coefs
-        return coefs, 2.0 * np.asarray(all_nll)
+        return self._batch_varying_X(  # type: ignore[return-value]
+            _make_newton_solver, X_batch, y, fit_intercept, True, **kwargs
+        )
 
     def batch_poisson_fit_and_score_varying_X(
         self,
@@ -3289,30 +3231,9 @@ class JaxBackend:
         **kwargs: Any,
     ) -> tuple[np.ndarray, np.ndarray]:
         """Batch Poisson (varying X) returning ``(coefs, 2·NLL)``."""
-        max_iter: int = kwargs.get("max_iter", 100)
-        tol: float = kwargs.get("tol", _DEFAULT_TOL)
-        min_damping: float = kwargs.get("min_damping", _MIN_DAMPING)
-
-        if fit_intercept:
-            B, n, _ = X_batch.shape
-            ones = np.ones((B, n, 1), dtype=X_batch.dtype)
-            X_aug = np.concatenate([ones, X_batch], axis=2)
-        else:
-            X_aug = X_batch
-
-        X_j = jnp.array(X_aug, dtype=jnp.float64)
-        y_j = jnp.array(y, dtype=jnp.float64)
-
-        def _solve_one(
-            X_single: jax.Array,
-        ) -> tuple[jax.Array, jax.Array, jax.Array]:
-            return _make_poisson_solver(X_single, y_j, max_iter, tol, min_damping)
-
-        all_betas, all_nll, all_converged = jit(vmap(_solve_one))(X_j)
-        _check_convergence(np.asarray(all_converged), max_iter)
-        all_coefs = np.asarray(all_betas)
-        coefs = all_coefs[:, 1:] if fit_intercept else all_coefs
-        return coefs, 2.0 * np.asarray(all_nll)
+        return self._batch_varying_X(  # type: ignore[return-value]
+            _make_poisson_solver, X_batch, y, fit_intercept, True, **kwargs
+        )
 
     def batch_negbin_fit_and_score_varying_X(
         self,
@@ -3323,30 +3244,13 @@ class JaxBackend:
     ) -> tuple[np.ndarray, np.ndarray]:
         """Batch NB2 (varying X) returning ``(coefs, 2·NLL)``."""
         alpha: float = kwargs["alpha"]
-        max_iter: int = kwargs.get("max_iter", 100)
-        tol: float = kwargs.get("tol", _DEFAULT_TOL)
-        min_damping: float = kwargs.get("min_damping", _MIN_DAMPING)
 
-        if fit_intercept:
-            B, n, _ = X_batch.shape
-            ones = np.ones((B, n, 1), dtype=X_batch.dtype)
-            X_aug = np.concatenate([ones, X_batch], axis=2)
-        else:
-            X_aug = X_batch
+        def solver(X: Any, y: Any, mi: Any, t: Any, md: Any) -> Any:
+            return _make_negbin_solver(X, y, alpha, mi, t, md)
 
-        X_j = jnp.array(X_aug, dtype=jnp.float64)
-        y_j = jnp.array(y, dtype=jnp.float64)
-
-        def _solve_one(
-            X_single: jax.Array,
-        ) -> tuple[jax.Array, jax.Array, jax.Array]:
-            return _make_negbin_solver(X_single, y_j, alpha, max_iter, tol, min_damping)
-
-        all_betas, all_nll, all_converged = jit(vmap(_solve_one))(X_j)
-        _check_convergence(np.asarray(all_converged), max_iter)
-        all_coefs = np.asarray(all_betas)
-        coefs = all_coefs[:, 1:] if fit_intercept else all_coefs
-        return coefs, 2.0 * np.asarray(all_nll)
+        return self._batch_varying_X(  # type: ignore[return-value]
+            solver, X_batch, y, fit_intercept, True, **kwargs
+        )
 
     def batch_ordinal_fit_and_score_varying_X(
         self,
@@ -3357,23 +3261,20 @@ class JaxBackend:
     ) -> tuple[np.ndarray, np.ndarray]:
         """Batch ordinal (varying X) returning ``(coefs, 2·NLL)``."""
         K: int = kwargs["K"]
-        max_iter: int = kwargs.get("max_iter", 100)
-        tol: float = kwargs.get("tol", _DEFAULT_TOL)
-        min_damping: float = kwargs.get("min_damping", _MIN_DAMPING)
-
-        X_j = jnp.array(X_batch, dtype=jnp.float64)
-        y_j = jnp.array(y, dtype=jnp.float64)
         n_features = X_batch.shape[2]
 
-        def _solve_one(
-            X_single: jax.Array,
-        ) -> tuple[jax.Array, jax.Array, jax.Array]:
-            return _make_ordinal_solver(X_single, y_j, K, max_iter, tol, min_damping)
+        def solver(X: Any, y: Any, mi: Any, t: Any, md: Any) -> Any:
+            return _make_ordinal_solver(X, y, K, mi, t, md)
 
-        all_params, all_nll, all_converged = jit(vmap(_solve_one))(X_j)
-        _check_convergence(np.asarray(all_converged), max_iter)
-        all_coefs = np.asarray(all_params)[:, :n_features]
-        return all_coefs, 2.0 * np.asarray(all_nll)
+        return self._batch_varying_X(  # type: ignore[return-value]
+            solver,
+            X_batch,
+            y,
+            False,
+            True,
+            coef_slice=slice(0, n_features),
+            **kwargs,
+        )
 
     def batch_multinomial_fit_and_score_varying_X(
         self,
@@ -3388,12 +3289,7 @@ class JaxBackend:
         tol: float = kwargs.get("tol", _DEFAULT_TOL)
         min_damping: float = kwargs.get("min_damping", _MIN_DAMPING)
 
-        if fit_intercept:
-            B, n, _ = X_batch.shape
-            ones = np.ones((B, n, 1), dtype=X_batch.dtype)
-            X_aug = np.concatenate([ones, X_batch], axis=2)
-        else:
-            X_aug = X_batch
+        X_aug = _augment_intercept_3d(X_batch, fit_intercept)
 
         X_j = jnp.array(X_aug, dtype=jnp.float64)
         y_j = jnp.array(y, dtype=jnp.float64)
@@ -3467,12 +3363,7 @@ class JaxBackend:
         Returns:
             Slope coefficients ``(B, p)`` (intercept excluded).
         """
-        if fit_intercept:
-            B, n, _ = X_batch.shape
-            ones = np.ones((B, n, 1), dtype=X_batch.dtype)
-            X_aug = np.concatenate([ones, X_batch], axis=2)
-        else:
-            X_aug = X_batch
+        X_aug = _augment_intercept_3d(X_batch, fit_intercept)
 
         X_j = jnp.array(X_aug, dtype=jnp.float64)
         Y_j = jnp.array(Y_batch, dtype=jnp.float64)
@@ -3492,7 +3383,7 @@ class JaxBackend:
             return vmap(_solve_one)(X_all, Y_all)
 
         all_coefs = np.asarray(_batch_solve(X_j, Y_j))
-        return all_coefs[:, 1:] if fit_intercept else all_coefs
+        return _strip_intercept(all_coefs, fit_intercept)
 
     def batch_logistic_paired(
         self,
@@ -3504,38 +3395,17 @@ class JaxBackend:
         """Batch logistic where both X and Y vary per replicate.
 
         Args:
-            X_batch: Design matrices ``(B, n, p)`` — no intercept.
+            X_batch: Design matrices ``(B, n, p)``.
             Y_batch: Binary response vectors ``(B, n)``.
             fit_intercept: Prepend intercept column.
             **kwargs: ``max_iter``, ``tol``, ``min_damping``.
 
         Returns:
-            Slope coefficients ``(B, p)`` (intercept excluded).
+            Slope coefficients ``(B, p)``.
         """
-        max_iter: int = kwargs.get("max_iter", 100)
-        tol: float = kwargs.get("tol", _DEFAULT_TOL)
-        min_damping: float = kwargs.get("min_damping", _MIN_DAMPING)
-
-        if fit_intercept:
-            B, n, _ = X_batch.shape
-            ones = np.ones((B, n, 1), dtype=X_batch.dtype)
-            X_aug = np.concatenate([ones, X_batch], axis=2)
-        else:
-            X_aug = X_batch
-
-        X_j = jnp.array(X_aug, dtype=jnp.float64)
-        Y_j = jnp.array(Y_batch, dtype=jnp.float64)
-
-        def _solve_one(
-            X_single: jax.Array,
-            y_vec: jax.Array,
-        ) -> tuple[jax.Array, jax.Array, jax.Array]:
-            return _make_newton_solver(X_single, y_vec, max_iter, tol, min_damping)
-
-        all_betas, _all_nll, all_converged = jit(vmap(_solve_one))(X_j, Y_j)
-        _check_convergence(np.asarray(all_converged), max_iter)
-        all_coefs = np.asarray(all_betas)
-        return all_coefs[:, 1:] if fit_intercept else all_coefs
+        return self._batch_paired(  # type: ignore[return-value]
+            _make_newton_solver, X_batch, Y_batch, fit_intercept, False, **kwargs
+        )
 
     def batch_poisson_paired(
         self,
@@ -3547,38 +3417,17 @@ class JaxBackend:
         """Batch Poisson where both X and Y vary per replicate.
 
         Args:
-            X_batch: Design matrices ``(B, n, p)`` — no intercept.
+            X_batch: Design matrices ``(B, n, p)``.
             Y_batch: Count response vectors ``(B, n)``.
             fit_intercept: Prepend intercept column.
             **kwargs: ``max_iter``, ``tol``, ``min_damping``.
 
         Returns:
-            Slope coefficients ``(B, p)`` (intercept excluded).
+            Slope coefficients ``(B, p)``.
         """
-        max_iter: int = kwargs.get("max_iter", 100)
-        tol: float = kwargs.get("tol", _DEFAULT_TOL)
-        min_damping: float = kwargs.get("min_damping", _MIN_DAMPING)
-
-        if fit_intercept:
-            B, n, _ = X_batch.shape
-            ones = np.ones((B, n, 1), dtype=X_batch.dtype)
-            X_aug = np.concatenate([ones, X_batch], axis=2)
-        else:
-            X_aug = X_batch
-
-        X_j = jnp.array(X_aug, dtype=jnp.float64)
-        Y_j = jnp.array(Y_batch, dtype=jnp.float64)
-
-        def _solve_one(
-            X_single: jax.Array,
-            y_vec: jax.Array,
-        ) -> tuple[jax.Array, jax.Array, jax.Array]:
-            return _make_poisson_solver(X_single, y_vec, max_iter, tol, min_damping)
-
-        all_betas, _all_nll, all_converged = jit(vmap(_solve_one))(X_j, Y_j)
-        _check_convergence(np.asarray(all_converged), max_iter)
-        all_coefs = np.asarray(all_betas)
-        return all_coefs[:, 1:] if fit_intercept else all_coefs
+        return self._batch_paired(  # type: ignore[return-value]
+            _make_poisson_solver, X_batch, Y_batch, fit_intercept, False, **kwargs
+        )
 
     def batch_negbin_paired(
         self,
@@ -3590,42 +3439,23 @@ class JaxBackend:
         """Batch NB2 where both X and Y vary per replicate.
 
         Args:
-            X_batch: Design matrices ``(B, n, p)`` — no intercept.
+            X_batch: Design matrices ``(B, n, p)``.
             Y_batch: Count response vectors ``(B, n)``.
             fit_intercept: Prepend intercept column.
             **kwargs: ``alpha`` (required), ``max_iter``, ``tol``,
                 ``min_damping``.
 
         Returns:
-            Slope coefficients ``(B, p)`` (intercept excluded).
+            Slope coefficients ``(B, p)``.
         """
         alpha: float = kwargs["alpha"]
-        max_iter: int = kwargs.get("max_iter", 100)
-        tol: float = kwargs.get("tol", _DEFAULT_TOL)
-        min_damping: float = kwargs.get("min_damping", _MIN_DAMPING)
 
-        if fit_intercept:
-            B, n, _ = X_batch.shape
-            ones = np.ones((B, n, 1), dtype=X_batch.dtype)
-            X_aug = np.concatenate([ones, X_batch], axis=2)
-        else:
-            X_aug = X_batch
+        def solver(X: Any, y: Any, mi: Any, t: Any, md: Any) -> Any:
+            return _make_negbin_solver(X, y, alpha, mi, t, md)
 
-        X_j = jnp.array(X_aug, dtype=jnp.float64)
-        Y_j = jnp.array(Y_batch, dtype=jnp.float64)
-
-        def _solve_one(
-            X_single: jax.Array,
-            y_vec: jax.Array,
-        ) -> tuple[jax.Array, jax.Array, jax.Array]:
-            return _make_negbin_solver(
-                X_single, y_vec, alpha, max_iter, tol, min_damping
-            )
-
-        all_betas, _all_nll, all_converged = jit(vmap(_solve_one))(X_j, Y_j)
-        _check_convergence(np.asarray(all_converged), max_iter)
-        all_coefs = np.asarray(all_betas)
-        return all_coefs[:, 1:] if fit_intercept else all_coefs
+        return self._batch_paired(  # type: ignore[return-value]
+            solver, X_batch, Y_batch, fit_intercept, False, **kwargs
+        )
 
     def batch_ordinal_paired(
         self,
@@ -3637,35 +3467,30 @@ class JaxBackend:
         """Batch ordinal where both X and Y vary per replicate.
 
         Args:
-            X_batch: Design matrices ``(B, n, p)`` — no intercept.
-            Y_batch: Ordinal response vectors ``(B, n)``,
-                integer-coded 0 … K-1.
-            fit_intercept: Ignored (protocol compatibility).
+            X_batch: Design matrices ``(B, n, p)``.
+            Y_batch: Ordinal response vectors ``(B, n)``.
+            fit_intercept: Ignored (thresholds serve as intercepts).
             **kwargs: ``K`` (required), ``max_iter``, ``tol``,
                 ``min_damping``.
 
         Returns:
-            Slope coefficients ``(B, p)`` (thresholds excluded).
+            Slope coefficients ``(B, p)``.
         """
         K: int = kwargs["K"]
-        max_iter: int = kwargs.get("max_iter", 100)
-        tol: float = kwargs.get("tol", _DEFAULT_TOL)
-        min_damping: float = kwargs.get("min_damping", _MIN_DAMPING)
-
-        X_j = jnp.array(X_batch, dtype=jnp.float64)
-        Y_j = jnp.array(Y_batch, dtype=jnp.float64)
         n_features = X_batch.shape[2]
 
-        def _solve_one(
-            X_single: jax.Array,
-            y_vec: jax.Array,
-        ) -> tuple[jax.Array, jax.Array, jax.Array]:
-            return _make_ordinal_solver(X_single, y_vec, K, max_iter, tol, min_damping)
+        def solver(X: Any, y: Any, mi: Any, t: Any, md: Any) -> Any:
+            return _make_ordinal_solver(X, y, K, mi, t, md)
 
-        all_params, _all_nll, all_converged = jit(vmap(_solve_one))(X_j, Y_j)
-        _check_convergence(np.asarray(all_converged), max_iter)
-        all_coefs = np.asarray(all_params)[:, :n_features]
-        return all_coefs
+        return self._batch_paired(  # type: ignore[return-value]
+            solver,
+            X_batch,
+            Y_batch,
+            False,
+            False,
+            coef_slice=slice(0, n_features),
+            **kwargs,
+        )
 
     def batch_multinomial_paired(
         self,
@@ -3696,12 +3521,7 @@ class JaxBackend:
         tol: float = kwargs.get("tol", _DEFAULT_TOL)
         min_damping: float = kwargs.get("min_damping", _MIN_DAMPING)
 
-        if fit_intercept:
-            B, n, _ = X_batch.shape
-            ones = np.ones((B, n, 1), dtype=X_batch.dtype)
-            X_aug = np.concatenate([ones, X_batch], axis=2)
-        else:
-            X_aug = X_batch
+        X_aug = _augment_intercept_3d(X_batch, fit_intercept)
 
         X_j = jnp.array(X_aug, dtype=jnp.float64)
         Y_j = jnp.array(Y_batch, dtype=jnp.float64)
@@ -3817,12 +3637,7 @@ class JaxBackend:
         Z: np.ndarray = kwargs["Z"]
         C22: np.ndarray = kwargs["C22"]
 
-        if fit_intercept:
-            B, n, _ = X_batch.shape
-            ones = np.ones((B, n, 1), dtype=X_batch.dtype)
-            X_aug = np.concatenate([ones, X_batch], axis=2)
-        else:
-            X_aug = X_batch
+        X_aug = _augment_intercept_3d(X_batch, fit_intercept)
 
         X_j = jnp.array(X_aug, dtype=jnp.float64)
         y_j = jnp.array(y, dtype=jnp.float64)
@@ -3841,5 +3656,4 @@ class JaxBackend:
             return jnp.asarray(A @ y_j)  # (p,)
 
         all_coefs: np.ndarray = np.asarray(jit(vmap(_solve_one))(X_j))  # (B, p)
-        coefs = all_coefs[:, 1:] if fit_intercept else all_coefs
-        return np.asarray(coefs)
+        return _strip_intercept(all_coefs, fit_intercept)

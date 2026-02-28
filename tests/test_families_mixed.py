@@ -23,12 +23,12 @@ from randomization_tests.families_mixed import (
 # ------------------------------------------------------------------ #
 
 
-@pytest.fixture()
+@pytest.fixture(scope="module")
 def rng():
     return np.random.default_rng(42)
 
 
-@pytest.fixture()
+@pytest.fixture(scope="module")
 def mixed_data(rng):
     """Generate clustered data with known structure.
 
@@ -53,7 +53,7 @@ def mixed_data(rng):
     return X, y, groups
 
 
-@pytest.fixture()
+@pytest.fixture(scope="module")
 def calibrated_family(mixed_data):
     """Return a calibrated LinearMixedFamily."""
     X, y, groups = mixed_data
@@ -827,7 +827,7 @@ class TestIntegration:
 # ------------------------------------------------------------------ #
 
 
-@pytest.fixture()
+@pytest.fixture(scope="module")
 def logistic_mixed_data():
     """Generate clustered binary data with known structure.
 
@@ -854,7 +854,7 @@ def logistic_mixed_data():
     return X, y, groups
 
 
-@pytest.fixture()
+@pytest.fixture(scope="module")
 def calibrated_logistic_family(logistic_mixed_data):
     """Return a calibrated LogisticMixedFamily."""
     X, y, groups = logistic_mixed_data
@@ -1298,7 +1298,7 @@ class TestLogisticExchangeabilityCells:
 # ------------------------------------------------------------------ #
 
 
-@pytest.fixture()
+@pytest.fixture(scope="module")
 def poisson_mixed_data():
     """Generate clustered count data with known structure.
 
@@ -1326,7 +1326,7 @@ def poisson_mixed_data():
     return X, y, groups
 
 
-@pytest.fixture()
+@pytest.fixture(scope="module")
 def calibrated_poisson_family(poisson_mixed_data):
     """Return a calibrated PoissonMixedFamily."""
     X, y, groups = poisson_mixed_data

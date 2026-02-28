@@ -222,6 +222,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **37 unnecessary `# noqa: ARG002` annotations removed** from
   `families.py`: the `ARG` rule set is not enabled in the project's
   ruff configuration, so these annotations were inert.
+- **`JaxBackend` batch dispatch refactor**: 30 GLM `batch_*` methods
+  (logistic, Poisson, negative binomial, ordinal, multinomial, OLS ×
+  5 patterns each) consolidated via 3 generic private helpers
+  (`_batch_shared_X`, `_batch_varying_X`, `_batch_paired`) and
+  3 static module-level helpers (`_augment_intercept_2d`,
+  `_augment_intercept_3d`, `_strip_intercept`).  Each public method
+  is now a thin one-liner delegate.  ~900 lines of duplicated
+  boilerplate eliminated.  No public API change; compiled XLA
+  identical.  Mixed-LM methods excluded (different solver architecture).
+- **GLMM test fixture scoping**: 6 module-level fixtures in
+  `test_families_mixed.py` re-scoped from `scope="function"` to
+  `scope="module"`, avoiding redundant Laplace REML calibration
+  per test (~10× speedup: 21 min → <2 min).
 
 ## [0.4.0] - Unreleased
 
