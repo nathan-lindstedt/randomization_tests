@@ -65,7 +65,7 @@ p-value count).
 
 from __future__ import annotations
 
-import warnings
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -73,12 +73,108 @@ import numpy as np
 import statsmodels.api as sm
 from joblib import Parallel, delayed
 from sklearn.linear_model import LogisticRegression
-from statsmodels.tools.sm_exceptions import (
-    ConvergenceWarning as SmConvergenceWarning,
-)
-from statsmodels.tools.sm_exceptions import (
-    HessianInversionWarning,
-)
+
+from ..families import _augment_intercept, _suppress_sm_warnings
+
+# ------------------------------------------------------------------ #
+# Generic batch-dispatch helpers
+# ------------------------------------------------------------------ #
+#
+# Every GLM ``batch_*`` method follows one of two scaffolding
+# patterns:
+#
+#   1. **Coefs-only** — loop ``_fit_one`` over *items*, stack the
+#      resulting 1-D coefficient arrays into ``(B, n_params)``.
+#   2. **Coefs + score** — same loop, but ``_fit_one`` returns a
+#      ``(coefs, score)`` tuple; results are unpacked into a
+#      ``(B, n_params)`` coefficient matrix and a ``(B,)`` score
+#      vector.
+#
+# ``_batch_coefs`` and ``_batch_coefs_and_scores`` factor out the
+# sequential-vs-parallel branching, ``np.vstack`` collation, and
+# pre-allocation logic so that each concrete ``batch_*`` method
+# only needs to define its ``_fit_one`` closure and call one of
+# these two helpers.
+#
+# Both helpers accept an arbitrary *items* sequence (rows of
+# ``Y_matrix``, slices of ``X_batch``, or ``range(B)`` for paired
+# methods) so they work across all three strategy dimensions
+# (shared-X, varying-X, paired).
+# ------------------------------------------------------------------ #
+
+
+def _batch_coefs(
+    items: Sequence[Any] | np.ndarray,
+    fit_one: Callable[..., np.ndarray],
+    n_params: int,
+    n_jobs: int,
+) -> np.ndarray:
+    """Run *fit_one* over *items*, stacking into ``(B, n_params)``.
+
+    When ``n_jobs == 1`` the loop runs sequentially in-process.
+    Otherwise ``joblib.Parallel(prefer="threads")`` is used — all
+    underlying solvers (LAPACK, sklearn BLAS, statsmodels IRLS)
+    release the GIL, so thread-based parallelism avoids
+    serialisation overhead.
+
+    Args:
+        items: Iterable of length *B* — each element is passed to
+            *fit_one* as a single positional argument.
+        fit_one: ``item -> np.ndarray`` of shape ``(n_params,)``.
+        n_params: Number of output coefficients per replicate.
+        n_jobs: ``1`` for sequential, ``>1`` or ``-1`` for parallel.
+
+    Returns:
+        Coefficients ``(B, n_params)``.
+    """
+    B = len(items)
+    if n_jobs == 1:
+        result = np.empty((B, n_params))
+        for b in range(B):
+            result[b] = fit_one(items[b])
+        return result
+
+    coefs_list = Parallel(n_jobs=n_jobs, prefer="threads")(
+        delayed(fit_one)(items[b]) for b in range(B)
+    )
+    return np.asarray(np.vstack(coefs_list))
+
+
+def _batch_coefs_and_scores(
+    items: Sequence[Any] | np.ndarray,
+    fit_one: Callable[..., tuple[np.ndarray, float]],
+    n_params: int,
+    n_jobs: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Run *fit_one* over *items*, returning ``(coefs, scores)``.
+
+    Same parallelism strategy as :func:`_batch_coefs`, but
+    *fit_one* returns ``(coefs_1d, score_scalar)`` and the results
+    are unpacked into a coefficient matrix ``(B, n_params)`` and a
+    score vector ``(B,)``.
+
+    Args:
+        items: Iterable of length *B*.
+        fit_one: ``item -> (np.ndarray, float)``.
+        n_params: Number of output coefficients per replicate.
+        n_jobs: ``1`` for sequential, ``>1`` or ``-1`` for parallel.
+
+    Returns:
+        ``(coefs, scores)`` — shapes ``(B, n_params)`` and ``(B,)``.
+    """
+    B = len(items)
+    coefs = np.empty((B, n_params))
+    scores = np.empty(B)
+    if n_jobs == 1:
+        for b in range(B):
+            coefs[b], scores[b] = fit_one(items[b])
+    else:
+        results = Parallel(n_jobs=n_jobs, prefer="threads")(
+            delayed(fit_one)(items[b]) for b in range(B)
+        )
+        for b, (c, s) in enumerate(results):
+            coefs[b], scores[b] = c, s
+    return coefs, scores
 
 
 @dataclass(frozen=True)
@@ -149,7 +245,7 @@ class NumpyBackend:
             Slope coefficients ``(B, p)`` (intercept excluded).
         """
         if fit_intercept:
-            X_aug = np.column_stack([np.ones(X.shape[0]), X])  # (n, p+1)
+            X_aug = _augment_intercept(X)  # (n, p+1)
             # Moore–Penrose pseudoinverse via SVD.  For full-rank X this
             # is equivalent to (X'X)⁻¹X', but gracefully handles rank-
             # deficient designs (collinear features) by zeroing singular
@@ -214,11 +310,8 @@ class NumpyBackend:
         """
         n_jobs: int = kwargs.pop("n_jobs", 1)
         max_iter = kwargs.get("max_iter", 5_000)
-        B, _ = Y_matrix.shape
 
         def _fit_one(y_b: np.ndarray) -> np.ndarray:
-            # Unpenalised (penalty=None) MLE via L-BFGS.  Each permuted
-            # binary response vector gets its own independent solve.
             m = LogisticRegression(
                 penalty=None,
                 solver="lbfgs",
@@ -226,27 +319,9 @@ class NumpyBackend:
                 fit_intercept=fit_intercept,
             )
             m.fit(X, y_b)
-            # sklearn returns coef_ as (1, p) for binary classification;
-            # flatten to (p,) for stacking into the (B, p) result.
             return np.asarray(m.coef_.flatten())
 
-        # Sequential path — used when n_jobs=1 (default) to avoid
-        # joblib overhead for small B.
-        if n_jobs == 1:
-            p = X.shape[1]
-            result = np.empty((B, p))
-            for b in range(B):
-                result[b] = _fit_one(Y_matrix[b])
-            return result
-
-        # Parallel path — joblib with thread preference.  sklearn's
-        # L-BFGS implementation calls BLAS routines that release the
-        # GIL, so threads achieve near-linear speedup without the
-        # serialisation cost of process-based parallelism.
-        coefs_list = Parallel(n_jobs=n_jobs, prefer="threads")(
-            delayed(_fit_one)(Y_matrix[b]) for b in range(B)
-        )
-        return np.asarray(np.vstack(coefs_list))
+        return _batch_coefs(Y_matrix, _fit_one, X.shape[1], n_jobs)
 
     # ================================================================ #
     # Logistic regression — many X, shared y
@@ -282,11 +357,8 @@ class NumpyBackend:
         """
         n_jobs: int = kwargs.pop("n_jobs", 1)
         max_iter = kwargs.get("max_iter", 5_000)
-        B = X_batch.shape[0]
 
         def _fit_one(X_b: np.ndarray) -> np.ndarray:
-            # Each permutation gets its own design matrix with the
-            # j-th column replaced — fit an independent logistic MLE.
             m = LogisticRegression(
                 penalty=None,
                 solver="lbfgs",
@@ -296,17 +368,7 @@ class NumpyBackend:
             m.fit(X_b, y)
             return np.asarray(m.coef_.flatten())
 
-        if n_jobs == 1:
-            p = X_batch.shape[2]
-            result = np.empty((B, p))
-            for b in range(B):
-                result[b] = _fit_one(X_batch[b])
-            return result
-
-        coefs_list = Parallel(n_jobs=n_jobs, prefer="threads")(
-            delayed(_fit_one)(X_batch[b]) for b in range(B)
-        )
-        return np.asarray(np.vstack(coefs_list))
+        return _batch_coefs(X_batch, _fit_one, X_batch.shape[2], n_jobs)
 
     # ================================================================ #
     # OLS — many X, shared y
@@ -352,34 +414,21 @@ class NumpyBackend:
             Slope coefficients ``(B, p)`` (intercept excluded).
         """
         n_jobs: int = kwargs.pop("n_jobs", 1)
-        B, n, p = X_batch.shape
+        p = X_batch.shape[2]
 
         if fit_intercept:
-            # Pre-allocate the ones column once — reused across all B
-            # solves to avoid B redundant allocations.
-            ones_col = np.ones((n, 1))
 
             def _solve(X_b: np.ndarray) -> np.ndarray:
-                X_aug = np.column_stack([ones_col, X_b])
-                # lstsq via LAPACK dgelsd — releases the GIL.
+                X_aug = _augment_intercept(X_b)
                 coefs, _, _, _ = np.linalg.lstsq(X_aug, y, rcond=None)
-                return np.asarray(coefs[1:])  # drop intercept
+                return np.asarray(coefs[1:])
         else:
 
             def _solve(X_b: np.ndarray) -> np.ndarray:
                 coefs, _, _, _ = np.linalg.lstsq(X_b, y, rcond=None)
                 return np.asarray(coefs)
 
-        if n_jobs == 1:
-            result = np.empty((B, p))
-            for b in range(B):
-                result[b] = _solve(X_batch[b])
-            return result
-
-        coefs_list = Parallel(n_jobs=n_jobs, prefer="threads")(
-            delayed(_solve)(X_batch[b]) for b in range(B)
-        )
-        return np.asarray(np.vstack(coefs_list))
+        return _batch_coefs(X_batch, _solve, p, n_jobs)
 
     # ================================================================ #
     # Poisson GLM — shared X, many Y
@@ -423,44 +472,21 @@ class NumpyBackend:
             Slope coefficients ``(B, p)`` (intercept excluded).
         """
         n_jobs: int = kwargs.pop("n_jobs", 1)
-        # statsmodels expects the intercept column baked into X.
-        # ``sm.add_constant`` prepends a column of ones.
-        X_sm = sm.add_constant(X) if fit_intercept else np.asarray(X)
+        X_sm = _augment_intercept(X, fit_intercept)
         n_params = X.shape[1]
-        B = Y_matrix.shape[0]
 
         def _fit_one(y_b: np.ndarray) -> np.ndarray:
             try:
-                with warnings.catch_warnings():
-                    # Suppress IRLS convergence and runtime warnings
-                    # for degenerate permuted-y vectors.  See module
-                    # docstring "Warning suppression" for rationale.
-                    warnings.filterwarnings("ignore", category=SmConvergenceWarning)
-                    warnings.filterwarnings("ignore", category=RuntimeWarning)
+                with _suppress_sm_warnings(separation=False):
                     model = sm.GLM(y_b, X_sm, family=sm.families.Poisson()).fit(
                         disp=0, maxiter=100
                     )
                 params = np.asarray(model.params)
-                # Strip the intercept coefficient — the caller expects
-                # slope-only output of shape (p,).
                 return params[1:] if fit_intercept else params
             except Exception:  # noqa: BLE001
-                # Degenerate data (e.g. all-zero counts after permutation)
-                # can cause statsmodels to raise.  Return NaN so the
-                # permutation is retained but does not inflate the
-                # empirical p-value count.
                 return np.full(n_params, np.nan)
 
-        if n_jobs == 1:
-            result = np.empty((B, n_params))
-            for b in range(B):
-                result[b] = _fit_one(Y_matrix[b])
-            return result
-
-        coefs_list = Parallel(n_jobs=n_jobs, prefer="threads")(
-            delayed(_fit_one)(Y_matrix[b]) for b in range(B)
-        )
-        return np.asarray(np.vstack(coefs_list))
+        return _batch_coefs(Y_matrix, _fit_one, n_params, n_jobs)
 
     # ================================================================ #
     # Poisson GLM — many X, shared y
@@ -489,16 +515,12 @@ class NumpyBackend:
             Slope coefficients ``(B, p)`` (intercept excluded).
         """
         n_jobs: int = kwargs.pop("n_jobs", 1)
-        B, _n, p = X_batch.shape
+        p = X_batch.shape[2]
 
         def _fit_one(X_b: np.ndarray) -> np.ndarray:
-            # Each permutation requires its own intercept-augmented
-            # design matrix because X varies per permutation.
-            X_sm = sm.add_constant(X_b) if fit_intercept else np.asarray(X_b)
+            X_sm = _augment_intercept(X_b, fit_intercept)
             try:
-                with warnings.catch_warnings():
-                    warnings.filterwarnings("ignore", category=SmConvergenceWarning)
-                    warnings.filterwarnings("ignore", category=RuntimeWarning)
+                with _suppress_sm_warnings(separation=False):
                     model = sm.GLM(y, X_sm, family=sm.families.Poisson()).fit(
                         disp=0, maxiter=100
                     )
@@ -507,16 +529,7 @@ class NumpyBackend:
             except Exception:  # noqa: BLE001
                 return np.full(p, np.nan)
 
-        if n_jobs == 1:
-            result = np.empty((B, p))
-            for b in range(B):
-                result[b] = _fit_one(X_batch[b])
-            return result
-
-        coefs_list = Parallel(n_jobs=n_jobs, prefer="threads")(
-            delayed(_fit_one)(X_batch[b]) for b in range(B)
-        )
-        return np.asarray(np.vstack(coefs_list))
+        return _batch_coefs(X_batch, _fit_one, p, n_jobs)
 
     # ================================================================ #
     # Negative Binomial (NB2) GLM — shared X, many Y
@@ -564,49 +577,20 @@ class NumpyBackend:
         """
         alpha: float = kwargs.pop("alpha")
         n_jobs: int = kwargs.pop("n_jobs", 1)
-
-        # Build the design matrix once — X is shared across all B
-        # permutations so we can pre-augment with a constant column.
-        X_sm = sm.add_constant(X) if fit_intercept else np.asarray(X)
+        X_sm = _augment_intercept(X, fit_intercept)
         n_params = X.shape[1]
-        B = Y_matrix.shape[0]
-
-        # Construct the NB2 family object **once** with the calibrated α.
-        # Reusing the same family object across all B iterations avoids
-        # redundant object construction and ensures the held-fixed α is
-        # applied consistently.
         nb_family = sm.families.NegativeBinomial(alpha=alpha)
 
         def _fit_one(y_b: np.ndarray) -> np.ndarray:
             try:
-                with warnings.catch_warnings():
-                    # Suppress IRLS convergence warnings — permuted
-                    # responses can produce degenerate likelihoods.
-                    warnings.filterwarnings("ignore", category=SmConvergenceWarning)
-                    warnings.filterwarnings("ignore", category=RuntimeWarning)
+                with _suppress_sm_warnings(separation=False):
                     model = sm.GLM(y_b, X_sm, family=nb_family).fit(disp=0, maxiter=100)
                 params = np.asarray(model.params)
-                # Strip the intercept term to return slope-only coefficients.
                 return params[1:] if fit_intercept else params
             except Exception:  # noqa: BLE001
-                # Graceful degradation — NaN signals a failed permutation
-                # and is handled downstream by the p-value computation.
                 return np.full(n_params, np.nan)
 
-        # Sequential path — used when n_jobs == 1 to avoid joblib
-        # overhead for small B or when thread-safety is uncertain.
-        if n_jobs == 1:
-            result = np.empty((B, n_params))
-            for b in range(B):
-                result[b] = _fit_one(Y_matrix[b])
-            return result
-
-        # Parallel path — statsmodels GLM releases the GIL during
-        # LAPACK calls inside IRLS, so "threads" gives real speedup.
-        coefs_list = Parallel(n_jobs=n_jobs, prefer="threads")(
-            delayed(_fit_one)(Y_matrix[b]) for b in range(B)
-        )
-        return np.asarray(np.vstack(coefs_list))
+        return _batch_coefs(Y_matrix, _fit_one, n_params, n_jobs)
 
     # ---- Negative binomial (many X, shared y) -------------------------
 
@@ -630,31 +614,20 @@ class NumpyBackend:
         """
         alpha: float = kwargs.pop("alpha")
         n_jobs: int = kwargs.pop("n_jobs", 1)
-        B, _n, p = X_batch.shape
+        p = X_batch.shape[2]
         nb_family = sm.families.NegativeBinomial(alpha=alpha)
 
         def _fit_one(X_b: np.ndarray) -> np.ndarray:
-            X_sm = sm.add_constant(X_b) if fit_intercept else np.asarray(X_b)
+            X_sm = _augment_intercept(X_b, fit_intercept)
             try:
-                with warnings.catch_warnings():
-                    warnings.filterwarnings("ignore", category=SmConvergenceWarning)
-                    warnings.filterwarnings("ignore", category=RuntimeWarning)
+                with _suppress_sm_warnings(separation=False):
                     model = sm.GLM(y, X_sm, family=nb_family).fit(disp=0, maxiter=100)
                 params = np.asarray(model.params)
                 return params[1:] if fit_intercept else params
             except Exception:  # noqa: BLE001
                 return np.full(p, np.nan)
 
-        if n_jobs == 1:
-            result = np.empty((B, p))
-            for b in range(B):
-                result[b] = _fit_one(X_batch[b])
-            return result
-
-        coefs_list = Parallel(n_jobs=n_jobs, prefer="threads")(
-            delayed(_fit_one)(X_batch[b]) for b in range(B)
-        )
-        return np.asarray(np.vstack(coefs_list))
+        return _batch_coefs(X_batch, _fit_one, p, n_jobs)
 
     # ================================================================ #
     # Ordinal (Proportional-Odds) Logistic Regression
@@ -710,36 +683,18 @@ class NumpyBackend:
         kwargs.pop("K", None)  # Not needed for statsmodels path
         X_arr = np.asarray(X, dtype=float)
         n_params = X_arr.shape[1]
-        B = Y_matrix.shape[0]
 
         def _fit_one(y_b: np.ndarray) -> np.ndarray:
             try:
-                with warnings.catch_warnings():
-                    # Hessian inversion warnings are common for ordinal
-                    # models — the Powell optimizer does not use the
-                    # Hessian, but statsmodels still attempts to compute
-                    # it post-fit for standard errors.
-                    warnings.filterwarnings("ignore", category=SmConvergenceWarning)
-                    warnings.filterwarnings("ignore", category=HessianInversionWarning)
-                    warnings.filterwarnings("ignore", category=RuntimeWarning)
+                with _suppress_sm_warnings(separation=False, hessian=True):
                     model = OrderedModel(y_b, X_arr, distr="logit").fit(
                         disp=0, method="powell", maxiter=200
                     )
-                # Slopes first, thresholds last — extract only the slopes.
                 return np.asarray(model.params[:n_params])
             except Exception:  # noqa: BLE001
                 return np.full(n_params, np.nan)
 
-        if n_jobs == 1:
-            result = np.empty((B, n_params))
-            for b in range(B):
-                result[b] = _fit_one(Y_matrix[b])
-            return result
-
-        coefs_list = Parallel(n_jobs=n_jobs, prefer="threads")(
-            delayed(_fit_one)(Y_matrix[b]) for b in range(B)
-        )
-        return np.asarray(np.vstack(coefs_list))
+        return _batch_coefs(Y_matrix, _fit_one, n_params, n_jobs)
 
     # ---- Ordinal (many X, shared y) ----------------------------------
 
@@ -765,16 +720,13 @@ class NumpyBackend:
 
         n_jobs: int = kwargs.pop("n_jobs", 1)
         kwargs.pop("K", None)  # Not needed for statsmodels path
-        B, _n, p = X_batch.shape
+        p = X_batch.shape[2]
         y_arr = np.asarray(y)
 
         def _fit_one(X_b: np.ndarray) -> np.ndarray:
             X_arr = np.asarray(X_b, dtype=float)
             try:
-                with warnings.catch_warnings():
-                    warnings.filterwarnings("ignore", category=SmConvergenceWarning)
-                    warnings.filterwarnings("ignore", category=HessianInversionWarning)
-                    warnings.filterwarnings("ignore", category=RuntimeWarning)
+                with _suppress_sm_warnings(separation=False, hessian=True):
                     model = OrderedModel(y_arr, X_arr, distr="logit").fit(
                         disp=0, method="powell", maxiter=200
                     )
@@ -782,16 +734,7 @@ class NumpyBackend:
             except Exception:  # noqa: BLE001
                 return np.full(p, np.nan)
 
-        if n_jobs == 1:
-            result = np.empty((B, p))
-            for b in range(B):
-                result[b] = _fit_one(X_batch[b])
-            return result
-
-        coefs_list = Parallel(n_jobs=n_jobs, prefer="threads")(
-            delayed(_fit_one)(X_batch[b]) for b in range(B)
-        )
-        return np.asarray(np.vstack(coefs_list))
+        return _batch_coefs(X_batch, _fit_one, p, n_jobs)
 
     # ================================================================ #
     # Multinomial Logistic Regression (MNLogit)
@@ -854,36 +797,19 @@ class NumpyBackend:
         n_jobs: int = kwargs.pop("n_jobs", 1)
         kwargs.pop("K", None)  # Not needed — MNLogit infers K
 
-        if fit_intercept:
-            X_aug = np.column_stack([np.ones(X.shape[0]), X])
-        else:
-            X_aug = np.asarray(X, dtype=float)
-
+        X_aug = _augment_intercept(X, fit_intercept)
         p_aug = X_aug.shape[1]
-        p_slopes = X.shape[1]  # slopes only (intercept excluded)
-        B = Y_matrix.shape[0]
+        p_slopes = X.shape[1]
 
         def _fit_one(y_b: np.ndarray) -> np.ndarray:
             try:
-                with warnings.catch_warnings():
-                    warnings.filterwarnings("ignore", category=SmConvergenceWarning)
-                    warnings.filterwarnings("ignore", category=HessianInversionWarning)
-                    warnings.filterwarnings("ignore", category=RuntimeWarning)
+                with _suppress_sm_warnings(separation=False, hessian=True):
                     model = MNLogit(y_b, X_aug).fit(disp=0, maxiter=200)
                 return _wald_chi2_from_mnlogit(model, p_aug, fit_intercept)
             except Exception:  # noqa: BLE001
                 return np.full(p_slopes, np.nan)
 
-        if n_jobs == 1:
-            result = np.empty((B, p_slopes))
-            for b in range(B):
-                result[b] = _fit_one(Y_matrix[b])
-            return result
-
-        coefs_list = Parallel(n_jobs=n_jobs, prefer="threads")(
-            delayed(_fit_one)(Y_matrix[b]) for b in range(B)
-        )
-        return np.asarray(np.vstack(coefs_list))
+        return _batch_coefs(Y_matrix, _fit_one, p_slopes, n_jobs)
 
     # ---- Multinomial (many X, shared y) --------------------------------
 
@@ -909,36 +835,21 @@ class NumpyBackend:
         from statsmodels.discrete.discrete_model import MNLogit
 
         n_jobs: int = kwargs.pop("n_jobs", 1)
-        kwargs.pop("K", None)  # Not needed
-        B, _n, p = X_batch.shape
+        kwargs.pop("K", None)
+        p = X_batch.shape[2]
         y_arr = np.asarray(y)
 
         def _fit_one(X_b: np.ndarray) -> np.ndarray:
-            if fit_intercept:
-                X_aug = np.column_stack([np.ones(X_b.shape[0]), X_b])
-            else:
-                X_aug = np.asarray(X_b, dtype=float)
+            X_aug = _augment_intercept(X_b, fit_intercept)
             p_aug = X_aug.shape[1]
             try:
-                with warnings.catch_warnings():
-                    warnings.filterwarnings("ignore", category=SmConvergenceWarning)
-                    warnings.filterwarnings("ignore", category=HessianInversionWarning)
-                    warnings.filterwarnings("ignore", category=RuntimeWarning)
+                with _suppress_sm_warnings(separation=False, hessian=True):
                     model = MNLogit(y_arr, X_aug).fit(disp=0, maxiter=200)
                 return _wald_chi2_from_mnlogit(model, p_aug, fit_intercept)
             except Exception:  # noqa: BLE001
                 return np.full(p, np.nan)
 
-        if n_jobs == 1:
-            result = np.empty((B, p))
-            for b in range(B):
-                result[b] = _fit_one(X_batch[b])
-            return result
-
-        coefs_list = Parallel(n_jobs=n_jobs, prefer="threads")(
-            delayed(_fit_one)(X_batch[b]) for b in range(B)
-        )
-        return np.asarray(np.vstack(coefs_list))
+        return _batch_coefs(X_batch, _fit_one, p, n_jobs)
 
     # ================================================================ #
     # batch_fit_and_score — shared X, varying Y
@@ -975,10 +886,7 @@ class NumpyBackend:
         fit_intercept: bool = True,
     ) -> tuple[np.ndarray, np.ndarray]:
         """Batch OLS returning ``(coefs, RSS)``."""
-        if fit_intercept:
-            X_aug = np.column_stack([np.ones(X.shape[0]), X])
-        else:
-            X_aug = np.asarray(X, dtype=float)
+        X_aug = _augment_intercept(X, fit_intercept)
 
         # Pseudoinverse computed once — same matrix multiplication
         # strategy as batch_ols (see that method's comments).
@@ -1004,7 +912,6 @@ class NumpyBackend:
         """Batch logistic returning ``(coefs, deviance)``."""
         n_jobs: int = kwargs.pop("n_jobs", 1)
         max_iter = kwargs.get("max_iter", 5_000)
-        B, _ = Y_matrix.shape
         p = X.shape[1]
 
         def _fit_one(y_b: np.ndarray) -> tuple[np.ndarray, float]:
@@ -1016,24 +923,11 @@ class NumpyBackend:
             )
             m.fit(X, y_b)
             coef = np.asarray(m.coef_.flatten())
-            # Compute deviance = 2·NLL manually from predicted probas.
-            # Clipping avoids log(0) when the model is overconfident.
             proba = np.clip(m.predict_proba(X)[:, 1], 1e-15, 1 - 1e-15)
             nll = -float(np.sum(y_b * np.log(proba) + (1 - y_b) * np.log(1 - proba)))
-            return coef, 2.0 * nll  # deviance = 2·NLL
+            return coef, 2.0 * nll
 
-        coefs = np.empty((B, p))
-        scores = np.empty(B)
-        if n_jobs == 1:
-            for b in range(B):
-                coefs[b], scores[b] = _fit_one(Y_matrix[b])
-        else:
-            results = Parallel(n_jobs=n_jobs, prefer="threads")(
-                delayed(_fit_one)(Y_matrix[b]) for b in range(B)
-            )
-            for b, (c, s) in enumerate(results):
-                coefs[b], scores[b] = c, s
-        return coefs, scores
+        return _batch_coefs_and_scores(Y_matrix, _fit_one, p, n_jobs)
 
     def batch_poisson_fit_and_score(
         self,
@@ -1044,15 +938,12 @@ class NumpyBackend:
     ) -> tuple[np.ndarray, np.ndarray]:
         """Batch Poisson returning ``(coefs, deviance)``."""
         n_jobs: int = kwargs.pop("n_jobs", 1)
-        X_sm = sm.add_constant(X) if fit_intercept else np.asarray(X)
+        X_sm = _augment_intercept(X, fit_intercept)
         n_params = X.shape[1]
-        B = Y_matrix.shape[0]
 
         def _fit_one(y_b: np.ndarray) -> tuple[np.ndarray, float]:
             try:
-                with warnings.catch_warnings():
-                    warnings.filterwarnings("ignore", category=SmConvergenceWarning)
-                    warnings.filterwarnings("ignore", category=RuntimeWarning)
+                with _suppress_sm_warnings(separation=False):
                     model = sm.GLM(y_b, X_sm, family=sm.families.Poisson()).fit(
                         disp=0, maxiter=100
                     )
@@ -1062,18 +953,7 @@ class NumpyBackend:
             except Exception:  # noqa: BLE001
                 return np.full(n_params, np.nan), np.nan
 
-        coefs = np.empty((B, n_params))
-        scores = np.empty(B)
-        if n_jobs == 1:
-            for b in range(B):
-                coefs[b], scores[b] = _fit_one(Y_matrix[b])
-        else:
-            results = Parallel(n_jobs=n_jobs, prefer="threads")(
-                delayed(_fit_one)(Y_matrix[b]) for b in range(B)
-            )
-            for b, (c, s) in enumerate(results):
-                coefs[b], scores[b] = c, s
-        return coefs, scores
+        return _batch_coefs_and_scores(Y_matrix, _fit_one, n_params, n_jobs)
 
     def batch_negbin_fit_and_score(
         self,
@@ -1085,16 +965,13 @@ class NumpyBackend:
         """Batch NB2 returning ``(coefs, deviance)``."""
         alpha: float = kwargs.pop("alpha")
         n_jobs: int = kwargs.pop("n_jobs", 1)
-        X_sm = sm.add_constant(X) if fit_intercept else np.asarray(X)
+        X_sm = _augment_intercept(X, fit_intercept)
         n_params = X.shape[1]
-        B = Y_matrix.shape[0]
         nb_family = sm.families.NegativeBinomial(alpha=alpha)
 
         def _fit_one(y_b: np.ndarray) -> tuple[np.ndarray, float]:
             try:
-                with warnings.catch_warnings():
-                    warnings.filterwarnings("ignore", category=SmConvergenceWarning)
-                    warnings.filterwarnings("ignore", category=RuntimeWarning)
+                with _suppress_sm_warnings(separation=False):
                     model = sm.GLM(y_b, X_sm, family=nb_family).fit(disp=0, maxiter=100)
                 params = np.asarray(model.params)
                 coef = params[1:] if fit_intercept else params
@@ -1102,18 +979,7 @@ class NumpyBackend:
             except Exception:  # noqa: BLE001
                 return np.full(n_params, np.nan), np.nan
 
-        coefs = np.empty((B, n_params))
-        scores = np.empty(B)
-        if n_jobs == 1:
-            for b in range(B):
-                coefs[b], scores[b] = _fit_one(Y_matrix[b])
-        else:
-            results = Parallel(n_jobs=n_jobs, prefer="threads")(
-                delayed(_fit_one)(Y_matrix[b]) for b in range(B)
-            )
-            for b, (c, s) in enumerate(results):
-                coefs[b], scores[b] = c, s
-        return coefs, scores
+        return _batch_coefs_and_scores(Y_matrix, _fit_one, n_params, n_jobs)
 
     def batch_ordinal_fit_and_score(
         self,
@@ -1129,14 +995,10 @@ class NumpyBackend:
         kwargs.pop("K", None)
         X_arr = np.asarray(X, dtype=float)
         n_params = X_arr.shape[1]
-        B = Y_matrix.shape[0]
 
         def _fit_one(y_b: np.ndarray) -> tuple[np.ndarray, float]:
             try:
-                with warnings.catch_warnings():
-                    warnings.filterwarnings("ignore", category=SmConvergenceWarning)
-                    warnings.filterwarnings("ignore", category=HessianInversionWarning)
-                    warnings.filterwarnings("ignore", category=RuntimeWarning)
+                with _suppress_sm_warnings(separation=False, hessian=True):
                     model = OrderedModel(y_b, X_arr, distr="logit").fit(
                         disp=0, method="powell", maxiter=200
                     )
@@ -1145,18 +1007,7 @@ class NumpyBackend:
             except Exception:  # noqa: BLE001
                 return np.full(n_params, np.nan), np.nan
 
-        coefs = np.empty((B, n_params))
-        scores = np.empty(B)
-        if n_jobs == 1:
-            for b in range(B):
-                coefs[b], scores[b] = _fit_one(Y_matrix[b])
-        else:
-            results = Parallel(n_jobs=n_jobs, prefer="threads")(
-                delayed(_fit_one)(Y_matrix[b]) for b in range(B)
-            )
-            for b, (c, s) in enumerate(results):
-                coefs[b], scores[b] = c, s
-        return coefs, scores
+        return _batch_coefs_and_scores(Y_matrix, _fit_one, n_params, n_jobs)
 
     def batch_multinomial_fit_and_score(
         self,
@@ -1171,39 +1022,20 @@ class NumpyBackend:
         n_jobs: int = kwargs.pop("n_jobs", 1)
         kwargs.pop("K", None)
 
-        if fit_intercept:
-            X_aug = np.column_stack([np.ones(X.shape[0]), X])
-        else:
-            X_aug = np.asarray(X, dtype=float)
-
+        X_aug = _augment_intercept(X, fit_intercept)
         p_aug = X_aug.shape[1]
         p_slopes = X.shape[1]
-        B = Y_matrix.shape[0]
 
         def _fit_one(y_b: np.ndarray) -> tuple[np.ndarray, float]:
             try:
-                with warnings.catch_warnings():
-                    warnings.filterwarnings("ignore", category=SmConvergenceWarning)
-                    warnings.filterwarnings("ignore", category=HessianInversionWarning)
-                    warnings.filterwarnings("ignore", category=RuntimeWarning)
+                with _suppress_sm_warnings(separation=False, hessian=True):
                     model = MNLogit(y_b, X_aug).fit(disp=0, maxiter=200)
                 wald = _wald_chi2_from_mnlogit(model, p_aug, fit_intercept)
                 return wald, -2.0 * float(model.llf)
             except Exception:  # noqa: BLE001
                 return np.full(p_slopes, np.nan), np.nan
 
-        coefs = np.empty((B, p_slopes))
-        scores = np.empty(B)
-        if n_jobs == 1:
-            for b in range(B):
-                coefs[b], scores[b] = _fit_one(Y_matrix[b])
-        else:
-            results = Parallel(n_jobs=n_jobs, prefer="threads")(
-                delayed(_fit_one)(Y_matrix[b]) for b in range(B)
-            )
-            for b, (c, s) in enumerate(results):
-                coefs[b], scores[b] = c, s
-        return coefs, scores
+        return _batch_coefs_and_scores(Y_matrix, _fit_one, p_slopes, n_jobs)
 
     # ================================================================ #
     # batch_fit_and_score_varying_X — varying X, shared Y
@@ -1226,13 +1058,12 @@ class NumpyBackend:
     ) -> tuple[np.ndarray, np.ndarray]:
         """Batch OLS (varying X) returning ``(coefs, RSS)``."""
         n_jobs: int = kwargs.pop("n_jobs", 1)
-        B, n, p = X_batch.shape
+        p = X_batch.shape[2]
 
         if fit_intercept:
-            ones_col = np.ones((n, 1))
 
             def _solve(X_b: np.ndarray) -> tuple[np.ndarray, float]:
-                X_aug = np.column_stack([ones_col, X_b])
+                X_aug = _augment_intercept(X_b)
                 coef, _, _, _ = np.linalg.lstsq(X_aug, y, rcond=None)
                 resid = y - X_aug @ coef
                 return np.asarray(coef[1:]), float(np.sum(resid**2))
@@ -1243,18 +1074,7 @@ class NumpyBackend:
                 resid = y - X_b @ coef
                 return np.asarray(coef), float(np.sum(resid**2))
 
-        coefs = np.empty((B, p))
-        scores = np.empty(B)
-        if n_jobs == 1:
-            for b in range(B):
-                coefs[b], scores[b] = _solve(X_batch[b])
-        else:
-            results = Parallel(n_jobs=n_jobs, prefer="threads")(
-                delayed(_solve)(X_batch[b]) for b in range(B)
-            )
-            for b, (c, s) in enumerate(results):
-                coefs[b], scores[b] = c, s
-        return coefs, scores
+        return _batch_coefs_and_scores(X_batch, _solve, p, n_jobs)
 
     def batch_logistic_fit_and_score_varying_X(
         self,
@@ -1266,7 +1086,7 @@ class NumpyBackend:
         """Batch logistic (varying X) returning ``(coefs, deviance)``."""
         n_jobs: int = kwargs.pop("n_jobs", 1)
         max_iter = kwargs.get("max_iter", 5_000)
-        B, _n, p = X_batch.shape
+        p = X_batch.shape[2]
 
         def _fit_one(X_b: np.ndarray) -> tuple[np.ndarray, float]:
             m = LogisticRegression(
@@ -1281,18 +1101,7 @@ class NumpyBackend:
             nll = -float(np.sum(y * np.log(proba) + (1 - y) * np.log(1 - proba)))
             return coef, 2.0 * nll
 
-        coefs = np.empty((B, p))
-        scores = np.empty(B)
-        if n_jobs == 1:
-            for b in range(B):
-                coefs[b], scores[b] = _fit_one(X_batch[b])
-        else:
-            results = Parallel(n_jobs=n_jobs, prefer="threads")(
-                delayed(_fit_one)(X_batch[b]) for b in range(B)
-            )
-            for b, (c, s) in enumerate(results):
-                coefs[b], scores[b] = c, s
-        return coefs, scores
+        return _batch_coefs_and_scores(X_batch, _fit_one, p, n_jobs)
 
     def batch_poisson_fit_and_score_varying_X(
         self,
@@ -1303,14 +1112,12 @@ class NumpyBackend:
     ) -> tuple[np.ndarray, np.ndarray]:
         """Batch Poisson (varying X) returning ``(coefs, deviance)``."""
         n_jobs: int = kwargs.pop("n_jobs", 1)
-        B, _n, p = X_batch.shape
+        p = X_batch.shape[2]
 
         def _fit_one(X_b: np.ndarray) -> tuple[np.ndarray, float]:
-            X_sm = sm.add_constant(X_b) if fit_intercept else np.asarray(X_b)
+            X_sm = _augment_intercept(X_b, fit_intercept)
             try:
-                with warnings.catch_warnings():
-                    warnings.filterwarnings("ignore", category=SmConvergenceWarning)
-                    warnings.filterwarnings("ignore", category=RuntimeWarning)
+                with _suppress_sm_warnings(separation=False):
                     model = sm.GLM(y, X_sm, family=sm.families.Poisson()).fit(
                         disp=0, maxiter=100
                     )
@@ -1320,18 +1127,7 @@ class NumpyBackend:
             except Exception:  # noqa: BLE001
                 return np.full(p, np.nan), np.nan
 
-        coefs = np.empty((B, p))
-        scores = np.empty(B)
-        if n_jobs == 1:
-            for b in range(B):
-                coefs[b], scores[b] = _fit_one(X_batch[b])
-        else:
-            results = Parallel(n_jobs=n_jobs, prefer="threads")(
-                delayed(_fit_one)(X_batch[b]) for b in range(B)
-            )
-            for b, (c, s) in enumerate(results):
-                coefs[b], scores[b] = c, s
-        return coefs, scores
+        return _batch_coefs_and_scores(X_batch, _fit_one, p, n_jobs)
 
     def batch_negbin_fit_and_score_varying_X(
         self,
@@ -1343,15 +1139,13 @@ class NumpyBackend:
         """Batch NB2 (varying X) returning ``(coefs, deviance)``."""
         alpha: float = kwargs.pop("alpha")
         n_jobs: int = kwargs.pop("n_jobs", 1)
-        B, _n, p = X_batch.shape
+        p = X_batch.shape[2]
         nb_family = sm.families.NegativeBinomial(alpha=alpha)
 
         def _fit_one(X_b: np.ndarray) -> tuple[np.ndarray, float]:
-            X_sm = sm.add_constant(X_b) if fit_intercept else np.asarray(X_b)
+            X_sm = _augment_intercept(X_b, fit_intercept)
             try:
-                with warnings.catch_warnings():
-                    warnings.filterwarnings("ignore", category=SmConvergenceWarning)
-                    warnings.filterwarnings("ignore", category=RuntimeWarning)
+                with _suppress_sm_warnings(separation=False):
                     model = sm.GLM(y, X_sm, family=nb_family).fit(disp=0, maxiter=100)
                 params = np.asarray(model.params)
                 coef = params[1:] if fit_intercept else params
@@ -1359,18 +1153,7 @@ class NumpyBackend:
             except Exception:  # noqa: BLE001
                 return np.full(p, np.nan), np.nan
 
-        coefs = np.empty((B, p))
-        scores = np.empty(B)
-        if n_jobs == 1:
-            for b in range(B):
-                coefs[b], scores[b] = _fit_one(X_batch[b])
-        else:
-            results = Parallel(n_jobs=n_jobs, prefer="threads")(
-                delayed(_fit_one)(X_batch[b]) for b in range(B)
-            )
-            for b, (c, s) in enumerate(results):
-                coefs[b], scores[b] = c, s
-        return coefs, scores
+        return _batch_coefs_and_scores(X_batch, _fit_one, p, n_jobs)
 
     def batch_ordinal_fit_and_score_varying_X(
         self,
@@ -1384,16 +1167,13 @@ class NumpyBackend:
 
         n_jobs: int = kwargs.pop("n_jobs", 1)
         kwargs.pop("K", None)
-        B, _n, p = X_batch.shape
+        p = X_batch.shape[2]
         y_arr = np.asarray(y)
 
         def _fit_one(X_b: np.ndarray) -> tuple[np.ndarray, float]:
             X_arr = np.asarray(X_b, dtype=float)
             try:
-                with warnings.catch_warnings():
-                    warnings.filterwarnings("ignore", category=SmConvergenceWarning)
-                    warnings.filterwarnings("ignore", category=HessianInversionWarning)
-                    warnings.filterwarnings("ignore", category=RuntimeWarning)
+                with _suppress_sm_warnings(separation=False, hessian=True):
                     model = OrderedModel(y_arr, X_arr, distr="logit").fit(
                         disp=0, method="powell", maxiter=200
                     )
@@ -1402,18 +1182,7 @@ class NumpyBackend:
             except Exception:  # noqa: BLE001
                 return np.full(p, np.nan), np.nan
 
-        coefs = np.empty((B, p))
-        scores = np.empty(B)
-        if n_jobs == 1:
-            for b in range(B):
-                coefs[b], scores[b] = _fit_one(X_batch[b])
-        else:
-            results = Parallel(n_jobs=n_jobs, prefer="threads")(
-                delayed(_fit_one)(X_batch[b]) for b in range(B)
-            )
-            for b, (c, s) in enumerate(results):
-                coefs[b], scores[b] = c, s
-        return coefs, scores
+        return _batch_coefs_and_scores(X_batch, _fit_one, p, n_jobs)
 
     def batch_multinomial_fit_and_score_varying_X(
         self,
@@ -1427,38 +1196,21 @@ class NumpyBackend:
 
         n_jobs: int = kwargs.pop("n_jobs", 1)
         kwargs.pop("K", None)
-        B, _n, p = X_batch.shape
+        p = X_batch.shape[2]
         y_arr = np.asarray(y)
 
         def _fit_one(X_b: np.ndarray) -> tuple[np.ndarray, float]:
-            if fit_intercept:
-                X_aug = np.column_stack([np.ones(X_b.shape[0]), X_b])
-            else:
-                X_aug = np.asarray(X_b, dtype=float)
+            X_aug = _augment_intercept(X_b, fit_intercept)
             p_aug = X_aug.shape[1]
             try:
-                with warnings.catch_warnings():
-                    warnings.filterwarnings("ignore", category=SmConvergenceWarning)
-                    warnings.filterwarnings("ignore", category=HessianInversionWarning)
-                    warnings.filterwarnings("ignore", category=RuntimeWarning)
+                with _suppress_sm_warnings(separation=False, hessian=True):
                     model = MNLogit(y_arr, X_aug).fit(disp=0, maxiter=200)
                 wald = _wald_chi2_from_mnlogit(model, p_aug, fit_intercept)
                 return wald, -2.0 * float(model.llf)
             except Exception:  # noqa: BLE001
                 return np.full(p, np.nan), np.nan
 
-        coefs = np.empty((B, p))
-        scores = np.empty(B)
-        if n_jobs == 1:
-            for b in range(B):
-                coefs[b], scores[b] = _fit_one(X_batch[b])
-        else:
-            results = Parallel(n_jobs=n_jobs, prefer="threads")(
-                delayed(_fit_one)(X_batch[b]) for b in range(B)
-            )
-            for b, (c, s) in enumerate(results):
-                coefs[b], scores[b] = c, s
-        return coefs, scores
+        return _batch_coefs_and_scores(X_batch, _fit_one, p, n_jobs)
 
     # ================================================================ #
     # batch_*_paired — both X and Y vary per replicate
@@ -1500,17 +1252,13 @@ class NumpyBackend:
             Slope coefficients ``(B, p)`` (intercept excluded).
         """
         B, n, p = X_batch.shape
-        result = np.empty((B, p))
-        for b in range(B):
-            X_b = X_batch[b]
-            if fit_intercept:
-                X_aug = np.column_stack([np.ones(n), X_b])
-                coefs, _, _, _ = np.linalg.lstsq(X_aug, Y_batch[b], rcond=None)
-                result[b] = coefs[1:]
-            else:
-                coefs, _, _, _ = np.linalg.lstsq(X_b, Y_batch[b], rcond=None)
-                result[b] = coefs
-        return result
+
+        def _fit_one(b: int) -> np.ndarray:
+            X_aug = _augment_intercept(X_batch[b], fit_intercept)
+            coefs, _, _, _ = np.linalg.lstsq(X_aug, Y_batch[b], rcond=None)
+            return np.asarray(coefs[1:] if fit_intercept else coefs)
+
+        return _batch_coefs(range(B), _fit_one, p, n_jobs=1)
 
     def batch_logistic_paired(
         self,
@@ -1547,16 +1295,7 @@ class NumpyBackend:
             except Exception:  # noqa: BLE001
                 return np.full(p, np.nan)
 
-        if n_jobs == 1:
-            result = np.empty((B, p))
-            for b in range(B):
-                result[b] = _fit_one(b)
-            return result
-
-        coefs_list = Parallel(n_jobs=n_jobs, prefer="threads")(
-            delayed(_fit_one)(b) for b in range(B)
-        )
-        return np.asarray(np.vstack(coefs_list))
+        return _batch_coefs(range(B), _fit_one, p, n_jobs)
 
     def batch_poisson_paired(
         self,
@@ -1580,13 +1319,9 @@ class NumpyBackend:
         B, _n, p = X_batch.shape
 
         def _fit_one(b: int) -> np.ndarray:
-            X_sm = (
-                sm.add_constant(X_batch[b]) if fit_intercept else np.asarray(X_batch[b])
-            )
+            X_sm = _augment_intercept(X_batch[b], fit_intercept)
             try:
-                with warnings.catch_warnings():
-                    warnings.filterwarnings("ignore", category=SmConvergenceWarning)
-                    warnings.filterwarnings("ignore", category=RuntimeWarning)
+                with _suppress_sm_warnings(separation=False):
                     model = sm.GLM(Y_batch[b], X_sm, family=sm.families.Poisson()).fit(
                         disp=0, maxiter=100
                     )
@@ -1595,16 +1330,7 @@ class NumpyBackend:
             except Exception:  # noqa: BLE001
                 return np.full(p, np.nan)
 
-        if n_jobs == 1:
-            result = np.empty((B, p))
-            for b in range(B):
-                result[b] = _fit_one(b)
-            return result
-
-        coefs_list = Parallel(n_jobs=n_jobs, prefer="threads")(
-            delayed(_fit_one)(b) for b in range(B)
-        )
-        return np.asarray(np.vstack(coefs_list))
+        return _batch_coefs(range(B), _fit_one, p, n_jobs)
 
     def batch_negbin_paired(
         self,
@@ -1630,13 +1356,9 @@ class NumpyBackend:
         nb_family = sm.families.NegativeBinomial(alpha=alpha)
 
         def _fit_one(b: int) -> np.ndarray:
-            X_sm = (
-                sm.add_constant(X_batch[b]) if fit_intercept else np.asarray(X_batch[b])
-            )
+            X_sm = _augment_intercept(X_batch[b], fit_intercept)
             try:
-                with warnings.catch_warnings():
-                    warnings.filterwarnings("ignore", category=SmConvergenceWarning)
-                    warnings.filterwarnings("ignore", category=RuntimeWarning)
+                with _suppress_sm_warnings(separation=False):
                     model = sm.GLM(Y_batch[b], X_sm, family=nb_family).fit(
                         disp=0, maxiter=100
                     )
@@ -1645,16 +1367,7 @@ class NumpyBackend:
             except Exception:  # noqa: BLE001
                 return np.full(p, np.nan)
 
-        if n_jobs == 1:
-            result = np.empty((B, p))
-            for b in range(B):
-                result[b] = _fit_one(b)
-            return result
-
-        coefs_list = Parallel(n_jobs=n_jobs, prefer="threads")(
-            delayed(_fit_one)(b) for b in range(B)
-        )
-        return np.asarray(np.vstack(coefs_list))
+        return _batch_coefs(range(B), _fit_one, p, n_jobs)
 
     def batch_ordinal_paired(
         self,
@@ -1684,10 +1397,7 @@ class NumpyBackend:
             X_arr = np.asarray(X_batch[b], dtype=float)
             y_arr = np.asarray(Y_batch[b])
             try:
-                with warnings.catch_warnings():
-                    warnings.filterwarnings("ignore", category=SmConvergenceWarning)
-                    warnings.filterwarnings("ignore", category=HessianInversionWarning)
-                    warnings.filterwarnings("ignore", category=RuntimeWarning)
+                with _suppress_sm_warnings(separation=False, hessian=True):
                     model = OrderedModel(y_arr, X_arr, distr="logit").fit(
                         disp=0, method="powell", maxiter=200
                     )
@@ -1695,16 +1405,7 @@ class NumpyBackend:
             except Exception:  # noqa: BLE001
                 return np.full(p, np.nan)
 
-        if n_jobs == 1:
-            result = np.empty((B, p))
-            for b in range(B):
-                result[b] = _fit_one(b)
-            return result
-
-        coefs_list = Parallel(n_jobs=n_jobs, prefer="threads")(
-            delayed(_fit_one)(b) for b in range(B)
-        )
-        return np.asarray(np.vstack(coefs_list))
+        return _batch_coefs(range(B), _fit_one, p, n_jobs)
 
     def batch_multinomial_paired(
         self,
@@ -1735,31 +1436,16 @@ class NumpyBackend:
 
         def _fit_one(b: int) -> np.ndarray:
             X_b = X_batch[b]
-            if fit_intercept:
-                X_aug = np.column_stack([np.ones(X_b.shape[0]), X_b])
-            else:
-                X_aug = np.asarray(X_b, dtype=float)
+            X_aug = _augment_intercept(X_b, fit_intercept)
             p_aug = X_aug.shape[1]
             try:
-                with warnings.catch_warnings():
-                    warnings.filterwarnings("ignore", category=SmConvergenceWarning)
-                    warnings.filterwarnings("ignore", category=HessianInversionWarning)
-                    warnings.filterwarnings("ignore", category=RuntimeWarning)
+                with _suppress_sm_warnings(separation=False, hessian=True):
                     model = MNLogit(Y_batch[b], X_aug).fit(disp=0, maxiter=200)
                 return _wald_chi2_from_mnlogit(model, p_aug, fit_intercept)
             except Exception:  # noqa: BLE001
                 return np.full(p, np.nan)
 
-        if n_jobs == 1:
-            result = np.empty((B, p))
-            for b in range(B):
-                result[b] = _fit_one(b)
-            return result
-
-        coefs_list = Parallel(n_jobs=n_jobs, prefer="threads")(
-            delayed(_fit_one)(b) for b in range(B)
-        )
-        return np.asarray(np.vstack(coefs_list))
+        return _batch_coefs(range(B), _fit_one, p, n_jobs)
 
     # ---- Linear mixed model (shared X, many Y) ----------------------
 
@@ -1833,10 +1519,7 @@ class NumpyBackend:
 
         def _solve_one(b: int) -> np.ndarray:
             X_b = X_batch[b]
-            if fit_intercept:
-                X_aug = np.column_stack([np.ones(n), X_b])
-            else:
-                X_aug = np.asarray(X_b, dtype=float)
+            X_aug = _augment_intercept(X_b, fit_intercept)
             XtZ = X_aug.T @ Z  # (p_aug, q)
             C22_inv_ZtX = C22_inv_Zt @ X_aug  # (q, p_aug)
             S = X_aug.T @ X_aug - XtZ @ C22_inv_ZtX  # (p_aug, p_aug)
@@ -1845,16 +1528,7 @@ class NumpyBackend:
             coefs: np.ndarray = np.asarray(A @ y)  # (p_aug,)
             return coefs[1:] if fit_intercept else coefs
 
-        if n_jobs == 1:
-            result = np.empty((B, p))
-            for b in range(B):
-                result[b] = _solve_one(b)
-            return result
-
-        coefs_list = Parallel(n_jobs=n_jobs, prefer="threads")(
-            delayed(_solve_one)(b) for b in range(B)
-        )
-        return np.asarray(np.vstack(coefs_list))
+        return _batch_coefs(range(B), _solve_one, p, n_jobs)
 
 
 # ------------------------------------------------------------------ #

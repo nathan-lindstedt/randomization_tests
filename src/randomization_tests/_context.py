@@ -156,6 +156,9 @@ class FitContext:
     confounders: list[str] = field(default_factory=list)
     """Confounder column names."""
 
+    panel_id: np.ndarray | None = None
+    """Panel/subject labels for longitudinal data, or ``None``."""
+
     confidence_level: float | None = None
     """Requested confidence level for CIs (e.g. 0.95)."""
 

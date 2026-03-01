@@ -14,12 +14,14 @@ permutation test adds value.
 
 from __future__ import annotations
 
+import math
 import textwrap
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
+from scipy import stats as _sp_stats
 
-from randomization_tests.families import ModelFamily
+from .families import ModelFamily
 
 if TYPE_CHECKING:
     from ._context import FitContext
@@ -59,6 +61,62 @@ def _wrap(text: str, width: int = 80, indent: int = 2) -> str:
         initial_indent="",
         subsequent_indent=" " * indent,
     )
+
+
+def _significance_marker(
+    ci_lo: float,
+    ci_hi: float,
+    thresholds: list[float],
+) -> str:
+    """Return ``' [!]'`` when the CI straddles any threshold.
+
+    A CI *straddles* a threshold when the lower bound is strictly
+    below it and the upper bound is strictly above it, meaning the
+    data are consistent with the p-value falling on either side.
+
+    Args:
+        ci_lo: Lower bound of the Clopper-Pearson CI.
+        ci_hi: Upper bound of the Clopper-Pearson CI.
+        thresholds: Significance thresholds to check (e.g.
+            ``[0.05, 0.01, 0.001]``).
+
+    Returns:
+        ``'  [!]'`` if the CI straddles any threshold, else ``''``.
+    """
+    for t in thresholds:
+        if ci_lo < t < ci_hi:
+            return "  [!]"
+    return ""
+
+
+def _recommend_n_permutations(
+    p_hat: float,
+    threshold: float,
+    alpha: float = 0.05,
+) -> int:
+    """Minimum *B* so the Clopper-Pearson CI no longer straddles *threshold*.
+
+    Uses the normal approximation to the Clopper-Pearson half-width,
+    ``z_{1-α/2} √{p(1-p)/B}``, and solves for *B* such that
+    the half-width is at most ``|p_hat - threshold|``.
+
+    The result is rounded up and clamped to ``[100, 10_000_000]``.
+
+    Args:
+        p_hat: Observed empirical p-value.
+        threshold: The nearest significance threshold that the CI
+            straddles.
+        alpha: Confidence level for the CI (default 0.05).
+
+    Returns:
+        Recommended minimum number of permutations.
+    """
+    gap = abs(p_hat - threshold)
+    if gap < 1e-12:
+        return 10_000_000  # effectively tied — need extreme B
+    z = _sp_stats.norm.ppf(1 - alpha / 2)
+    b_min = math.ceil((z**2) * p_hat * (1 - p_hat) / (gap**2))
+    return max(100, min(b_min, 10_000_000))  # type: ignore[no-any-return]
 
 
 def _render_header_rows(
@@ -126,6 +184,17 @@ def print_results_table(
 
     print("-" * 80)
 
+    # ── Table geometry (W = 80 chars) ─────────────────────────── #
+    #
+    #   Feature  (fc=22, left)  |  Coef (9, right)  |  2-space gap
+    #   |  Emp p-value (23, right)  |  1 space  |  Asy p-value (23, right)
+    #   Total: 22 + 9 + 2 + 23 + 1 + 23 = 80
+    #
+    # The ± margin sub-row re-uses the same grid:
+    #   33 blank prefix  (22 feat + 9 coef + 2 gap)
+    #   17 right-aligned  core  (± X.XXX)
+    #   5 suffix  ([!] or blank)
+    #   = 55 visible + 22 prefix padding = matches right edge.
     fc = 22
     stat_label = family.stat_label
     emp_hdr = f"P>|{stat_label}| (Emp)"
@@ -137,30 +206,90 @@ def print_results_table(
     emp_p = results.permuted_p_values
     asy_p = results.classic_p_values
 
+    # Clopper-Pearson CI for the empirical p-value (may be absent)
+    ci = getattr(results, "confidence_intervals", None) or {}
+    pval_ci: list[list[float]] | None = ci.get("pvalue_ci")
+    thresholds = [
+        results.p_value_threshold_one,
+        results.p_value_threshold_two,
+        results.p_value_threshold_three,
+    ]
+    borderline_features: list[tuple[str, float, float]] = []
+
     for i, feat in enumerate(feature_names):
         trunc_feat = _truncate(feat, fc)
         coef_str = f"{coefs[i]:>9.4f}"
         print(f"{trunc_feat:<{fc}}{coef_str}  {emp_p[i]:>23} {asy_p[i]:>23}")
 
+        # Sub-row: ± margin from the Clopper-Pearson CI, aligned
+        # under the empirical p-value column.
+        if pval_ci is not None and i < len(pval_ci):
+            lo, hi = pval_ci[i]
+            margin = (hi - lo) / 2
+            marker = _significance_marker(lo, hi, thresholds)
+            # Scientific e-notation when margin < 0.001 (smaller
+            # than 3 decimal places can represent); 3 dp otherwise.
+            if margin < 0.001 and margin > 0:
+                num_str = f"{margin:.0e}"
+            else:
+                num_str = f"{margin:.3f}"
+            core = f"\u00b1 {num_str}"
+            # Right-align core in 17 chars so the decimal of
+            # "\u00b1 0.XXX" aligns with the p-value decimal above.
+            # Fixed 5-char suffix for the [!] marker so it never
+            # shifts the number.
+            _warn_suffix = "  [!]" if marker else "     "
+            margin_display = f"{core:>17}{_warn_suffix}"
+            # 22 (feat) + 9 (coef) + 2 (gap) = 33 chars of prefix.
+            print(f"{'':<33}{margin_display}")
+            if marker:
+                # Identify which threshold is straddled to recommend B
+                raw_p = float(results.raw_empirical_p[i])
+                for t in thresholds:
+                    if lo < t < hi:
+                        borderline_features.append((feat, raw_p, t))
+                        break
+
+        # Blank row between feature groups for vertical spacing
+        if i < len(feature_names) - 1:
+            print()
+
     # ── Notes ──────────────────────────────────────────────────── #
+    notes: list[str] = []
+
     # Kennedy / Freedman–Lane without confounders is valid but unusual —
     # surface a note so the user knows ter Braak may be more appropriate.
     method = getattr(results, "method", "")
     confounders = getattr(results, "confounders", None)
     if method in ("kennedy", "freedman_lane") and not confounders:
         method_label = "Freedman\u2013Lane" if method == "freedman_lane" else "Kennedy"
+        notes.append(
+            f"{method_label} method called without confounders \u2014 all "
+            "features will be tested unconditionally. Consider 'ter_braak' "
+            "for unconditional tests."
+        )
+
+    # Recommend larger n_permutations for borderline cases (Step 25)
+    if borderline_features:
+        ci_alpha = ci.get("confidence_level", 0.95)
+        alpha = 1 - ci_alpha if ci_alpha > 0.5 else ci_alpha
+        b_recs = [
+            (feat, _recommend_n_permutations(p_hat, t, alpha))
+            for feat, p_hat, t in borderline_features
+        ]
+        max_b = max(b for _, b in b_recs)
+        feat_list = ", ".join(feat for feat, _ in b_recs)
+        notes.append(
+            f"Consider n_permutations \u2265 {max_b:,} to resolve "
+            f"borderline p-values for: {feat_list}."
+        )
+
+    if notes:
         print("-" * 80)
         print("Notes")
         print("-" * 80)
-        print(
-            _wrap(
-                f"  [!] {method_label} method called without confounders \u2014 all "
-                "features will be tested unconditionally. Consider 'ter_braak' "
-                "for unconditional tests.",
-                width=80,
-                indent=6,
-            )
-        )
+        for note in notes:
+            print(_wrap(f"  [!] {note}", width=80, indent=6))
 
     print("=" * 80)
     print(
@@ -329,6 +458,11 @@ def print_diagnostics_table(
     exp_r2 = ext.get("exposure_r_squared")
     show_exp_r2 = exp_r2 is not None and len(exp_r2) > 0
 
+    # Clopper-Pearson CI column (in non-Exp-R² layouts only)
+    ci = getattr(results, "confidence_intervals", None) or {}
+    pval_ci: list[list[float]] | None = ci.get("pvalue_ci")
+    show_pval_ci = pval_ci is not None and not show_exp_r2
+
     print("Per-predictor Diagnostics")
     print("-" * W)
     if show_exp_r2:
@@ -338,8 +472,17 @@ def print_diagnostics_table(
             f"{'Std Coef':>10} "
             f"{'VIF':>8} "
             f"{'MC SE':>10} "
-            f"{_exp_hdr:>8}  "
+            f"{_exp_hdr:>11}  "
             f"{'Emp vs Asy':>14}"
+        )
+    elif show_pval_ci:
+        print(
+            f"{'Feature':<{fc}}"
+            f"{'Std Coef':>9} "
+            f"{'VIF':>8} "
+            f"{'MC SE':>9} "
+            f"{'P-Val CI':>13}   "
+            f"{'Emp vs Asy':>13}"
         )
     else:
         print(
@@ -369,15 +512,17 @@ def print_diagnostics_table(
         trunc_feat = _truncate(feat, fc)
 
         # Standardized coefficient
-        if i < len(std_coefs):
-            std_c = f"{std_coefs[i]:>10.4f}"
+        if show_exp_r2:
+            std_c = f"{std_coefs[i]:>10.4f}" if i < len(std_coefs) else f"{'':>10}"
+        elif show_pval_ci:
+            std_c = f"{std_coefs[i]:>9.4f}" if i < len(std_coefs) else f"{'':>9}"
         else:
-            std_c = f"{'':>10}"
+            std_c = f"{std_coefs[i]:>10.4f}" if i < len(std_coefs) else f"{'':>10}"
 
         # VIF — flag problematic values for Notes
         if i < len(vifs):
             v = vifs[i]
-            if show_exp_r2:
+            if show_exp_r2 or show_pval_ci:
                 vif_str = f"{v:>8.2f}" if v < 1000 else f"{'> 1000':>8}"
             else:
                 vif_str = f"{v:>10.2f}" if v < 1000 else f"{'> 1000':>10}"
@@ -386,7 +531,10 @@ def print_diagnostics_table(
             elif v > 5:
                 vif_problems.append((feat, v, "moderate"))
         else:
-            vif_str = f"{'':>10}" if not show_exp_r2 else f"{'':>8}"
+            if show_exp_r2 or show_pval_ci:
+                vif_str = f"{'':>8}"
+            else:
+                vif_str = f"{'':>10}"
 
         # Monte Carlo SE — 4 dp sufficient for precision assessment.
         # Confounders have no permutation distribution, so their MC SE
@@ -395,16 +543,35 @@ def print_diagnostics_table(
             mc_val = mc_ses[i]
             if show_exp_r2:
                 if isinstance(mc_val, float) and mc_val != mc_val:  # NaN check
-                    mc_str = f"{'—':>10}"
+                    mc_str = f"{'—':>8}  "
                 else:
                     mc_str = f"{mc_val:>10.4f}"
+            elif show_pval_ci:
+                if isinstance(mc_val, float) and mc_val != mc_val:  # NaN check
+                    mc_str = f"{'—':>7}  "
+                else:
+                    mc_str = f"{mc_val:>9.4f}"
             else:
                 if isinstance(mc_val, float) and mc_val != mc_val:  # NaN check
-                    mc_str = f"{'—':>12}"
+                    mc_str = f"{'—':>10}  "
                 else:
                     mc_str = f"{mc_val:>12.4f}"
         else:
-            mc_str = f"{'':>12}" if not show_exp_r2 else f"{'':>10}"
+            if show_exp_r2:
+                mc_str = f"{'':>10}"
+            elif show_pval_ci:
+                mc_str = f"{'':>9}"
+            else:
+                mc_str = f"{'':>12}"
+
+        # P-Value CI column (non-Exp-R² layouts only)
+        if show_pval_ci:
+            if pval_ci is not None and i < len(pval_ci):
+                lo, hi = pval_ci[i]
+                ci_str = f"[{lo:.3f}, {hi:.3f}]"
+                ci_str = f"{ci_str:>16}"
+            else:
+                ci_str = f"{'—':>14}  "
 
         # Exposure R² (Kennedy only)
         # For non-confounder features, this is the R² from regressing
@@ -418,9 +585,9 @@ def print_diagnostics_table(
             if er2 is None:
                 # Confounder — not part of the hypothesis; exposure
                 # R² is undefined for controls.
-                er2_str = f"{'—':>8}"
+                er2_str = f"{'—':>9}  "
             else:
-                er2_str = f"{er2:>8.4f}"
+                er2_str = f"{er2:>11.4f}"
                 if er2 > 0.99:
                     exp_r2_problems.append((feat, er2))
 
@@ -432,6 +599,9 @@ def print_diagnostics_table(
         if show_exp_r2:
             div_str = f"{flag:>14}"
             print(f"{trunc_feat:<{fc}}{std_c} {vif_str} {mc_str} {er2_str}  {div_str}")
+        elif show_pval_ci:
+            div_str = f"{flag:>13}"
+            print(f"{trunc_feat:<{fc}}{std_c} {vif_str} {mc_str} {ci_str}{div_str}")
         else:
             div_str = f"{flag:>18}"
             print(f"{trunc_feat:<{fc}}{std_c} {vif_str} {mc_str} {div_str}")
@@ -441,6 +611,8 @@ def print_diagnostics_table(
     print("-" * W)
     print("  Std Coef: effect per SD.  VIF: collinearity (> 5 moderate, > 10 severe).")
     print("  MC SE: p-value precision (increase B if large relative to p).")
+    if show_pval_ci:
+        print("  P-Val CI: Clopper-Pearson exact 95% CI for the empirical p-value.")
     if show_exp_r2:
         print(
             "  Exp R\u00b2: variance of X_j explained by "

@@ -325,3 +325,104 @@ class TestNJobsJAXWarning:
                 random_state=0,
                 n_jobs=1,
             )
+
+
+# ------------------------------------------------------------------ #
+# NB2 autodiff cross-validation
+# ------------------------------------------------------------------ #
+
+
+class TestNB2Autodiff:
+    """Verify NB2 autodiff gradient and Hessian match finite differences."""
+
+    def test_negbin_autodiff_grad_matches_finite_diff(self):
+        """Autodiff gradient should match finite-difference approximation."""
+        import jax.numpy as jnp
+
+        from randomization_tests._backends._jax import _CAN_IMPORT_JAX
+
+        if not _CAN_IMPORT_JAX:
+            pytest.skip("JAX not available")
+
+        # Access the closure factories from the module's JAX block.
+        from randomization_tests._backends import _jax as jax_mod
+
+        _make_nll = jax_mod._make_negbin_nll
+        _make_grad = jax_mod._make_negbin_grad
+
+        alpha = 0.5
+        rng = np.random.default_rng(42)
+        n, p = 30, 3
+        X = rng.standard_normal((n, p))
+        X = np.column_stack([np.ones(n), X])  # with intercept
+        beta_true = np.array([0.5, -0.3, 0.2, 0.1])
+        mu = np.exp(X @ beta_true)
+        y = rng.poisson(mu).astype(float)
+
+        X_jax = jnp.array(X, dtype=jnp.float64)
+        y_jax = jnp.array(y, dtype=jnp.float64)
+        beta_jax = jnp.array(beta_true, dtype=jnp.float64)
+
+        nll_fn = _make_nll(alpha)
+        grad_fn = _make_grad(alpha)
+
+        # Autodiff gradient
+        g_auto = np.asarray(grad_fn(beta_jax, X_jax, y_jax))
+
+        # Finite-difference gradient
+        eps = 1e-5
+        g_fd = np.zeros_like(beta_true)
+        for j in range(len(beta_true)):
+            bp = beta_jax.at[j].set(beta_jax[j] + eps)
+            bm = beta_jax.at[j].set(beta_jax[j] - eps)
+            g_fd[j] = (
+                float(nll_fn(bp, X_jax, y_jax)) - float(nll_fn(bm, X_jax, y_jax))
+            ) / (2 * eps)
+
+        np.testing.assert_allclose(g_auto, g_fd, atol=1e-5, rtol=1e-5)
+
+    def test_negbin_autodiff_hessian_matches_finite_diff(self):
+        """Autodiff Hessian should match finite-difference approximation."""
+        import jax.numpy as jnp
+
+        from randomization_tests._backends._jax import _CAN_IMPORT_JAX
+
+        if not _CAN_IMPORT_JAX:
+            pytest.skip("JAX not available")
+
+        from randomization_tests._backends import _jax as jax_mod
+
+        _make_grad = jax_mod._make_negbin_grad
+        _make_hess = jax_mod._make_negbin_hessian
+
+        alpha = 0.5
+        rng = np.random.default_rng(42)
+        n, p = 30, 3
+        X = rng.standard_normal((n, p))
+        X = np.column_stack([np.ones(n), X])
+        beta_true = np.array([0.5, -0.3, 0.2, 0.1])
+        mu = np.exp(X @ beta_true)
+        y = rng.poisson(mu).astype(float)
+
+        X_jax = jnp.array(X, dtype=jnp.float64)
+        y_jax = jnp.array(y, dtype=jnp.float64)
+        beta_jax = jnp.array(beta_true, dtype=jnp.float64)
+
+        grad_fn = _make_grad(alpha)
+        hess_fn = _make_hess(alpha)
+
+        # Autodiff Hessian
+        H_auto = np.asarray(hess_fn(beta_jax, X_jax, y_jax))
+
+        # Finite-difference Hessian (from gradient)
+        eps = 1e-5
+        d = len(beta_true)
+        H_fd = np.zeros((d, d))
+        for j in range(d):
+            bp = beta_jax.at[j].set(beta_jax[j] + eps)
+            bm = beta_jax.at[j].set(beta_jax[j] - eps)
+            gp = np.asarray(grad_fn(bp, X_jax, y_jax))
+            gm = np.asarray(grad_fn(bm, X_jax, y_jax))
+            H_fd[:, j] = (gp - gm) / (2 * eps)
+
+        np.testing.assert_allclose(H_auto, H_fd, atol=1e-4, rtol=1e-4)

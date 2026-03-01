@@ -33,8 +33,10 @@ against the protocol, not against concrete classes.
 from __future__ import annotations
 
 import warnings
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Any, Protocol, final, runtime_checkable
+from typing import Any, ClassVar, Protocol, final, runtime_checkable
 
 import numpy as np
 import statsmodels.api as sm
@@ -48,6 +50,224 @@ from statsmodels.tools.sm_exceptions import (
     PerfectSeparationWarning,
 )
 from typing_extensions import Self
+
+# ------------------------------------------------------------------ #
+# Warning-suppression helper
+# ------------------------------------------------------------------ #
+
+
+@contextmanager
+def _suppress_sm_warnings(
+    *,
+    convergence: bool = True,
+    separation: bool = True,
+    hessian: bool = False,
+    runtime: bool = True,
+) -> Iterator[None]:
+    """Silence expected statsmodels / numerical warnings during fitting.
+
+    Model-fitting routines (IRLS, BFGS, score iterations) regularly
+    emit warnings for degenerate permuted responses — convergence
+    failures, perfect separation, singular Hessians, and floating-point
+    edge cases.  These are *expected* under permutation and must not
+    leak to the user.
+
+    Instead of repeating a ``with warnings.catch_warnings(): ...``
+    block at every call site, callers use this context manager with
+    boolean flags for the four warning families:
+
+    * **convergence** — ``SmConvergenceWarning`` from
+      ``statsmodels.tools.sm_exceptions`` (IRLS / optimizer did not
+      converge).
+    * **separation** — ``PerfectSeparationWarning`` (quasi-complete or
+      complete separation in logistic / ordinal / multinomial models).
+    * **hessian** — ``HessianInversionWarning`` (singular information
+      matrix in ordinal / multinomial fits).
+    * **runtime** — ``RuntimeWarning`` (overflow, divide-by-zero in
+      link / variance functions).
+
+    The default ``(True, True, False, True)`` covers the common GLM
+    profile; ordinal / multinomial callers add ``hessian=True``.
+
+    Example::
+
+        with _suppress_sm_warnings(hessian=True):
+            model = OrderedModel(y, X, distr="logit").fit(disp=0)
+    """
+    with warnings.catch_warnings():
+        if runtime:
+            warnings.filterwarnings("ignore", category=RuntimeWarning)
+        if convergence:
+            warnings.filterwarnings("ignore", category=SmConvergenceWarning)
+        if separation:
+            warnings.filterwarnings("ignore", category=PerfectSeparationWarning)
+        if hessian:
+            warnings.filterwarnings("ignore", category=HessianInversionWarning)
+        yield
+
+
+# ------------------------------------------------------------------ #
+# Intercept-augmentation helper
+# ------------------------------------------------------------------ #
+
+
+def _validate_count_y(y: np.ndarray, family_name: str) -> None:
+    """Validate *y* for count families (Poisson, Negative Binomial).
+
+    Checks: numeric dtype, no NaN, non-negative, integer-valued.
+    """
+    if not np.issubdtype(y.dtype, np.number):
+        msg = f"{family_name} requires numeric Y values."
+        raise ValueError(msg)
+    if np.any(np.isnan(y)):
+        msg = f"{family_name} does not accept NaN values in Y."
+        raise ValueError(msg)
+    if np.any(y < 0):
+        msg = f"{family_name} requires non-negative Y values."
+        raise ValueError(msg)
+    if not np.allclose(y, np.round(y)):
+        msg = f"{family_name} requires integer-valued Y. Got non-integer values."
+        raise ValueError(msg)
+
+
+def _validate_categorical_y(
+    y: np.ndarray,
+    family_name: str,
+    category_label: str = "categories",
+) -> None:
+    """Validate *y* for categorical families (Ordinal, Multinomial).
+
+    Checks: numeric dtype, no NaN, integer-coded, ≥ 3 levels.
+    """
+    if not np.issubdtype(y.dtype, np.number):
+        msg = f"{family_name} requires numeric Y values."
+        raise ValueError(msg)
+    if np.any(np.isnan(y)):
+        msg = f"{family_name} does not accept NaN values in Y."
+        raise ValueError(msg)
+    if not np.allclose(y, np.round(y)):
+        msg = (
+            f"{family_name} requires integer-coded Y values "
+            "(e.g. 0, 1, 2, …, K−1). Got non-integer values."
+        )
+        raise ValueError(msg)
+    n_levels = len(np.unique(y))
+    if n_levels < 3:
+        msg = (
+            f"{family_name} requires ≥ 3 {category_label}, "
+            f"got {n_levels}. For binary outcomes, use "
+            f"family='logistic' instead."
+        )
+        raise ValueError(msg)
+
+
+def _augment_intercept(
+    X: np.ndarray,
+    fit_intercept: bool = True,
+) -> np.ndarray:
+    """Prepend a column of ones when *fit_intercept* is ``True``.
+
+    Pure-NumPy replacement for the scattered
+    ``sm.add_constant(X) if fit_intercept else np.asarray(X)`` pattern
+    and ``np.column_stack([np.ones(n), X])`` one-liners.  Ensures the
+    return value is always a 2-D float array.
+    """
+    X_arr = np.asarray(X, dtype=float)
+    if X_arr.ndim == 1:
+        X_arr = X_arr.reshape(-1, 1)
+    if not fit_intercept:
+        return X_arr
+    return np.column_stack([np.ones(X_arr.shape[0]), X_arr])
+
+
+# ------------------------------------------------------------------ #
+# Batch dispatch helper
+# ------------------------------------------------------------------ #
+
+
+def _dispatch_batch(
+    backend_slug: str,
+    method_suffix: str,
+    *data_args: Any,
+    fit_intercept: bool,
+    discard_njobs: bool = False,
+    forward_kwargs: bool = True,
+    extra_backend_kwargs: dict[str, Any] | None = None,
+    **kwargs: Any,
+) -> Any:
+    """Resolve backend and dispatch a ``batch_*`` call.
+
+    Every family's ``batch_*`` method repeats the same four-step
+    boilerplate: resolve backend, pop ``n_jobs``, branch on
+    ``backend.name == "numpy"`` for parallel dispatch, and call
+    ``getattr(backend, f"batch_{slug}{suffix}")(...)``.  This helper
+    centralises that logic so each wrapper is 1–3 lines.
+
+    Parameters
+    ----------
+    backend_slug : str
+        Family identifier in the backend method name (e.g.
+        ``"ols"``, ``"logistic"``, ``"negbin"``).
+    method_suffix : str
+        Variant suffix (``""``, ``"_varying_X"``,
+        ``"_fit_and_score"``, ``"_fit_and_score_varying_X"``,
+        ``"_paired"``).
+    *data_args
+        Positional data arrays forwarded to the backend method
+        (e.g. ``X, Y_matrix`` or ``X_batch, y``).
+    fit_intercept : bool
+        Forwarded as a keyword argument to the backend.
+    discard_njobs : bool
+        If ``True``, pop and discard ``n_jobs`` without forwarding
+        (used by Linear's fully-vectorised paths).
+    forward_kwargs : bool
+        If ``True`` (default), remaining ``**kwargs`` (solver
+        parameters like ``max_iter``, ``tol``) are forwarded to
+        the backend call.  Linear sets this to ``False``.
+    extra_backend_kwargs : dict or None
+        Family-specific keyword arguments forwarded to the backend
+        (e.g. ``{"alpha": α}`` for NB2, ``{"K": K}`` for
+        ordinal/multinomial).
+    **kwargs
+        Incoming keyword arguments from the family method.  Must
+        contain ``backend`` (optional) and ``n_jobs`` (optional);
+        remaining entries are solver parameters.
+
+    Returns
+    -------
+    np.ndarray or tuple[np.ndarray, ...]
+        Backend result wrapped with ``np.asarray``.
+    """
+    from ._backends import resolve_backend
+
+    backend = kwargs.pop("backend", None)
+    if backend is None:
+        backend = resolve_backend()
+
+    call_kwargs: dict[str, Any] = {"fit_intercept": fit_intercept}
+    if extra_backend_kwargs:
+        call_kwargs.update(extra_backend_kwargs)
+
+    fn = getattr(backend, f"batch_{backend_slug}{method_suffix}")
+
+    if discard_njobs:
+        kwargs.pop("n_jobs", None)
+        if forward_kwargs:
+            call_kwargs.update(kwargs)
+        result = fn(*data_args, **call_kwargs)
+    else:
+        n_jobs = kwargs.pop("n_jobs", 1)
+        if forward_kwargs:
+            call_kwargs.update(kwargs)
+        if backend.name == "numpy":
+            result = fn(*data_args, n_jobs=n_jobs, **call_kwargs)
+        else:
+            result = fn(*data_args, **call_kwargs)
+
+    if isinstance(result, tuple):
+        return tuple(np.asarray(r) for r in result)
+    return np.asarray(result)
+
 
 # ------------------------------------------------------------------ #
 # Display helpers
@@ -475,15 +695,23 @@ class ModelFamily(Protocol):
         X: np.ndarray,
         y: np.ndarray,
         fit_intercept: bool = True,
+        *,
+        robust_se: bool = False,
     ) -> np.ndarray:
-        """Compute classical (asymptotic) p-values via statsmodels.
+        """Compute classical (asymptotic) p-values.
 
-        Used alongside the permutation p-values for comparison.
+        When JAX is available the Hessian-based observed Fisher
+        information produces SEs without a statsmodels refit.
+        Falls back to statsmodels otherwise.
 
         Args:
             X: Design matrix (pandas DataFrame or ndarray).
             y: Response vector of shape ``(n,)``.
             fit_intercept: Whether to include an intercept.
+            robust_se: If ``True``, use Eicker–Huber–White sandwich
+                SEs (heteroscedasticity-robust).  Requires JAX for
+                non-linear families; falls back to ``cov_type='HC1'``
+                with statsmodels for linear/logistic/Poisson/NB.
 
         Returns:
             Array of p-values of shape ``(p,)``, one per slope
@@ -587,6 +815,7 @@ class ModelFamily(Protocol):
         perm_indices: np.ndarray,
         *,
         fit_intercept: bool = True,
+        y: np.ndarray | None = None,
     ) -> np.ndarray:
         """Project permuted residuals onto feature *j* via a single matmul.
 
@@ -597,7 +826,8 @@ class ModelFamily(Protocol):
 
         where ``projection_row`` is the j-th row of the projection
         matrix (pseudoinverse for OLS, GLS projection A for LMM,
-        or one-step corrector for GLMM).
+        Fisher-information-weighted projection for GLMs, or
+        one-step corrector for GLMM).
 
         The score strategy adds a constant offset to these raw scores
         to produce coefficient-scale values compatible with the
@@ -609,6 +839,9 @@ class ModelFamily(Protocol):
             residuals: Reduced-model residuals ``(n,)``.
             perm_indices: Permutation indices ``(B, n)``.
             fit_intercept: Whether the model includes an intercept.
+            y: Response vector ``(n,)`` — required for GLM families
+                that need working weights from a reduced-model fit.
+                Linear and mixed families may ignore this.
 
         Returns:
             Raw score array of shape ``(B,)``.
@@ -845,6 +1078,8 @@ class LinearFamily:
     or JAX ``vmap``'d ``lstsq``).
     """
 
+    _backend_slug: ClassVar[str] = "ols"
+
     @property
     def name(self) -> str:
         return "linear"
@@ -1032,6 +1267,7 @@ class LinearFamily:
         perm_indices: np.ndarray,
         *,
         fit_intercept: bool = True,
+        y: np.ndarray | None = None,  # noqa: ARG002
     ) -> np.ndarray:
         """Score projection via OLS pseudoinverse row.
 
@@ -1042,12 +1278,8 @@ class LinearFamily:
         ``batch_fit(X, Y*)[:, j]`` where ``Y* = ŷ_red + e_π``,
         up to a constant offset that the score strategy adds.
         """
-        if fit_intercept:
-            X_full = np.column_stack([np.ones(X.shape[0]), X])
-            j = feature_idx + 1  # account for intercept column
-        else:
-            X_full = X
-            j = feature_idx
+        X_full = _augment_intercept(X, fit_intercept)
+        j = feature_idx + 1 if fit_intercept else feature_idx
         pinv = np.linalg.pinv(X_full)
         projection_row = pinv[j]  # (n,) — j-th row of pseudoinverse
         E_pi = residuals[perm_indices]  # (B, n)
@@ -1169,16 +1401,15 @@ class LinearFamily:
     ) -> dict[str, Any]:
         """OLS diagnostics via statsmodels (R², F-stat, AIC, BIC).
 
-        When *fit_intercept* is True, ``sm.add_constant`` prepends a
+        When *fit_intercept* is True, ``_augment_intercept`` prepends a
         column of ones so that statsmodels estimates the same model as
         sklearn's ``LinearRegression(fit_intercept=True)``.
         """
         # statsmodels requires an explicit intercept column.
-        X_sm = sm.add_constant(X) if fit_intercept else np.asarray(X)
-        with warnings.catch_warnings():
+        X_sm = _augment_intercept(X, fit_intercept)
+        with _suppress_sm_warnings(convergence=False, separation=False):
             # Near-singular X'X can trigger floating-point warnings;
             # suppress because the user relies on permutation p-values.
-            warnings.filterwarnings("ignore", category=RuntimeWarning)
             sm_model = sm.OLS(y, X_sm).fit()
         return {
             "n_observations": len(y),
@@ -1196,20 +1427,27 @@ class LinearFamily:
         X: np.ndarray,
         y: np.ndarray,
         fit_intercept: bool = True,
+        *,
+        robust_se: bool = False,
     ) -> np.ndarray:
         """Asymptotic t-test p-values via statsmodels OLS.
 
         Returns one p-value per slope coefficient (intercept excluded).
         RuntimeWarnings from near-singular designs are suppressed —
         the permutation p-value is the primary inference tool.
+
+        When ``robust_se=True``, uses Eicker–Huber–White (HC1)
+        heteroscedasticity-consistent standard errors.
         """
-        X_sm = sm.add_constant(X) if fit_intercept else np.asarray(X)
-        with warnings.catch_warnings():
+        X_sm = _augment_intercept(X, fit_intercept)
+        with _suppress_sm_warnings(convergence=False, separation=False):
             # Near-singular X'X can trigger floating-point warnings in
             # the Wald SE computation; suppress them because the user
             # cares about the permutation p-value, not the asymptotic one.
-            warnings.filterwarnings("ignore", category=RuntimeWarning)
-            sm_model = sm.OLS(y, X_sm).fit()
+            fit_kw: dict[str, Any] = {}
+            if robust_se:
+                fit_kw["cov_type"] = "HC1"
+            sm_model = sm.OLS(y, X_sm).fit(**fit_kw)
         # sm_model.pvalues includes the intercept at index 0 when
         # fit_intercept is True; strip it to match the protocol contract
         # of returning only slope p-values.
@@ -1251,17 +1489,13 @@ class LinearFamily:
 
     # ---- Batch fitting (hot loop) ----------------------------------
     #
-    # This is by far the most performance-critical method.  For B = 5 000
-    # permutations with n = 200 observations and p = 5 features, the
-    # NumPy backend computes:
-    #
-    #   pinv(X_aug)  →  shape (p+1, n), computed once
-    #   pinv @ Y'    →  (p+1, n) @ (n, B) = (p+1, B), one BLAS call
-    #
-    # Total: one SVD (for pinv) + one dgemm.  The JAX backend does the
-    # same but JIT-compiles and optionally runs on GPU.  Either way,
-    # the Python overhead is a single function call — no per-permutation
-    # loop.
+    # All batch methods delegate to ``_dispatch_batch`` which resolves
+    # the active backend, handles ``n_jobs`` routing, and wraps
+    # results as NumPy arrays.  Linear's shared-X paths
+    # (``batch_fit``, ``batch_fit_and_score``, ``batch_fit_paired``)
+    # are fully vectorised (one pseudoinverse multiply), so ``n_jobs``
+    # is discarded.  The ``_varying_X`` variants forward ``n_jobs``
+    # to the NumPy backend for parallel ``lstsq`` solves.
 
     def batch_fit(
         self,
@@ -1270,24 +1504,17 @@ class LinearFamily:
         fit_intercept: bool,
         **kwargs: Any,
     ) -> np.ndarray:
-        """Batch OLS via the active backend.
-
-        Delegates to ``backend.batch_ols()`` resolved from the
-        current configuration.  The backend handles intercept
-        augmentation, pseudoinverse computation, and coefficient
-        extraction internally.
-
-        The ``batch_ols`` path is already fully vectorised (single
-        pseudoinverse multiply), so ``n_jobs`` is accepted for
-        interface consistency but has no effect here.
-        """
-        from ._backends import resolve_backend
-
-        backend = kwargs.pop("backend", None)
-        kwargs.pop("n_jobs", None)  # OLS is vectorised; n_jobs unused
-        if backend is None:
-            backend = resolve_backend()
-        return np.asarray(backend.batch_ols(X, Y_matrix, fit_intercept=fit_intercept))
+        """Batch OLS via the active backend (vectorised, no ``n_jobs``)."""
+        return _dispatch_batch(  # type: ignore[no-any-return]
+            self._backend_slug,
+            "",
+            X,
+            Y_matrix,
+            fit_intercept=fit_intercept,
+            discard_njobs=True,
+            forward_kwargs=False,
+            **kwargs,
+        )
 
     def batch_fit_varying_X(
         self,
@@ -1296,31 +1523,15 @@ class LinearFamily:
         fit_intercept: bool,
         **kwargs: Any,
     ) -> np.ndarray:
-        """Batch OLS with per-permutation design matrices.
-
-        Delegates to ``backend.batch_ols_varying_X()`` for the
-        Kennedy individual path where column *j* of *X* differs
-        across permutations.  Forwards ``n_jobs`` to the NumPy
-        backend for parallel ``lstsq`` solves; the JAX backend
-        uses ``vmap`` and does not accept ``n_jobs``.
-        """
-        from ._backends import resolve_backend
-
-        backend = kwargs.pop("backend", None)
-        n_jobs = kwargs.pop("n_jobs", 1)
-        if backend is None:
-            backend = resolve_backend()
-        if backend.name == "numpy":
-            return np.asarray(
-                backend.batch_ols_varying_X(
-                    X_batch,
-                    y,
-                    fit_intercept=fit_intercept,
-                    n_jobs=n_jobs,
-                )
-            )
-        return np.asarray(
-            backend.batch_ols_varying_X(X_batch, y, fit_intercept=fit_intercept)
+        """Batch OLS with per-permutation design matrices."""
+        return _dispatch_batch(  # type: ignore[no-any-return]
+            self._backend_slug,
+            "_varying_X",
+            X_batch,
+            y,
+            fit_intercept=fit_intercept,
+            forward_kwargs=False,
+            **kwargs,
         )
 
     def batch_fit_and_score(
@@ -1331,16 +1542,16 @@ class LinearFamily:
         **kwargs: Any,
     ) -> tuple[np.ndarray, np.ndarray]:
         """Batch OLS returning ``(coefs, RSS)``."""
-        from ._backends import resolve_backend
-
-        backend = kwargs.pop("backend", None)
-        kwargs.pop("n_jobs", None)
-        if backend is None:
-            backend = resolve_backend()
-        coefs, scores = backend.batch_ols_fit_and_score(
-            X, Y_matrix, fit_intercept=fit_intercept
+        return _dispatch_batch(  # type: ignore[no-any-return]
+            self._backend_slug,
+            "_fit_and_score",
+            X,
+            Y_matrix,
+            fit_intercept=fit_intercept,
+            discard_njobs=True,
+            forward_kwargs=False,
+            **kwargs,
         )
-        return np.asarray(coefs), np.asarray(scores)
 
     def batch_fit_and_score_varying_X(
         self,
@@ -1350,21 +1561,15 @@ class LinearFamily:
         **kwargs: Any,
     ) -> tuple[np.ndarray, np.ndarray]:
         """Batch OLS (varying X) returning ``(coefs, RSS)``."""
-        from ._backends import resolve_backend
-
-        backend = kwargs.pop("backend", None)
-        n_jobs = kwargs.pop("n_jobs", 1)
-        if backend is None:
-            backend = resolve_backend()
-        if backend.name == "numpy":
-            coefs, scores = backend.batch_ols_fit_and_score_varying_X(
-                X_batch, y, fit_intercept=fit_intercept, n_jobs=n_jobs
-            )
-        else:
-            coefs, scores = backend.batch_ols_fit_and_score_varying_X(
-                X_batch, y, fit_intercept=fit_intercept
-            )
-        return np.asarray(coefs), np.asarray(scores)
+        return _dispatch_batch(  # type: ignore[no-any-return]
+            self._backend_slug,
+            "_fit_and_score_varying_X",
+            X_batch,
+            y,
+            fit_intercept=fit_intercept,
+            forward_kwargs=False,
+            **kwargs,
+        )
 
     def batch_fit_paired(
         self,
@@ -1374,14 +1579,15 @@ class LinearFamily:
         **kwargs: Any,
     ) -> np.ndarray:
         """Batch OLS where both X and Y vary per replicate."""
-        from ._backends import resolve_backend
-
-        backend = kwargs.pop("backend", None)
-        kwargs.pop("n_jobs", None)
-        if backend is None:
-            backend = resolve_backend()
-        return np.asarray(
-            backend.batch_ols_paired(X_batch, Y_batch, fit_intercept=fit_intercept)
+        return _dispatch_batch(  # type: ignore[no-any-return]
+            self._backend_slug,
+            "_paired",
+            X_batch,
+            Y_batch,
+            fit_intercept=fit_intercept,
+            discard_njobs=True,
+            forward_kwargs=False,
+            **kwargs,
         )
 
 
@@ -1442,6 +1648,8 @@ class LogisticFamily:
     ``batch_fit`` delegates to the active backend (sklearn loop or
     JAX ``vmap``'d Newton–Raphson).
     """
+
+    _backend_slug: ClassVar[str] = "logistic"
 
     @property
     def name(self) -> str:
@@ -1527,10 +1735,7 @@ class LogisticFamily:
         from .diagnostics import compute_deviance_residual_diagnostics
 
         try:
-            with warnings.catch_warnings():
-                warnings.filterwarnings("ignore", category=RuntimeWarning)
-                warnings.filterwarnings("ignore", category=SmConvergenceWarning)
-                warnings.filterwarnings("ignore", category=PerfectSeparationWarning)
+            with _suppress_sm_warnings():
                 return {
                     "deviance_residuals": compute_deviance_residual_diagnostics(X, y)
                 }
@@ -1637,12 +1842,50 @@ class LogisticFamily:
         perm_indices: np.ndarray,
         *,
         fit_intercept: bool = True,
+        y: np.ndarray | None = None,
     ) -> np.ndarray:
-        """Not implemented — logistic score projection requires Plan C."""
-        raise NotImplementedError(
-            f"score_project() not implemented for family='{self.name}'. "
-            f"Use method='ter_braak' or method='freedman_lane' instead."
-        )
+        """Score projection via Fisher-information-weighted projection.
+
+        Computes the one-step Newton update for feature *j*:
+
+            Δβ̂_j = [(X'WX)⁻¹ X']_j @ e_π
+
+        where W = μ̂(1 − μ̂) are the logistic working weights
+        evaluated at the reduced-model MLE, and e = y − μ̂_red
+        are the response-scale residuals.
+
+        Requires ``y`` to fit the reduced model and compute μ̂.
+        """
+        if y is None:
+            raise ValueError(
+                "LogisticFamily.score_project() requires y to compute "
+                "working weights from the reduced-model fit."
+            )
+
+        try:
+            from ._backends._jax import _glm_score_projection_row
+        except ImportError:
+            raise NotImplementedError(
+                "LogisticFamily.score_project() requires JAX. "
+                "Use method='ter_braak' or method='freedman_lane' instead."
+            ) from None
+
+        # Step 1: Fit reduced model (drop feature j) to get μ̂.
+        X_red = np.delete(X, feature_idx, axis=1)  # (n, p-1)
+        _, preds_reduced = fit_reduced(self, X_red, y, fit_intercept)
+        mu = np.clip(preds_reduced, 1e-10, 1 - 1e-10)  # μ̂ = σ(X_red β̂)
+
+        # Step 2: Logistic working weights W = μ̂(1 − μ̂).
+        W_diag = mu * (1.0 - mu)  # (n,)
+
+        # Step 3: Projection row from full X.
+        X_full = _augment_intercept(X, fit_intercept)
+        j_aug = feature_idx + 1 if fit_intercept else feature_idx
+        projection_row = _glm_score_projection_row(X_full, W_diag, j_aug)
+
+        # Step 4: Permuted scores via single matmul.
+        E_pi = residuals[perm_indices]  # (B, n)
+        return np.asarray(E_pi @ projection_row)  # (B,)
 
     # ---- Permutation helpers ---------------------------------------
     #
@@ -1785,18 +2028,15 @@ class LogisticFamily:
     ) -> dict[str, Any]:
         """Logistic diagnostics via statsmodels (pseudo-R², LLR, AIC, BIC).
 
-        When *fit_intercept* is True, ``sm.add_constant`` prepends a
+        When *fit_intercept* is True, ``_augment_intercept`` prepends a
         column of ones so that statsmodels estimates the same model as
         sklearn's ``LogisticRegression(fit_intercept=True)``.
         """
-        X_sm = sm.add_constant(X) if fit_intercept else np.asarray(X)
-        with warnings.catch_warnings():
+        X_sm = _augment_intercept(X, fit_intercept)
+        with _suppress_sm_warnings():
             # Quasi-complete separation can trigger convergence and
             # separation warnings; suppress because the user relies
             # on permutation p-values, not asymptotic diagnostics.
-            warnings.filterwarnings("ignore", category=SmConvergenceWarning)
-            warnings.filterwarnings("ignore", category=PerfectSeparationWarning)
-            warnings.filterwarnings("ignore", category=RuntimeWarning)
             # disp=0 suppresses the iteration log that statsmodels
             # prints by default for iterative MLE solvers.
             sm_model = sm.Logit(y, X_sm).fit(disp=0)
@@ -1816,22 +2056,37 @@ class LogisticFamily:
         X: np.ndarray,
         y: np.ndarray,
         fit_intercept: bool = True,
+        *,
+        robust_se: bool = False,
     ) -> np.ndarray:
-        """Asymptotic Wald z-test p-values via statsmodels Logit.
+        """Asymptotic Wald z-test p-values for logistic regression.
 
-        Returns one p-value per slope coefficient (intercept excluded).
-        PerfectSeparationWarning and ConvergenceWarning are suppressed
-        — the permutation p-value is the primary inference tool.
+        Tries JAX-based Fisher/sandwich SEs first (avoids a
+        statsmodels refit); falls back to statsmodels Logit.
+
+        When ``robust_se=True``, uses Eicker–Huber–White sandwich
+        SEs for heteroscedasticity-robust inference.
         """
-        X_sm = sm.add_constant(X) if fit_intercept else np.asarray(X)
-        with warnings.catch_warnings():
+        # ---- JAX path (preferred) -----------------------------------
+        try:
+            from ._backends._jax import _classical_p_values_logistic
+
+            return _classical_p_values_logistic(
+                X, y, fit_intercept, robust_se=robust_se
+            )
+        except ImportError:
+            pass
+
+        # ---- statsmodels fallback ------------------------------------
+        X_sm = _augment_intercept(X, fit_intercept)
+        with _suppress_sm_warnings():
             # Quasi-complete separation inflates SEs to infinity,
             # making Wald p-values meaningless.  Suppress the warning
             # because the user relies on permutation p-values.
-            warnings.filterwarnings("ignore", category=SmConvergenceWarning)
-            warnings.filterwarnings("ignore", category=PerfectSeparationWarning)
-            warnings.filterwarnings("ignore", category=RuntimeWarning)
-            sm_model = sm.Logit(y, X_sm).fit(disp=0)
+            fit_kw: dict[str, Any] = {"disp": 0}
+            if robust_se:
+                fit_kw["cov_type"] = "HC1"
+            sm_model = sm.Logit(y, X_sm).fit(**fit_kw)
         # sm_model.pvalues includes the intercept at index 0 when
         # fit_intercept is True; strip it to match the protocol contract.
         pvals = sm_model.pvalues[1:] if fit_intercept else sm_model.pvalues
@@ -1868,19 +2123,10 @@ class LogisticFamily:
 
     # ---- Batch fitting (hot loop) ----------------------------------
     #
-    # Unlike OLS, logistic batch fitting requires B independent
-    # Newton–Raphson solves — there is no pseudoinverse shortcut.
-    #
-    # Backend dispatch:
-    #   NumPy: sequential sklearn loop, ~1 fit/ms per permutation.
-    #   JAX:   vmap'd Newton–Raphson with jit compilation and
-    #          optional GPU execution.  All B solves run as a single
-    #          XLA kernel.  Float64, damped Hessian, triple
-    #          convergence criteria.  See ``_backends/_jax.py``.
-    #
-    # kwargs forwarded to the backend:
-    #   max_iter (int)  — Newton–Raphson iteration cap (default 100).
-    #   tol (float)     — convergence tolerance (default 1e-8).
+    # All batch methods delegate to ``_dispatch_batch`` which resolves
+    # the active backend, handles ``n_jobs`` routing, and wraps
+    # results as NumPy arrays.  Solver parameters (``max_iter``,
+    # ``tol``) are forwarded via ``**kwargs``.
 
     def batch_fit(
         self,
@@ -1889,36 +2135,14 @@ class LogisticFamily:
         fit_intercept: bool,
         **kwargs: Any,
     ) -> np.ndarray:
-        """Batch logistic via the active backend.
-
-        Delegates to ``backend.batch_logistic()`` for the shared-X
-        case (ter Braak: same X, many permuted Y vectors).  Forwards
-        ``n_jobs`` only to the NumPy backend; the JAX backend uses
-        ``vmap`` and does not accept ``n_jobs``.
-        """
-        from ._backends import resolve_backend
-
-        backend = kwargs.pop("backend", None)
-        n_jobs = kwargs.pop("n_jobs", 1)
-        if backend is None:
-            backend = resolve_backend()
-        if backend.name == "numpy":
-            return np.asarray(
-                backend.batch_logistic(
-                    X,
-                    Y_matrix,
-                    fit_intercept=fit_intercept,
-                    n_jobs=n_jobs,
-                    **kwargs,
-                )
-            )
-        return np.asarray(
-            backend.batch_logistic(
-                X,
-                Y_matrix,
-                fit_intercept=fit_intercept,
-                **kwargs,
-            )
+        """Batch logistic via the active backend."""
+        return _dispatch_batch(  # type: ignore[no-any-return]
+            self._backend_slug,
+            "",
+            X,
+            Y_matrix,
+            fit_intercept=fit_intercept,
+            **kwargs,
         )
 
     def batch_fit_varying_X(
@@ -1928,36 +2152,14 @@ class LogisticFamily:
         fit_intercept: bool,
         **kwargs: Any,
     ) -> np.ndarray:
-        """Batch logistic with per-permutation design matrices.
-
-        Delegates to ``backend.batch_logistic_varying_X()`` for the
-        Kennedy individual path where column *j* of *X* differs
-        across permutations.  Forwards ``n_jobs`` only to the NumPy
-        backend.
-        """
-        from ._backends import resolve_backend
-
-        backend = kwargs.pop("backend", None)
-        n_jobs = kwargs.pop("n_jobs", 1)
-        if backend is None:
-            backend = resolve_backend()
-        if backend.name == "numpy":
-            return np.asarray(
-                backend.batch_logistic_varying_X(
-                    X_batch,
-                    y,
-                    fit_intercept=fit_intercept,
-                    n_jobs=n_jobs,
-                    **kwargs,
-                )
-            )
-        return np.asarray(
-            backend.batch_logistic_varying_X(
-                X_batch,
-                y,
-                fit_intercept=fit_intercept,
-                **kwargs,
-            )
+        """Batch logistic with per-permutation design matrices."""
+        return _dispatch_batch(  # type: ignore[no-any-return]
+            self._backend_slug,
+            "_varying_X",
+            X_batch,
+            y,
+            fit_intercept=fit_intercept,
+            **kwargs,
         )
 
     def batch_fit_and_score(
@@ -1968,21 +2170,14 @@ class LogisticFamily:
         **kwargs: Any,
     ) -> tuple[np.ndarray, np.ndarray]:
         """Batch logistic returning ``(coefs, deviance)``."""
-        from ._backends import resolve_backend
-
-        backend = kwargs.pop("backend", None)
-        n_jobs = kwargs.pop("n_jobs", 1)
-        if backend is None:
-            backend = resolve_backend()
-        if backend.name == "numpy":
-            coefs, scores = backend.batch_logistic_fit_and_score(
-                X, Y_matrix, fit_intercept=fit_intercept, n_jobs=n_jobs, **kwargs
-            )
-        else:
-            coefs, scores = backend.batch_logistic_fit_and_score(
-                X, Y_matrix, fit_intercept=fit_intercept, **kwargs
-            )
-        return np.asarray(coefs), np.asarray(scores)
+        return _dispatch_batch(  # type: ignore[no-any-return]
+            self._backend_slug,
+            "_fit_and_score",
+            X,
+            Y_matrix,
+            fit_intercept=fit_intercept,
+            **kwargs,
+        )
 
     def batch_fit_and_score_varying_X(
         self,
@@ -1992,21 +2187,14 @@ class LogisticFamily:
         **kwargs: Any,
     ) -> tuple[np.ndarray, np.ndarray]:
         """Batch logistic (varying X) returning ``(coefs, deviance)``."""
-        from ._backends import resolve_backend
-
-        backend = kwargs.pop("backend", None)
-        n_jobs = kwargs.pop("n_jobs", 1)
-        if backend is None:
-            backend = resolve_backend()
-        if backend.name == "numpy":
-            coefs, scores = backend.batch_logistic_fit_and_score_varying_X(
-                X_batch, y, fit_intercept=fit_intercept, n_jobs=n_jobs, **kwargs
-            )
-        else:
-            coefs, scores = backend.batch_logistic_fit_and_score_varying_X(
-                X_batch, y, fit_intercept=fit_intercept, **kwargs
-            )
-        return np.asarray(coefs), np.asarray(scores)
+        return _dispatch_batch(  # type: ignore[no-any-return]
+            self._backend_slug,
+            "_fit_and_score_varying_X",
+            X_batch,
+            y,
+            fit_intercept=fit_intercept,
+            **kwargs,
+        )
 
     def batch_fit_paired(
         self,
@@ -2016,29 +2204,13 @@ class LogisticFamily:
         **kwargs: Any,
     ) -> np.ndarray:
         """Batch logistic where both X and Y vary per replicate."""
-        from ._backends import resolve_backend
-
-        backend = kwargs.pop("backend", None)
-        n_jobs = kwargs.pop("n_jobs", 1)
-        if backend is None:
-            backend = resolve_backend()
-        if backend.name == "numpy":
-            return np.asarray(
-                backend.batch_logistic_paired(
-                    X_batch,
-                    Y_batch,
-                    fit_intercept=fit_intercept,
-                    n_jobs=n_jobs,
-                    **kwargs,
-                )
-            )
-        return np.asarray(
-            backend.batch_logistic_paired(
-                X_batch,
-                Y_batch,
-                fit_intercept=fit_intercept,
-                **kwargs,
-            )
+        return _dispatch_batch(  # type: ignore[no-any-return]
+            self._backend_slug,
+            "_paired",
+            X_batch,
+            Y_batch,
+            fit_intercept=fit_intercept,
+            **kwargs,
         )
 
 
@@ -2101,6 +2273,8 @@ class PoissonFamily:
     ``batch_fit`` delegates to the active backend (JAX or NumPy)
     via ``resolve_backend()``.
     """
+
+    _backend_slug: ClassVar[str] = "poisson"
 
     @property
     def name(self) -> str:
@@ -2187,10 +2361,8 @@ class PoissonFamily:
     ) -> dict[str, Any]:
         """Compute Poisson goodness-of-fit diagnostics."""
         try:
-            with warnings.catch_warnings():
-                warnings.filterwarnings("ignore", category=RuntimeWarning)
-                warnings.filterwarnings("ignore", category=SmConvergenceWarning)
-                X_sm = sm.add_constant(X) if fit_intercept else np.asarray(X)
+            with _suppress_sm_warnings(separation=False):
+                X_sm = _augment_intercept(X, fit_intercept)
                 pois_model = sm.GLM(y, X_sm, family=sm.families.Poisson()).fit(disp=0)
                 pearson_chi2 = float(pois_model.pearson_chi2)
                 df_resid = float(pois_model.df_resid)
@@ -2225,20 +2397,7 @@ class PoissonFamily:
 
     def validate_y(self, y: np.ndarray) -> None:
         """Check that *y* contains non-negative integer-valued data."""
-        if not np.issubdtype(y.dtype, np.number):
-            msg = "PoissonFamily requires numeric Y values."
-            raise ValueError(msg)
-        if np.any(np.isnan(y)):
-            msg = "PoissonFamily does not accept NaN values in Y."
-            raise ValueError(msg)
-        if np.any(y < 0):
-            msg = "PoissonFamily requires non-negative Y values."
-            raise ValueError(msg)
-        # Allow floats that happen to be whole numbers (e.g. 3.0),
-        # but reject genuinely fractional values like 3.5.
-        if not np.allclose(y, np.round(y)):
-            msg = "PoissonFamily requires integer-valued Y. Got non-integer values."
-            raise ValueError(msg)
+        _validate_count_y(y, "PoissonFamily")
 
     # ---- Single-model operations -----------------------------------
     #
@@ -2257,11 +2416,8 @@ class PoissonFamily:
         and runtime warnings are suppressed — the permutation p-value
         is the primary inference tool.
         """
-        X_sm = sm.add_constant(X) if fit_intercept else np.asarray(X)
-        with warnings.catch_warnings():
-            warnings.filterwarnings("ignore", category=SmConvergenceWarning)
-            warnings.filterwarnings("ignore", category=PerfectSeparationWarning)
-            warnings.filterwarnings("ignore", category=RuntimeWarning)
+        X_sm = _augment_intercept(X, fit_intercept)
+        with _suppress_sm_warnings():
             model = sm.GLM(y, X_sm, family=sm.families.Poisson()).fit(disp=0)
         return model
 
@@ -2273,7 +2429,7 @@ class PoissonFamily:
         non-negative counts (not log-counts).
         """
         # Use fittedvalues when X matches the training data (avoids
-        # re-applying add_constant).  Fall back to model.predict()
+        # re-applying _augment_intercept).  Fall back to model.predict()
         # with explicit X when shapes differ (e.g. reduced model).
         return np.asarray(model.fittedvalues)
 
@@ -2284,7 +2440,7 @@ class PoissonFamily:
         model was fit with a constant column; strip it.
         """
         # GLM models always include the constant in params when
-        # add_constant was used.  The model's df_model tells us the
+        # _augment_intercept was used.  The model's df_model tells us the
         # number of slope parameters, but it's simpler to check
         # whether the first column is the constant by convention.
         # We follow the same pattern as LogisticFamily: always strip
@@ -2323,12 +2479,50 @@ class PoissonFamily:
         perm_indices: np.ndarray,
         *,
         fit_intercept: bool = True,
+        y: np.ndarray | None = None,
     ) -> np.ndarray:
-        """Not implemented — Poisson score projection requires Plan C."""
-        raise NotImplementedError(
-            f"score_project() not implemented for family='{self.name}'. "
-            f"Use method='ter_braak' or method='freedman_lane' instead."
-        )
+        """Score projection via Fisher-information-weighted projection.
+
+        Computes the one-step Newton update for feature *j*:
+
+            Δβ̂_j = [(X'WX)⁻¹ X']_j @ e_π
+
+        where W = μ̂ are the Poisson working weights (canonical link)
+        evaluated at the reduced-model MLE, and e = y − μ̂_red are
+        the response-scale residuals.
+
+        Requires ``y`` to fit the reduced model and compute μ̂.
+        """
+        if y is None:
+            raise ValueError(
+                "PoissonFamily.score_project() requires y to compute "
+                "working weights from the reduced-model fit."
+            )
+
+        try:
+            from ._backends._jax import _glm_score_projection_row
+        except ImportError:
+            raise NotImplementedError(
+                "PoissonFamily.score_project() requires JAX. "
+                "Use method='ter_braak' or method='freedman_lane' instead."
+            ) from None
+
+        # Step 1: Fit reduced model (drop feature j) to get μ̂.
+        X_red = np.delete(X, feature_idx, axis=1)
+        _, preds_reduced = fit_reduced(self, X_red, y, fit_intercept)
+        mu = np.maximum(preds_reduced, 1e-10)  # μ̂ = exp(X_red β̂)
+
+        # Step 2: Poisson working weights W = μ̂ (canonical link).
+        W_diag = mu  # (n,)
+
+        # Step 3: Projection row from full X.
+        X_full = _augment_intercept(X, fit_intercept)
+        j_aug = feature_idx + 1 if fit_intercept else feature_idx
+        projection_row = _glm_score_projection_row(X_full, W_diag, j_aug)
+
+        # Step 4: Permuted scores via single matmul.
+        E_pi = residuals[perm_indices]  # (B, n)
+        return np.asarray(E_pi @ projection_row)  # (B,)
 
     # ---- Permutation helpers ---------------------------------------
     #
@@ -2464,11 +2658,8 @@ class PoissonFamily:
         fit_intercept: bool = True,
     ) -> dict[str, Any]:
         """Poisson GLM diagnostics (deviance, Pearson χ², dispersion, AIC, BIC)."""
-        X_sm = sm.add_constant(X) if fit_intercept else np.asarray(X)
-        with warnings.catch_warnings():
-            warnings.filterwarnings("ignore", category=SmConvergenceWarning)
-            warnings.filterwarnings("ignore", category=PerfectSeparationWarning)
-            warnings.filterwarnings("ignore", category=RuntimeWarning)
+        X_sm = _augment_intercept(X, fit_intercept)
+        with _suppress_sm_warnings():
             sm_model = sm.GLM(y, X_sm, family=sm.families.Poisson()).fit(disp=0)
         pearson_chi2 = float(sm_model.pearson_chi2)  # Σ (yᵢ − μ̂ᵢ)² / μ̂ᵢ
         df_resid = float(sm_model.df_resid)  # n − p − 1
@@ -2491,19 +2682,32 @@ class PoissonFamily:
         X: np.ndarray,
         y: np.ndarray,
         fit_intercept: bool = True,
+        *,
+        robust_se: bool = False,
     ) -> np.ndarray:
-        """Asymptotic Wald z-test p-values via statsmodels Poisson GLM.
+        """Asymptotic Wald z-test p-values for Poisson regression.
 
-        Returns one p-value per slope coefficient (intercept excluded).
-        Convergence warnings are suppressed — the permutation p-value
-        is the primary inference tool.
+        Tries JAX-based Fisher/sandwich SEs first (avoids a
+        statsmodels refit); falls back to statsmodels Poisson GLM.
+
+        When ``robust_se=True``, uses Eicker–Huber–White sandwich
+        SEs for heteroscedasticity-robust inference.
         """
-        X_sm = sm.add_constant(X) if fit_intercept else np.asarray(X)
-        with warnings.catch_warnings():
-            warnings.filterwarnings("ignore", category=SmConvergenceWarning)
-            warnings.filterwarnings("ignore", category=PerfectSeparationWarning)
-            warnings.filterwarnings("ignore", category=RuntimeWarning)
-            sm_model = sm.GLM(y, X_sm, family=sm.families.Poisson()).fit(disp=0)
+        # ---- JAX path (preferred) -----------------------------------
+        try:
+            from ._backends._jax import _classical_p_values_poisson
+
+            return _classical_p_values_poisson(X, y, fit_intercept, robust_se=robust_se)
+        except ImportError:
+            pass
+
+        # ---- statsmodels fallback ------------------------------------
+        X_sm = _augment_intercept(X, fit_intercept)
+        with _suppress_sm_warnings():
+            fit_kw: dict[str, Any] = {"disp": 0}
+            if robust_se:
+                fit_kw["cov_type"] = "HC1"
+            sm_model = sm.GLM(y, X_sm, family=sm.families.Poisson()).fit(**fit_kw)
         pvals = sm_model.pvalues[1:] if fit_intercept else sm_model.pvalues
         return np.asarray(pvals)
 
@@ -2539,10 +2743,10 @@ class PoissonFamily:
 
     # ---- Batch fitting (hot loop) ----------------------------------
     #
-    # Delegates to the active backend (JAX or NumPy) via
-    # ``resolve_backend()``.  The JAX backend uses vmap'd
-    # Newton–Raphson; the NumPy backend falls back to a
-    # joblib-parallelised statsmodels IRLS loop.
+    # All batch methods delegate to ``_dispatch_batch`` which resolves
+    # the active backend, handles ``n_jobs`` routing, and wraps
+    # results as NumPy arrays.  Solver parameters (``max_iter``,
+    # ``tol``) are forwarded via ``**kwargs``.
 
     def batch_fit(
         self,
@@ -2551,35 +2755,14 @@ class PoissonFamily:
         fit_intercept: bool,
         **kwargs: Any,
     ) -> np.ndarray:
-        """Batch Poisson GLM via the active backend.
-
-        Delegates to ``backend.batch_poisson()`` resolved from the
-        current configuration.  Forwards ``n_jobs`` only to the
-        NumPy backend.
-        """
-        from ._backends import resolve_backend
-
-        backend = kwargs.pop("backend", None)
-        n_jobs = kwargs.pop("n_jobs", 1)
-        if backend is None:
-            backend = resolve_backend()
-        if backend.name == "numpy":
-            return np.asarray(
-                backend.batch_poisson(
-                    X,
-                    Y_matrix,
-                    fit_intercept=fit_intercept,
-                    n_jobs=n_jobs,
-                    **kwargs,
-                )
-            )
-        return np.asarray(
-            backend.batch_poisson(
-                X,
-                Y_matrix,
-                fit_intercept=fit_intercept,
-                **kwargs,
-            )
+        """Batch Poisson GLM via the active backend."""
+        return _dispatch_batch(  # type: ignore[no-any-return]
+            self._backend_slug,
+            "",
+            X,
+            Y_matrix,
+            fit_intercept=fit_intercept,
+            **kwargs,
         )
 
     def batch_fit_varying_X(
@@ -2589,35 +2772,14 @@ class PoissonFamily:
         fit_intercept: bool,
         **kwargs: Any,
     ) -> np.ndarray:
-        """Batch Poisson with per-permutation design matrices.
-
-        Delegates to ``backend.batch_poisson_varying_X()`` for the
-        Kennedy individual path.  Forwards ``n_jobs`` only to the
-        NumPy backend.
-        """
-        from ._backends import resolve_backend
-
-        backend = kwargs.pop("backend", None)
-        n_jobs = kwargs.pop("n_jobs", 1)
-        if backend is None:
-            backend = resolve_backend()
-        if backend.name == "numpy":
-            return np.asarray(
-                backend.batch_poisson_varying_X(
-                    X_batch,
-                    y,
-                    fit_intercept=fit_intercept,
-                    n_jobs=n_jobs,
-                    **kwargs,
-                )
-            )
-        return np.asarray(
-            backend.batch_poisson_varying_X(
-                X_batch,
-                y,
-                fit_intercept=fit_intercept,
-                **kwargs,
-            )
+        """Batch Poisson with per-permutation design matrices."""
+        return _dispatch_batch(  # type: ignore[no-any-return]
+            self._backend_slug,
+            "_varying_X",
+            X_batch,
+            y,
+            fit_intercept=fit_intercept,
+            **kwargs,
         )
 
     def batch_fit_and_score(
@@ -2628,21 +2790,14 @@ class PoissonFamily:
         **kwargs: Any,
     ) -> tuple[np.ndarray, np.ndarray]:
         """Batch Poisson returning ``(coefs, deviance)``."""
-        from ._backends import resolve_backend
-
-        backend = kwargs.pop("backend", None)
-        n_jobs = kwargs.pop("n_jobs", 1)
-        if backend is None:
-            backend = resolve_backend()
-        if backend.name == "numpy":
-            coefs, scores = backend.batch_poisson_fit_and_score(
-                X, Y_matrix, fit_intercept=fit_intercept, n_jobs=n_jobs, **kwargs
-            )
-        else:
-            coefs, scores = backend.batch_poisson_fit_and_score(
-                X, Y_matrix, fit_intercept=fit_intercept, **kwargs
-            )
-        return np.asarray(coefs), np.asarray(scores)
+        return _dispatch_batch(  # type: ignore[no-any-return]
+            self._backend_slug,
+            "_fit_and_score",
+            X,
+            Y_matrix,
+            fit_intercept=fit_intercept,
+            **kwargs,
+        )
 
     def batch_fit_and_score_varying_X(
         self,
@@ -2652,21 +2807,14 @@ class PoissonFamily:
         **kwargs: Any,
     ) -> tuple[np.ndarray, np.ndarray]:
         """Batch Poisson (varying X) returning ``(coefs, deviance)``."""
-        from ._backends import resolve_backend
-
-        backend = kwargs.pop("backend", None)
-        n_jobs = kwargs.pop("n_jobs", 1)
-        if backend is None:
-            backend = resolve_backend()
-        if backend.name == "numpy":
-            coefs, scores = backend.batch_poisson_fit_and_score_varying_X(
-                X_batch, y, fit_intercept=fit_intercept, n_jobs=n_jobs, **kwargs
-            )
-        else:
-            coefs, scores = backend.batch_poisson_fit_and_score_varying_X(
-                X_batch, y, fit_intercept=fit_intercept, **kwargs
-            )
-        return np.asarray(coefs), np.asarray(scores)
+        return _dispatch_batch(  # type: ignore[no-any-return]
+            self._backend_slug,
+            "_fit_and_score_varying_X",
+            X_batch,
+            y,
+            fit_intercept=fit_intercept,
+            **kwargs,
+        )
 
     def batch_fit_paired(
         self,
@@ -2676,29 +2824,13 @@ class PoissonFamily:
         **kwargs: Any,
     ) -> np.ndarray:
         """Batch Poisson where both X and Y vary per replicate."""
-        from ._backends import resolve_backend
-
-        backend = kwargs.pop("backend", None)
-        n_jobs = kwargs.pop("n_jobs", 1)
-        if backend is None:
-            backend = resolve_backend()
-        if backend.name == "numpy":
-            return np.asarray(
-                backend.batch_poisson_paired(
-                    X_batch,
-                    Y_batch,
-                    fit_intercept=fit_intercept,
-                    n_jobs=n_jobs,
-                    **kwargs,
-                )
-            )
-        return np.asarray(
-            backend.batch_poisson_paired(
-                X_batch,
-                Y_batch,
-                fit_intercept=fit_intercept,
-                **kwargs,
-            )
+        return _dispatch_batch(  # type: ignore[no-any-return]
+            self._backend_slug,
+            "_paired",
+            X_batch,
+            Y_batch,
+            fit_intercept=fit_intercept,
+            **kwargs,
         )
 
 
@@ -2772,6 +2904,7 @@ class NegativeBinomialFamily:
     """
 
     alpha: float | None = None
+    _backend_slug: ClassVar[str] = "negbin"
 
     @property
     def name(self) -> str:
@@ -2864,10 +2997,8 @@ class NegativeBinomialFamily:
     ) -> dict[str, Any]:
         """Compute negative binomial goodness-of-fit diagnostics."""
         try:
-            with warnings.catch_warnings():
-                warnings.filterwarnings("ignore", category=RuntimeWarning)
-                warnings.filterwarnings("ignore", category=SmConvergenceWarning)
-                X_sm = sm.add_constant(X) if fit_intercept else np.asarray(X)
+            with _suppress_sm_warnings(separation=False):
+                X_sm = _augment_intercept(X, fit_intercept)
                 # Estimate α via MLE, then fit GLM with fixed α.
                 nb_mle = sm.NegativeBinomial(y, X_sm).fit(disp=0, maxiter=200)
                 alpha_hat = float(np.exp(nb_mle.lnalpha))
@@ -2906,21 +3037,7 @@ class NegativeBinomialFamily:
 
     def validate_y(self, y: np.ndarray) -> None:
         """Check that *y* contains non-negative integer-valued data."""
-        if not np.issubdtype(y.dtype, np.number):
-            msg = "NegativeBinomialFamily requires numeric Y values."
-            raise ValueError(msg)
-        if np.any(np.isnan(y)):
-            msg = "NegativeBinomialFamily does not accept NaN values in Y."
-            raise ValueError(msg)
-        if np.any(y < 0):
-            msg = "NegativeBinomialFamily requires non-negative Y values."
-            raise ValueError(msg)
-        if not np.allclose(y, np.round(y)):
-            msg = (
-                "NegativeBinomialFamily requires integer-valued Y. "
-                "Got non-integer values."
-            )
-            raise ValueError(msg)
+        _validate_count_y(y, "NegativeBinomialFamily")
 
     # ---- Single-model operations -----------------------------------
 
@@ -2937,11 +3054,8 @@ class NegativeBinomialFamily:
         not yet resolved.
         """
         alpha = self._require_alpha("fit")
-        X_sm = sm.add_constant(X) if fit_intercept else np.asarray(X)
-        with warnings.catch_warnings():
-            warnings.filterwarnings("ignore", category=SmConvergenceWarning)
-            warnings.filterwarnings("ignore", category=PerfectSeparationWarning)
-            warnings.filterwarnings("ignore", category=RuntimeWarning)
+        X_sm = _augment_intercept(X, fit_intercept)
+        with _suppress_sm_warnings():
             model = sm.GLM(y, X_sm, family=self._nb_family(alpha)).fit(disp=0)
         return model
 
@@ -2950,7 +3064,13 @@ class NegativeBinomialFamily:
         return np.asarray(model.fittedvalues)
 
     def coefs(self, model: Any) -> np.ndarray:
-        """Extract slope coefficients (intercept excluded)."""
+        """Extract slope coefficients (intercept excluded).
+
+        Same intercept-stripping logic as ``PoissonFamily.coefs()``:
+        when ``model.k_constant`` is true, ``params[0]`` is the
+        intercept added by ``_augment_intercept()`` and must be
+        removed to return only the p slope coefficients.
+        """
         params = np.asarray(model.params)
         if model.k_constant:
             return params[1:]
@@ -2975,12 +3095,54 @@ class NegativeBinomialFamily:
         perm_indices: np.ndarray,
         *,
         fit_intercept: bool = True,
+        y: np.ndarray | None = None,
     ) -> np.ndarray:
-        """Not implemented — negative-binomial score projection requires Plan C."""
-        raise NotImplementedError(
-            f"score_project() not implemented for family='{self.name}'. "
-            f"Use method='ter_braak' or method='freedman_lane' instead."
-        )
+        """Score projection via Fisher-information-weighted projection.
+
+        Computes the one-step Newton update for feature *j*:
+
+            Δβ̂_j = [(X'WX)⁻¹ X']_j @ e_π
+
+        where W = μ̂ / (1 + α·μ̂) are the NB2 working weights
+        (canonical link) evaluated at the reduced-model MLE, and
+        e = y − μ̂_red are the response-scale residuals.
+
+        Requires ``y`` to fit the reduced model and compute μ̂.
+        """
+        if y is None:
+            raise ValueError(
+                "NegativeBinomialFamily.score_project() requires y to "
+                "compute working weights from the reduced-model fit."
+            )
+
+        try:
+            from ._backends._jax import _glm_score_projection_row
+        except ImportError:
+            raise NotImplementedError(
+                "NegativeBinomialFamily.score_project() requires JAX. "
+                "Use method='ter_braak' or method='freedman_lane' instead."
+            ) from None
+
+        alpha = self._require_alpha("score_project")
+
+        # Step 1: Fit reduced model (drop feature j) to get μ̂.
+        X_red = np.delete(X, feature_idx, axis=1)
+        _, preds_reduced = fit_reduced(self, X_red, y, fit_intercept)
+        mu = np.maximum(preds_reduced, 1e-10)
+
+        # Step 2: NB2 working weights W = μ̂ / (1 + α·μ̂).
+        # From the NB2 log-likelihood with log link, the Fisher
+        # information uses W_i = μ̂_i / (1 + α·μ̂_i).
+        W_diag = mu / (1.0 + alpha * mu)  # (n,)
+
+        # Step 3: Projection row from full X.
+        X_full = _augment_intercept(X, fit_intercept)
+        j_aug = feature_idx + 1 if fit_intercept else feature_idx
+        projection_row = _glm_score_projection_row(X_full, W_diag, j_aug)
+
+        # Step 4: Permuted scores via single matmul.
+        E_pi = residuals[perm_indices]  # (B, n)
+        return np.asarray(E_pi @ projection_row)  # (B,)
 
     # ---- Permutation helpers ---------------------------------------
 
@@ -3091,11 +3253,8 @@ class NegativeBinomialFamily:
     ) -> dict[str, Any]:
         """NB GLM diagnostics (deviance, Pearson χ², dispersion, α, AIC, BIC)."""
         alpha = self._require_alpha("diagnostics")
-        X_sm = sm.add_constant(X) if fit_intercept else np.asarray(X)
-        with warnings.catch_warnings():
-            warnings.filterwarnings("ignore", category=SmConvergenceWarning)
-            warnings.filterwarnings("ignore", category=PerfectSeparationWarning)
-            warnings.filterwarnings("ignore", category=RuntimeWarning)
+        X_sm = _augment_intercept(X, fit_intercept)
+        with _suppress_sm_warnings():
             sm_model = sm.GLM(y, X_sm, family=self._nb_family(alpha)).fit(disp=0)
         pearson_chi2 = float(sm_model.pearson_chi2)  # Σ (yᵢ − μ̂ᵢ)² / Var(μ̂ᵢ)
         df_resid = float(sm_model.df_resid)  # n − p − 1
@@ -3119,18 +3278,36 @@ class NegativeBinomialFamily:
         X: np.ndarray,
         y: np.ndarray,
         fit_intercept: bool = True,
+        *,
+        robust_se: bool = False,
     ) -> np.ndarray:
-        """Asymptotic Wald z-test p-values via statsmodels NB GLM.
+        """Asymptotic Wald z-test p-values for NB2 regression.
 
-        Returns one p-value per slope coefficient (intercept excluded).
+        Tries JAX-based Fisher/sandwich SEs first (avoids a
+        statsmodels refit); falls back to statsmodels NB GLM.
+
+        When ``robust_se=True``, uses Eicker–Huber–White sandwich
+        SEs for heteroscedasticity-robust inference.
         """
         alpha = self._require_alpha("classical_p_values")
-        X_sm = sm.add_constant(X) if fit_intercept else np.asarray(X)
-        with warnings.catch_warnings():
-            warnings.filterwarnings("ignore", category=SmConvergenceWarning)
-            warnings.filterwarnings("ignore", category=PerfectSeparationWarning)
-            warnings.filterwarnings("ignore", category=RuntimeWarning)
-            sm_model = sm.GLM(y, X_sm, family=self._nb_family(alpha)).fit(disp=0)
+
+        # ---- JAX path (preferred) -----------------------------------
+        try:
+            from ._backends._jax import _classical_p_values_negbin
+
+            return _classical_p_values_negbin(
+                X, y, alpha, fit_intercept, robust_se=robust_se
+            )
+        except ImportError:
+            pass
+
+        # ---- statsmodels fallback ------------------------------------
+        X_sm = _augment_intercept(X, fit_intercept)
+        with _suppress_sm_warnings():
+            fit_kw: dict[str, Any] = {"disp": 0}
+            if robust_se:
+                fit_kw["cov_type"] = "HC1"
+            sm_model = sm.GLM(y, X_sm, family=self._nb_family(alpha)).fit(**fit_kw)
         pvals = sm_model.pvalues[1:] if fit_intercept else sm_model.pvalues
         return np.asarray(pvals)
 
@@ -3212,10 +3389,8 @@ class NegativeBinomialFamily:
         """
         if self.alpha is not None:
             return self
-        X_sm = sm.add_constant(X) if fit_intercept else np.asarray(X)
-        with warnings.catch_warnings():
-            warnings.filterwarnings("ignore", category=SmConvergenceWarning)
-            warnings.filterwarnings("ignore", category=RuntimeWarning)
+        X_sm = _augment_intercept(X, fit_intercept)
+        with _suppress_sm_warnings(separation=False):
             nb_model = sm.NegativeBinomial(y, X_sm).fit(disp=0, maxiter=200)
         alpha_hat = float(np.exp(nb_model.lnalpha))
         # ``@final`` makes ``Self ≡ NegativeBinomialFamily``, so
@@ -3225,10 +3400,11 @@ class NegativeBinomialFamily:
 
     # ---- Batch fitting (hot loop) ----------------------------------
     #
-    # Delegates to the active backend (JAX or NumPy) via
-    # ``resolve_backend()``.  The JAX backend uses vmap'd
-    # Newton–Raphson with fixed α; the NumPy backend falls
-    # back to a joblib-parallelised statsmodels IRLS loop.
+    # All batch methods delegate to ``_dispatch_batch`` which resolves
+    # the active backend, handles ``n_jobs`` routing, and wraps
+    # results as NumPy arrays.  Each method calls
+    # ``_require_alpha(method)`` before dispatch to ensure the
+    # dispersion parameter has been calibrated.
 
     def batch_fit(
         self,
@@ -3237,39 +3413,16 @@ class NegativeBinomialFamily:
         fit_intercept: bool,
         **kwargs: Any,
     ) -> np.ndarray:
-        """Batch NB GLM via the active backend.
-
-        Delegates to ``backend.batch_negbin()`` resolved from the
-        current configuration.  The dispersion α (estimated once
-        from observed data) is forwarded to the backend.
-        """
+        """Batch NB GLM via the active backend."""
         alpha = self._require_alpha("batch_fit")
-
-        from ._backends import resolve_backend
-
-        backend = kwargs.pop("backend", None)
-        n_jobs = kwargs.pop("n_jobs", 1)
-        if backend is None:
-            backend = resolve_backend()
-        if backend.name == "numpy":
-            return np.asarray(
-                backend.batch_negbin(
-                    X,
-                    Y_matrix,
-                    fit_intercept=fit_intercept,
-                    alpha=alpha,
-                    n_jobs=n_jobs,
-                    **kwargs,
-                )
-            )
-        return np.asarray(
-            backend.batch_negbin(
-                X,
-                Y_matrix,
-                fit_intercept=fit_intercept,
-                alpha=alpha,
-                **kwargs,
-            )
+        return _dispatch_batch(  # type: ignore[no-any-return]
+            self._backend_slug,
+            "",
+            X,
+            Y_matrix,
+            fit_intercept=fit_intercept,
+            extra_backend_kwargs={"alpha": alpha},
+            **kwargs,
         )
 
     def batch_fit_varying_X(
@@ -3279,39 +3432,16 @@ class NegativeBinomialFamily:
         fit_intercept: bool,
         **kwargs: Any,
     ) -> np.ndarray:
-        """Batch NB with per-permutation design matrices.
-
-        Delegates to ``backend.batch_negbin_varying_X()`` for the
-        Kennedy individual path.  Forwards ``n_jobs`` only to the
-        NumPy backend.
-        """
+        """Batch NB with per-permutation design matrices."""
         alpha = self._require_alpha("batch_fit_varying_X")
-
-        from ._backends import resolve_backend
-
-        backend = kwargs.pop("backend", None)
-        n_jobs = kwargs.pop("n_jobs", 1)
-        if backend is None:
-            backend = resolve_backend()
-        if backend.name == "numpy":
-            return np.asarray(
-                backend.batch_negbin_varying_X(
-                    X_batch,
-                    y,
-                    fit_intercept=fit_intercept,
-                    alpha=alpha,
-                    n_jobs=n_jobs,
-                    **kwargs,
-                )
-            )
-        return np.asarray(
-            backend.batch_negbin_varying_X(
-                X_batch,
-                y,
-                fit_intercept=fit_intercept,
-                alpha=alpha,
-                **kwargs,
-            )
+        return _dispatch_batch(  # type: ignore[no-any-return]
+            self._backend_slug,
+            "_varying_X",
+            X_batch,
+            y,
+            fit_intercept=fit_intercept,
+            extra_backend_kwargs={"alpha": alpha},
+            **kwargs,
         )
 
     def batch_fit_and_score(
@@ -3323,31 +3453,15 @@ class NegativeBinomialFamily:
     ) -> tuple[np.ndarray, np.ndarray]:
         """Batch NB returning ``(coefs, deviance)``."""
         alpha = self._require_alpha("batch_fit_and_score")
-
-        from ._backends import resolve_backend
-
-        backend = kwargs.pop("backend", None)
-        n_jobs = kwargs.pop("n_jobs", 1)
-        if backend is None:
-            backend = resolve_backend()
-        if backend.name == "numpy":
-            coefs, scores = backend.batch_negbin_fit_and_score(
-                X,
-                Y_matrix,
-                fit_intercept=fit_intercept,
-                alpha=alpha,
-                n_jobs=n_jobs,
-                **kwargs,
-            )
-        else:
-            coefs, scores = backend.batch_negbin_fit_and_score(
-                X,
-                Y_matrix,
-                fit_intercept=fit_intercept,
-                alpha=alpha,
-                **kwargs,
-            )
-        return np.asarray(coefs), np.asarray(scores)
+        return _dispatch_batch(  # type: ignore[no-any-return]
+            self._backend_slug,
+            "_fit_and_score",
+            X,
+            Y_matrix,
+            fit_intercept=fit_intercept,
+            extra_backend_kwargs={"alpha": alpha},
+            **kwargs,
+        )
 
     def batch_fit_and_score_varying_X(
         self,
@@ -3358,31 +3472,15 @@ class NegativeBinomialFamily:
     ) -> tuple[np.ndarray, np.ndarray]:
         """Batch NB (varying X) returning ``(coefs, deviance)``."""
         alpha = self._require_alpha("batch_fit_and_score_varying_X")
-
-        from ._backends import resolve_backend
-
-        backend = kwargs.pop("backend", None)
-        n_jobs = kwargs.pop("n_jobs", 1)
-        if backend is None:
-            backend = resolve_backend()
-        if backend.name == "numpy":
-            coefs, scores = backend.batch_negbin_fit_and_score_varying_X(
-                X_batch,
-                y,
-                fit_intercept=fit_intercept,
-                alpha=alpha,
-                n_jobs=n_jobs,
-                **kwargs,
-            )
-        else:
-            coefs, scores = backend.batch_negbin_fit_and_score_varying_X(
-                X_batch,
-                y,
-                fit_intercept=fit_intercept,
-                alpha=alpha,
-                **kwargs,
-            )
-        return np.asarray(coefs), np.asarray(scores)
+        return _dispatch_batch(  # type: ignore[no-any-return]
+            self._backend_slug,
+            "_fit_and_score_varying_X",
+            X_batch,
+            y,
+            fit_intercept=fit_intercept,
+            extra_backend_kwargs={"alpha": alpha},
+            **kwargs,
+        )
 
     def batch_fit_paired(
         self,
@@ -3393,32 +3491,14 @@ class NegativeBinomialFamily:
     ) -> np.ndarray:
         """Batch NB2 where both X and Y vary per replicate."""
         alpha = self._require_alpha("batch_fit_paired")
-
-        from ._backends import resolve_backend
-
-        backend = kwargs.pop("backend", None)
-        n_jobs = kwargs.pop("n_jobs", 1)
-        if backend is None:
-            backend = resolve_backend()
-        if backend.name == "numpy":
-            return np.asarray(
-                backend.batch_negbin_paired(
-                    X_batch,
-                    Y_batch,
-                    fit_intercept=fit_intercept,
-                    alpha=alpha,
-                    n_jobs=n_jobs,
-                    **kwargs,
-                )
-            )
-        return np.asarray(
-            backend.batch_negbin_paired(
-                X_batch,
-                Y_batch,
-                fit_intercept=fit_intercept,
-                alpha=alpha,
-                **kwargs,
-            )
+        return _dispatch_batch(  # type: ignore[no-any-return]
+            self._backend_slug,
+            "_paired",
+            X_batch,
+            Y_batch,
+            fit_intercept=fit_intercept,
+            extra_backend_kwargs={"alpha": alpha},
+            **kwargs,
         )
 
 
@@ -3490,6 +3570,8 @@ class OrdinalFamily:
     autodiff; the NumPy backend falls back to statsmodels
     ``OrderedModel`` with the Powell optimizer.
     """
+
+    _backend_slug: ClassVar[str] = "ordinal"
 
     @property
     def name(self) -> str:
@@ -3591,10 +3673,7 @@ class OrdinalFamily:
         from .diagnostics import _proportional_odds_test
 
         try:
-            with warnings.catch_warnings():
-                warnings.filterwarnings("ignore", category=RuntimeWarning)
-                warnings.filterwarnings("ignore", category=SmConvergenceWarning)
-                warnings.filterwarnings("ignore", category=HessianInversionWarning)
+            with _suppress_sm_warnings(separation=False, hessian=True):
                 X_arr = np.asarray(X, dtype=float)
                 ord_model = OrderedModel(y, X_arr, distr="logit").fit(
                     disp=0, method="bfgs"
@@ -3630,26 +3709,7 @@ class OrdinalFamily:
 
     def validate_y(self, y: np.ndarray) -> None:
         """Check that *y* contains ordered categorical integer data with ≥ 3 levels."""
-        if not np.issubdtype(y.dtype, np.number):
-            msg = "OrdinalFamily requires numeric Y values."
-            raise ValueError(msg)
-        if np.any(np.isnan(y)):
-            msg = "OrdinalFamily does not accept NaN values in Y."
-            raise ValueError(msg)
-        if not np.allclose(y, np.round(y)):
-            msg = (
-                "OrdinalFamily requires integer-coded Y values "
-                "(e.g. 0, 1, 2, …, K−1). Got non-integer values."
-            )
-            raise ValueError(msg)
-        n_levels = len(np.unique(y))
-        if n_levels < 3:
-            msg = (
-                f"OrdinalFamily requires ≥ 3 ordered categories, "
-                f"got {n_levels}. For binary outcomes, use "
-                f"family='logistic' instead."
-            )
-            raise ValueError(msg)
+        _validate_categorical_y(y, "OrdinalFamily", "ordered categories")
 
     # ---- Single-model operations -----------------------------------
 
@@ -3675,11 +3735,7 @@ class OrdinalFamily:
 
         X_arr = np.asarray(X, dtype=float)
         y_arr = np.asarray(y)
-        with warnings.catch_warnings():
-            warnings.filterwarnings("ignore", category=SmConvergenceWarning)
-            warnings.filterwarnings("ignore", category=PerfectSeparationWarning)
-            warnings.filterwarnings("ignore", category=HessianInversionWarning)
-            warnings.filterwarnings("ignore", category=RuntimeWarning)
+        with _suppress_sm_warnings(hessian=True):
             model = OrderedModel(y_arr, X_arr, distr="logit").fit(disp=0, method="bfgs")
         return model
 
@@ -3731,6 +3787,7 @@ class OrdinalFamily:
         perm_indices: np.ndarray,
         *,
         fit_intercept: bool = True,
+        y: np.ndarray | None = None,  # noqa: ARG002
     ) -> np.ndarray:
         """Not implemented — ordinal score projection requires Plan C."""
         raise NotImplementedError(
@@ -3909,13 +3966,32 @@ class OrdinalFamily:
         X: np.ndarray,
         y: np.ndarray,
         fit_intercept: bool = True,
+        *,
+        robust_se: bool = False,
     ) -> np.ndarray:
-        """Asymptotic Wald z-test p-values for slope coefficients.
+        """Asymptotic Wald z-test p-values for ordinal regression.
 
-        Returns one p-value per slope coefficient (thresholds excluded).
+        Tries JAX-based Fisher/sandwich SEs first (avoids a
+        statsmodels refit); falls back to ``statsmodels.OrderedModel``.
+
+        When ``robust_se=True``, uses Eicker–Huber–White sandwich
+        SEs (JAX path only — the statsmodels fallback ignores it).
         """
+        K = int(len(np.unique(y)))
+        n_features = X.shape[1]
+
+        # ---- JAX path (preferred) -----------------------------------
+        try:
+            from ._backends._jax import _classical_p_values_ordinal
+
+            return _classical_p_values_ordinal(
+                X, y, K, n_features, fit_intercept, robust_se=robust_se
+            )
+        except ImportError:
+            pass
+
+        # ---- statsmodels fallback ------------------------------------
         model = self.fit(X, y, fit_intercept)
-        n_features = X.shape[1]  # p — slope count (excl. thresholds)
         return np.asarray(model.pvalues[:n_features])  # Wald z p-values, shape (p,)
 
     # ---- Exchangeability (v0.4.0 forward-compat) -------------------
@@ -3949,10 +4025,11 @@ class OrdinalFamily:
 
     # ---- Batch fitting (hot loop) ----------------------------------
     #
-    # Delegates to the active backend (JAX or NumPy) via
-    # ``resolve_backend()``.  The JAX backend uses vmap'd
-    # Newton–Raphson with autodiff; the NumPy backend falls
-    # back to a joblib-parallelised statsmodels OrderedModel loop.
+    # All batch methods delegate to ``_dispatch_batch`` which resolves
+    # the active backend, handles ``n_jobs`` routing, and wraps
+    # results as NumPy arrays.  Each method computes K (number of
+    # ordered categories) from the data and forwards it to the
+    # backend via ``extra_backend_kwargs``.
 
     def batch_fit(
         self,
@@ -3961,45 +4038,16 @@ class OrdinalFamily:
         fit_intercept: bool,
         **kwargs: Any,
     ) -> np.ndarray:
-        """Batch ordinal fitting via the active backend.
-
-        Delegates to ``backend.batch_ordinal()`` resolved from the
-        current configuration.  The number of categories K is
-        computed from the union of unique values across all
-        permuted Y vectors and forwarded to the backend.
-
-        ``fit_intercept`` is accepted for protocol compatibility but
-        ignored — ordinal thresholds always serve as intercepts.
-        """
-        from ._backends import resolve_backend
-
-        backend = kwargs.pop("backend", None)
-        n_jobs = kwargs.pop("n_jobs", 1)
-        if backend is None:
-            backend = resolve_backend()
-
-        # Compute K from observed categories across all permutations.
+        """Batch ordinal fitting via the active backend."""
         K = int(len(np.unique(Y_matrix)))
-
-        if backend.name == "numpy":
-            return np.asarray(
-                backend.batch_ordinal(
-                    X,
-                    Y_matrix,
-                    fit_intercept=fit_intercept,
-                    K=K,
-                    n_jobs=n_jobs,
-                    **kwargs,
-                )
-            )
-        return np.asarray(
-            backend.batch_ordinal(
-                X,
-                Y_matrix,
-                fit_intercept=fit_intercept,
-                K=K,
-                **kwargs,
-            )
+        return _dispatch_batch(  # type: ignore[no-any-return]
+            self._backend_slug,
+            "",
+            X,
+            Y_matrix,
+            fit_intercept=fit_intercept,
+            extra_backend_kwargs={"K": K},
+            **kwargs,
         )
 
     def batch_fit_varying_X(
@@ -4009,43 +4057,16 @@ class OrdinalFamily:
         fit_intercept: bool,
         **kwargs: Any,
     ) -> np.ndarray:
-        """Batch ordinal with per-permutation design matrices.
-
-        Delegates to ``backend.batch_ordinal_varying_X()`` for the
-        Kennedy individual path.  Forwards ``n_jobs`` only to the
-        NumPy backend.
-
-        ``fit_intercept`` is accepted for protocol compatibility but
-        ignored — ordinal thresholds always serve as intercepts.
-        """
-        from ._backends import resolve_backend
-
-        backend = kwargs.pop("backend", None)
-        n_jobs = kwargs.pop("n_jobs", 1)
-        if backend is None:
-            backend = resolve_backend()
-
+        """Batch ordinal with per-permutation design matrices."""
         K = int(len(np.unique(y)))
-
-        if backend.name == "numpy":
-            return np.asarray(
-                backend.batch_ordinal_varying_X(
-                    X_batch,
-                    y,
-                    fit_intercept=fit_intercept,
-                    K=K,
-                    n_jobs=n_jobs,
-                    **kwargs,
-                )
-            )
-        return np.asarray(
-            backend.batch_ordinal_varying_X(
-                X_batch,
-                y,
-                fit_intercept=fit_intercept,
-                K=K,
-                **kwargs,
-            )
+        return _dispatch_batch(  # type: ignore[no-any-return]
+            self._backend_slug,
+            "_varying_X",
+            X_batch,
+            y,
+            fit_intercept=fit_intercept,
+            extra_backend_kwargs={"K": K},
+            **kwargs,
         )
 
     def batch_fit_and_score(
@@ -4056,33 +4077,16 @@ class OrdinalFamily:
         **kwargs: Any,
     ) -> tuple[np.ndarray, np.ndarray]:
         """Batch ordinal returning ``(coefs, −2·llf)``."""
-        from ._backends import resolve_backend
-
-        backend = kwargs.pop("backend", None)
-        n_jobs = kwargs.pop("n_jobs", 1)
-        if backend is None:
-            backend = resolve_backend()
-
         K = int(len(np.unique(Y_matrix)))
-
-        if backend.name == "numpy":
-            coefs, scores = backend.batch_ordinal_fit_and_score(
-                X,
-                Y_matrix,
-                fit_intercept=fit_intercept,
-                K=K,
-                n_jobs=n_jobs,
-                **kwargs,
-            )
-        else:
-            coefs, scores = backend.batch_ordinal_fit_and_score(
-                X,
-                Y_matrix,
-                fit_intercept=fit_intercept,
-                K=K,
-                **kwargs,
-            )
-        return np.asarray(coefs), np.asarray(scores)
+        return _dispatch_batch(  # type: ignore[no-any-return]
+            self._backend_slug,
+            "_fit_and_score",
+            X,
+            Y_matrix,
+            fit_intercept=fit_intercept,
+            extra_backend_kwargs={"K": K},
+            **kwargs,
+        )
 
     def batch_fit_and_score_varying_X(
         self,
@@ -4092,33 +4096,16 @@ class OrdinalFamily:
         **kwargs: Any,
     ) -> tuple[np.ndarray, np.ndarray]:
         """Batch ordinal (varying X) returning ``(coefs, −2·llf)``."""
-        from ._backends import resolve_backend
-
-        backend = kwargs.pop("backend", None)
-        n_jobs = kwargs.pop("n_jobs", 1)
-        if backend is None:
-            backend = resolve_backend()
-
         K = int(len(np.unique(y)))
-
-        if backend.name == "numpy":
-            coefs, scores = backend.batch_ordinal_fit_and_score_varying_X(
-                X_batch,
-                y,
-                fit_intercept=fit_intercept,
-                K=K,
-                n_jobs=n_jobs,
-                **kwargs,
-            )
-        else:
-            coefs, scores = backend.batch_ordinal_fit_and_score_varying_X(
-                X_batch,
-                y,
-                fit_intercept=fit_intercept,
-                K=K,
-                **kwargs,
-            )
-        return np.asarray(coefs), np.asarray(scores)
+        return _dispatch_batch(  # type: ignore[no-any-return]
+            self._backend_slug,
+            "_fit_and_score_varying_X",
+            X_batch,
+            y,
+            fit_intercept=fit_intercept,
+            extra_backend_kwargs={"K": K},
+            **kwargs,
+        )
 
     def batch_fit_paired(
         self,
@@ -4128,35 +4115,15 @@ class OrdinalFamily:
         **kwargs: Any,
     ) -> np.ndarray:
         """Batch ordinal where both X and Y vary per replicate."""
-        from ._backends import resolve_backend
-
-        backend = kwargs.pop("backend", None)
-        n_jobs = kwargs.pop("n_jobs", 1)
-        if backend is None:
-            backend = resolve_backend()
-
-        # Infer K from the full Y_batch (all replicates).
         K = int(len(np.unique(Y_batch)))
-
-        if backend.name == "numpy":
-            return np.asarray(
-                backend.batch_ordinal_paired(
-                    X_batch,
-                    Y_batch,
-                    fit_intercept=fit_intercept,
-                    K=K,
-                    n_jobs=n_jobs,
-                    **kwargs,
-                )
-            )
-        return np.asarray(
-            backend.batch_ordinal_paired(
-                X_batch,
-                Y_batch,
-                fit_intercept=fit_intercept,
-                K=K,
-                **kwargs,
-            )
+        return _dispatch_batch(  # type: ignore[no-any-return]
+            self._backend_slug,
+            "_paired",
+            X_batch,
+            Y_batch,
+            fit_intercept=fit_intercept,
+            extra_backend_kwargs={"K": K},
+            **kwargs,
         )
 
 
@@ -4224,6 +4191,8 @@ class MultinomialFamily:
     fitting delegates to the active backend (JAX: vmap'd
     Newton-Raphson with autodiff; NumPy: statsmodels MNLogit loop).
     """
+
+    _backend_slug: ClassVar[str] = "multinomial"
 
     @property
     def name(self) -> str:
@@ -4311,11 +4280,8 @@ class MultinomialFamily:
         from statsmodels.discrete.discrete_model import MNLogit
 
         try:
-            with warnings.catch_warnings():
-                warnings.filterwarnings("ignore", category=RuntimeWarning)
-                warnings.filterwarnings("ignore", category=SmConvergenceWarning)
-                warnings.filterwarnings("ignore", category=HessianInversionWarning)
-                X_sm = sm.add_constant(X) if fit_intercept else np.asarray(X)
+            with _suppress_sm_warnings(separation=False, hessian=True):
+                X_sm = _augment_intercept(X, fit_intercept)
                 mn_model = MNLogit(y, X_sm).fit(disp=0, maxiter=200)
             llf = float(mn_model.llf)
             llnull = float(mn_model.llnull)
@@ -4359,26 +4325,7 @@ class MultinomialFamily:
 
     def validate_y(self, y: np.ndarray) -> None:
         """Check that *y* contains unordered categorical integer data with ≥ 3 levels."""
-        if not np.issubdtype(y.dtype, np.number):
-            msg = "MultinomialFamily requires numeric Y values."
-            raise ValueError(msg)
-        if np.any(np.isnan(y)):
-            msg = "MultinomialFamily does not accept NaN values in Y."
-            raise ValueError(msg)
-        if not np.allclose(y, np.round(y)):
-            msg = (
-                "MultinomialFamily requires integer-coded Y values "
-                "(e.g. 0, 1, 2, …, K−1). Got non-integer values."
-            )
-            raise ValueError(msg)
-        n_levels = len(np.unique(y))
-        if n_levels < 3:
-            msg = (
-                f"MultinomialFamily requires ≥ 3 categories, "
-                f"got {n_levels}. For binary outcomes, use "
-                f"family='logistic' instead."
-            )
-            raise ValueError(msg)
+        _validate_categorical_y(y, "MultinomialFamily", "categories")
 
     # ---- Single-model operations -----------------------------------
 
@@ -4394,13 +4341,9 @@ class MultinomialFamily:
         """
         from statsmodels.discrete.discrete_model import MNLogit
 
-        X_sm = sm.add_constant(X) if fit_intercept else np.asarray(X, dtype=float)
+        X_sm = _augment_intercept(X, fit_intercept)
         y_arr = np.asarray(y)
-        with warnings.catch_warnings():
-            warnings.filterwarnings("ignore", category=SmConvergenceWarning)
-            warnings.filterwarnings("ignore", category=PerfectSeparationWarning)
-            warnings.filterwarnings("ignore", category=HessianInversionWarning)
-            warnings.filterwarnings("ignore", category=RuntimeWarning)
+        with _suppress_sm_warnings(hessian=True):
             model = MNLogit(y_arr, X_sm).fit(disp=0, maxiter=200)
         return model
 
@@ -4487,6 +4430,7 @@ class MultinomialFamily:
         perm_indices: np.ndarray,
         *,
         fit_intercept: bool = True,
+        y: np.ndarray | None = None,  # noqa: ARG002
     ) -> np.ndarray:
         """Not implemented — multinomial score projection requires Plan C."""
         raise NotImplementedError(
@@ -4604,10 +4548,7 @@ class MultinomialFamily:
         else:
             X_null = np.zeros((n, 0), dtype=float)  # empty design → degenerate model
         y_arr = np.asarray(y)
-        with warnings.catch_warnings():
-            warnings.filterwarnings("ignore", category=SmConvergenceWarning)
-            warnings.filterwarnings("ignore", category=HessianInversionWarning)
-            warnings.filterwarnings("ignore", category=RuntimeWarning)
+        with _suppress_sm_warnings(separation=False, hessian=True):
             null_model = MNLogit(y_arr, X_null).fit(disp=0, maxiter=200)
         return -2.0 * float(null_model.llf)
 
@@ -4661,18 +4602,40 @@ class MultinomialFamily:
         X: np.ndarray,
         y: np.ndarray,
         fit_intercept: bool = True,
+        *,
+        robust_se: bool = False,
     ) -> np.ndarray:
-        """Asymptotic Wald χ² p-values for slope coefficients.
+        """Asymptotic Wald χ² p-values for multinomial regression.
+
+        Tries JAX-based Fisher information first (avoids a statsmodels
+        refit); falls back to the existing sklearn-fit + JAX Wald χ²
+        path.
+
+        When ``robust_se=True``, uses Eicker–Huber–White sandwich
+        SEs (JAX path only — the fallback ignores it).
 
         Returns one p-value per slope predictor.  Each p-value is
         the survival function of the χ²(K-1) distribution evaluated
         at the predictor's Wald χ² statistic.
         """
+        K = int(len(np.unique(y)))
+        n_features = X.shape[1]
+
+        # ---- JAX path (preferred) -----------------------------------
+        try:
+            from ._backends._jax import _classical_p_values_multinomial
+
+            return _classical_p_values_multinomial(
+                X, y, K, n_features, fit_intercept, robust_se=robust_se
+            )
+        except ImportError:
+            pass
+
+        # ---- statsmodels/sklearn fallback ----------------------------
         from scipy import stats as sp_stats
 
         model = self.fit(X, y, fit_intercept)
         wald_stats = self.coefs(model)  # (p,)
-        K = len(np.unique(y))  # number of response categories
         df = K - 1  # degrees of freedom per predictor
         return np.asarray(
             sp_stats.chi2.sf(wald_stats, df=df)
@@ -4709,11 +4672,11 @@ class MultinomialFamily:
 
     # ---- Batch fitting (hot loop) ----------------------------------
     #
-    # Delegates to the active backend (JAX or NumPy) via
-    # ``resolve_backend()``.  The JAX backend uses vmap'd
-    # Newton–Raphson with autodiff and Wald χ² extraction;
-    # the NumPy backend falls back to a joblib-parallelised
-    # statsmodels MNLogit loop.
+    # All batch methods delegate to ``_dispatch_batch`` which resolves
+    # the active backend, handles ``n_jobs`` routing, and wraps
+    # results as NumPy arrays.  Each method computes K (number of
+    # unordered categories) from the data and forwards it to the
+    # backend via ``extra_backend_kwargs``.
 
     def batch_fit(
         self,
@@ -4722,45 +4685,16 @@ class MultinomialFamily:
         fit_intercept: bool,
         **kwargs: Any,
     ) -> np.ndarray:
-        """Batch multinomial fitting via the active backend.
-
-        Delegates to ``backend.batch_multinomial()`` resolved from
-        the current configuration.  The number of categories K is
-        computed from the union of unique values across all
-        permuted Y vectors and forwarded to the backend.
-
-        Returns Wald χ² statistics ``(B, p)`` — one scalar per
-        slope predictor per permutation.
-        """
-        from ._backends import resolve_backend
-
-        backend = kwargs.pop("backend", None)
-        n_jobs = kwargs.pop("n_jobs", 1)
-        if backend is None:
-            backend = resolve_backend()
-
-        # Compute K from observed categories across all permutations.
+        """Batch multinomial fitting via the active backend."""
         K = int(len(np.unique(Y_matrix)))
-
-        if backend.name == "numpy":
-            return np.asarray(
-                backend.batch_multinomial(
-                    X,
-                    Y_matrix,
-                    fit_intercept=fit_intercept,
-                    K=K,
-                    n_jobs=n_jobs,
-                    **kwargs,
-                )
-            )
-        return np.asarray(
-            backend.batch_multinomial(
-                X,
-                Y_matrix,
-                fit_intercept=fit_intercept,
-                K=K,
-                **kwargs,
-            )
+        return _dispatch_batch(  # type: ignore[no-any-return]
+            self._backend_slug,
+            "",
+            X,
+            Y_matrix,
+            fit_intercept=fit_intercept,
+            extra_backend_kwargs={"K": K},
+            **kwargs,
         )
 
     def batch_fit_varying_X(
@@ -4770,40 +4704,16 @@ class MultinomialFamily:
         fit_intercept: bool,
         **kwargs: Any,
     ) -> np.ndarray:
-        """Batch multinomial with per-permutation design matrices.
-
-        Delegates to ``backend.batch_multinomial_varying_X()`` for
-        the Kennedy individual path.  Returns Wald χ² statistics
-        ``(B, p)``.
-        """
-        from ._backends import resolve_backend
-
-        backend = kwargs.pop("backend", None)
-        n_jobs = kwargs.pop("n_jobs", 1)
-        if backend is None:
-            backend = resolve_backend()
-
+        """Batch multinomial with per-permutation design matrices."""
         K = int(len(np.unique(y)))
-
-        if backend.name == "numpy":
-            return np.asarray(
-                backend.batch_multinomial_varying_X(
-                    X_batch,
-                    y,
-                    fit_intercept=fit_intercept,
-                    K=K,
-                    n_jobs=n_jobs,
-                    **kwargs,
-                )
-            )
-        return np.asarray(
-            backend.batch_multinomial_varying_X(
-                X_batch,
-                y,
-                fit_intercept=fit_intercept,
-                K=K,
-                **kwargs,
-            )
+        return _dispatch_batch(  # type: ignore[no-any-return]
+            self._backend_slug,
+            "_varying_X",
+            X_batch,
+            y,
+            fit_intercept=fit_intercept,
+            extra_backend_kwargs={"K": K},
+            **kwargs,
         )
 
     def batch_fit_and_score(
@@ -4814,33 +4724,16 @@ class MultinomialFamily:
         **kwargs: Any,
     ) -> tuple[np.ndarray, np.ndarray]:
         """Batch multinomial returning ``(wald_chi2, −2·llf)``."""
-        from ._backends import resolve_backend
-
-        backend = kwargs.pop("backend", None)
-        n_jobs = kwargs.pop("n_jobs", 1)
-        if backend is None:
-            backend = resolve_backend()
-
         K = int(len(np.unique(Y_matrix)))
-
-        if backend.name == "numpy":
-            coefs, scores = backend.batch_multinomial_fit_and_score(
-                X,
-                Y_matrix,
-                fit_intercept=fit_intercept,
-                K=K,
-                n_jobs=n_jobs,
-                **kwargs,
-            )
-        else:
-            coefs, scores = backend.batch_multinomial_fit_and_score(
-                X,
-                Y_matrix,
-                fit_intercept=fit_intercept,
-                K=K,
-                **kwargs,
-            )
-        return np.asarray(coefs), np.asarray(scores)
+        return _dispatch_batch(  # type: ignore[no-any-return]
+            self._backend_slug,
+            "_fit_and_score",
+            X,
+            Y_matrix,
+            fit_intercept=fit_intercept,
+            extra_backend_kwargs={"K": K},
+            **kwargs,
+        )
 
     def batch_fit_and_score_varying_X(
         self,
@@ -4850,33 +4743,16 @@ class MultinomialFamily:
         **kwargs: Any,
     ) -> tuple[np.ndarray, np.ndarray]:
         """Batch multinomial (varying X) returning ``(wald_chi2, −2·llf)``."""
-        from ._backends import resolve_backend
-
-        backend = kwargs.pop("backend", None)
-        n_jobs = kwargs.pop("n_jobs", 1)
-        if backend is None:
-            backend = resolve_backend()
-
         K = int(len(np.unique(y)))
-
-        if backend.name == "numpy":
-            coefs, scores = backend.batch_multinomial_fit_and_score_varying_X(
-                X_batch,
-                y,
-                fit_intercept=fit_intercept,
-                K=K,
-                n_jobs=n_jobs,
-                **kwargs,
-            )
-        else:
-            coefs, scores = backend.batch_multinomial_fit_and_score_varying_X(
-                X_batch,
-                y,
-                fit_intercept=fit_intercept,
-                K=K,
-                **kwargs,
-            )
-        return np.asarray(coefs), np.asarray(scores)
+        return _dispatch_batch(  # type: ignore[no-any-return]
+            self._backend_slug,
+            "_fit_and_score_varying_X",
+            X_batch,
+            y,
+            fit_intercept=fit_intercept,
+            extra_backend_kwargs={"K": K},
+            **kwargs,
+        )
 
     def batch_fit_paired(
         self,
@@ -4886,34 +4762,15 @@ class MultinomialFamily:
         **kwargs: Any,
     ) -> np.ndarray:
         """Batch multinomial where both X and Y vary per replicate."""
-        from ._backends import resolve_backend
-
-        backend = kwargs.pop("backend", None)
-        n_jobs = kwargs.pop("n_jobs", 1)
-        if backend is None:
-            backend = resolve_backend()
-
         K = int(len(np.unique(Y_batch)))
-
-        if backend.name == "numpy":
-            return np.asarray(
-                backend.batch_multinomial_paired(
-                    X_batch,
-                    Y_batch,
-                    fit_intercept=fit_intercept,
-                    K=K,
-                    n_jobs=n_jobs,
-                    **kwargs,
-                )
-            )
-        return np.asarray(
-            backend.batch_multinomial_paired(
-                X_batch,
-                Y_batch,
-                fit_intercept=fit_intercept,
-                K=K,
-                **kwargs,
-            )
+        return _dispatch_batch(  # type: ignore[no-any-return]
+            self._backend_slug,
+            "_paired",
+            X_batch,
+            Y_batch,
+            fit_intercept=fit_intercept,
+            extra_backend_kwargs={"K": K},
+            **kwargs,
         )
 
 

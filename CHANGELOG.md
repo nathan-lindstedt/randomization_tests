@@ -124,6 +124,100 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   linear joint, LMM joint, unsupported family rejection (logistic,
   Poisson), `score_exact` placeholder, confounder masking, n_jobs
   warning, determinism.
+- **Stabilization Phase 5: Autodiff-powered capabilities** — Five
+  new capabilities built on JAX autodiff infrastructure:
+  - **Fisher information SEs** (`_fisher_information_se`): Wald p-values
+    from observed Fisher information (H⁻¹ diagonal) for all 5 GLM
+    families.  JAX-first, statsmodels fallback.
+  - **Sandwich (robust) SEs** (`_sandwich_se`): Eicker–Huber–White
+    heteroscedasticity-robust SEs via per-observation score outer
+    product.  Available as `robust_se=True` on `classical_p_values()`.
+  - **GLM score projection** (`score_project()`): real implementations
+    for `LogisticFamily` (W = μ(1−μ)), `PoissonFamily` (W = μ),
+    `NegativeBinomialFamily` (W = μ/(1+αμ)).  Unlocks
+    `method="score"` and `method="score_joint"` for all GLM families.
+  - **Autodiff Cook's D** (`_autodiff_cooks_distance`): influence-
+    function Cook's D via D_i = (1/p) sᵢ' H⁻¹ sᵢ.  Extends Cook's
+    D to ordinal and multinomial families where statsmodels lacks
+    support.  JAX-first, statsmodels fallback for linear/logistic.
+  - **Profile likelihood CIs** (`compute_profile_ci`): bisection on
+    the profile deviance 2[NLL_profile − NLL_full] = χ²₁(α) with
+    inner Newton loop for constrained optimisation.  Surfaces as
+    `"profile_ci"` in `result.confidence_intervals`.  Supported for
+    logistic, Poisson, NB, and ordinal families.
+- **Stabilization Phase 6: P-value range surfacing** — Four display
+  enhancements that surface Clopper-Pearson CI precision directly in
+  the results tables:
+  - **P-value CIs in results table** (`print_results_table`): each
+    empirical p-value now has a sub-row showing `± margin` from the
+    Clopper-Pearson CI, decimal-aligned beneath the p-value.
+  - **Borderline significance marker** (`_significance_marker`):
+    when the CI straddles any significance threshold, a `[!]` marker
+    is appended to the `± margin` display, flagging that the
+    significance conclusion is unstable.
+  - **P-value CIs in diagnostics table** (`print_diagnostics_table`):
+    new `P-Val CI` column shows `[lo, hi]` alongside the MC SE
+    column (non-Exp-R² layouts).
+  - **`n_permutations` recommendation**: when borderline p-values
+    are detected, a Notes line recommends minimum B to resolve the
+    ambiguity, computed by inverting the Clopper-Pearson width formula.
+  - **`_recommend_n_permutations` helper**: computes minimum B using
+    normal approximation to Clopper-Pearson half-width, clamped to
+    `[100, 10_000_000]`.
+  - 18 new tests covering all Phase 6 display features.
+- **Stabilization Phase 7: Inaccuracies & staleness fixes** —
+  Three corrections to bring documentation and imports up to date:
+  - **`__init__.py` docstring rewrite**: module docstring now reflects
+    full scope (all GLM families, mixed-effects, Freedman–Lane, score
+    strategies, JAX across all families).  Six missing symbols added
+    to the autosummary block: `moderation_analysis`, `compute_e_value`,
+    `rosenbaum_bounds`, `ConfounderAnalysisResult`,
+    `IndividualTestResult`, `JointTestResult`.
+  - **API.md signature update**: `permutation_test_regression` now
+    documents all 22 parameters including `p_value_threshold_three`,
+    `backend`, `groups`, `permutation_strategy`,
+    `permutation_constraints`, `random_slopes`, `confidence_level`,
+    `panel_id`, `time_id`.  `family` widened to `str | ModelFamily`.
+    `method` values updated to include `score`, `score_joint`,
+    `score_exact`.  `resolve_family` signature updated to
+    `(family: str | ModelFamily, y: np.ndarray | None = None)`.
+  - **Relative import fix** (`display.py`): changed
+    `from randomization_tests.families import ModelFamily` to
+    `from .families import ModelFamily`.
+  - **`core.py` docstring update**: `method` parameter now lists all
+    8 strategies including score variants.  Added missing
+    `random_slopes` parameter documentation.
+- **Stabilization Phase 8: Comment quality lift** —
+  Codebase-wide narration pass bringing ~15 under-documented
+  locations up to the tutorial-quality standard set by `_jax.py`,
+  `diagnostics.py`, and `confounders.py`.  Highlights:
+  - **`engine.py`**: score probe duck-typing rationale, Anderson &
+    Robinson (2001) citation in `_generate_for_strategy()` docstring,
+    `deficit * 2` overgeneration explanation in `_apply_constraints()`.
+  - **`families.py`**: `NegativeBinomialFamily.coefs()` docstring
+    expanded with intercept-stripping explanation.
+  - **`families_mixed.py`**: all 4 ICC formulas now carry full
+    citations — Snijders & Bosker (2012) §17.2 for logistic (π²/3
+    latent-scale variance), Goldstein, Browne & Rasbash (2002) for
+    Poisson (log-normal approximation, level-1 variance = 1).
+    Woodbury identity derivation added to `_calibrate_statsmodels()`
+    with per-variable dimensional annotations.
+  - **`_jax.py`**: McCullagh & Nelder (1989, §2.5) IRLS citation
+    added to `_fit_glm_irls()`.  Deviance inline comment at first
+    `2.0 * NLL` return.
+  - **`_strategies/score.py`**: 17-line narration block in Cholesky
+    reconstruction loop explaining log-Cholesky parameterisation
+    (θ → L_k → Σ_k = L_k L_k'), Kronecker block-diagonal structure
+    (I_G ⊗ Σ_k⁻¹), and assembly into Γ⁻¹.
+  - **`display.py`**: table geometry comment (W=80, fc=22, sub-column
+    widths summing to 80).
+  - **`_results.py`**: `np.bool_` edge-case comment explaining NumPy
+    ≥ 2.0 decoupling from `builtins.bool`.
+  - **`_config.py`**: thread-safety note on `_backend_override`.
+  - **`diagnostics.py`**: Clopper-Pearson (1934) citation added;
+    Chinn (2000) citation for the 0.91 probit/logistic bridge
+    constant; Rosenbaum (2002, §4.3) derivation for shifted null
+    mean and variance; orphaned aggregate-helper comment repaired.
 - **`LogisticMixedFamily`** (`family="logistic_mixed"`): GLMM for
   clustered binary data via Laplace approximation.  Inner IRLS
   pre-scales by √W to reuse unweighted Henderson algebra from LMM.
@@ -216,9 +310,59 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   fallback, cluster bootstrap, collinearity guard, multinomial
   exclusion, full sieve orchestrator, E-value (10 tests), and
   Rosenbaum bounds (5 tests).
+- **`panel_id=` and `time_id=` convenience parameters** on
+  `permutation_test_regression()`: syntactic sugar for
+  `groups=panel_id, permutation_strategy="within"`.  When
+  `panel_id` is provided, permutations are automatically
+  constrained to within-panel shuffling.  `time_id` enables
+  panel-balance and sort-order validation warnings.  Conflicts
+  with explicit `groups=` or `permutation_strategy=` raise
+  `ValueError`.  Panel-level diagnostics (number of panels,
+  observations per panel min/max/mean, balance flag) are added
+  to `extended_diagnostics["panel_diagnostics"]`.
+- **10 new tests** in `TestPanelData` covering balanced panels,
+  diagnostics, equivalence to explicit groups, conflict detection,
+  sort-order warnings, column-name resolution, and unbalanced
+  panel warnings.
 
 ### Changed
 
+- **Stabilization Phase 1: Cross-cutting helpers** — Extracted 9
+  shared helpers replacing ~2,400 lines of near-identical boilerplate:
+  `_suppress_sm_warnings` context manager (43 sites),
+  `_augment_intercept` helper (51+ sites), `_extract_variance_components`
+  (6 loops), `_format_variance_components` (3 loops),
+  `_require_calibrated` (3 copies), `_validate_count_y` /
+  `_validate_categorical_y` (4 bodies), VIF via matrix inverse
+  (diagnostics.py), vectorized Clopper-Pearson CIs, vectorized BCa CIs.
+- **Stabilization Phase 2: Batch dispatch dedup** — Added module-level
+  `_dispatch_batch()` helper and `_backend_slug: ClassVar[str]` to all
+  6 family classes.  Collapsed 30 batch methods (each 15–40 lines of
+  repeated backend-resolution boilerplate) to 1–5-line wrappers.
+  Net: ~490 lines removed from `families.py`.
+- **NB2 gradient/Hessian → autodiff** — Replaced 60 lines of
+  hand-coded NB2 gradient and Hessian in `_jax.py` with
+  `jit(grad(_make_negbin_nll(alpha)))` and
+  `jit(hessian(_make_negbin_nll(alpha)))`.  Added 2 cross-validation
+  tests verifying autodiff matches finite-difference approximations.
+- **Stabilization Phase 3: `_numpy.py` batch dispatch dedup** — Added
+  two module-level generic helpers (`_batch_coefs` and
+  `_batch_coefs_and_scores`) that factor out the sequential-vs-parallel
+  loop/vstack scaffolding shared by all 29 non-vectorized batch methods
+  in `NumpyBackend`.  Each method is now a thin wrapper: preamble →
+  `_fit_one` closure → single `return _batch_coefs(...)` or
+  `return _batch_coefs_and_scores(...)` call.  3 pure-BLAS vectorized
+  methods (`batch_ols`, `batch_ols_fit_and_score`, `batch_mixed_lm`)
+  remain untouched.  Net: ~228 lines removed from `_numpy.py`
+  (1,839 → 1,611).
+- **Stabilization Phase 4: GLMM stub & calibrate dedup** — Added
+  `_GLMMBatchStubMixin` (5 `batch_*` `NotImplementedError` stubs) and
+  `_calibrate_glmm()` shared Laplace-approximation calibration helper
+  in `families_mixed.py`.  Both `LogisticMixedFamily` and
+  `PoissonMixedFamily` now inherit the mixin and delegate `calibrate()`
+  to the shared helper (parameterised by family name, working-response
+  function, and conditional NLL).  Net: ~65 lines removed
+  (2,630 → 2,565).
 - **Confounder sieve batch optimisation (29× speedup)**:
   `_collider_test()`, `mediation_analysis()`, `_bca_ci()`, and
   `moderation_analysis()` in `confounders.py` now use

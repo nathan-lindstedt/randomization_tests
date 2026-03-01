@@ -54,7 +54,7 @@ from typing import TYPE_CHECKING, final
 import numpy as np
 import pandas as pd
 
-from ..families import fit_reduced
+from ..families import _augment_intercept, fit_reduced
 
 if TYPE_CHECKING:
     from ..families import ModelFamily
@@ -147,7 +147,12 @@ class ScoreIndividualStrategy:
             # family.score_project() returns A_j @ e_π for each
             # permutation — shape (B,).  This is the varying part.
             raw_scores = family.score_project(
-                X_np, j, e, perm_indices, fit_intercept=fit_intercept
+                X_np,
+                j,
+                e,
+                perm_indices,
+                fit_intercept=fit_intercept,
+                y=y_values,
             )  # (B,) — raw score (sans constant)
 
             # Step 5: Add constant offset to put on coefficient scale.
@@ -159,7 +164,12 @@ class ScoreIndividualStrategy:
             #   result[:, j] = model_coefs[j] + (raw_scores - observed_raw)
             identity = np.arange(n, dtype=perm_indices.dtype).reshape(1, -1)
             observed_raw = family.score_project(
-                X_np, j, e, identity, fit_intercept=fit_intercept
+                X_np,
+                j,
+                e,
+                identity,
+                fit_intercept=fit_intercept,
+                y=y_values,
             )[0]  # scalar — A_j @ e (unpermuted)
             result[:, j] = model_coefs[j] + (raw_scores - observed_raw)
 
@@ -377,6 +387,23 @@ class ScoreExactStrategy:
         )
 
         # ---- Build Γ⁻¹ from stored log-Cholesky params ----------
+        #
+        # θ is a packed 1-D vector of log-Cholesky parameters
+        # produced by the JAX REML solver.  For each random-effects
+        # factor k (with G_k groups, each d_k-dimensional):
+        #
+        #   1. Extract the d_k(d_k+1)/2 elements for factor k.
+        #   2. Unpack into L_k — a lower-triangular matrix whose
+        #      diagonal entries are exp(θ_diag) (log-Cholesky
+        #      parameterisation ensures positive definiteness).
+        #   3. Σ_k = L_k L_k'  — the d_k × d_k random-effects
+        #      covariance for one group in factor k.
+        #   4. Σ_k⁻¹ — the per-group precision matrix.
+        #   5. Kronecker-replicate across G_k groups:
+        #      block_k = I_{G_k} ⊗ Σ_k⁻¹   (block-diagonal).
+        #   6. Insert block_k into the global q × q precision
+        #      matrix Γ⁻¹ at the rows/cols for factor k.
+        #
         assert family.re_struct is not None
         assert family.Z is not None
         re_struct = family.re_struct
@@ -388,12 +415,12 @@ class ScoreExactStrategy:
         theta_offset = 0
         for k in range(len(re_struct)):
             G_k, d_k = re_struct[k]
-            n_chol_k = d_k * (d_k + 1) // 2
+            n_chol_k = d_k * (d_k + 1) // 2  # vech length for L_k
             theta_k = log_chol[theta_offset : theta_offset + n_chol_k]
-            L_k = _fill_lower_triangular_np(theta_k, d_k)
-            Sigma_k = L_k @ L_k.T
-            Sigma_k_inv = np.linalg.solve(Sigma_k, np.eye(d_k))
-            block_k = np.kron(np.eye(G_k), Sigma_k_inv)
+            L_k = _fill_lower_triangular_np(theta_k, d_k)  # θ → L_k
+            Sigma_k = L_k @ L_k.T  # L_k L_k' = Σ_k
+            Sigma_k_inv = np.linalg.solve(Sigma_k, np.eye(d_k))  # Σ_k⁻¹
+            block_k = np.kron(np.eye(G_k), Sigma_k_inv)  # I_G ⊗ Σ_k⁻¹
             size_k = G_k * d_k
             Gamma_inv[
                 factor_offset : factor_offset + size_k,
@@ -408,7 +435,7 @@ class ScoreExactStrategy:
         n_features = X_np.shape[1]
 
         if fit_intercept:
-            X_aug = np.column_stack([np.ones(X_np.shape[0]), X_np])
+            X_aug = _augment_intercept(X_np)
         else:
             X_aug = np.asarray(X_np)
 

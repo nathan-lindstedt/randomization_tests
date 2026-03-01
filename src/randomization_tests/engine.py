@@ -136,6 +136,13 @@ class PermutationEngine:
             raise ValueError(msg)
 
         # Reject score methods for families without score_project().
+        #
+        # Duck-typing probe: we call score_project() with synthetic
+        # inputs.  If the family raises NotImplementedError, the
+        # method is genuinely unsupported.  Any *other* exception
+        # (e.g. "not calibrated") is benign — it means the method
+        # exists but can't run yet, which is fine at construction
+        # time (calibration happens later in core.py).
         if method in ("score", "score_joint", "score_exact"):
             try:
                 self.family.score_project(
@@ -152,7 +159,7 @@ class PermutationEngine:
                     f"method='freedman_lane' instead."
                 ) from None
             except Exception:
-                pass  # probe raised for other reasons (e.g. not calibrated) — OK
+                pass  # probe raised for non-fatal reasons — OK
 
         # ---- Backend resolution -----------------------------------
         from ._backends import resolve_backend
@@ -356,7 +363,23 @@ class PermutationEngine:
         n_permutations: int,
         random_state: int | None,
     ) -> np.ndarray:
-        """Route to the correct permutation generator."""
+        """Route to the correct permutation generator.
+
+        Three cell-level strategies (Anderson & Robinson, 2001):
+
+        * **within** — shuffle only within cells, preserving cell
+          membership.  Appropriate when exchangeability holds
+          within groups but not between them.
+        * **between** — permute entire cells as units, keeping
+          within-cell ordering fixed.  Tests group-level effects.
+        * **two-stage** — compose within-cell and between-cell
+          permutations for maximal null coverage.
+
+        Each generator uses birthday-paradox collision bounds to
+        decide whether post-hoc deduplication is needed (see
+        ``generate_unique_permutations()`` in ``permutations.py``
+        for the bound derivation).
+        """
         if cells is None or strategy is None:
             return generate_unique_permutations(
                 n_samples=n_samples,
@@ -424,7 +447,9 @@ class PermutationEngine:
 
         while filtered.shape[0] < n_permutations and round_count < max_rounds:
             deficit = n_permutations - filtered.shape[0]
-            # Generate extras with an offset seed for variety.
+            # Over-generate by 2× to amortise the callback cost:
+            # if the filter keeps ≥ 50 % of candidates, one round
+            # suffices; otherwise we iterate with offset seeds.
             rng_offset += 1
             extra_seed = (
                 (random_state + rng_offset) if random_state is not None else None

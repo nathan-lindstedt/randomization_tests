@@ -80,6 +80,8 @@ from statsmodels.tools.sm_exceptions import (
     PerfectSeparationWarning,
 )
 
+from .families import _augment_intercept
+
 logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
@@ -284,27 +286,74 @@ def compute_permutation_ci(
         CI array of shape ``(p, 2)``.
     """
     p = len(model_coefs)
-    ci = np.empty((p, 2))
 
-    # Strategy-aware centering.
+    # Strategy-aware centering (vectorised).
     needs_shift = method in ("ter_braak", "freedman_lane")
+    shifted = (
+        permuted_coefs + model_coefs[np.newaxis, :] if needs_shift else permuted_coefs
+    )
 
-    for j in range(p):
-        # Confounder columns → NaN.
-        if feature_names[j] in confounders:
-            ci[j] = [np.nan, np.nan]
-            continue
+    # Confounder mask — these columns get NaN CIs.
+    confounder_set = set(confounders)
+    is_confounder = np.array([fn in confounder_set for fn in feature_names])
 
-        col = permuted_coefs[:, j].copy()
-        if needs_shift:
-            col += model_coefs[j]
+    if jackknife_coefs is not None:
+        # ---- BCa: vectorise z₀ and â across all p columns ----
+        # Bias correction z₀ = Φ⁻¹(mean(boot < θ̂))
+        prop_less = np.mean(shifted < model_coefs[np.newaxis, :], axis=0)  # (p,)
+        prop_less = np.clip(prop_less, 1e-10, 1 - 1e-10)
+        z0 = _sp_stats.norm.ppf(prop_less)  # (p,)
 
-        if jackknife_coefs is not None:
-            ci[j] = _bca_percentile(col, model_coefs[j], jackknife_coefs[:, j], alpha)
-        else:
-            lo = alpha / 2 * 100
-            hi = (1 - alpha / 2) * 100
-            ci[j] = [np.percentile(col, lo), np.percentile(col, hi)]
+        # Acceleration â via jackknife
+        theta_bar = np.mean(jackknife_coefs, axis=0)  # (p,)
+        diffs = theta_bar[np.newaxis, :] - jackknife_coefs  # (n, p)
+        sum_d3 = np.sum(diffs**3, axis=0)
+        sum_d2_pow = np.sum(diffs**2, axis=0) ** 1.5
+        a_hat = sum_d3 / (6.0 * sum_d2_pow + 1e-10)  # (p,)
+
+        # Adjusted percentiles
+        z_lo = _sp_stats.norm.ppf(alpha / 2)
+        z_hi = _sp_stats.norm.ppf(1 - alpha / 2)
+
+        denom_lo = 1.0 - a_hat * (z0 + z_lo)
+        denom_hi = 1.0 - a_hat * (z0 + z_hi)
+
+        # Degenerate columns → fall back to simple percentile
+        degenerate = (np.abs(denom_lo) < 1e-10) | (np.abs(denom_hi) < 1e-10)
+        safe_denom_lo = np.where(degenerate, 1.0, denom_lo)
+        safe_denom_hi = np.where(degenerate, 1.0, denom_hi)
+
+        p_lo = _sp_stats.norm.cdf(z0 + (z0 + z_lo) / safe_denom_lo)
+        p_hi = _sp_stats.norm.cdf(z0 + (z0 + z_hi) / safe_denom_hi)
+
+        B = shifted.shape[0]
+        p_lo = np.clip(p_lo, 0.5 / B, 1 - 0.5 / B)
+        p_hi = np.clip(p_hi, 0.5 / B, 1 - 0.5 / B)
+
+        degenerate |= np.isnan(p_lo) | np.isnan(p_hi)
+
+        # Merge BCa and fallback percentiles
+        pct_lo = np.where(degenerate, alpha / 2, p_lo) * 100
+        pct_hi = np.where(degenerate, 1 - alpha / 2, p_hi) * 100
+
+        # Per-column percentile (different percentile per column)
+        ci = np.empty((p, 2))
+        for j in range(p):
+            ci[j, 0] = np.percentile(shifted[:, j], pct_lo[j])
+            ci[j, 1] = np.percentile(shifted[:, j], pct_hi[j])
+    else:
+        # Simple shifted-percentile CI
+        lo_pct = alpha / 2 * 100
+        hi_pct = (1 - alpha / 2) * 100
+        ci = np.column_stack(
+            [
+                np.percentile(shifted, lo_pct, axis=0),
+                np.percentile(shifted, hi_pct, axis=0),
+            ]
+        )
+
+    # Mask confounder columns
+    ci[is_confounder] = np.nan
 
     return ci
 
@@ -315,6 +364,10 @@ def compute_pvalue_ci(
     alpha: float,
 ) -> np.ndarray:
     """Clopper-Pearson exact binomial CIs for empirical p-values.
+
+    Ref: Clopper, C. J. & Pearson, E. S. (1934), "The use of
+    confidence or fiducial limits illustrated in the case of the
+    binomial", *Biometrika*, 26(4), 404–413.
 
     Aligned with the Phipson & Smyth (2010) ``(b+1)/(B+1)`` estimator:
     ``successes = counts + 1``, ``trials = B + 1``.
@@ -328,26 +381,28 @@ def compute_pvalue_ci(
     Returns:
         CI array of shape ``(p, 2)``.
     """
-    p = len(counts)
-    ci = np.empty((p, 2))
-
-    successes = counts + 1
+    successes = counts + 1  # (p,)
     trials = n_permutations + 1
 
-    for j in range(p):
-        s = successes[j]
-        # Lower bound
-        if s == 0:
-            ci[j, 0] = 0.0
-        else:
-            ci[j, 0] = float(_sp_stats.beta.ppf(alpha / 2, s, trials - s + 1))
-        # Upper bound
-        if s == trials:
-            ci[j, 1] = 1.0
-        else:
-            ci[j, 1] = float(_sp_stats.beta.ppf(1 - alpha / 2, s + 1, trials - s))
+    # Lower bound: Beta.ppf(α/2, s, n-s+1), with s=0 → 0
+    a_lo = np.maximum(successes, 1)  # guard against a=0
+    b_lo = trials - successes + 1
+    lower = np.where(
+        successes == 0,
+        0.0,
+        _sp_stats.beta.ppf(alpha / 2, a_lo, b_lo),
+    )
 
-    return ci
+    # Upper bound: Beta.ppf(1−α/2, s+1, n-s), with s=n → 1
+    a_hi = successes + 1
+    b_hi = np.maximum(trials - successes, 1)  # guard against b=0
+    upper = np.where(
+        successes == trials,
+        1.0,
+        _sp_stats.beta.ppf(1 - alpha / 2, a_hi, b_hi),
+    )
+
+    return np.column_stack([lower, upper])  # (p, 2)
 
 
 def compute_wald_ci(
@@ -406,7 +461,7 @@ def compute_wald_ci(
         if X is None or y is None:
             return nan_ci, None
         try:
-            X_aug = sm.add_constant(X) if fit_intercept else X
+            X_aug = _augment_intercept(X, fit_intercept)
             if name == "linear":
                 sm_model = sm.OLS(y, X_aug).fit()
             else:
@@ -574,8 +629,10 @@ def compute_standardized_coefs(
 def compute_vif(X: pd.DataFrame) -> np.ndarray:
     """Compute Variance Inflation Factors for each predictor.
 
-    VIF_j = 1 / (1 − R²_j), where R²_j is the R² from regressing
-    X_j on all other columns of X.
+    Uses the algebraic identity VIF_j = [(X'X)⁻¹]_jj · (X'X)_jj on
+    centered predictors (centering absorbs the implicit intercept in
+    each auxiliary regression X_j ~ X_{-j} + 1).  One matrix inverse,
+    no loop.  Ref: Greene, *Econometric Analysis*, §4.9.
 
     Args:
         X: Feature matrix.
@@ -583,35 +640,29 @@ def compute_vif(X: pd.DataFrame) -> np.ndarray:
     Returns:
         Array of VIFs, shape ``(n_features,)``.
     """
-    # Convert to plain numpy for the auxiliary regressions.
     X_np = X.values.astype(float)
     n_features = X_np.shape[1]
-    vifs = np.zeros(n_features)
 
-    # For each predictor j, regress X_j on all remaining predictors
-    # X_{-j} and record R²_j.  This loop is unavoidable because each
-    # auxiliary regression has a different response variable.  The
-    # number of features p is typically small (< 20), so the cost is
-    # dominated by the permutation loop in the core module.
-    for j in range(n_features):
-        y_j = X_np[:, j]  # shape: (n,)
-        X_others = np.delete(X_np, j, axis=1)  # shape: (n, p-1)
+    if n_features <= 1:
+        # Only one predictor — no collinearity possible.
+        return np.ones(n_features)
 
-        if X_others.shape[1] == 0:
-            # Only one predictor — no collinearity possible.
-            vifs[j] = 1.0
-            continue
+    # Center columns to absorb the implicit intercept in each
+    # auxiliary regression X_j ~ X_{-j} + 1.
+    X_c = X_np - X_np.mean(axis=0)
+    C = X_c.T @ X_c  # (p, p)
 
-        # The auxiliary regression needs its own intercept because we
-        # are regressing one predictor on the others, not on Y.
-        X_aug = sm.add_constant(X_others)
-        r_squared = sm.OLS(y_j, X_aug).fit().rsquared
+    try:
+        C_inv = np.linalg.inv(C)
+    except np.linalg.LinAlgError:
+        # Singular — at least one predictor is perfectly collinear.
+        # Use pseudo-inverse; perfectly collinear directions get
+        # near-zero eigenvalues → large diagonal entries → large VIF.
+        C_inv = np.linalg.pinv(C)
 
-        # VIF_j = 1 / (1 − R²_j).  If R²_j = 1 (perfect collinearity),
-        # VIF is infinite — the coefficient is not identifiable.
-        vifs[j] = 1.0 / (1.0 - r_squared) if r_squared < 1.0 else np.inf
-
-    return vifs
+    # VIF_j = (X'X)_jj · [(X'X)⁻¹]_jj
+    vifs = np.diag(C) * np.diag(C_inv)
+    return np.asarray(vifs)
 
 
 def compute_monte_carlo_se(
@@ -732,7 +783,7 @@ def compute_breusch_pagan(
         ``f_p_value``, and a ``warning`` string (empty if no issue).
     """
     # Fit OLS on the full model to obtain residuals.
-    X_aug = sm.add_constant(X)
+    X_aug = _augment_intercept(X)
     ols_result = sm.OLS(y_values, X_aug).fit()
 
     # The Breusch-Pagan test regresses squared residuals on X and
@@ -787,7 +838,7 @@ def compute_deviance_residual_diagnostics(
     """
     # Fit the full logistic model via statsmodels.  The disp=0 flag
     # suppresses the iteration log.
-    X_aug = sm.add_constant(X)
+    X_aug = _augment_intercept(X)
     sm_model = sm.Logit(y_values, X_aug).fit(disp=0)
 
     # --- Deviance residuals ---
@@ -910,6 +961,329 @@ def _runs_test(binary_seq: np.ndarray) -> tuple[float, float]:
     return float(z), float(p)
 
 
+def _autodiff_profile_ci(
+    X: np.ndarray,
+    y_values: np.ndarray,
+    family: ModelFamily,
+    alpha: float,
+    fit_intercept: bool = True,
+) -> np.ndarray:
+    """Profile likelihood CIs via JAX autodiff.
+
+    Dispatcher that selects the right NLL function and solver for the
+    given family, fits the model, and delegates to
+    ``_profile_ci_coefficients()`` in the JAX backend.
+
+    Args:
+        X: Feature matrix ``(n, p)`` — raw, without intercept.
+        y_values: Response vector ``(n,)``.
+        family: Resolved ``ModelFamily`` instance.
+        alpha: ``1 - confidence_level``.
+        fit_intercept: Whether the model includes an intercept.
+
+    Returns:
+        ``(n_features, 2)`` NumPy array of profile CI bounds.
+
+    Raises:
+        ImportError: If JAX is not available.
+        ValueError: If the family is not supported.
+    """
+    import jax.numpy as jnp
+
+    from ._backends._jax import (
+        _DEFAULT_TOL,
+        _logistic_nll,
+        _make_negbin_nll,
+        _make_negbin_solver,
+        _make_newton_solver,
+        _make_ordinal_nll,
+        _make_ordinal_solver,
+        _make_poisson_solver,
+        _poisson_nll,
+        _profile_ci_coefficients,
+    )
+
+    n_features = X.shape[1]
+    name = family.name
+
+    if name == "linear":
+        # For linear models, the profile CI is identical to the Wald
+        # CI because the log-likelihood is exactly quadratic.  No need
+        # for the expensive bisection — fall back to Wald.
+        raise ValueError("Linear profile CI is identical to Wald CI.")
+
+    X_aug = _augment_intercept(X, fit_intercept)
+    X_j = jnp.array(X_aug, dtype=jnp.float64)
+    y_j = jnp.array(y_values, dtype=jnp.float64)
+
+    # Intercept is column 0 when fit_intercept is True; slope
+    # parameters start at index 1.
+    idx_start = 1 if fit_intercept else 0
+    feature_indices = list(range(idx_start, idx_start + n_features))
+
+    if name == "logistic":
+        beta, _, _ = _make_newton_solver(X_j, y_j, max_iter=100, tol=_DEFAULT_TOL)
+        return _profile_ci_coefficients(
+            _logistic_nll,
+            beta,
+            X_j,
+            y_j,
+            feature_indices,
+            alpha,
+        )
+
+    if name == "poisson":
+        beta, _, _ = _make_poisson_solver(X_j, y_j, max_iter=100, tol=_DEFAULT_TOL)
+        return _profile_ci_coefficients(
+            _poisson_nll,
+            beta,
+            X_j,
+            y_j,
+            feature_indices,
+            alpha,
+        )
+
+    if name == "negative_binomial":
+        a = family.alpha  # type: ignore[attr-defined]
+        if a is None:
+            raise RuntimeError(
+                "Profile CI for NB requires calibrated α. Call calibrate() first."
+            )
+        beta, _, _ = _make_negbin_solver(
+            X_j,
+            y_j,
+            a,
+            max_iter=100,
+            tol=_DEFAULT_TOL,
+        )
+        nll_fn = _make_negbin_nll(a)
+        return _profile_ci_coefficients(
+            nll_fn,
+            beta,
+            X_j,
+            y_j,
+            feature_indices,
+            alpha,
+        )
+
+    if name == "ordinal":
+        K = int(len(np.unique(y_values)))
+        # Ordinal models DON'T use intercept augmentation — thresholds
+        # serve as intercepts.  Use the raw feature matrix.
+        X_bare = np.asarray(X)
+        X_j_bare = jnp.array(X_bare, dtype=jnp.float64)
+        params, _, _ = _make_ordinal_solver(
+            X_j_bare,
+            y_j,
+            K,
+            max_iter=100,
+            tol=_DEFAULT_TOL,
+        )
+        nll_fn = _make_ordinal_nll(K)
+        # Ordinal params: [slopes..., thresholds...].  Feature indices
+        # are the first n_features elements (no intercept to skip).
+        feature_indices_ord = list(range(n_features))
+        return _profile_ci_coefficients(
+            nll_fn,
+            params,
+            X_j_bare,
+            y_j,
+            feature_indices_ord,
+            alpha,
+        )
+
+    if name == "multinomial":
+        # Multinomial has (K-1) coefficients per predictor.  Profile
+        # CIs per-predictor are not well-defined (joint profile over
+        # K-1 params would be needed).  Return NaN.
+        raise ValueError("Multinomial profile CIs not supported.")
+
+    raise ValueError(f"Unsupported family for profile CI: {name}")
+
+
+def compute_profile_ci(
+    X: pd.DataFrame | np.ndarray,
+    y_values: np.ndarray,
+    family: ModelFamily,
+    alpha: float = 0.05,
+    fit_intercept: bool = True,
+) -> np.ndarray:
+    """Profile likelihood CIs for regression coefficients.
+
+    Tries JAX autodiff first.  Falls back to a NaN array when JAX
+    is unavailable or the family is not supported (e.g. linear models,
+    where the profile CI is identical to the Wald CI, or multinomial
+    models where per-predictor profile CIs are not well-defined).
+
+    Profile CIs are based on inverting the likelihood-ratio test
+    and are asymmetric — they respect the curvature of the
+    likelihood surface.  For small samples they are more accurate
+    than Wald CIs.
+
+    Ref: Venzon & Moolgavkar (1988), *Applied Statistics*, 37(1).
+
+    Args:
+        X: Feature matrix ``(n, p)``.
+        y_values: Response vector ``(n,)``.
+        family: Resolved :class:`ModelFamily` instance.
+        alpha: ``1 - confidence_level``.
+        fit_intercept: Whether the model includes an intercept.
+
+    Returns:
+        ``(n_features, 2)`` NumPy array of ``[lower, upper]``
+        profile CI bounds.  NaN where unavailable.
+    """
+    n_features = X.shape[1] if hasattr(X, "shape") else len(X.columns)  # type: ignore[union-attr]
+    try:
+        return _autodiff_profile_ci(
+            np.asarray(X),
+            np.asarray(y_values),
+            family,
+            alpha,
+            fit_intercept,
+        )
+    except (ImportError, ValueError, RuntimeError):
+        return np.full((n_features, 2), np.nan)
+
+
+def _autodiff_cooks_distance(
+    X_aug: np.ndarray,
+    y_values: np.ndarray,
+    family: ModelFamily,
+) -> np.ndarray:
+    """Compute Cook's D for any family via JAX autodiff influence function.
+
+    Fits a single model using the family's JAX Newton solver, then
+    computes D_i = (1/p) sᵢ' H⁻¹ sᵢ for each observation via
+    ``_autodiff_cooks_d()`` in the JAX backend.
+
+    This is the generalised Cook (1977) definition applicable to
+    any smooth GLM family — it reduces to the standard formula for
+    OLS and logistic (up to small numerical differences from the
+    statsmodels closed-form implementation).
+
+    Args:
+        X_aug: Augmented design matrix ``(n, p_aug)`` (with intercept).
+        y_values: Response vector ``(n,)``.
+        family: Resolved ``ModelFamily`` instance.
+
+    Returns:
+        Cook's distances ``(n,)`` as a NumPy array.
+
+    Raises:
+        ImportError: If JAX is not available.
+        ValueError: If the family name is not recognised.
+    """
+    import jax
+    import jax.numpy as jnp
+    from jax import jit
+
+    from ._backends._jax import (
+        _DEFAULT_TOL,
+        _autodiff_cooks_d,
+        _logistic_hessian,
+        _logistic_nll_per_obs,
+        _make_multinomial_nll,
+        _make_multinomial_nll_per_obs,
+        _make_multinomial_solver,
+        _make_negbin_hessian,
+        _make_negbin_nll_per_obs,
+        _make_negbin_solver,
+        _make_newton_solver,
+        _make_ordinal_nll,
+        _make_ordinal_nll_per_obs,
+        _make_ordinal_solver,
+        _make_poisson_solver,
+        _poisson_hessian,
+        _poisson_nll_per_obs,
+    )
+
+    X_j = jnp.array(X_aug, dtype=jnp.float64)
+    y_j = jnp.array(y_values, dtype=jnp.float64)
+
+    name = family.name
+
+    if name == "linear":
+        # OLS via logistic solver infrastructure is wasteful; use a
+        # simple closed form instead:  D_i = ê²_i h_i / (p MSE (1−h_i)²)
+        # But for consistency we use the autodiff path with a Gaussian
+        # NLL:  nll_i = 0.5 (y_i - x_i'β)² (up to constant).
+        # However, OLS doesn't have a Newton solver in _jax.py.
+        # Fall back — caller should use statsmodels for linear.
+        raise ValueError("Linear family should use statsmodels OLS path.")
+
+    elif name == "logistic":
+        beta, _, _ = _make_newton_solver(X_j, y_j, max_iter=100, tol=_DEFAULT_TOL)
+
+        def hess_fn_logistic(b: jnp.ndarray) -> jnp.ndarray:
+            return _logistic_hessian(b, X_j, y_j)  # type: ignore[no-any-return]
+
+        return _autodiff_cooks_d(
+            _logistic_nll_per_obs, hess_fn_logistic, beta, X_j, y_j
+        )
+
+    elif name == "poisson":
+        beta, _, _ = _make_poisson_solver(X_j, y_j, max_iter=100, tol=_DEFAULT_TOL)
+
+        def hess_fn_poisson(b: jnp.ndarray) -> jnp.ndarray:
+            return _poisson_hessian(b, X_j, y_j)  # type: ignore[no-any-return]
+
+        return _autodiff_cooks_d(_poisson_nll_per_obs, hess_fn_poisson, beta, X_j, y_j)
+
+    elif name == "negative_binomial":
+        alpha = family.alpha  # type: ignore[attr-defined]
+        if alpha is None:
+            raise RuntimeError(
+                "NB Cook's D requires calibrated α. Call calibrate() first."
+            )
+        beta, _, _ = _make_negbin_solver(
+            X_j, y_j, alpha, max_iter=100, tol=_DEFAULT_TOL
+        )
+        _nb_hess = _make_negbin_hessian(alpha)
+
+        def hess_fn_nb(b: jnp.ndarray) -> jnp.ndarray:
+            return _nb_hess(b, X_j, y_j)  # type: ignore[no-any-return]
+
+        nll_per_obs_fn = _make_negbin_nll_per_obs(alpha)
+        return _autodiff_cooks_d(nll_per_obs_fn, hess_fn_nb, beta, X_j, y_j)
+
+    elif name == "ordinal":
+        K = int(len(np.unique(y_values)))
+        # Ordinal doesn't use intercept augmentation — but the caller
+        # already passed X_aug.  For ordinal, we need to strip the
+        # intercept column and use bare X.
+        X_bare = X_aug[:, 1:]  # strip intercept
+        X_j_bare = jnp.array(X_bare, dtype=jnp.float64)
+        params, _, _ = _make_ordinal_solver(
+            X_j_bare, y_j, K, max_iter=100, tol=_DEFAULT_TOL
+        )
+        _nll = _make_ordinal_nll(K)
+        _ord_hess = jit(jax.hessian(_nll))
+
+        def hess_fn_ord(p: jnp.ndarray) -> jnp.ndarray:
+            return _ord_hess(p, X_j_bare, y_j)  # type: ignore[no-any-return]
+
+        nll_per_obs_fn = _make_ordinal_nll_per_obs(K)
+        return _autodiff_cooks_d(nll_per_obs_fn, hess_fn_ord, params, X_j_bare, y_j)
+
+    elif name == "multinomial":
+        K = int(len(np.unique(y_values)))
+        params, _, _ = _make_multinomial_solver(
+            X_j, y_j, K, max_iter=100, tol=_DEFAULT_TOL
+        )
+        _nll = _make_multinomial_nll(K)
+        _mn_hess = jit(jax.hessian(_nll))
+
+        def hess_fn_mn(p: jnp.ndarray) -> jnp.ndarray:
+            return _mn_hess(p, X_j, y_j)  # type: ignore[no-any-return]
+
+        nll_per_obs_fn = _make_multinomial_nll_per_obs(K)
+        return _autodiff_cooks_d(nll_per_obs_fn, hess_fn_mn, params, X_j, y_j)
+
+    else:
+        raise ValueError(f"Unsupported family for autodiff Cook's D: {name}")
+
+
 def compute_cooks_distance(
     X: pd.DataFrame,
     y_values: np.ndarray,
@@ -917,25 +1291,24 @@ def compute_cooks_distance(
 ) -> dict:
     """Compute Cook's distance and flag influential observations.
 
-    For linear models, delegates to ``OLSInfluence.cooks_distance``.
-    For logistic models, delegates to ``GLMInfluence.cooks_distance``.
-    Both use the same statsmodels influence API, which computes:
+    Tries JAX autodiff influence function first (works for all
+    families); falls back to statsmodels ``OLSInfluence`` /
+    ``GLMInfluence`` for linear and logistic when JAX is unavailable.
 
-        D_i = (r*²_i · h_i) / (p · (1 − h_i))
+    The autodiff definition generalises Cook (1977) to arbitrary
+    smooth GLMs via the influence function:
 
-    where r*_i is the internally-studentized Pearson residual
-    r_P,i / √(1 − h_i), h_i is the hat-matrix leverage, and p is
-    the number of parameters.  This is equivalent to:
+        D_i = (1/p) sᵢ' H⁻¹ sᵢ
 
-        D_i = (r²_P,i · h_i) / (p · (1 − h_i)²)
+    where sᵢ = ∂ℓᵢ/∂β is the per-observation score and H is the
+    Hessian of the NLL at β̂.
 
     Observations with D_i > 4/n are flagged as influential.
 
     Args:
         X: Feature matrix.
         y_values: Response vector.
-        family: :class:`ModelFamily` instance.  Controls whether
-            OLS or GLM Cook's D is computed.
+        family: :class:`ModelFamily` instance.
 
     Returns:
         Dictionary with ``cooks_d`` (array), ``n_influential`` (count
@@ -949,47 +1322,39 @@ def compute_cooks_distance(
     # suitable for the moderate-n settings typical of permutation
     # testing.
     threshold = 4.0 / n
-    X_aug = sm.add_constant(X)
+    X_aug = _augment_intercept(X)
 
     # Ensure y_values is a plain numpy array so that arithmetic with
     # statsmodels fitted values (which may be pandas Series) does not
     # trigger index-alignment broadcasts.
     y_values = np.asarray(y_values)
 
-    if family.name == "logistic":
-        # --- Logistic: GLM Cook's D via statsmodels ---
-        #
-        # We delegate to statsmodels GLMInfluence rather than computing
-        # the hat matrix and residuals manually.  This avoids subtle
-        # pitfalls — e.g., sm.Logit.fittedvalues returns log-odds
-        # (the linear predictor η = Xβ), NOT probabilities, so using
-        # it as p̂ in the variance function would produce garbage.
-        #
-        # statsmodels GLMInfluence internally:
-        #   1. Computes the hat matrix H = W^½ X (X'WX)⁻¹ X' W^½
-        #      where W = diag(p̂_i(1 − p̂_i))
-        #   2. Forms studentized Pearson residuals r*_i = r_P,i / √(1 − h_i)
-        #   3. Returns D_i = r*²_i · h_i / (k · (1 − h_i))
-        #      which equals r²_P,i · h_i / (k · (1 − h_i)²)
-        #
-        # This matches the standard GLM Cook's D from McCullagh &
-        # Nelder (1989, §12.5) and Pregibon (1981).
-        sm_model = sm.GLM(
-            y_values,
-            X_aug,
-            family=sm.families.Binomial(),
-        ).fit(disp=0)
-        influence = sm_model.get_influence()
-        cooks_d = np.asarray(influence.cooks_distance[0])
-    else:
-        # --- Linear: exact OLS Cook's D via statsmodels ---
-        #
-        # For OLS the closed-form Cook's D is:
-        #   D_i = (ê_i² · h_i) / (p · MSE · (1 − h_i)²)
-        # statsmodels computes this via the OLSInfluence class.
-        sm_model = sm.OLS(y_values, X_aug).fit()
-        influence = sm_model.get_influence()
-        cooks_d = np.asarray(influence.cooks_distance[0])
+    # ---- JAX path (preferred) ----------------------------------------
+    try:
+        cooks_d = _autodiff_cooks_distance(X_aug, y_values, family)
+    except (ImportError, ValueError):
+        # ImportError: JAX not installed.
+        # ValueError:  Family not supported by autodiff (e.g. linear).
+        # Fall through to statsmodels path.
+        cooks_d = None
+
+    # ---- statsmodels fallback ----------------------------------------
+    if cooks_d is None:
+        if family.name == "logistic":
+            # GLM Cook's D via statsmodels GLMInfluence.
+            # McCullagh & Nelder (1989, §12.5), Pregibon (1981).
+            sm_model = sm.GLM(
+                y_values,
+                X_aug,
+                family=sm.families.Binomial(),
+            ).fit(disp=0)
+            influence = sm_model.get_influence()
+            cooks_d = np.asarray(influence.cooks_distance[0])
+        else:
+            # Default: exact OLS Cook's D via statsmodels.
+            sm_model = sm.OLS(y_values, X_aug).fit()
+            influence = sm_model.get_influence()
+            cooks_d = np.asarray(influence.cooks_distance[0])
 
     # Flag observations exceeding the 4/n threshold.
     influential_mask = cooks_d > threshold
@@ -1239,7 +1604,7 @@ def _proportional_odds_test(
             # skip if degenerate
             if y_bin.sum() == 0 or y_bin.sum() == len(y_bin):
                 return nan_result
-            X_c = sm.add_constant(X)
+            X_c = _augment_intercept(X)
             with warnings.catch_warnings():
                 warnings.filterwarnings("ignore", category=RuntimeWarning)
                 warnings.filterwarnings("ignore", category=SmConvergenceWarning)
@@ -1382,6 +1747,12 @@ def compute_e_value(
                 "computation (Cohen's d conversion)."
             )
         d = coefficient * sd_x / sd_y  # Cohen's d
+        # Cohen's d → RR via the probit/logistic bridge:
+        #   RR ≈ exp(0.91 × |d|)
+        # The constant 0.91 = π/√3 ≈ 1.814 / 2 comes from
+        # equating the logistic and normal CDFs.
+        # Ref: Chinn, S. (2000), *Statistics in Medicine*,
+        # 19(22), 3127–3131; VanderWeele & Ding (2017), Appendix.
         rr = math.exp(0.91 * abs(d))
         e_val = _e_from_rr(rr)
 
@@ -1541,8 +1912,7 @@ def rosenbaum_bounds(
 
     # Compute contrast vector c_i = [(X'X)^{-1}X']_{j,i}.
     # Add intercept column for OLS.
-    ones = np.ones((n, 1))
-    X_design = np.column_stack([ones, X_arr])
+    X_design = _augment_intercept(X_arr)
 
     try:
         XtX_inv = np.linalg.inv(X_design.T @ X_design)
@@ -1593,6 +1963,15 @@ def rosenbaum_bounds(
         u_worst = sign_match.astype(float)
 
         # Shifted null expectation and variance.
+        #
+        # Under worst-case Γ, each unit i is weighted by
+        #   w_i = Γ^{u_i} / Σ_j Γ^{u_j}
+        # and the linear contrast T = Σ_i c_i y_i has:
+        #   E_Γ[T] = (Σ c_i w_i) × n   (rescaled by n because
+        #             the contrast vector c is normalised to sum
+        #             to 0 for n observations)
+        #   Var_Γ[T] = RSE² × (Σ c_i² w_i) × n
+        # See Rosenbaum (2002), *Observational Studies*, §4.3.
         weights = np.exp(log_gamma * u_worst)
         weights /= weights.sum()
 
@@ -1631,10 +2010,13 @@ def rosenbaum_bounds(
     }
 
 
-# predictor and model-level diagnostic in one pass and returns a
-# flat dictionary suitable for inclusion in the results dict.  The
-# caller does not need to know which individual functions exist —
-# this keeps the public API surface small.
+# ---- Aggregate helper -------------------------------------------- #
+#
+# compute_all_diagnostics collects every per-predictor and model-level
+# diagnostic in one pass and returns a flat dictionary suitable for
+# inclusion in the results dict.  The caller does not need to know
+# which individual functions exist — this keeps the public API
+# surface small.
 
 
 def compute_all_diagnostics(
@@ -1650,6 +2032,7 @@ def compute_all_diagnostics(
     method: str = "ter_braak",
     confounders: list[str] | None = None,
     fit_intercept: bool = True,
+    panel_id: np.ndarray | None = None,
 ) -> dict:
     """Compute all extended diagnostics in one call.
 
@@ -1670,6 +2053,10 @@ def compute_all_diagnostics(
             for the ``'kennedy'`` method.
         confounders: Column names of confounders (Kennedy only).
         fit_intercept: Whether the model includes an intercept.
+        panel_id: Panel/subject labels for longitudinal data.
+            When provided, a ``panel_diagnostics`` sub-dict is added
+            with panel count, obs-per-panel statistics, and a
+            balanced flag.
 
     Returns:
         Dictionary with keys for each diagnostic component.
@@ -1766,5 +2153,17 @@ def compute_all_diagnostics(
             confounders,
             fit_intercept,
         )
+
+    # ---- Panel diagnostics (Step 15) ----
+    if panel_id is not None:
+        _, panel_counts = np.unique(panel_id, return_counts=True)
+        n_panels = len(panel_counts)
+        result["panel_diagnostics"] = {
+            "n_panels": n_panels,
+            "obs_per_panel_min": int(panel_counts.min()),
+            "obs_per_panel_max": int(panel_counts.max()),
+            "obs_per_panel_mean": float(np.mean(panel_counts)),
+            "balanced": bool(panel_counts.min() == panel_counts.max()),
+        }
 
     return result

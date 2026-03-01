@@ -51,12 +51,15 @@ from __future__ import annotations
 
 import warnings
 from collections import OrderedDict
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any, final
 
 import numpy as np
 import statsmodels.api as sm
 from typing_extensions import Self
+
+from .families import _augment_intercept
 
 # ------------------------------------------------------------------ #
 # Z-construction helpers
@@ -207,6 +210,115 @@ def _build_random_effects_design(
 
     Z = np.hstack(Z_list) if len(Z_list) > 1 else Z_list[0]
     return Z, re_struct
+
+
+# ------------------------------------------------------------------ #
+# Variance-component extraction (shared by all 3 mixed families)
+# ------------------------------------------------------------------ #
+
+
+def _extract_variance_components(
+    re_struct: Sequence[tuple[Any, int]],
+    re_covariances: Sequence[np.ndarray],
+) -> tuple[list[dict[str, Any]], float]:
+    """Build structured variance-component dicts from RE covariance matrices.
+
+    Iterates over ``re_struct`` / ``re_covariances`` and returns a
+    ``factors`` list with intercept variance, optional slope variances,
+    and intercept–slope correlations (for factors with *d_k* > 1),
+    together with ``total_tau2 = Σ_k τ²_k`` (sum of intercept
+    variances across all factors).
+
+    Returns
+    -------
+    factors : list[dict]
+        One dict per random-effects factor.
+    total_tau2 : float
+        Sum of intercept variances, used by the caller for ICC.
+    """
+    factors: list[dict[str, Any]] = []
+    for k, cov_k in enumerate(re_covariances):
+        _G_k, d_k = re_struct[k]
+        entry: dict[str, Any] = {
+            "index": k,
+            "d_k": d_k,
+            "intercept_var": float(cov_k[0, 0]),
+        }
+        if d_k > 1:
+            entry["slope_vars"] = [float(cov_k[s, s]) for s in range(1, d_k)]
+            # Correlations between intercept and each slope
+            correlations: list[dict[str, Any]] = []
+            stds = np.sqrt(np.diag(cov_k))
+            for s in range(1, d_k):
+                if stds[0] > 0 and stds[s] > 0:
+                    rho = float(cov_k[0, s] / (stds[0] * stds[s]))
+                else:
+                    rho = 0.0
+                correlations.append(
+                    {
+                        "label": f"int, slope {s - 1}",
+                        "value": rho,
+                    }
+                )
+            entry["correlations"] = correlations
+        factors.append(entry)
+
+    total_tau2 = sum(f["intercept_var"] for f in factors)
+    return factors, total_tau2
+
+
+def _format_variance_components(
+    vc: dict[str, Any],
+) -> list[tuple[str, str]]:
+    """Format variance-component factors as ``(label, value)`` display lines.
+
+    Shared by the ``display_diagnostics()`` methods of all three mixed
+    families.  The caller appends family-specific rows (σ², ICC,
+    dispersion, convergence notes) before and/or after these lines.
+    """
+    lines: list[tuple[str, str]] = []
+    for k_info in vc.get("factors", []):
+        k = k_info["index"]
+        d_k = k_info["d_k"]
+        label = f"factor {k}" if len(vc.get("factors", [])) > 1 else ""
+        if d_k == 1:
+            tau2 = k_info["intercept_var"]
+            tag = f" ({label})" if label else ""
+            lines.append((f"τ² (intercept{tag}):", f"{tau2:.4f}"))
+        else:
+            tag = f" [{label}]" if label else ""
+            lines.append((f"τ² (intercept{tag}):", f"{k_info['intercept_var']:.4f}"))
+            for s_idx, sv in enumerate(k_info.get("slope_vars", [])):
+                lines.append((f"τ² (slope {s_idx}{tag}):", f"{sv:.4f}"))
+            for corr_entry in k_info.get("correlations", []):
+                lines.append(
+                    (
+                        f"ρ ({corr_entry['label']}{tag}):",
+                        f"{corr_entry['value']:.4f}",
+                    )
+                )
+    return lines
+
+
+def _require_calibrated_guard(
+    obj: Any,
+    method: str,
+    *,
+    field: str,
+    family_name: str,
+) -> None:
+    """Guard: raise ``RuntimeError`` if ``calibrate()`` not yet called.
+
+    Shared implementation for all three mixed-family classes.
+    Each class exposes a thin ``_require_calibrated`` method that
+    delegates here with its specific field and family name.
+    """
+    if getattr(obj, field) is None:
+        msg = (
+            f"{family_name}.{method}() requires calibration. "
+            "Call calibrate(X, y, fit_intercept, groups=...) first."
+        )
+        raise RuntimeError(msg)
 
 
 # ------------------------------------------------------------------ #
@@ -429,31 +541,7 @@ class LinearMixedFamily:
 
         # Variance components — flattened representation
         vc = lmm.get("variance_components", {})
-        for k_info in vc.get("factors", []):
-            k = k_info["index"]
-            d_k = k_info["d_k"]
-            label = f"factor {k}" if len(vc.get("factors", [])) > 1 else ""
-
-            if d_k == 1:
-                # Random intercept only
-                tau2 = k_info["intercept_var"]
-                tag = f" ({label})" if label else ""
-                lines.append((f"τ² (intercept{tag}):", f"{tau2:.4f}"))
-            else:
-                # Random intercept + slopes
-                tag = f" [{label}]" if label else ""
-                lines.append(
-                    (f"τ² (intercept{tag}):", f"{k_info['intercept_var']:.4f}")
-                )
-                for s_idx, sv in enumerate(k_info.get("slope_vars", [])):
-                    lines.append((f"τ² (slope {s_idx}{tag}):", f"{sv:.4f}"))
-                for corr_entry in k_info.get("correlations", []):
-                    lines.append(
-                        (
-                            f"ρ ({corr_entry['label']}{tag}):",
-                            f"{corr_entry['value']:.4f}",
-                        )
-                    )
+        lines.extend(_format_variance_components(vc))
 
         # ICC
         icc = lmm.get("icc")
@@ -482,37 +570,12 @@ class LinearMixedFamily:
         assert self.re_struct is not None
 
         # Build structured variance components
-        factors: list[dict[str, Any]] = []
-        for k, cov_k in enumerate(self.re_covariances):
-            G_k, d_k = self.re_struct[k]
-            entry: dict[str, Any] = {
-                "index": k,
-                "d_k": d_k,
-                "intercept_var": float(cov_k[0, 0]),
-            }
-            if d_k > 1:
-                entry["slope_vars"] = [float(cov_k[s, s]) for s in range(1, d_k)]
-                # Correlations between intercept and each slope
-                correlations: list[dict[str, Any]] = []
-                stds = np.sqrt(np.diag(cov_k))
-                for s in range(1, d_k):
-                    if stds[0] > 0 and stds[s] > 0:
-                        rho = float(cov_k[0, s] / (stds[0] * stds[s]))
-                    else:
-                        rho = 0.0
-                    correlations.append(
-                        {
-                            "label": f"int, slope {s - 1}",
-                            "value": rho,
-                        }
-                    )
-                entry["correlations"] = correlations
-            factors.append(entry)
-
+        factors, total_tau2 = _extract_variance_components(
+            self.re_struct, self.re_covariances
+        )
         var_comps: dict[str, Any] = {"factors": factors}
 
         # ICC = Σ τ²_intercept_k / (Σ τ²_intercept_k + σ²)
-        total_tau2 = sum(f["intercept_var"] for f in factors)
         total_var = total_tau2 + self.sigma2
         icc = total_tau2 / total_var if total_var > 0 else 0.0
 
@@ -564,10 +627,7 @@ class LinearMixedFamily:
         assert self.projection_A is not None  # for mypy
         assert self.sigma2 is not None
 
-        if fit_intercept:
-            X_aug = np.column_stack([np.ones(X.shape[0]), X])
-        else:
-            X_aug = np.asarray(X)
+        X_aug = _augment_intercept(X, fit_intercept)
 
         p_aug = X_aug.shape[1]
         if p_aug == self.projection_A.shape[0]:
@@ -634,6 +694,7 @@ class LinearMixedFamily:
         perm_indices: np.ndarray,
         *,
         fit_intercept: bool = True,
+        y: np.ndarray | None = None,  # noqa: ARG002
     ) -> np.ndarray:
         """Score projection via GLS projection matrix A.
 
@@ -716,10 +777,7 @@ class LinearMixedFamily:
         assert self.re_covariances is not None
 
         # Marginal R²: var(Xβ̂) / var(y)
-        if fit_intercept:
-            X_aug = np.column_stack([np.ones(X.shape[0]), X])
-        else:
-            X_aug = np.asarray(X)
+        X_aug = _augment_intercept(X, fit_intercept)
         assert self.projection_A is not None
         beta = self.projection_A @ y
         y_pred = X_aug @ beta
@@ -745,33 +803,10 @@ class LinearMixedFamily:
         )
 
         # Variance components: structured per-factor representation
-        factors: list[dict[str, Any]] = []
-        for k, cov_k in enumerate(self.re_covariances):
-            G_k, d_k = self.re_struct[k]  # type: ignore[index]
-            entry: dict[str, Any] = {
-                "index": k,
-                "d_k": d_k,
-                "intercept_var": float(cov_k[0, 0]),
-            }
-            if d_k > 1:
-                entry["slope_vars"] = [float(cov_k[s, s]) for s in range(1, d_k)]
-                # Correlations between intercept and each slope
-                correlations: list[dict[str, Any]] = []
-                stds = np.sqrt(np.diag(cov_k))
-                for s in range(1, d_k):
-                    if stds[0] > 0 and stds[s] > 0:
-                        rho = float(cov_k[0, s] / (stds[0] * stds[s]))
-                    else:
-                        rho = 0.0
-                    correlations.append(
-                        {
-                            "label": f"int, slope {s - 1}",
-                            "value": rho,
-                        }
-                    )
-                entry["correlations"] = correlations
-            factors.append(entry)
-
+        factors, _ = _extract_variance_components(
+            self.re_struct,  # type: ignore[arg-type]
+            self.re_covariances,  # type: ignore[arg-type]
+        )
         var_comps: dict[str, Any] = {"factors": factors}
 
         # AIC/BIC from cached statsmodels model, or refit if needed.
@@ -801,7 +836,7 @@ class LinearMixedFamily:
                             )[:, :, 0],
                             axis=1,
                         )
-                    X_sm = sm.add_constant(X) if fit_intercept else np.asarray(X)
+                    X_sm = _augment_intercept(X, fit_intercept)
                     exog_re_kw: dict[str, Any] = {}
                     if self._exog_re_kw is not None:
                         exog_re_kw = self._exog_re_kw
@@ -857,11 +892,17 @@ class LinearMixedFamily:
         X: np.ndarray,
         y: np.ndarray,
         fit_intercept: bool = True,
+        *,
+        robust_se: bool = False,
     ) -> np.ndarray:
         """Approximate Wald t-test p-values via statsmodels MixedLM.
 
         Falls back to OLS p-values if statsmodels MixedLM fails.
         Returns one p-value per slope coefficient (intercept excluded).
+
+        ``robust_se`` is accepted for protocol compatibility but
+        ignored — mixed-model SEs already account for the
+        random-effects covariance structure.
         """
         self._require_calibrated("classical_p_values")
         assert self.Z is not None
@@ -871,7 +912,7 @@ class LinearMixedFamily:
             # Use cached statsmodels model if available
             if self._sm_model is not None:
                 pvals = self._sm_model.pvalues
-                X_sm = sm.add_constant(X) if fit_intercept else np.asarray(X)
+                X_sm = _augment_intercept(X, fit_intercept)
                 n_fe = X_sm.shape[1]
                 fe_pvals = pvals[:n_fe]
                 return (
@@ -890,7 +931,7 @@ class LinearMixedFamily:
                     ],
                     axis=1,
                 )
-            X_sm = sm.add_constant(X) if fit_intercept else np.asarray(X)
+            X_sm = _augment_intercept(X, fit_intercept)
             exog_re_kw_local: dict[str, Any] = {}
             if self._exog_re_kw is not None:
                 exog_re_kw_local = self._exog_re_kw
@@ -916,7 +957,7 @@ class LinearMixedFamily:
             return np.asarray(fe_pvals[1:]) if fit_intercept else np.asarray(fe_pvals)
         except Exception:
             # Fallback: OLS p-values (approximate)
-            X_sm = sm.add_constant(X) if fit_intercept else np.asarray(X)
+            X_sm = _augment_intercept(X, fit_intercept)
             with warnings.catch_warnings():
                 warnings.filterwarnings("ignore", category=RuntimeWarning)
                 sm_model = sm.OLS(y, X_sm).fit()
@@ -1082,10 +1123,7 @@ class LinearMixedFamily:
         """
         import statsmodels.regression.mixed_linear_model as mlm
 
-        if fit_intercept:
-            X_aug = np.column_stack([np.ones(X.shape[0]), X])
-        else:
-            X_aug = np.asarray(X)
+        X_aug = _augment_intercept(X, fit_intercept)
 
         n, p = X_aug.shape
         q = Z.shape[1]
@@ -1097,7 +1135,7 @@ class LinearMixedFamily:
         ]
         groups_arr = np.argmax(intercept_cols, axis=1)
 
-        X_sm = sm.add_constant(X) if fit_intercept else np.asarray(X)
+        X_sm = _augment_intercept(X, fit_intercept)
         exog_re_kw: dict[str, Any] = {}
         if d_first > 1:
             exog_re_cols = [np.ones(len(y))]
@@ -1166,13 +1204,19 @@ class LinearMixedFamily:
 
         C22 = Z.T @ Z + Gamma_inv
 
-        # Build projection A = S⁻¹ X'Ṽ⁻¹ via Woodbury
-        XtZ = X_aug.T @ Z
-        C22_inv_ZtX = np.linalg.solve(C22, XtZ.T)
-        S = X_aug.T @ X_aug - XtZ @ C22_inv_ZtX
-        C22_inv_Zt = np.linalg.solve(C22, Z.T)
-        Xt_Vtilde_inv = X_aug.T - XtZ @ C22_inv_Zt
-        A = np.linalg.solve(S, Xt_Vtilde_inv)
+        # Build projection A = S⁻¹ X'Ṽ⁻¹ via the Woodbury identity.
+        #
+        # Ṽ = I + Z Γ Z' is the marginal covariance scaled by σ².
+        # The Woodbury identity lets us invert Ṽ without forming
+        # the dense n×n matrix:
+        #   Ṽ⁻¹ = I − Z (Z'Z + Γ⁻¹)⁻¹ Z' = I − Z C₂₂⁻¹ Z'
+        # where C₂₂ = Z'Z + Γ⁻¹ is only q×q (much smaller than n×n).
+        XtZ = X_aug.T @ Z  # (p, q)
+        C22_inv_ZtX = np.linalg.solve(C22, XtZ.T)  # (q, p)
+        S = X_aug.T @ X_aug - XtZ @ C22_inv_ZtX  # (p, p)  GLS info matrix
+        C22_inv_Zt = np.linalg.solve(C22, Z.T)  # (q, n)
+        Xt_Vtilde_inv = X_aug.T - XtZ @ C22_inv_Zt  # (p, n)  X'Ṽ⁻¹
+        A = np.linalg.solve(S, Xt_Vtilde_inv)  # (p, n)  projection
 
         return LinearMixedFamily(
             re_struct=tuple(re_struct),
@@ -1288,10 +1332,7 @@ class LinearMixedFamily:
         """
         self._require_calibrated("batch_fit_and_score")
 
-        if fit_intercept:
-            X_aug = np.column_stack([np.ones(X.shape[0]), X])
-        else:
-            X_aug = np.asarray(X)
+        X_aug = _augment_intercept(X, fit_intercept)
 
         assert self.projection_A is not None
         if X_aug.shape[1] == self.projection_A.shape[0]:
@@ -1350,10 +1391,7 @@ class LinearMixedFamily:
 
         for b in range(B):
             X_b = X_batch[b]
-            if fit_intercept:
-                X_aug = np.column_stack([np.ones(X_b.shape[0]), X_b])
-            else:
-                X_aug = np.asarray(X_b, dtype=float)
+            X_aug = _augment_intercept(X_b, fit_intercept)
             XtZ = X_aug.T @ self.Z
             C22_inv_ZtX = C22_inv_Zt @ X_aug
             S = X_aug.T @ X_aug - XtZ @ C22_inv_ZtX
@@ -1388,10 +1426,7 @@ class LinearMixedFamily:
         for b in range(B):
             X_b = X_batch[b]
             y_b = Y_batch[b]
-            if fit_intercept:
-                X_aug = np.column_stack([np.ones(n), X_b])
-            else:
-                X_aug = np.asarray(X_b, dtype=float)
+            X_aug = _augment_intercept(X_b, fit_intercept)
             XtZ = X_aug.T @ self.Z
             C22_inv_ZtX = C22_inv_Zt @ X_aug
             S = X_aug.T @ X_aug - XtZ @ C22_inv_ZtX
@@ -1406,12 +1441,9 @@ class LinearMixedFamily:
 
     def _require_calibrated(self, method: str) -> None:
         """Guard: raise if calibrate() has not been called."""
-        if self.projection_A is None:
-            msg = (
-                f"LinearMixedFamily.{method}() requires calibration. "
-                "Call calibrate(X, y, fit_intercept, groups=...) first."
-            )
-            raise RuntimeError(msg)
+        _require_calibrated_guard(
+            self, method, field="projection_A", family_name="LinearMixedFamily"
+        )
 
 
 # ------------------------------------------------------------------ #
@@ -1438,13 +1470,184 @@ class _GLMMFitResult:
 
 
 # ------------------------------------------------------------------ #
+# GLMM shared helpers
+# ------------------------------------------------------------------ #
+
+
+class _GLMMBatchStubMixin:
+    """Mixin providing ``batch_*`` stubs that reject non-score methods.
+
+    GLMM families (logistic_mixed, poisson_mixed) require
+    ``method='score'`` or ``method='score_exact'`` — conventional
+    batch-refit strategies are not supported because re-estimating
+    variance components per permutation is prohibitively expensive.
+    """
+
+    def batch_fit(
+        self,
+        X: np.ndarray,
+        Y_matrix: np.ndarray,
+        fit_intercept: bool,
+        **kwargs: Any,
+    ) -> np.ndarray:
+        """Not supported — use ``method='score'``."""
+        raise NotImplementedError(
+            "GLMM families require method='score'. "
+            "Use permutation_test_regression(..., method='score')."
+        )
+
+    def batch_fit_varying_X(
+        self,
+        X_batch: np.ndarray,
+        y: np.ndarray,
+        fit_intercept: bool,
+        **kwargs: Any,
+    ) -> np.ndarray:
+        """Not supported — use ``method='score'``."""
+        raise NotImplementedError(
+            "GLMM families require method='score'. "
+            "Use permutation_test_regression(..., method='score')."
+        )
+
+    def batch_fit_and_score(
+        self,
+        X: np.ndarray,
+        Y_matrix: np.ndarray,
+        fit_intercept: bool,
+        **kwargs: Any,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Not supported — use ``method='score'``."""
+        raise NotImplementedError(
+            "GLMM families require method='score'. "
+            "Use permutation_test_regression(..., method='score')."
+        )
+
+    def batch_fit_and_score_varying_X(
+        self,
+        X_batch: np.ndarray,
+        y: np.ndarray,
+        fit_intercept: bool,
+        **kwargs: Any,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Not supported — use ``method='score'``."""
+        raise NotImplementedError(
+            "GLMM families require method='score'. "
+            "Use permutation_test_regression(..., method='score')."
+        )
+
+    def batch_fit_paired(
+        self,
+        X_batch: np.ndarray,
+        Y_batch: np.ndarray,
+        fit_intercept: bool,
+        **kwargs: Any,
+    ) -> np.ndarray:
+        """Not supported — use ``method='score'``."""
+        raise NotImplementedError(
+            "GLMM families require method='score'. "
+            "Use permutation_test_regression(..., method='score')."
+        )
+
+
+def _calibrate_glmm(
+    cls: type,
+    instance: LogisticMixedFamily | PoissonMixedFamily,
+    X: np.ndarray,
+    y: np.ndarray,
+    fit_intercept: bool,
+    family_name: str,
+    **kwargs: Any,
+) -> LogisticMixedFamily | PoissonMixedFamily:
+    """Shared Laplace-approximation calibration for GLMM families.
+
+    Parameters
+    ----------
+    cls : type
+        The concrete family class to construct (``LogisticMixedFamily``
+        or ``PoissonMixedFamily``).
+    instance : LogisticMixedFamily | PoissonMixedFamily
+        The uncalibrated instance (used for the idempotency guard).
+    X, y : np.ndarray
+        Design matrix and response vector.
+    fit_intercept : bool
+        Whether the model includes an intercept.
+    family_name : str
+        ``"logistic"`` or ``"poisson"`` — selects the conditional NLL
+        and working-response functions from ``_backends._jax``.
+    **kwargs
+        Must include ``groups=``; may include ``random_slopes=``.
+
+    Returns
+    -------
+    LogisticMixedFamily | PoissonMixedFamily
+        A **new** calibrated instance with all Laplace fields populated.
+    """
+    # Idempotent — return immediately if already calibrated.
+    if instance.fisher_info is not None:
+        return instance
+
+    groups = kwargs.get("groups")
+    if groups is None:
+        msg = f"{cls.__name__}.calibrate() requires groups= for calibration."
+        raise ValueError(msg)
+
+    random_slopes = kwargs.get("random_slopes")
+    Z, re_struct = _build_random_effects_design(
+        groups, X=X, random_slopes=random_slopes
+    )
+
+    # Lazy-import the family-specific functions from the JAX backend.
+    import importlib
+
+    jax_mod = importlib.import_module("._backends._jax", package=__package__)
+    _laplace_solve = jax_mod._laplace_solve
+    working_fn = getattr(jax_mod, f"_{family_name}_working_response_and_weights")
+    cond_nll_fn = getattr(jax_mod, f"_{family_name}_conditional_nll")
+
+    result = _laplace_solve(
+        X,
+        Z,
+        y,
+        re_struct,
+        working_fn=working_fn,
+        cond_nll_fn=cond_nll_fn,
+        family=family_name,
+        fit_intercept=fit_intercept,
+    )
+
+    # Derive group labels from Z intercept columns.
+    G_first, d_first = re_struct[0]
+    intercept_cols = Z[:, : G_first * d_first].reshape(-1, G_first, d_first)[:, :, 0]
+    groups_arr = np.argmax(intercept_cols, axis=1)
+
+    return cls(  # type: ignore[no-any-return]
+        re_struct=tuple(re_struct),
+        beta=result.beta,
+        u=result.u,
+        W=result.W,
+        mu=result.mu,
+        V_inv_diag=result.V_inv_diag,
+        fisher_info=result.fisher_info,
+        re_covariances=result.re_covariances,
+        log_chol=result.log_chol,
+        Z=Z,
+        C22=result.C22,
+        converged=result.converged,
+        n_iter=result.n_iter_outer,
+        nll=result.nll,
+        _groups_arr=groups_arr,
+        _raw_groups=groups,
+    )
+
+
+# ------------------------------------------------------------------ #
 # LogisticMixedFamily
 # ------------------------------------------------------------------ #
 
 
 @final
 @dataclass(frozen=True)
-class LogisticMixedFamily:
+class LogisticMixedFamily(_GLMMBatchStubMixin):
     """Logistic mixed-effects model for clustered binary outcomes.
 
     Implements the ``ModelFamily`` protocol for binary Y ∈ {0, 1}
@@ -1566,28 +1769,7 @@ class LogisticMixedFamily:
             return lines, notes
 
         vc = glmm.get("variance_components", {})
-        for k_info in vc.get("factors", []):
-            k = k_info["index"]
-            d_k = k_info["d_k"]
-            label = f"factor {k}" if len(vc.get("factors", [])) > 1 else ""
-            if d_k == 1:
-                tau2 = k_info["intercept_var"]
-                tag = f" ({label})" if label else ""
-                lines.append((f"τ² (intercept{tag}):", f"{tau2:.4f}"))
-            else:
-                tag = f" [{label}]" if label else ""
-                lines.append(
-                    (f"τ² (intercept{tag}):", f"{k_info['intercept_var']:.4f}")
-                )
-                for s_idx, sv in enumerate(k_info.get("slope_vars", [])):
-                    lines.append((f"τ² (slope {s_idx}{tag}):", f"{sv:.4f}"))
-                for corr_entry in k_info.get("correlations", []):
-                    lines.append(
-                        (
-                            f"ρ ({corr_entry['label']}{tag}):",
-                            f"{corr_entry['value']:.4f}",
-                        )
-                    )
+        lines.extend(_format_variance_components(vc))
 
         icc = glmm.get("icc")
         if icc is not None:
@@ -1611,34 +1793,17 @@ class LogisticMixedFamily:
         if self.re_covariances is None or self.re_struct is None:
             return {}
 
-        factors: list[dict[str, Any]] = []
-        for k, cov_k in enumerate(self.re_covariances):
-            _G_k, d_k = self.re_struct[k]
-            entry: dict[str, Any] = {
-                "index": k,
-                "d_k": d_k,
-                "intercept_var": float(cov_k[0, 0]),
-            }
-            if d_k > 1:
-                entry["slope_vars"] = [float(cov_k[s, s]) for s in range(1, d_k)]
-                correlations: list[dict[str, Any]] = []
-                stds = np.sqrt(np.diag(cov_k))
-                for s in range(1, d_k):
-                    if stds[0] > 0 and stds[s] > 0:
-                        rho = float(cov_k[0, s] / (stds[0] * stds[s]))
-                    else:
-                        rho = 0.0
-                    correlations.append(
-                        {
-                            "label": f"int, slope {s - 1}",
-                            "value": rho,
-                        }
-                    )
-                entry["correlations"] = correlations
-            factors.append(entry)
-
-        total_tau2 = sum(f["intercept_var"] for f in factors)
+        factors, total_tau2 = _extract_variance_components(
+            self.re_struct, self.re_covariances
+        )
         # ICC on the latent scale: τ² / (τ² + π²/3)
+        #
+        # The level-1 residual variance for the logistic GLMM is
+        # π²/3 ≈ 3.29 — the variance of the standard logistic
+        # distribution, which serves as the implicit residual
+        # distribution on the latent (linear predictor) scale.
+        # Ref: Snijders & Bosker (2012), *Multilevel Analysis*,
+        # §17.2, Eq. 17.5.
         icc = total_tau2 / (total_tau2 + np.pi**2 / 3.0) if total_tau2 > 0 else 0.0
 
         return {
@@ -1685,10 +1850,7 @@ class LogisticMixedFamily:
         self._require_calibrated("fit")
         assert self.beta is not None
 
-        if fit_intercept:
-            X_aug = np.column_stack([np.ones(X.shape[0]), X])
-        else:
-            X_aug = np.asarray(X)
+        X_aug = _augment_intercept(X, fit_intercept)
 
         p_aug = X_aug.shape[1]
         if p_aug == len(self.beta):
@@ -1713,11 +1875,7 @@ class LogisticMixedFamily:
             _logistic_working_response_and_weights as _logistic_wf,
         )
 
-        X_aug_red = (
-            np.column_stack([np.ones(X.shape[0]), X])
-            if fit_intercept
-            else np.asarray(X)
-        )
+        X_aug_red = _augment_intercept(X, fit_intercept)
         glm_res = _fit_glm_irls(
             X_aug_red,
             y,
@@ -1760,6 +1918,7 @@ class LogisticMixedFamily:
         perm_indices: np.ndarray,
         *,
         fit_intercept: bool = True,
+        y: np.ndarray | None = None,  # noqa: ARG002
     ) -> np.ndarray:
         """One-step corrector via score projection.
 
@@ -1777,10 +1936,7 @@ class LogisticMixedFamily:
         assert self.fisher_info is not None
 
         j = feature_idx + 1 if fit_intercept else feature_idx
-        if fit_intercept:
-            X_full = np.column_stack([np.ones(X.shape[0]), X])
-        else:
-            X_full = np.asarray(X)
+        X_full = _augment_intercept(X, fit_intercept)
 
         score_weights = X_full[:, j] * self.V_inv_diag  # (n,)
         E_pi = residuals[perm_indices]  # (B, n)
@@ -1838,10 +1994,7 @@ class LogisticMixedFamily:
         assert self.re_covariances is not None
         assert self.re_struct is not None
 
-        if fit_intercept:
-            X_aug = np.column_stack([np.ones(X.shape[0]), X])
-        else:
-            X_aug = np.asarray(X)
+        X_aug = _augment_intercept(X, fit_intercept)
 
         # Marginal predictions
         eta = X_aug @ self.beta
@@ -1854,34 +2007,17 @@ class LogisticMixedFamily:
         )
 
         # Variance components
-        factors: list[dict[str, Any]] = []
-        for k, cov_k in enumerate(self.re_covariances):
-            _G_k, d_k = self.re_struct[k]
-            entry: dict[str, Any] = {
-                "index": k,
-                "d_k": d_k,
-                "intercept_var": float(cov_k[0, 0]),
-            }
-            if d_k > 1:
-                entry["slope_vars"] = [float(cov_k[s, s]) for s in range(1, d_k)]
-                correlations: list[dict[str, Any]] = []
-                stds = np.sqrt(np.diag(cov_k))
-                for s in range(1, d_k):
-                    if stds[0] > 0 and stds[s] > 0:
-                        rho = float(cov_k[0, s] / (stds[0] * stds[s]))
-                    else:
-                        rho = 0.0
-                    correlations.append(
-                        {
-                            "label": f"int, slope {s - 1}",
-                            "value": rho,
-                        }
-                    )
-                entry["correlations"] = correlations
-            factors.append(entry)
-
-        total_tau2 = sum(f["intercept_var"] for f in factors)
-        # Logistic ICC on latent scale: τ² / (τ² + π²/3)
+        factors, total_tau2 = _extract_variance_components(
+            self.re_struct, self.re_covariances
+        )
+        # ICC on the latent scale: τ² / (τ² + π²/3)
+        #
+        # The level-1 residual variance for the logistic GLMM is
+        # π²/3 ≈ 3.29 — the variance of the standard logistic
+        # distribution, which serves as the implicit residual
+        # distribution on the latent (linear predictor) scale.
+        # Ref: Snijders & Bosker (2012), *Multilevel Analysis*,
+        # §17.2, Eq. 17.5.
         icc = total_tau2 / (total_tau2 + np.pi**2 / 3.0) if total_tau2 > 0 else 0.0
 
         n_groups = self.re_struct[0][0]
@@ -1915,11 +2051,17 @@ class LogisticMixedFamily:
         X: np.ndarray,
         y: np.ndarray,
         fit_intercept: bool = True,
+        *,
+        robust_se: bool = False,
     ) -> np.ndarray:
         """Wald z-test p-values from the Fisher information.
 
         Computes the Wald statistic z_j = β̂_j / se(β̂_j) where
         se is derived from the inverse Fisher information matrix.
+
+        ``robust_se`` is accepted for protocol compatibility but
+        ignored — GLMM SEs already account for the random-effects
+        covariance structure.
         """
         self._require_calibrated("classical_p_values")
         assert self.beta is not None
@@ -1972,138 +2114,17 @@ class LogisticMixedFamily:
         ``LogisticMixedFamily`` with all calibrated fields populated.
         Idempotent — returns ``self`` if already calibrated.
         """
-        if self.fisher_info is not None:
-            return self
-
-        groups = kwargs.get("groups")
-        if groups is None:
-            msg = "LogisticMixedFamily.calibrate() requires groups= for calibration."
-            raise ValueError(msg)
-
-        random_slopes = kwargs.get("random_slopes")
-        Z, re_struct = _build_random_effects_design(
-            groups, X=X, random_slopes=random_slopes
-        )
-
-        from ._backends._jax import (
-            _laplace_solve,
-            _logistic_conditional_nll,
-            _logistic_working_response_and_weights,
-        )
-
-        result = _laplace_solve(
-            X,
-            Z,
-            y,
-            re_struct,
-            working_fn=_logistic_working_response_and_weights,
-            cond_nll_fn=_logistic_conditional_nll,
-            family="logistic",
-            fit_intercept=fit_intercept,
-        )
-
-        G_first, d_first = re_struct[0]
-        intercept_cols = Z[:, : G_first * d_first].reshape(-1, G_first, d_first)[
-            :, :, 0
-        ]
-        groups_arr = np.argmax(intercept_cols, axis=1)
-
-        return LogisticMixedFamily(
-            re_struct=tuple(re_struct),
-            beta=result.beta,
-            u=result.u,
-            W=result.W,
-            mu=result.mu,
-            V_inv_diag=result.V_inv_diag,
-            fisher_info=result.fisher_info,
-            re_covariances=result.re_covariances,
-            log_chol=result.log_chol,
-            Z=Z,
-            C22=result.C22,
-            converged=result.converged,
-            n_iter=result.n_iter_outer,
-            nll=result.nll,
-            _groups_arr=groups_arr,
-            _raw_groups=groups,
-        )
-
-    # ---- Batch fitting (GLMM → NotImplementedError) ----------------
-
-    def batch_fit(
-        self,
-        X: np.ndarray,
-        Y_matrix: np.ndarray,
-        fit_intercept: bool,
-        **kwargs: Any,
-    ) -> np.ndarray:
-        """Not supported — use ``method='score'``."""
-        raise NotImplementedError(
-            "GLMM families require method='score'. "
-            "Use permutation_test_regression(..., method='score')."
-        )
-
-    def batch_fit_varying_X(
-        self,
-        X_batch: np.ndarray,
-        y: np.ndarray,
-        fit_intercept: bool,
-        **kwargs: Any,
-    ) -> np.ndarray:
-        """Not supported — use ``method='score'``."""
-        raise NotImplementedError(
-            "GLMM families require method='score'. "
-            "Use permutation_test_regression(..., method='score')."
-        )
-
-    def batch_fit_and_score(
-        self,
-        X: np.ndarray,
-        Y_matrix: np.ndarray,
-        fit_intercept: bool,
-        **kwargs: Any,
-    ) -> tuple[np.ndarray, np.ndarray]:
-        """Not supported — use ``method='score'``."""
-        raise NotImplementedError(
-            "GLMM families require method='score'. "
-            "Use permutation_test_regression(..., method='score')."
-        )
-
-    def batch_fit_and_score_varying_X(
-        self,
-        X_batch: np.ndarray,
-        y: np.ndarray,
-        fit_intercept: bool,
-        **kwargs: Any,
-    ) -> tuple[np.ndarray, np.ndarray]:
-        """Not supported — use ``method='score'``."""
-        raise NotImplementedError(
-            "GLMM families require method='score'. "
-            "Use permutation_test_regression(..., method='score')."
-        )
-
-    def batch_fit_paired(
-        self,
-        X_batch: np.ndarray,
-        Y_batch: np.ndarray,
-        fit_intercept: bool,
-        **kwargs: Any,
-    ) -> np.ndarray:
-        """Not supported — use ``method='score'``."""
-        raise NotImplementedError(
-            "GLMM families require method='score'. "
-            "Use permutation_test_regression(..., method='score')."
+        return _calibrate_glmm(  # type: ignore[return-value]
+            LogisticMixedFamily, self, X, y, fit_intercept, "logistic", **kwargs
         )
 
     # ---- Internal --------------------------------------------------
 
     def _require_calibrated(self, method: str) -> None:
         """Guard: raise if calibrate() has not been called."""
-        if self.fisher_info is None:
-            msg = (
-                f"LogisticMixedFamily.{method}() requires calibration. "
-                "Call calibrate(X, y, fit_intercept, groups=...) first."
-            )
-            raise RuntimeError(msg)
+        _require_calibrated_guard(
+            self, method, field="fisher_info", family_name="LogisticMixedFamily"
+        )
 
 
 # ------------------------------------------------------------------ #
@@ -2113,7 +2134,7 @@ class LogisticMixedFamily:
 
 @final
 @dataclass(frozen=True)
-class PoissonMixedFamily:
+class PoissonMixedFamily(_GLMMBatchStubMixin):
     """Poisson mixed-effects model for clustered count outcomes.
 
     Implements the ``ModelFamily`` protocol for non-negative
@@ -2217,28 +2238,7 @@ class PoissonMixedFamily:
             return lines, notes
 
         vc = glmm.get("variance_components", {})
-        for k_info in vc.get("factors", []):
-            k = k_info["index"]
-            d_k = k_info["d_k"]
-            label = f"factor {k}" if len(vc.get("factors", [])) > 1 else ""
-            if d_k == 1:
-                tau2 = k_info["intercept_var"]
-                tag = f" ({label})" if label else ""
-                lines.append((f"τ² (intercept{tag}):", f"{tau2:.4f}"))
-            else:
-                tag = f" [{label}]" if label else ""
-                lines.append(
-                    (f"τ² (intercept{tag}):", f"{k_info['intercept_var']:.4f}")
-                )
-                for s_idx, sv in enumerate(k_info.get("slope_vars", [])):
-                    lines.append((f"τ² (slope {s_idx}{tag}):", f"{sv:.4f}"))
-                for corr_entry in k_info.get("correlations", []):
-                    lines.append(
-                        (
-                            f"ρ ({corr_entry['label']}{tag}):",
-                            f"{corr_entry['value']:.4f}",
-                        )
-                    )
+        lines.extend(_format_variance_components(vc))
 
         icc = glmm.get("icc")
         if icc is not None:
@@ -2271,41 +2271,23 @@ class PoissonMixedFamily:
         if self.re_covariances is None or self.re_struct is None:
             return {}
 
-        factors: list[dict[str, Any]] = []
-        for k, cov_k in enumerate(self.re_covariances):
-            _G_k, d_k = self.re_struct[k]
-            entry: dict[str, Any] = {
-                "index": k,
-                "d_k": d_k,
-                "intercept_var": float(cov_k[0, 0]),
-            }
-            if d_k > 1:
-                entry["slope_vars"] = [float(cov_k[s, s]) for s in range(1, d_k)]
-                correlations: list[dict[str, Any]] = []
-                stds = np.sqrt(np.diag(cov_k))
-                for s in range(1, d_k):
-                    if stds[0] > 0 and stds[s] > 0:
-                        rho = float(cov_k[0, s] / (stds[0] * stds[s]))
-                    else:
-                        rho = 0.0
-                    correlations.append(
-                        {
-                            "label": f"int, slope {s - 1}",
-                            "value": rho,
-                        }
-                    )
-                entry["correlations"] = correlations
-            factors.append(entry)
-
-        total_tau2 = sum(f["intercept_var"] for f in factors)
+        factors, total_tau2 = _extract_variance_components(
+            self.re_struct, self.re_covariances
+        )
+        # Poisson ICC on the log scale: τ² / (τ² + 1)
+        #
+        # Under the log-normal approximation the level-1 variance
+        # on the link (log) scale is 1.0, so the ICC denominator
+        # is simply τ² + 1.  This is the "latent-variable" ICC
+        # for count outcomes.
+        # Ref: Goldstein, Browne & Rasbash (2002), "Partitioning
+        # variation in multilevel models", *Understanding
+        # Statistics*, 1(4), 223–231.
         icc = total_tau2 / (total_tau2 + 1.0) if total_tau2 > 0 else 0.0
 
         # Pearson dispersion (overdispersion diagnostic)
         assert self.beta is not None
-        if fit_intercept:
-            X_aug = np.column_stack([np.ones(X.shape[0]), X])
-        else:
-            X_aug = np.asarray(X)
+        X_aug = _augment_intercept(X, fit_intercept)
         eta = X_aug @ self.beta
         mu = np.exp(np.clip(eta, -20.0, 20.0))
         pearson_chi2 = float(np.sum((y - mu) ** 2 / np.maximum(mu, 1e-15)))
@@ -2349,10 +2331,7 @@ class PoissonMixedFamily:
         self._require_calibrated("fit")
         assert self.beta is not None
 
-        if fit_intercept:
-            X_aug = np.column_stack([np.ones(X.shape[0]), X])
-        else:
-            X_aug = np.asarray(X)
+        X_aug = _augment_intercept(X, fit_intercept)
 
         p_aug = X_aug.shape[1]
         if p_aug == len(self.beta):
@@ -2374,11 +2353,7 @@ class PoissonMixedFamily:
             _poisson_working_response_and_weights as _poisson_wf,
         )
 
-        X_aug_red = (
-            np.column_stack([np.ones(X.shape[0]), X])
-            if fit_intercept
-            else np.asarray(X)
-        )
+        X_aug_red = _augment_intercept(X, fit_intercept)
         glm_res = _fit_glm_irls(
             X_aug_red,
             y,
@@ -2421,6 +2396,7 @@ class PoissonMixedFamily:
         perm_indices: np.ndarray,
         *,
         fit_intercept: bool = True,
+        y: np.ndarray | None = None,  # noqa: ARG002
     ) -> np.ndarray:
         """One-step corrector via score projection.
 
@@ -2433,10 +2409,7 @@ class PoissonMixedFamily:
         assert self.fisher_info is not None
 
         j = feature_idx + 1 if fit_intercept else feature_idx
-        if fit_intercept:
-            X_full = np.column_stack([np.ones(X.shape[0]), X])
-        else:
-            X_full = np.asarray(X)
+        X_full = _augment_intercept(X, fit_intercept)
 
         score_weights = X_full[:, j] * self.V_inv_diag  # (n,)
         E_pi = residuals[perm_indices]  # (B, n)
@@ -2502,10 +2475,7 @@ class PoissonMixedFamily:
         assert self.re_covariances is not None
         assert self.re_struct is not None
 
-        if fit_intercept:
-            X_aug = np.column_stack([np.ones(X.shape[0]), X])
-        else:
-            X_aug = np.asarray(X)
+        X_aug = _augment_intercept(X, fit_intercept)
 
         # Marginal predictions
         eta = X_aug @ self.beta
@@ -2524,34 +2494,13 @@ class PoissonMixedFamily:
         dispersion = pearson_chi2 / df_resid
 
         # Variance components
-        factors: list[dict[str, Any]] = []
-        for k, cov_k in enumerate(self.re_covariances):
-            _G_k, d_k = self.re_struct[k]
-            entry: dict[str, Any] = {
-                "index": k,
-                "d_k": d_k,
-                "intercept_var": float(cov_k[0, 0]),
-            }
-            if d_k > 1:
-                entry["slope_vars"] = [float(cov_k[s, s]) for s in range(1, d_k)]
-                correlations: list[dict[str, Any]] = []
-                stds = np.sqrt(np.diag(cov_k))
-                for s in range(1, d_k):
-                    if stds[0] > 0 and stds[s] > 0:
-                        rho = float(cov_k[0, s] / (stds[0] * stds[s]))
-                    else:
-                        rho = 0.0
-                    correlations.append(
-                        {
-                            "label": f"int, slope {s - 1}",
-                            "value": rho,
-                        }
-                    )
-                entry["correlations"] = correlations
-            factors.append(entry)
-
-        total_tau2 = sum(f["intercept_var"] for f in factors)
-        # Poisson ICC on log scale: τ² / (τ² + 1)
+        factors, total_tau2 = _extract_variance_components(
+            self.re_struct, self.re_covariances
+        )
+        # Poisson ICC on the log scale: τ² / (τ² + 1)
+        #
+        # Level-1 residual variance on the log scale is 1.0 under
+        # the log-normal approximation (see Goldstein et al. 2002).
         icc = total_tau2 / (total_tau2 + 1.0) if total_tau2 > 0 else 0.0
 
         n_groups = self.re_struct[0][0]
@@ -2587,8 +2536,15 @@ class PoissonMixedFamily:
         X: np.ndarray,
         y: np.ndarray,
         fit_intercept: bool = True,
+        *,
+        robust_se: bool = False,
     ) -> np.ndarray:
-        """Wald z-test p-values from the Fisher information."""
+        """Wald z-test p-values from the Fisher information.
+
+        ``robust_se`` is accepted for protocol compatibility but
+        ignored — GLMM SEs already account for the random-effects
+        covariance structure.
+        """
         self._require_calibrated("classical_p_values")
         assert self.beta is not None
         assert self.fisher_info is not None
@@ -2639,138 +2595,17 @@ class PoissonMixedFamily:
         ``PoissonMixedFamily`` with all calibrated fields populated.
         Idempotent — returns ``self`` if already calibrated.
         """
-        if self.fisher_info is not None:
-            return self
-
-        groups = kwargs.get("groups")
-        if groups is None:
-            msg = "PoissonMixedFamily.calibrate() requires groups= for calibration."
-            raise ValueError(msg)
-
-        random_slopes = kwargs.get("random_slopes")
-        Z, re_struct = _build_random_effects_design(
-            groups, X=X, random_slopes=random_slopes
-        )
-
-        from ._backends._jax import (
-            _laplace_solve,
-            _poisson_conditional_nll,
-            _poisson_working_response_and_weights,
-        )
-
-        result = _laplace_solve(
-            X,
-            Z,
-            y,
-            re_struct,
-            working_fn=_poisson_working_response_and_weights,
-            cond_nll_fn=_poisson_conditional_nll,
-            family="poisson",
-            fit_intercept=fit_intercept,
-        )
-
-        G_first, d_first = re_struct[0]
-        intercept_cols = Z[:, : G_first * d_first].reshape(-1, G_first, d_first)[
-            :, :, 0
-        ]
-        groups_arr = np.argmax(intercept_cols, axis=1)
-
-        return PoissonMixedFamily(
-            re_struct=tuple(re_struct),
-            beta=result.beta,
-            u=result.u,
-            W=result.W,
-            mu=result.mu,
-            V_inv_diag=result.V_inv_diag,
-            fisher_info=result.fisher_info,
-            re_covariances=result.re_covariances,
-            log_chol=result.log_chol,
-            Z=Z,
-            C22=result.C22,
-            converged=result.converged,
-            n_iter=result.n_iter_outer,
-            nll=result.nll,
-            _groups_arr=groups_arr,
-            _raw_groups=groups,
-        )
-
-    # ---- Batch fitting (GLMM → NotImplementedError) ----------------
-
-    def batch_fit(
-        self,
-        X: np.ndarray,
-        Y_matrix: np.ndarray,
-        fit_intercept: bool,
-        **kwargs: Any,
-    ) -> np.ndarray:
-        """Not supported — use ``method='score'``."""
-        raise NotImplementedError(
-            "GLMM families require method='score'. "
-            "Use permutation_test_regression(..., method='score')."
-        )
-
-    def batch_fit_varying_X(
-        self,
-        X_batch: np.ndarray,
-        y: np.ndarray,
-        fit_intercept: bool,
-        **kwargs: Any,
-    ) -> np.ndarray:
-        """Not supported — use ``method='score'``."""
-        raise NotImplementedError(
-            "GLMM families require method='score'. "
-            "Use permutation_test_regression(..., method='score')."
-        )
-
-    def batch_fit_and_score(
-        self,
-        X: np.ndarray,
-        Y_matrix: np.ndarray,
-        fit_intercept: bool,
-        **kwargs: Any,
-    ) -> tuple[np.ndarray, np.ndarray]:
-        """Not supported — use ``method='score'``."""
-        raise NotImplementedError(
-            "GLMM families require method='score'. "
-            "Use permutation_test_regression(..., method='score')."
-        )
-
-    def batch_fit_and_score_varying_X(
-        self,
-        X_batch: np.ndarray,
-        y: np.ndarray,
-        fit_intercept: bool,
-        **kwargs: Any,
-    ) -> tuple[np.ndarray, np.ndarray]:
-        """Not supported — use ``method='score'``."""
-        raise NotImplementedError(
-            "GLMM families require method='score'. "
-            "Use permutation_test_regression(..., method='score')."
-        )
-
-    def batch_fit_paired(
-        self,
-        X_batch: np.ndarray,
-        Y_batch: np.ndarray,
-        fit_intercept: bool,
-        **kwargs: Any,
-    ) -> np.ndarray:
-        """Not supported — use ``method='score'``."""
-        raise NotImplementedError(
-            "GLMM families require method='score'. "
-            "Use permutation_test_regression(..., method='score')."
+        return _calibrate_glmm(  # type: ignore[return-value]
+            PoissonMixedFamily, self, X, y, fit_intercept, "poisson", **kwargs
         )
 
     # ---- Internal --------------------------------------------------
 
     def _require_calibrated(self, method: str) -> None:
         """Guard: raise if calibrate() has not been called."""
-        if self.fisher_info is None:
-            msg = (
-                f"PoissonMixedFamily.{method}() requires calibration. "
-                "Call calibrate(X, y, fit_intercept, groups=...) first."
-            )
-            raise RuntimeError(msg)
+        _require_calibrated_guard(
+            self, method, field="fisher_info", family_name="PoissonMixedFamily"
+        )
 
 
 # ------------------------------------------------------------------ #

@@ -45,6 +45,10 @@ def _numpy_to_python(obj: Any) -> Any:
     """
     if isinstance(obj, np.ndarray):
         return obj.tolist()
+    # np.bool_ is grouped with np.integer → int() because
+    # json.dumps rejects np.bool_ (it is not a Python bool
+    # subclass in NumPy ≥ 2.0, where np.bool_ was decoupled
+    # from builtins.bool).  int() is safe: True → 1, False → 0.
     if isinstance(obj, (np.integer, np.bool_)):
         return int(obj)
     if isinstance(obj, np.floating):

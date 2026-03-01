@@ -33,6 +33,7 @@ from .diagnostics import (
     compute_all_diagnostics,
     compute_jackknife_coefs,
     compute_permutation_ci,
+    compute_profile_ci,
     compute_pvalue_ci,
     compute_standardized_ci,
     compute_wald_ci,
@@ -70,6 +71,8 @@ def permutation_test_regression(
     permutation_constraints: Callable[[np.ndarray], np.ndarray] | None = None,
     random_slopes: list[int] | dict[str, list[int]] | None = None,
     confidence_level: float = 0.95,
+    panel_id: np.ndarray | list[int] | pd.Series | str | None = None,
+    time_id: np.ndarray | list[int] | pd.Series | str | None = None,
 ) -> IndividualTestResult | JointTestResult:
     """Run a permutation test for regression coefficients.
 
@@ -91,8 +94,9 @@ def permutation_test_regression(
         p_value_threshold_two: Second significance level.
         p_value_threshold_three: Third significance level.
         method: One of ``'ter_braak'``, ``'kennedy'``,
-            ``'kennedy_joint'``, ``'freedman_lane'``, or
-            ``'freedman_lane_joint'``.
+            ``'kennedy_joint'``, ``'freedman_lane'``,
+            ``'freedman_lane_joint'``, ``'score'``,
+            ``'score_joint'``, or ``'score_exact'``.
         confounders: Column names of confounders (required for Kennedy
             and Freedman–Lane methods).
         random_state: Seed for reproducibility.
@@ -145,10 +149,31 @@ def permutation_test_regression(
             a ``(B', n)`` array with ``B' ≤ B`` rows.  Used to
             apply domain-specific constraints that cannot be
             expressed via cell structure alone.
+        random_slopes: Random-slope column indices for mixed-effects
+            families.  A flat ``list[int]`` applies the same slopes
+            to every random factor; a ``dict[str, list[int]]``
+            maps each factor name to its own slope indices.  Passed
+            to ``calibrate()`` to build the random-effects design
+            matrix Z.
         confidence_level: Confidence level for all CI types
             (permutation, Wald, Clopper-Pearson, standardised).
             Defaults to 0.95.  The resulting CIs are stored in
             ``result.confidence_intervals``.
+        panel_id: Panel (subject/unit) identifier for longitudinal /
+            panel data.  When provided, automatically sets
+            ``groups=panel_id`` and
+            ``permutation_strategy="within"`` so that permutations
+            occur only within panels.  Accepts a 1-D array-like of
+            labels or a column name (string) referencing a column
+            in *X*.  Cannot be used together with an explicit
+            ``groups=`` argument.
+        time_id: Time-period identifier for longitudinal data.
+            Only meaningful when ``panel_id`` is also provided.
+            Used for two validation checks: (1) warns if the data
+            is not sorted by ``(panel_id, time_id)``; (2) warns if
+            panels are unbalanced (different numbers of time
+            periods).  Accepts a 1-D array-like of labels or a
+            column name (string) referencing a column in *X*.
 
     Returns:
         Typed result object containing coefficients, p-values,
@@ -181,6 +206,11 @@ def permutation_test_regression(
 
     y_values = np.ravel(y)
 
+    # ---- Panel convenience layer ---------------------------------
+    groups, permutation_strategy = _validate_panel(
+        X, panel_id, time_id, groups, permutation_strategy
+    )
+
     # ---- Groups validation ---------------------------------------
     cells, resolved_strategy = _validate_groups(
         X, groups, permutation_strategy, n_permutations
@@ -190,25 +220,6 @@ def permutation_test_regression(
     if permutation_constraints is not None:
         _validate_constraints(permutation_constraints, len(y_values))
 
-    # ---- Contextual warnings -------------------------------------
-    if method in ("kennedy", "kennedy_joint") and not confounders:
-        warnings.warn(
-            f"{method!r} method called without confounders — all features "
-            "will be tested. Consider 'ter_braak' for unconditional tests.",
-            UserWarning,
-            stacklevel=2,
-        )
-
-    if method in ("freedman_lane", "freedman_lane_joint") and not confounders:
-        warnings.warn(
-            f"{method!r} method called without confounders — the reduced "
-            "model is intercept-only, which yields less power than "
-            "conditioning on other predictors. Consider 'ter_braak' for "
-            "unconditional tests.",
-            UserWarning,
-            stacklevel=2,
-        )
-
     # ---- Context accumulator -----------------------------------
     ctx = FitContext()
     ctx.target_name = str(y.columns[0])
@@ -216,6 +227,15 @@ def permutation_test_regression(
     ctx.n_permutations = n_permutations
     ctx.confounders = confounders or []
     ctx.confidence_level = confidence_level
+
+    # Store resolved panel_id for downstream diagnostics.
+    if panel_id is not None:
+        if isinstance(panel_id, str):
+            ctx.panel_id = X[panel_id].values
+        elif isinstance(panel_id, pd.Series):
+            ctx.panel_id = panel_id.values
+        else:
+            ctx.panel_id = np.asarray(panel_id)
 
     # ---- Engine (family + backend + observed model + perm indices) -
     engine = PermutationEngine(
@@ -237,6 +257,30 @@ def permutation_test_regression(
 
     # ---- Strategy resolution -------------------------------------
     # Validate method string and special-case guards.
+    #
+    # Contextual warnings for running confounder-aware methods without
+    # confounders are placed here — AFTER the engine constructor —
+    # so that family compatibility checks (e.g., "Freedman-Lane not
+    # supported for ordinal") fire first.  Otherwise the user would
+    # see a misleading "no confounders" warning before the hard error.
+    if method in ("kennedy", "kennedy_joint") and not confounders:
+        warnings.warn(
+            f"{method!r} method called without confounders — all features "
+            "will be tested. Consider 'ter_braak' for unconditional tests.",
+            UserWarning,
+            stacklevel=2,
+        )
+
+    if method in ("freedman_lane", "freedman_lane_joint") and not confounders:
+        warnings.warn(
+            f"{method!r} method called without confounders — the reduced "
+            "model is intercept-only, which yields less power than "
+            "conditioning on other predictors. Consider 'ter_braak' for "
+            "unconditional tests.",
+            UserWarning,
+            stacklevel=2,
+        )
+
     if method == "ter_braak" and engine.family.name == "logistic" and X.shape[1] == 1:
         raise ValueError(
             "ter Braak method with logistic regression requires at least "
@@ -356,6 +400,133 @@ def _validate_inputs(
         missing = [c for c in confounders if c not in X.columns]
         if missing:
             raise ValueError(f"Confounders not found in X columns: {missing}")
+
+
+# ------------------------------------------------------------------ #
+# Panel-data convenience layer (Step 15)
+# ------------------------------------------------------------------ #
+
+
+def _validate_panel(
+    X: pd.DataFrame,
+    panel_id: np.ndarray | list[int] | pd.Series | str | None,
+    time_id: np.ndarray | list[int] | pd.Series | str | None,
+    groups: np.ndarray | list[int] | pd.Series | pd.DataFrame | None,
+    permutation_strategy: str | None,
+) -> tuple[
+    np.ndarray | list[int] | pd.Series | pd.DataFrame | None,
+    str | None,
+]:
+    """Resolve ``panel_id`` / ``time_id`` into ``groups`` / strategy.
+
+    When ``panel_id`` is provided, this function maps it to an
+    equivalent ``groups=panel_id, permutation_strategy="within"``
+    specification.  It also performs panel-specific validation:
+    conflict detection, sort-order checks, and balance warnings.
+
+    Args:
+        X: Feature matrix (used for column lookup and row count).
+        panel_id: Panel/subject identifier — array-like or a column
+            name in *X*.
+        time_id: Time-period identifier — array-like or a column
+            name in *X*.  Only used when ``panel_id`` is provided.
+        groups: User-supplied ``groups=`` argument (checked for
+            conflicts with ``panel_id``).
+        permutation_strategy: User-supplied strategy string (checked
+            for conflicts with ``panel_id``).
+
+    Returns:
+        ``(resolved_groups, resolved_strategy)`` ready to pass into
+        ``_validate_groups()``.
+
+    Raises:
+        ValueError: If ``panel_id`` conflicts with explicit
+            ``groups=`` or ``permutation_strategy=``, or if a string
+            column name is not found in *X*.
+    """
+    # Nothing to do if panel_id is not provided.
+    if panel_id is None:
+        if time_id is not None:
+            raise ValueError("time_id= requires panel_id= to be specified.")
+        return groups, permutation_strategy
+
+    # ---- Conflict detection --------------------------------------
+    if groups is not None:
+        raise ValueError(
+            "panel_id= and groups= cannot be used together.  "
+            "panel_id is a convenience wrapper that sets "
+            "groups=panel_id and permutation_strategy='within'."
+        )
+    if permutation_strategy is not None:
+        raise ValueError(
+            "panel_id= and permutation_strategy= cannot be used "
+            "together.  panel_id automatically sets "
+            "permutation_strategy='within'."
+        )
+
+    # ---- Resolve panel_id ----------------------------------------
+    if isinstance(panel_id, str):
+        if panel_id not in X.columns:
+            raise ValueError(
+                f"panel_id={panel_id!r} not found in X columns: {list(X.columns)}"
+            )
+        panel_arr = X[panel_id].values
+    elif isinstance(panel_id, pd.Series):
+        panel_arr = panel_id.values
+    else:
+        panel_arr = np.asarray(panel_id)
+
+    n = X.shape[0]
+    if len(panel_arr) != n:
+        raise ValueError(f"panel_id has {len(panel_arr)} elements but X has {n} rows.")
+
+    # ---- Resolve time_id (optional) ------------------------------
+    if time_id is not None:
+        if isinstance(time_id, str):
+            if time_id not in X.columns:
+                raise ValueError(
+                    f"time_id={time_id!r} not found in X columns: {list(X.columns)}"
+                )
+            time_arr = X[time_id].values
+        elif isinstance(time_id, pd.Series):
+            time_arr = time_id.values
+        else:
+            time_arr = np.asarray(time_id)
+
+        if len(time_arr) != n:
+            raise ValueError(
+                f"time_id has {len(time_arr)} elements but X has {n} rows."
+            )
+
+        # Sort-order check: data should be sorted by (panel, time).
+        panel_int = _to_integer_labels(panel_arr)
+        time_int = _to_integer_labels(time_arr)
+        sort_key = panel_int * (time_int.max() + 1) + time_int
+        if not np.all(sort_key[:-1] <= sort_key[1:]):
+            warnings.warn(
+                "Data is not sorted by (panel_id, time_id).  Some "
+                "panel-level diagnostics assume temporal ordering.  "
+                "Consider sorting with "
+                "df.sort_values([panel_col, time_col]).",
+                UserWarning,
+                stacklevel=3,
+            )
+
+        # Balance check: do all panels have the same number of
+        # observations (time periods)?
+        _, counts = np.unique(panel_arr, return_counts=True)
+        if len(set(counts)) > 1:
+            warnings.warn(
+                f"Unbalanced panel: panels have between "
+                f"{int(counts.min())} and {int(counts.max())} "
+                f"observations.  Within-panel permutation still "
+                f"works but statistical power varies across panels.",
+                UserWarning,
+                stacklevel=3,
+            )
+
+    # Map panel_id → groups with within-panel strategy.
+    return panel_arr, "within"
 
 
 # ------------------------------------------------------------------ #
@@ -745,6 +916,7 @@ def _package_individual_result(
         method=method,
         confounders=confounders,
         fit_intercept=fit_intercept,
+        panel_id=engine.ctx.panel_id,
     )
 
     # Populate context with remaining pipeline artifacts.
@@ -792,11 +964,20 @@ def _package_individual_result(
         perm_ci, engine.model_coefs, X, y_values, engine.family
     )
 
+    profile_ci = compute_profile_ci(
+        X.values.astype(float),
+        y_values,
+        engine.family,
+        alpha,
+        fit_intercept,
+    )
+
     ci_dict: dict[str, Any] = {
         "permutation_ci": perm_ci.tolist(),
         "pvalue_ci": pval_ci.tolist(),
         "wald_ci": wald_ci.tolist(),
         "standardized_ci": std_ci.tolist(),
+        "profile_ci": profile_ci.tolist(),
         "confidence_level": confidence_level,
         "ci_method": "bca" if jackknife_coefs is not None else "percentile",
     }

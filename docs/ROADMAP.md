@@ -114,9 +114,10 @@ Deferred from v0.3.0 audit.  Three related problems resolved together:
 - [X] Remove duck-typed `model_fit_metric()` and `null_fit_metric()`
   from `OrdinalFamily` and `MultinomialFamily` (subsumed by
   `score()` and `null_score()`).
-- [ ] Performance: the reduced model is fitted once and cached,
-  avoiding redundant refits when the same reduced model applies to
-  multiple exposure variables.
+- ~~Performance: reduced-model caching~~ — removed (v0.4.1 audit).
+  Each invocation uses a different design matrix (ter Braak and Score
+  individual drop a different column per feature); no redundancy
+  exists.
 
 ### `batch_fit_paired` — confounder bootstrap/jackknife vectorisation
 
@@ -242,8 +243,8 @@ family-specific diagnostic computation into the protocol:
   (drop `str` from union type).
 - [X] New fields added to result objects: `feature_names: list[str]`,
   `target_name: str`, `n_permutations: int`,
-  `groups: np.ndarray | None` (populated in v0.4.1),
-  `permutation_strategy: str | None` (populated in v0.4.1).
+  `groups: np.ndarray | None`,
+  `permutation_strategy: str | None`.
 
 ### Sign-flip test
 
@@ -331,8 +332,9 @@ nesting structure that the random effects encode).
   slopes demo.
 - [X] Manly (1997) fallback warning for direct-permutation families
   (ordinal, multinomial) when ter Braak is requested.
-- [ ] Integration with statsmodels `MixedLM` (linear) as an
-  alternative backend for the NumPy path.
+- ~~statsmodels MixedLM as NumPy fitting backend~~ — removed
+  (v0.4.1 audit).  Henderson REML solver is robust (225+ tests);
+  statsmodels used for calibration diagnostics only.
 - [X] Generalised linear mixed models (GLMM) as additional
   `ModelFamily` implementations (`LogisticMixedFamily`,
   `PoissonMixedFamily`) via Laplace approximation with Henderson
@@ -361,26 +363,56 @@ second-order accuracy.
 - [X] 37 new tests: equivalence with ter Braak (linear) and
   Freedman–Lane (LMM), protocol conformance, registry wiring,
   confounder masking, n_jobs warning, determinism.
+- [X] GLM score projection: real `score_project()` implementations
+  for `LogisticFamily`, `PoissonFamily`, `NegativeBinomialFamily`.
+  Unlocks `method="score"` and `method="score_joint"` for all GLM
+  families.
+
+### Autodiff-powered capabilities
+
+Built on JAX per-observation NLL decomposition and autodiff
+infrastructure.
+
+- [X] Fisher information SEs from JAX Hessian — `_fisher_information_se`
+  computes Cov(β̂) = H⁻¹ and extracts SEs.  JAX-first classical
+  p-values for all 5 GLM families.
+- [X] Sandwich (robust) SEs — `_sandwich_se` via Eicker–Huber–White.
+  `robust_se=True` parameter on `classical_p_values()`.
+- [X] Autodiff Cook's D — influence-function Cook's D via
+  D_i = (1/p) sᵢ' H⁻¹ sᵢ.  Extends to ordinal/multinomial.
+  JAX-first, statsmodels fallback.
+- [X] Profile likelihood CIs — bisection on profile deviance with
+  inner Newton loop.  `compute_profile_ci()` surfaces as
+  `"profile_ci"` in `result.confidence_intervals`.
 
 ### Longitudinal / panel data
 
 Depends on exchangeability cells (within-panel permutation is a
 special case of within-group exchangeability).
 
-- [ ] Within-panel permutation as the default strategy when a time or
+- [X] Within-panel permutation as the default strategy when a time or
   wave variable is provided, preserving the temporal dependency
   structure within each unit.
-- [ ] Support for both balanced and unbalanced panels.
+- [X] Support for both balanced and unbalanced panels.
 - [ ] Optional autoregressive residual structure for the reduced model.
 
 ### Inferential improvements
 
-- [ ] Exact binomial or Clopper-Pearson confidence intervals on
+- [X] Exact binomial or Clopper-Pearson confidence intervals on
   permutation p-values reflecting Monte Carlo uncertainty when only a
-  finite number of permutations are drawn.
+  finite number of permutations are drawn.  Displayed as `± margin`
+  sub-rows in `print_results_table()` and `[lo, hi]` column in
+  `print_diagnostics_table()`.  Borderline detection via
+  `_significance_marker()` with `[!]` flag; `_recommend_n_permutations()`
+  suggests minimum B to resolve ambiguity.
 - [ ] Adaptive stopping: optionally halt the permutation loop early
   once the CI for the p-value is narrow enough to determine
-  significance with a specified confidence.
+  significance with a specified confidence.  Implementation via
+  chunked batches — the engine pre-generates all B indices, then
+  processes them in fixed-size chunks with Clopper-Pearson CI
+  evaluation between chunks.  All components are B-agnostic (vmap,
+  batch_fit, p-value counts), so no architectural restructuring is
+  required.
 - [ ] Conditional Monte Carlo: permute within the sufficient-statistic
   strata of a nuisance parameter for exact conditional tests.
 
@@ -700,11 +732,19 @@ cell system, and structured result objects are all frozen.
 
 ### GPU acceleration
 
-- [ ] Evaluate CuPy as an additional backend by implementing
-  `_backends/_cupy.py` with `BackendProtocol` — all model families
-  gain GPU support automatically through the existing backend
-  dispatch system established in v0.3.0.
-- [ ] Document hardware requirements and expected speedups.
+- [ ] Implement a PyTorch backend (`_backends/_torch.py`) conforming
+  to `BackendProtocol`.  PyTorch's `torch.func` module provides
+  near-1:1 parity with the JAX functional APIs used in the existing
+  JAX backend — `torch.func.vmap`, `torch.func.grad`, and
+  `torch.func.hessian` map directly to their JAX equivalents, and
+  `torch.compile` replaces `jax.jit`.  The two `jax.lax.while_loop`
+  call sites translate to standard Python loops.  This gives all
+  model families GPU support automatically through the existing
+  backend dispatch system while providing native Windows CUDA
+  support (the primary motivation — JAX offers only experimental
+  CPU-only wheels on Windows with no GPU path).
+- [ ] Document hardware requirements (CUDA toolkit, supported GPU
+  architectures) and expected speedups.
 - [ ] Published GPU-vs-CPU benchmark results in the documentation.
 
 ### Community
@@ -726,8 +766,14 @@ continuously.
   dependency versions.
 - [ ] **Security:** monitor dependencies for vulnerabilities via
   Dependabot or similar tooling.
-- [ ] **Documentation:** keep the API reference, quickstart guide, and
-  changelog in sync with every release.
+- [X] **Documentation:** keep the API reference, quickstart guide, and
+  changelog in sync with every release.  (Phase 7: `__init__.py`
+  docstring rewritten, API.md signature updated with all 22
+  parameters, `resolve_family` signature corrected, relative import
+  fix applied.  Phase 8: codebase-wide comment quality lift — ICC
+  citations, Woodbury derivation, IRLS citation, Cholesky
+  narration, Clopper-Pearson citation, Rosenbaum derivation, table
+  geometry, and `np.bool_`/thread-safety notes added.)
 - [ ] **Property-based tests:** add Hypothesis-based property tests for
   core invariants (p-values in [0, 1], permuted arrays are true
   permutations, result schema completeness, determinism under fixed

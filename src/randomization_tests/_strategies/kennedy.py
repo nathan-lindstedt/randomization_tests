@@ -44,7 +44,7 @@ import numpy as np
 import pandas as pd
 from sklearn.linear_model import LinearRegression
 
-from ..families import fit_reduced
+from ..families import _augment_intercept, fit_reduced
 
 if TYPE_CHECKING:
     from ..families import ModelFamily
@@ -151,7 +151,7 @@ class KennedyIndividualStrategy:
                 if fit_intercept:
                     # Augment Z with a column of ones for the intercept:
                     # Z_aug = [1 | Z], shape (n, q+1).
-                    Z_aug = np.column_stack([np.ones(n), Z])
+                    Z_aug = _augment_intercept(Z)
                 else:
                     Z_aug = Z  # (n, q)
                 # Moore-Penrose pseudoinverse — handles rank-deficient Z.

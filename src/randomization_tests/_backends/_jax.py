@@ -61,6 +61,8 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
+from ..families import _augment_intercept
+
 if TYPE_CHECKING:
     import jax
 
@@ -247,6 +249,720 @@ if _CAN_IMPORT_JAX:
 
         _, beta_final, nll_final, converged = jax.lax.while_loop(cond, body, init_state)
         return beta_final, nll_final, converged
+
+    # ============================================================== #
+    # Fisher information / standard-error helpers
+    # ============================================================== #
+    #
+    # After the Newton solver converges, the **observed Fisher
+    # information** I(β̂) = H(β̂) (the Hessian of the NLL evaluated
+    # at the MLE) gives Cov(β̂) ≈ I(β̂)⁻¹.  Standard errors are
+    # SE(β̂_j) = √[I(β̂)⁻¹]_jj.
+    #
+    # These helpers are used by ``classical_p_values()`` on each
+    # family to avoid refitting via statsmodels.  The batch path
+    # (``_batch_shared_X`` etc.) does NOT use these — it discards
+    # the Hessian to keep the ``(B, p, p)`` tensor from
+    # materialising.
+    #
+    # Ref: Efron & Hinkley (1978), "Assessing the accuracy of the
+    # maximum likelihood estimator: observed versus expected
+    # Fisher information", Biometrika 65(3), 457–487.
+    # -------------------------------------------------------------- #
+
+    def _fisher_information_se(
+        hess_fn: Callable[[jnp.ndarray], jnp.ndarray],
+        beta: jnp.ndarray,
+    ) -> np.ndarray:
+        r"""Standard errors from the observed Fisher information.
+
+        Evaluates the Hessian of the NLL at the converged β̂ and
+        inverts it:
+
+        .. math::
+            \text{SE}(\hat\beta_j) = \sqrt{[H(\hat\beta)^{-1}]_{jj}}
+
+        Args:
+            hess_fn: ``β → (p, p)`` Hessian of the NLL.
+            beta: Converged parameter vector ``(p,)``.
+
+        Returns:
+            Standard errors ``(p,)`` as a NumPy array.
+        """
+        H = hess_fn(beta)
+        cov = jnp.linalg.inv(H)
+        return np.asarray(jnp.sqrt(jnp.abs(jnp.diag(cov))))
+
+    # ============================================================== #
+    # Per-observation NLL functions (for sandwich SEs & Cook's D)
+    # ============================================================== #
+    #
+    # Each ``_*_nll_per_obs`` function returns an ``(n,)`` vector of
+    # per-observation contributions to the NLL, i.e. the same as the
+    # ``_*_nll`` functions but **without** the final ``jnp.sum()``.
+    #
+    # Used by:
+    #   - ``_sandwich_se()``: score matrix via ``vmap(grad(nll_i))``
+    #   - ``_autodiff_cooks_d()``: influence function IF_i = H⁻¹ s_i
+    # -------------------------------------------------------------- #
+
+    @jit
+    def _logistic_nll_per_obs(
+        beta: jnp.ndarray,
+        X: jnp.ndarray,
+        y: jnp.ndarray,
+    ) -> jnp.ndarray:
+        """Per-observation logistic NLL: log(1 + exp(-s * η))."""
+        signs = 2.0 * y - 1.0
+        return jax.nn.softplus(-signs * (X @ beta))
+
+    @jit
+    def _poisson_nll_per_obs(
+        beta: jnp.ndarray,
+        X: jnp.ndarray,
+        y: jnp.ndarray,
+    ) -> jnp.ndarray:
+        """Per-observation Poisson NLL: μ − y·η."""
+        eta = X @ beta
+        mu = jnp.exp(eta)
+        return mu - y * eta
+
+    def _make_negbin_nll_per_obs(
+        alpha: float,
+    ) -> Callable[..., Any]:
+        """Return per-observation NB2 NLL with fixed α."""
+
+        @jit
+        def _negbin_nll_per_obs(
+            beta: jnp.ndarray,
+            X: jnp.ndarray,
+            y: jnp.ndarray,
+        ) -> jnp.ndarray:
+            eta = X @ beta
+            mu = jnp.exp(eta)
+            inv_a = 1.0 / alpha
+            return (y + inv_a) * jnp.log(1.0 + alpha * mu) - y * eta
+
+        return _negbin_nll_per_obs
+
+    def _make_ordinal_nll_per_obs(K: int) -> Callable[..., Any]:
+        """Return per-observation ordinal NLL with fixed K."""
+        _cat_probs = _make_ordinal_category_probs(K)
+
+        @jit
+        def _ordinal_nll_per_obs(
+            params: jnp.ndarray,
+            X: jnp.ndarray,
+            y: jnp.ndarray,
+        ) -> jnp.ndarray:
+            n_features = X.shape[1]
+            beta = params[:n_features]
+            thresholds = params[n_features:]
+            eta = X @ beta
+            probs = _cat_probs(thresholds, eta)
+            y_int = y.astype(jnp.int32)
+            log_probs = jnp.log(probs[jnp.arange(X.shape[0]), y_int])
+            return -log_probs
+
+        return _ordinal_nll_per_obs
+
+    def _make_multinomial_nll_per_obs(K: int) -> Callable[..., Any]:
+        """Return per-observation multinomial NLL with fixed K."""
+        Km1 = K - 1
+
+        @jit
+        def _multinomial_nll_per_obs(
+            params_flat: jnp.ndarray,
+            X: jnp.ndarray,
+            y: jnp.ndarray,
+        ) -> jnp.ndarray:
+            p_aug = X.shape[1]
+            B_mat = params_flat.reshape(Km1, p_aug)
+            logits = jnp.concatenate(
+                [jnp.zeros((X.shape[0], 1), dtype=jnp.float64), X @ B_mat.T],
+                axis=1,
+            )
+            log_probs = jax.nn.log_softmax(logits, axis=1)
+            y_int = y.astype(jnp.int32)
+            return -log_probs[jnp.arange(X.shape[0]), y_int]
+
+        return _multinomial_nll_per_obs
+
+    # ============================================================== #
+    # Sandwich (robust) standard errors
+    # ============================================================== #
+    #
+    # The Eicker–Huber–White sandwich estimator provides
+    # heteroscedasticity-robust SEs:
+    #
+    #   V = H⁻¹ (Σ sᵢ sᵢ') H⁻¹ = H⁻¹ S'S H⁻¹
+    #
+    # where H is the Hessian and sᵢ = ∂ℓᵢ/∂β is the per-observation
+    # score vector.  The score matrix S = (s₁, …, sₙ)' is computed
+    # via ``jax.vmap(jax.grad(nll_per_obs_i))`` where nll_per_obs_i
+    # indexes a single observation.
+    #
+    # Ref: White, H. (1980). "A heteroskedasticity-consistent
+    # covariance matrix estimator and a direct test for
+    # heteroskedasticity." Econometrica, 48(4), 817–838.
+    # -------------------------------------------------------------- #
+
+    def _sandwich_se(
+        nll_per_obs_fn: Callable[..., jnp.ndarray],
+        hess_fn: Callable[[jnp.ndarray], jnp.ndarray],
+        beta: jnp.ndarray,
+        X: jnp.ndarray,
+        y: jnp.ndarray,
+    ) -> np.ndarray:
+        r"""Sandwich (robust) standard errors.
+
+        Args:
+            nll_per_obs_fn: ``(β, X, y) → (n,)`` per-observation NLL.
+            hess_fn: ``β → (p, p)`` Hessian of the (summed) NLL.
+            beta: Converged parameter vector ``(p,)``.
+            X: Augmented design matrix ``(n, p)``.
+            y: Response ``(n,)``.
+
+        Returns:
+            Robust standard errors ``(p,)`` as a NumPy array.
+        """
+        H = hess_fn(beta)
+        H_inv = jnp.linalg.inv(H)
+
+        # Score matrix: each row is the gradient of the i-th obs NLL.
+        # We define a scalar-valued function nll_i(β) for observation i,
+        # then vmap its gradient over i.
+        def _nll_i(beta_: jnp.ndarray, i: jnp.ndarray) -> jnp.ndarray:
+            """NLL for a single observation (used in vmap)."""
+            return nll_per_obs_fn(beta_, X, y)[i]
+
+        n = X.shape[0]
+        # vmap over observation index, keeping beta fixed
+        score_fn = jit(vmap(grad(_nll_i), in_axes=(None, 0)))
+        S = score_fn(beta, jnp.arange(n))  # (n, p) score matrix
+
+        # Meat: S'S
+        meat = S.T @ S  # (p, p)
+
+        # Sandwich: H⁻¹ S'S H⁻¹
+        V = H_inv @ meat @ H_inv
+        return np.asarray(jnp.sqrt(jnp.abs(jnp.diag(V))))
+
+    # ============================================================== #
+    # Autodiff Cook's distance
+    # ============================================================== #
+    #
+    # Cook's D via the influence function:
+    #   IF_i = H⁻¹ sᵢ
+    #   D_i = (IF_i)' H (IF_i) / p
+    #       = sᵢ' H⁻¹ sᵢ / p
+    #
+    # This extends Cook's D to families where statsmodels lacks
+    # influence diagnostics (ordinal, multinomial, NB, Poisson).
+    #
+    # Ref: Cook, R. D. (1977). "Detection of influential observation
+    # in linear regression." Technometrics, 19(1), 15–18.
+    # -------------------------------------------------------------- #
+
+    def _autodiff_cooks_d(
+        nll_per_obs_fn: Callable[..., jnp.ndarray],
+        hess_fn: Callable[[jnp.ndarray], jnp.ndarray],
+        beta: jnp.ndarray,
+        X: jnp.ndarray,
+        y: jnp.ndarray,
+    ) -> np.ndarray:
+        r"""Cook's distance via autodiff influence function.
+
+        For each observation i:
+
+        .. math::
+            D_i = \frac{1}{p} s_i^\top H^{-1} s_i
+
+        where ``s_i = ∂ℓ_i/∂β`` and ``H = Σ ∂²ℓ_i/∂β∂β'``.
+
+        Args:
+            nll_per_obs_fn: ``(β, X, y) → (n,)`` per-observation NLL.
+            hess_fn: ``β → (p, p)`` Hessian of the (summed) NLL.
+            beta: Converged parameter vector ``(p,)``.
+            X: Augmented design matrix ``(n, p)``.
+            y: Response ``(n,)``.
+
+        Returns:
+            Cook's distances ``(n,)`` as a NumPy array.
+        """
+        H = hess_fn(beta)
+        H_inv = jnp.linalg.inv(H)
+        p = beta.shape[0]
+
+        def _nll_i(beta_: jnp.ndarray, i: jnp.ndarray) -> jnp.ndarray:
+            return nll_per_obs_fn(beta_, X, y)[i]
+
+        n = X.shape[0]
+        score_fn = jit(vmap(grad(_nll_i), in_axes=(None, 0)))
+        S = score_fn(beta, jnp.arange(n))  # (n, p)
+
+        # D_i = (1/p) sᵢ' H⁻¹ sᵢ
+        # Vectorise: IF = S @ H⁻¹, then D = rowwise dot(IF, S) / p
+        IF = S @ H_inv  # (n, p)
+        cooks_d = jnp.sum(IF * S, axis=1) / p  # (n,)
+        return np.asarray(cooks_d)
+
+    # ============================================================== #
+    # Profile likelihood confidence intervals
+    # ============================================================== #
+    #
+    # A profile likelihood CI for β_j is the set of values where the
+    # profile deviance does not exceed the χ²₁(α) critical value:
+    #
+    #   {β_j : 2[ℓ_P(β̂) − ℓ_P(β_j)] ≤ χ²₁(α)}
+    #
+    # Here ℓ_P(β_j) = max_{β_{-j}} ℓ(β) is the profile log-
+    # likelihood, obtained by re-optimising all parameters except β_j
+    # at each candidate value.  Since our NLL functions store
+    # *negative* log-likelihood, the deviance becomes
+    # 2[NLL_profile − NLL_full].
+    #
+    # Two helpers:
+    #   _profile_nll_at  — evaluates the profile NLL at a single
+    #                      fixed value of β_j (inner Newton loop).
+    #   _profile_ci_coefficients — bisection over _profile_nll_at
+    #                              for each requested coefficient.
+    #
+    # Ref: Venzon, D. J. & Moolgavkar, S. H. (1988). "A method for
+    # computing profile-likelihood-based confidence intervals."
+    # *Applied Statistics*, 37(1), 87–94.
+    # -------------------------------------------------------------- #
+
+    def _profile_nll_at(
+        nll_fn: Callable[..., jnp.ndarray],
+        grad_fn: Callable[..., jnp.ndarray],
+        hess_fn: Callable[..., jnp.ndarray],
+        beta_hat: jnp.ndarray,
+        j: int,
+        beta_j_star: float,
+        X: jnp.ndarray,
+        y: jnp.ndarray,
+        max_iter: int = 30,
+        tol: float = 1e-8,
+    ) -> float:
+        """Profile NLL at β_j = *beta_j_star*, optimising over β_{-j}.
+
+        Starts from β̂ with β_j replaced by *beta_j_star* and runs
+        Newton–Raphson on the free parameters (everything except j)
+        until convergence.
+
+        Args:
+            nll_fn: ``(β, X, y) → scalar`` negative log-likelihood.
+            grad_fn: ``(β, X, y) → (p,)`` JIT-compiled gradient.
+            hess_fn: ``(β, X, y) → (p, p)`` JIT-compiled Hessian.
+            beta_hat: Full MLE parameter vector ``(p,)``.
+            j: Index of the parameter to fix.
+            beta_j_star: Value to fix β_j at.
+            X: Design matrix ``(n, p_aug)``.
+            y: Response vector ``(n,)``.
+            max_iter: Maximum Newton iterations.
+            tol: Convergence tolerance on the step norm.
+
+        Returns:
+            Scalar profile NLL (Python float).
+        """
+        p = beta_hat.shape[0]
+        beta = jnp.array(beta_hat).at[j].set(beta_j_star)
+
+        # Indices of the p-1 free (non-fixed) parameters.
+        free = jnp.concatenate([jnp.arange(j), jnp.arange(j + 1, p)])
+
+        for _ in range(max_iter):
+            g = grad_fn(beta, X, y)
+            H = hess_fn(beta, X, y)
+
+            # Reduce to the free sub-system.
+            g_free = g[free]
+            H_free = H[free][:, free]
+
+            # Newton step.  Use Cholesky for speed / stability.
+            try:
+                L = jnp.linalg.cholesky(H_free)
+                delta = jax.scipy.linalg.cho_solve((L, True), g_free)
+            except Exception:
+                # Fall back to direct solve if Cholesky fails
+                # (can happen near a boundary).
+                delta = jnp.linalg.solve(
+                    H_free + 1e-8 * jnp.eye(H_free.shape[0]),
+                    g_free,
+                )
+
+            beta = beta.at[free].add(-delta)
+            beta = beta.at[j].set(beta_j_star)  # keep j fixed
+
+            if float(jnp.max(jnp.abs(delta))) < tol:
+                break
+
+        return float(nll_fn(beta, X, y))
+
+    def _profile_ci_coefficients(
+        nll_fn: Callable[..., jnp.ndarray],
+        beta_hat: jnp.ndarray,
+        X: jnp.ndarray,
+        y: jnp.ndarray,
+        feature_indices: list[int],
+        alpha: float = 0.05,
+        max_newton: int = 30,
+        max_bisect: int = 60,
+        tol: float = 1e-6,
+    ) -> np.ndarray:
+        r"""Profile likelihood CIs for selected parameters.
+
+        For each index *j* in *feature_indices*, uses bisection to
+        find the lower and upper values of β_j where:
+
+        .. math::
+            2\bigl[\mathrm{NLL}_{\mathrm{profile}}(\beta_j)
+                  - \mathrm{NLL}(\hat\beta)\bigr]
+            = \chi^2_1(\alpha)
+
+        The initial bracket for the bisection is set to ±5 SE (from
+        the observed Fisher information) and expanded geometrically
+        if the deviance at the bracket endpoint is insufficient.
+
+        Args:
+            nll_fn: ``(β, X, y) → scalar`` NLL — NOT jitted (we
+                jit the grad / Hessian closures internally).
+            beta_hat: MLE parameter vector ``(p,)``.
+            X: Design matrix ``(n, p_aug)``.
+            y: Response vector ``(n,)``.
+            feature_indices: Which parameter indices to compute
+                profile CIs for (typically the slope indices,
+                excluding intercept/thresholds).
+            alpha: 1 − confidence_level.
+            max_newton: Maximum Newton iterations per profile
+                evaluation.
+            max_bisect: Maximum bisection iterations per bound.
+            tol: Bisection stops when the bracket width falls
+                below ``tol * SE_j``.
+
+        Returns:
+            ``(len(feature_indices), 2)`` NumPy array of
+            ``[lower, upper]`` profile CI bounds.
+        """
+        from scipy.stats import chi2 as chi2_dist
+
+        chi2_crit = float(chi2_dist.ppf(1.0 - alpha, df=1))
+        nll_full = float(nll_fn(beta_hat, X, y))
+
+        # Pre-compile grad / Hessian closures (shared across all j).
+        _grad_fn = jit(grad(nll_fn))
+        _hess_fn = jit(jax.hessian(nll_fn))
+
+        # Approximate SEs from the Hessian at the MLE — used only
+        # to scale the initial bisection bracket.
+        H_full = _hess_fn(beta_hat, X, y)
+        se_approx = jnp.sqrt(jnp.abs(jnp.diag(jnp.linalg.inv(H_full))))
+
+        def _deviance(j: int, beta_j_star: float) -> float:
+            """Profile deviance at β_j = beta_j_star."""
+            nll_prof = _profile_nll_at(
+                nll_fn,
+                _grad_fn,
+                _hess_fn,
+                beta_hat,
+                j,
+                beta_j_star,
+                X,
+                y,
+                max_iter=max_newton,
+                tol=1e-8,
+            )
+            return 2.0 * (nll_prof - nll_full)
+
+        results = np.full((len(feature_indices), 2), np.nan)
+
+        for idx, j in enumerate(feature_indices):
+            se_j = float(se_approx[j])
+            b_hat_j = float(beta_hat[j])
+
+            if se_j <= 0.0 or not np.isfinite(se_j):
+                continue
+
+            # ── Lower bound ──────────────────────────────────── #
+            lo = b_hat_j - 5.0 * se_j
+            # Expand bracket until deviance exceeds the critical
+            # value (max 5 doublings → 160 SE total).
+            for _ in range(5):
+                if _deviance(j, lo) >= chi2_crit:
+                    break
+                lo = b_hat_j - 2.0 * (b_hat_j - lo)
+
+            hi = b_hat_j
+            for _ in range(max_bisect):
+                mid = 0.5 * (lo + hi)
+                if _deviance(j, mid) > chi2_crit:
+                    lo = mid
+                else:
+                    hi = mid
+                if abs(hi - lo) < tol * se_j:
+                    break
+            results[idx, 0] = 0.5 * (lo + hi)
+
+            # ── Upper bound ──────────────────────────────────── #
+            hi = b_hat_j + 5.0 * se_j
+            for _ in range(5):
+                if _deviance(j, hi) >= chi2_crit:
+                    break
+                hi = b_hat_j + 2.0 * (hi - b_hat_j)
+
+            lo = b_hat_j
+            for _ in range(max_bisect):
+                mid = 0.5 * (lo + hi)
+                if _deviance(j, mid) > chi2_crit:
+                    hi = mid
+                else:
+                    lo = mid
+                if abs(hi - lo) < tol * se_j:
+                    break
+            results[idx, 1] = 0.5 * (lo + hi)
+
+        return results
+
+    # ============================================================== #
+    # Single-observation fit with SEs (for classical_p_values)
+    # ============================================================== #
+
+    def _classical_p_values_logistic(
+        X: np.ndarray,
+        y: np.ndarray,
+        fit_intercept: bool,
+        *,
+        robust_se: bool = False,
+    ) -> np.ndarray:
+        """Wald z-test p-values for logistic regression via JAX.
+
+        Fits a single logistic model, computes SEs from the observed
+        Fisher information (or sandwich estimator if robust), and
+        returns two-sided Wald p-values for slope coefficients.
+        """
+        from scipy.stats import norm
+
+        X_aug = _augment_intercept(X, fit_intercept)
+        X_j = jnp.array(X_aug, dtype=jnp.float64)
+        y_j = jnp.array(y, dtype=jnp.float64)
+
+        beta, _, _ = _make_newton_solver(X_j, y_j, max_iter=100, tol=_DEFAULT_TOL)
+
+        def hess_fn(b: jnp.ndarray) -> jnp.ndarray:
+            return _logistic_hessian(b, X_j, y_j)  # type: ignore[no-any-return]
+
+        if robust_se:
+            se = _sandwich_se(_logistic_nll_per_obs, hess_fn, beta, X_j, y_j)
+        else:
+            se = _fisher_information_se(hess_fn, beta)
+
+        z = np.asarray(beta) / se
+        pvals = 2.0 * norm.sf(np.abs(z))
+        return pvals[1:] if fit_intercept else pvals  # type: ignore[no-any-return]
+
+    def _classical_p_values_poisson(
+        X: np.ndarray,
+        y: np.ndarray,
+        fit_intercept: bool,
+        *,
+        robust_se: bool = False,
+    ) -> np.ndarray:
+        """Wald z-test p-values for Poisson regression via JAX."""
+        from scipy.stats import norm
+
+        X_aug = _augment_intercept(X, fit_intercept)
+        X_j = jnp.array(X_aug, dtype=jnp.float64)
+        y_j = jnp.array(y, dtype=jnp.float64)
+
+        beta, _, _ = _make_poisson_solver(X_j, y_j, max_iter=100, tol=_DEFAULT_TOL)
+
+        def hess_fn(b: jnp.ndarray) -> jnp.ndarray:
+            return _poisson_hessian(b, X_j, y_j)  # type: ignore[no-any-return]
+
+        if robust_se:
+            se = _sandwich_se(_poisson_nll_per_obs, hess_fn, beta, X_j, y_j)
+        else:
+            se = _fisher_information_se(hess_fn, beta)
+
+        z = np.asarray(beta) / se
+        pvals = 2.0 * norm.sf(np.abs(z))
+        return pvals[1:] if fit_intercept else pvals  # type: ignore[no-any-return]
+
+    def _classical_p_values_negbin(
+        X: np.ndarray,
+        y: np.ndarray,
+        alpha: float,
+        fit_intercept: bool,
+        *,
+        robust_se: bool = False,
+    ) -> np.ndarray:
+        """Wald z-test p-values for NB2 regression via JAX."""
+        from scipy.stats import norm
+
+        X_aug = _augment_intercept(X, fit_intercept)
+        X_j = jnp.array(X_aug, dtype=jnp.float64)
+        y_j = jnp.array(y, dtype=jnp.float64)
+
+        beta, _, _ = _make_negbin_solver(
+            X_j, y_j, alpha, max_iter=100, tol=_DEFAULT_TOL
+        )
+        _nb_hess = _make_negbin_hessian(alpha)
+
+        def hess_fn(b: jnp.ndarray) -> jnp.ndarray:
+            return _nb_hess(b, X_j, y_j)  # type: ignore[no-any-return]
+
+        if robust_se:
+            nll_per_obs_fn = _make_negbin_nll_per_obs(alpha)
+            se = _sandwich_se(nll_per_obs_fn, hess_fn, beta, X_j, y_j)
+        else:
+            se = _fisher_information_se(hess_fn, beta)
+
+        z = np.asarray(beta) / se
+        pvals = 2.0 * norm.sf(np.abs(z))
+        return pvals[1:] if fit_intercept else pvals  # type: ignore[no-any-return]
+
+    def _classical_p_values_ordinal(
+        X: np.ndarray,
+        y: np.ndarray,
+        K: int,
+        n_features: int,
+        fit_intercept: bool,  # noqa: ARG001 — ignored; thresholds are intercepts
+        *,
+        robust_se: bool = False,
+    ) -> np.ndarray:
+        """Wald z-test p-values for ordinal regression via JAX.
+
+        ``fit_intercept`` is accepted for protocol compatibility but
+        ignored — ordinal thresholds serve as category-specific
+        intercepts. The design matrix is used WITHOUT an intercept
+        column.
+        """
+        from scipy.stats import norm
+
+        # No intercept augmentation — thresholds serve as intercepts.
+        X_j = jnp.array(np.asarray(X, dtype=np.float64), dtype=jnp.float64)
+        y_j = jnp.array(y, dtype=jnp.float64)
+
+        params, _, _ = _make_ordinal_solver(X_j, y_j, K, max_iter=100, tol=_DEFAULT_TOL)
+        _nll = _make_ordinal_nll(K)
+        _ord_hess = jit(jax.hessian(_nll))
+
+        def hess_fn(p: jnp.ndarray) -> jnp.ndarray:
+            return _ord_hess(p, X_j, y_j)  # type: ignore[no-any-return]
+
+        if robust_se:
+            nll_per_obs_fn = _make_ordinal_nll_per_obs(K)
+            se = _sandwich_se(nll_per_obs_fn, hess_fn, params, X_j, y_j)
+        else:
+            se = _fisher_information_se(hess_fn, params)
+
+        # Slopes are params[0:n_features]; thresholds follow.
+        z = np.asarray(params[:n_features]) / se[:n_features]
+        pvals = 2.0 * norm.sf(np.abs(z))
+        return pvals  # type: ignore[no-any-return]
+
+    def _classical_p_values_multinomial(
+        X: np.ndarray,
+        y: np.ndarray,
+        K: int,
+        n_features: int,
+        fit_intercept: bool,
+        *,
+        robust_se: bool = False,
+    ) -> np.ndarray:
+        """Wald χ² p-values for multinomial regression via JAX.
+
+        For each slope predictor j, extracts the (K-1) coefficients
+        across categories and computes a joint Wald χ² test —
+        matching the statsmodels MNLogit convention.
+        """
+        from scipy.stats import chi2
+
+        X_aug = _augment_intercept(X, fit_intercept)
+        X_j = jnp.array(X_aug, dtype=jnp.float64)
+        y_j = jnp.array(y, dtype=jnp.float64)
+        p_aug = X_aug.shape[1]
+
+        params, _, _ = _make_multinomial_solver(
+            X_j, y_j, K, max_iter=100, tol=_DEFAULT_TOL
+        )
+
+        _nll = _make_multinomial_nll(K)
+        H = jit(jax.hessian(_nll))(params, X_j, y_j)
+        cov = jnp.linalg.inv(H)
+
+        # Wald χ² per slope predictor via the existing helper
+        _wald = _make_multinomial_wald_chi2(K, p_aug, fit_intercept)
+        wald_chi2 = np.asarray(_wald(params, cov))  # (n_features,)
+        pvals = chi2.sf(wald_chi2, df=K - 1)
+        return pvals  # type: ignore[no-any-return]
+
+    # ============================================================== #
+    # GLM score projection helpers (for non-linear families)
+    # ============================================================== #
+    #
+    # Score projection computes the permuted test statistic via a
+    # single Fisher-information-weighted score projection:
+    #
+    #   β̂*_j ≈ (I⁻¹ U)_j
+    #
+    # where I = X' W X is the Fisher information at the reduced-model
+    # MLE and U = X' (y* − μ̂_red) is the score evaluated at the
+    # reduced-model parameters with the full design matrix.
+    #
+    # For GLM families with canonical link:
+    #   U_j = Σ x_{ij} (y*_i − μ̂_i)
+    #
+    # The one-step Newton update from the reduced-model MLE is
+    #
+    #   Δβ = (X'WX)⁻¹ X'(y − μ̂_red)
+    #
+    # so the projection row for feature j is the j-th row of
+    # (X'WX)⁻¹ X' (WITHOUT W on the right — the W appears only in
+    # the Fisher information, not in the score vector for canonical
+    # links).  Permuted scores are E_π @ projection_row.
+    #
+    # Ref: Rao, C. R. (1948). "Large sample tests of composite
+    # hypotheses." Sankhyā, 9(1), 44–56.
+    # -------------------------------------------------------------- #
+
+    def _glm_score_projection_row(
+        X_aug: np.ndarray,
+        W_diag: np.ndarray,
+        feature_idx: int,
+    ) -> np.ndarray:
+        r"""Compute the j-th row of the score test projection matrix.
+
+        For a GLM with canonical link and working weights W, the
+        one-step Newton update is:
+
+        .. math::
+            \Delta\hat\beta = (X^\top W X)^{-1} X^\top (y - \hat\mu)
+
+        The projection row for feature j is:
+
+        .. math::
+            A_j = [(X^\top W X)^{-1} X^\top]_j
+
+        Note: W appears only in the Fisher information (X'WX), NOT
+        in the score projection (X'e).  This matches the score test
+        definition where U = X'(y - μ̂).
+
+        Args:
+            X_aug: Augmented design matrix ``(n, p_aug)``.
+            W_diag: Working weights ``(n,)`` — ``Var(μ̂)`` for
+                canonical link families (e.g. μ̂(1−μ̂) for logistic).
+            feature_idx: Index into the *augmented* parameter vector.
+
+        Returns:
+            Projection row ``(n,)`` as a NumPy array.
+        """
+        XtW = X_aug.T * W_diag[None, :]  # (p_aug, n)
+        fisher = XtW @ X_aug  # (p_aug, p_aug) — Fisher information
+        fisher_inv = np.linalg.inv(fisher)
+        A_row = fisher_inv[feature_idx] @ X_aug.T  # (n,) — NO W on right
+        return A_row  # type: ignore[no-any-return]
 
     # ============================================================== #
     # Logistic regression helpers
@@ -461,62 +1177,24 @@ if _CAN_IMPORT_JAX:
         return _negbin_nll
 
     def _make_negbin_grad(alpha: float) -> Callable[..., Any]:
-        """Return a JIT-compiled NB2 gradient function with fixed α.
+        """Return a JIT-compiled NB2 gradient via autodiff.
 
-        Gradient: X'(y − μ·(y + 1/α)/(μ + 1/α))
-                = X'((μ − y)/(1 + α·μ))  [simplified]
-        Wait, let's derive correctly:
-        d/dβ NLL = d/dβ Σ[(y+1/α)·log(1+α·μ) − y·η]
-                 = Σ[(y+1/α)·α·μ/(1+α·μ) − y] · (dη/dβ_j)
-                 = X' · [(y+1/α)·α·μ/(1+α·μ) − y]
-                 = X' · [μ·(y+1/α)·α/(1+α·μ) − y]
-
-        Let w = α·μ/(1+α·μ), then gradient = X' · [(y+1/α)·w − y]
+        Uses ``jax.grad`` on the NB2 NLL closure to compute the
+        exact gradient ∂NLL/∂β automatically.  This replaces a
+        hand-derived gradient and ensures consistency with the NLL
+        definition in :func:`_make_negbin_nll`.
         """
-
-        @jit
-        def _negbin_grad(
-            beta: jnp.ndarray,
-            X: jnp.ndarray,
-            y: jnp.ndarray,
-        ) -> jnp.ndarray:
-            mu = jnp.exp(X @ beta)
-            inv_a = 1.0 / alpha
-            # derivative of NLL wrt eta: (y+1/α)·α·μ/(1+α·μ) − y
-            denom = 1.0 + alpha * mu
-            d_eta = (y + inv_a) * alpha * mu / denom - y
-            return X.T @ d_eta
-
-        return _negbin_grad
+        return jit(grad(_make_negbin_nll(alpha)))
 
     def _make_negbin_hessian(alpha: float) -> Callable[..., Any]:
-        """Return a JIT-compiled NB2 Hessian function with fixed α.
+        """Return a JIT-compiled NB2 Hessian via autodiff.
 
-        Hessian: X' diag(W) X  where
-        W_i = μ_i · (y_i + 1/α) · α / (1 + α·μ_i)²
-            = μ_i · (1/α + y_i) / (1/α + μ_i)²
-
-        For the expected (Fisher) information, replace y with E[y]=μ:
-        W_i = μ_i / (1/α + μ_i)
-        We use the observed Hessian for faster convergence.
+        Uses ``jax.hessian`` on the NB2 NLL closure to compute the
+        exact Hessian ∂²NLL/∂β∂β' automatically.  This replaces a
+        hand-derived Hessian and ensures consistency with the NLL
+        definition in :func:`_make_negbin_nll`.
         """
-
-        @jit
-        def _negbin_hessian(
-            beta: jnp.ndarray,
-            X: jnp.ndarray,
-            y: jnp.ndarray,
-        ) -> jnp.ndarray:
-            mu = jnp.exp(X @ beta)
-            inv_a = 1.0 / alpha
-            denom = 1.0 + alpha * mu
-            # Second derivative of NLL wrt eta:
-            # d²/dη² = (y+1/α)·α·μ/(1+α·μ)² · (1+α·μ − α·μ)
-            #         = (y+1/α)·α·μ/(1+α·μ)²
-            W = (y + inv_a) * alpha * mu / (denom * denom)
-            return (X.T * W[None, :]) @ X
-
-        return _negbin_hessian
+        return jit(hessian(_make_negbin_nll(alpha)))
 
     def _make_negbin_solver(
         X: jnp.ndarray,
@@ -1353,10 +2031,7 @@ if _CAN_IMPORT_JAX:
             ``REMLResult`` with β̂, σ̂², per-factor covariance
             matrices, C₂₂, projection A, and convergence diagnostics.
         """
-        if fit_intercept:
-            X = np.column_stack([np.ones(X_raw.shape[0]), X_raw])
-        else:
-            X = np.asarray(X_raw)
+        X = _augment_intercept(X_raw, fit_intercept)
 
         n, p = X.shape
         q = Z.shape[1]
@@ -1544,6 +2219,11 @@ if _CAN_IMPORT_JAX:
         max_step_halve: int = 5,
     ) -> _GLMIRLSResult:
         r"""Fit a fixed-effects GLM via IRLS with step-halving.
+
+        IRLS (Iteratively Reweighted Least Squares) is the canonical
+        algorithm for maximum-likelihood estimation in GLMs.
+        Ref: McCullagh & Nelder (1989), *Generalized Linear Models*,
+        2nd ed., Chapman & Hall, §2.5.
 
         Robust replacement for the earlier ``_glm_warmstart``.
         Serves two purposes:
@@ -2022,10 +2702,7 @@ if _CAN_IMPORT_JAX:
             ``LaplaceResult`` with β̂, û, W, μ̂, V⁻¹_diag,
             Fisher information, and convergence diagnostics.
         """
-        if fit_intercept:
-            X = np.column_stack([np.ones(X_raw.shape[0]), X_raw])
-        else:
-            X = np.asarray(X_raw)
+        X = _augment_intercept(X_raw, fit_intercept)
 
         n, p = X.shape
         q = Z.shape[1]
@@ -2410,6 +3087,8 @@ class JaxBackend:
             coefs = _strip_intercept(coefs, fit_intercept)
 
         if return_nll:
+            # 2 × NLL = deviance (up to a data-only constant that
+            # cancels in improvement = score_reduced − score_full).
             return coefs, 2.0 * np.asarray(all_nll)
         return coefs
 

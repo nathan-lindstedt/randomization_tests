@@ -32,6 +32,11 @@ import os
 _VALID_BACKENDS = {"jax", "numpy", "auto"}
 
 # Sentinel indicating "no programmatic override has been set".
+#
+# Thread-safety note: this module-level global is NOT thread-safe.
+# Concurrent calls to set_backend() from different threads could
+# race.  In practice this is fine — backend selection happens once
+# at program start-up (or in a notebook cell), never mid-loop.
 _backend_override: str | None = None
 
 

@@ -414,40 +414,46 @@ class TestScoreLMMJoint:
 
 
 class TestUnsupportedFamily:
-    """score methods with unsupported families raise ValueError."""
+    """score methods with previously unsupported families now work.
 
-    @pytest.mark.parametrize("method", ["score", "score_joint", "score_exact"])
-    def test_logistic_rejected(self, method: str) -> None:
+    LogisticFamily and PoissonFamily gained real ``score_project()``
+    implementations in Phase 5, so ``score`` and ``score_joint``
+    should complete without raising.  ``score_exact`` remains GLMM-
+    only and is tested in ``TestScoreExactNonGLMM`` below.
+    """
+
+    @pytest.mark.parametrize("method", ["score", "score_joint"])
+    def test_logistic_accepted(self, method: str) -> None:
         rng = np.random.default_rng(_SEED)
         n = 100
         X = pd.DataFrame({"x1": rng.standard_normal(n)})
         logits = 1.5 * X["x1"]
         y = pd.DataFrame({"y": rng.binomial(1, 1 / (1 + np.exp(-logits)))})
-        with pytest.raises(ValueError, match="score_project"):
-            permutation_test_regression(
-                X,
-                y,
-                n_permutations=50,
-                random_state=_SEED,
-                method=method,
-                family="logistic",
-            )
+        result = permutation_test_regression(
+            X,
+            y,
+            n_permutations=50,
+            random_state=_SEED,
+            method=method,
+            family="logistic",
+        )
+        assert result is not None
 
-    @pytest.mark.parametrize("method", ["score", "score_joint", "score_exact"])
-    def test_poisson_rejected(self, method: str) -> None:
+    @pytest.mark.parametrize("method", ["score", "score_joint"])
+    def test_poisson_accepted(self, method: str) -> None:
         rng = np.random.default_rng(_SEED)
         n = 100
         X = pd.DataFrame({"x1": rng.standard_normal(n)})
         y = pd.DataFrame({"y": rng.poisson(3, size=n)})
-        with pytest.raises(ValueError, match="score_project"):
-            permutation_test_regression(
-                X,
-                y,
-                n_permutations=50,
-                random_state=_SEED,
-                method=method,
-                family="poisson",
-            )
+        result = permutation_test_regression(
+            X,
+            y,
+            n_permutations=50,
+            random_state=_SEED,
+            method=method,
+            family="poisson",
+        )
+        assert result is not None
 
 
 # ------------------------------------------------------------------ #

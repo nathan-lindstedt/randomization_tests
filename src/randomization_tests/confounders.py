@@ -76,7 +76,12 @@ from scipy import stats
 from sklearn.linear_model import LinearRegression
 
 from ._compat import DataFrameLike, _ensure_pandas_df
-from .families import ModelFamily, resolve_family
+from .families import (
+    ModelFamily,
+    _augment_intercept,
+    _suppress_sm_warnings,
+    resolve_family,
+)
 
 if TYPE_CHECKING:
     from ._results import ConfounderAnalysisResult
@@ -164,24 +169,46 @@ def _cluster_bootstrap_indices(
     groups: np.ndarray,
     n_bootstrap: int,
     rng: np.random.Generator,
+    *,
+    mode: str = "cluster",
 ) -> list[np.ndarray]:
-    """Generate bootstrap index arrays by resampling whole clusters.
+    """Generate bootstrap index arrays that respect group structure.
 
-    Within-cluster observations are correlated, so resampling
-    individuals i.i.d. understates variance.  Cluster bootstrap
-    preserves the correlation structure (Cameron, Gelbach & Miller,
-    2008).
+    Two modes are available:
+
+    ``mode="cluster"`` (whole-cluster resampling)
+        Resample *G* cluster IDs with replacement, then concatenate
+        all observations from the selected clusters.  This is the
+        classic cluster bootstrap (Cameron, Gelbach & Miller, 2008)
+        and is appropriate when cluster-level variance estimation is
+        the goal.  Produces **ragged** index arrays when clusters are
+        unbalanced — callers must iterate sequentially rather than
+        batching with ``batch_fit_paired()``.
+
+    ``mode="stratified"`` (within-cluster resampling)
+        For each cluster *g*, resample *n_g* observation indices with
+        replacement **within** that cluster.  Every replicate has
+        exactly *n* observations, producing a rectangular ``(B, n)``
+        index array that is directly compatible with
+        ``batch_fit_paired()``.  Preserves hierarchical structure
+        while enabling JAX / NumPy vectorised fitting.  Appropriate
+        for the confounder sieve, where the question is "is this path
+        coefficient nonzero?" rather than "what is the between-cluster
+        variance?".
 
     Args:
         groups: 1-D array of group labels, length *n*.
         n_bootstrap: Number of bootstrap replicates.
         rng: NumPy random generator.
+        mode: Resampling strategy — ``"cluster"`` (default) or
+            ``"stratified"``.  See above.
 
     Returns:
         List of *n_bootstrap* 1-D index arrays.  Each array
-        contains the observation indices for one replicate;
-        lengths may vary because selected clusters have
-        different sizes.
+        contains the observation indices for one replicate.
+        For ``mode="stratified"`` all arrays have length *n*;
+        for ``mode="cluster"`` lengths may vary when clusters
+        are unbalanced.
     """
     unique_labels = np.unique(groups)
     n_groups = len(unique_labels)
@@ -190,9 +217,30 @@ def _cluster_bootstrap_indices(
         label: np.where(groups == label)[0] for label in unique_labels
     }
     indices: list[np.ndarray] = []
-    for _ in range(n_bootstrap):
-        chosen = rng.choice(unique_labels, size=n_groups, replace=True)
-        indices.append(np.concatenate([group_indices[lab] for lab in chosen]))
+
+    if mode == "stratified":
+        # Within-cluster resampling: resample n_g observations with
+        # replacement inside each cluster, then concatenate.  Every
+        # replicate has exactly n observations → rectangular output.
+        for _ in range(n_bootstrap):
+            parts: list[np.ndarray] = []
+            for label in unique_labels:
+                g_idx = group_indices[label]
+                parts.append(rng.choice(g_idx, size=len(g_idx), replace=True))
+            indices.append(np.concatenate(parts))
+    elif mode == "cluster":
+        # Whole-cluster resampling: resample G cluster IDs with
+        # replacement, concatenate all observations from the selected
+        # clusters.  Ragged when clusters are unbalanced.
+        for _ in range(n_bootstrap):
+            chosen = rng.choice(unique_labels, size=n_groups, replace=True)
+            indices.append(np.concatenate([group_indices[lab] for lab in chosen]))
+    else:
+        raise ValueError(
+            f"Unknown cluster bootstrap mode {mode!r}. "
+            "Expected 'cluster' or 'stratified'."
+        )
+
     return indices
 
 
@@ -252,7 +300,7 @@ def _partial_correlation(
     k = covariates.shape[1]
 
     # Add intercept column for OLS.
-    C = np.column_stack([np.ones(n), covariates])
+    C = _augment_intercept(covariates)
 
     # Residualise x and y.
     res_x = x - C @ np.linalg.lstsq(C, x, rcond=None)[0]
@@ -962,7 +1010,13 @@ def mediation_analysis(
 
     if _use_cluster:
         assert groups is not None
-        boot_idx_list = _cluster_bootstrap_indices(groups, n_bootstrap, rng)
+        # Stratified within-cluster resampling produces rectangular
+        # (B, n) index arrays, enabling batch fitting via
+        # batch_fit_paired().  See _cluster_bootstrap_indices() for
+        # the distinction between "cluster" and "stratified" modes.
+        boot_idx_list = _cluster_bootstrap_indices(
+            groups, n_bootstrap, rng, mode="stratified"
+        )
     else:
         boot_idx_list = [
             rng.choice(n, size=n, replace=True) for _ in range(n_bootstrap)
@@ -979,7 +1033,7 @@ def mediation_analysis(
     # batched into a single vectorised call — typically 30-50× faster
     # than sequential ``fam.fit()`` loops.
     _can_batch = _use_family and hasattr(fam, "batch_fit_paired")
-    boot_idx_arr = np.array(boot_idx_list)  # (B, n) or ragged for cluster
+    boot_idx_arr = np.array(boot_idx_list)  # (B, n) — always rectangular
 
     if _can_batch and boot_idx_arr.ndim == 2:
         # --- Vectorised path: batch a-path + batch b-path -----------
@@ -1002,8 +1056,7 @@ def mediation_analysis(
         )  # (B, n, 2)
         Yb_batch = y_values[boot_idx_arr].astype(float)  # (B, n)
 
-        with warnings.catch_warnings():
-            warnings.filterwarnings("ignore")
+        with _suppress_sm_warnings(hessian=True):
             b_coefs = fam.batch_fit_paired(
                 Xb_batch, Yb_batch, fit_intercept=True
             )  # (B, 2)
@@ -1187,8 +1240,7 @@ def _bca_ci(
         )  # (J, n-1, 2)
         Yb_jack = y_values[jack_idx_arr].astype(float)  # (J, n-1)
 
-        with warnings.catch_warnings():
-            warnings.filterwarnings("ignore")
+        with _suppress_sm_warnings(hessian=True):
             assert family is not None  # narrowed by _can_batch
             b_coefs = family.batch_fit_paired(
                 Xb_jack, Yb_jack, fit_intercept=True
@@ -1361,7 +1413,11 @@ def moderation_analysis(
 
     if _use_cluster:
         assert groups is not None
-        boot_idx_list = _cluster_bootstrap_indices(groups, n_bootstrap, rng)
+        # Stratified within-cluster resampling: rectangular (B, n)
+        # arrays compatible with batch_fit_paired().
+        boot_idx_list = _cluster_bootstrap_indices(
+            groups, n_bootstrap, rng, mode="stratified"
+        )
     else:
         boot_idx_list = [
             rng.choice(n, size=n, replace=True) for _ in range(n_bootstrap)
@@ -1372,7 +1428,7 @@ def moderation_analysis(
 
     # Batch the bootstrap fits when the family supports batch_fit_paired.
     _can_batch = _use_family and hasattr(fam, "batch_fit_paired")
-    boot_idx_arr = np.array(boot_idx_list)
+    boot_idx_arr = np.array(boot_idx_list)  # (B, n) — always rectangular
 
     if _can_batch and boot_idx_arr.ndim == 2:
         # --- Vectorised moderation bootstrap ------------------------
@@ -1391,8 +1447,7 @@ def moderation_analysis(
             Xmod_batch[b_i] = np.column_stack([xb_c, zb_c, xb_c * zb_c])
             Ymod_batch[b_i] = y_values[idx].astype(float)
 
-        with warnings.catch_warnings():
-            warnings.filterwarnings("ignore")
+        with _suppress_sm_warnings(hessian=True):
             batch_coefs = fam.batch_fit_paired(
                 Xmod_batch, Ymod_batch, fit_intercept=True
             )  # (B, 3)
@@ -1504,8 +1559,7 @@ def moderation_analysis(
             Xmod_jack[j] = np.column_stack([xj_c, zj_c, xj_c * zj_c])
             Ymod_jack[j] = y_values[jidx].astype(float)
 
-        with warnings.catch_warnings():
-            warnings.filterwarnings("ignore")
+        with _suppress_sm_warnings(hessian=True):
             jack_coefs = fam.batch_fit_paired(
                 Xmod_jack, Ymod_jack, fit_intercept=True
             )  # (J, 3)

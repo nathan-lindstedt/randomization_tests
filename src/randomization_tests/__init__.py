@@ -1,15 +1,21 @@
 """randomization_tests — Permutation tests for regression models.
 
-Implements ter Braak (1992) and Kennedy (1995) methods with vectorised
-OLS, optional JAX autodiff for logistic regression, and pre-generated
-unique permutations.
+Implements ter Braak (1992), Kennedy (1995), Freedman–Lane (1983), and
+score-based permutation strategies with vectorised batch fitting,
+optional JAX autodiff for all GLM families (linear, logistic, Poisson,
+negative-binomial, ordinal, multinomial) and mixed-effects models
+(linear, logistic, Poisson GLMM), and pre-generated unique permutations
+with exchangeability-cell constraints.
 
 Public API:
     .. autosummary::
         permutation_test_regression
         identify_confounders
         mediation_analysis
+        moderation_analysis
         screen_potential_confounders
+        compute_e_value
+        rosenbaum_bounds
         print_confounder_table
         print_dataset_info_table
         print_diagnostics_table
@@ -35,6 +41,9 @@ Public API:
         register_family
         PermutationEngine
         FitContext
+        ConfounderAnalysisResult
+        IndividualTestResult
+        JointTestResult
 """
 
 from ._config import get_backend, set_backend

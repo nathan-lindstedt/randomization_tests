@@ -1487,3 +1487,202 @@ class TestTwoStageImbalance:
                 )
             except UserWarning as exc:
                 assert "unbalanced" not in str(exc)
+
+
+# ------------------------------------------------------------------ #
+# Panel-data convenience layer (Step 15)
+# ------------------------------------------------------------------ #
+
+
+def _make_panel_data(
+    n_panels: int = 10,
+    n_times: int = 5,
+    seed: int = 42,
+    balanced: bool = True,
+):
+    """Create a simulated balanced (or unbalanced) panel dataset."""
+    rng = np.random.default_rng(seed)
+    rows = []
+    for p in range(n_panels):
+        t_count = n_times if balanced else rng.integers(3, n_times + 3)
+        for t in range(t_count):
+            rows.append({"panel": p, "time": t})
+
+    panel_df = pd.DataFrame(rows)
+    n = len(panel_df)
+    panel_df["x1"] = rng.standard_normal(n)
+    panel_df["x2"] = rng.standard_normal(n)
+    panel_df["y"] = (
+        2.0 * panel_df["x1"] - 1.0 * panel_df["x2"] + rng.standard_normal(n) * 0.5
+    )
+
+    X = panel_df[["x1", "x2"]].copy()
+    y = panel_df[["y"]].copy()
+    panel_id = panel_df["panel"].values
+    time_id = panel_df["time"].values
+    return X, y, panel_id, time_id
+
+
+class TestPanelData:
+    """Tests for panel_id / time_id convenience parameters (Step 15)."""
+
+    def test_balanced_panel_runs(self):
+        """Balanced panel with panel_id= produces valid results."""
+        X, y, panel_id, time_id = _make_panel_data()
+        result = permutation_test_regression(
+            X,
+            y,
+            n_permutations=20,
+            random_state=0,
+            panel_id=panel_id,
+            time_id=time_id,
+        )
+        assert result.permutation_strategy == "within"
+        assert result.groups is not None
+        # All p-values are valid
+        for p in result.raw_empirical_p:
+            assert 0.0 <= p <= 1.0
+
+    def test_panel_diagnostics_present(self):
+        """Panel diagnostics dict is populated when panel_id= given."""
+        X, y, panel_id, time_id = _make_panel_data()
+        result = permutation_test_regression(
+            X,
+            y,
+            n_permutations=20,
+            random_state=0,
+            panel_id=panel_id,
+            time_id=time_id,
+        )
+        diag = result.extended_diagnostics
+        assert "panel_diagnostics" in diag
+        pd_diag = diag["panel_diagnostics"]
+        assert pd_diag["n_panels"] == 10
+        assert pd_diag["obs_per_panel_min"] == 5
+        assert pd_diag["obs_per_panel_max"] == 5
+        assert pd_diag["balanced"] is True
+
+    def test_equivalent_to_explicit_groups(self):
+        """panel_id= gives identical results to groups= + within."""
+        X, y, panel_id, _ = _make_panel_data()
+
+        res_panel = permutation_test_regression(
+            X,
+            y,
+            n_permutations=50,
+            random_state=123,
+            panel_id=panel_id,
+        )
+        res_groups = permutation_test_regression(
+            X,
+            y,
+            n_permutations=50,
+            random_state=123,
+            groups=panel_id,
+            permutation_strategy="within",
+        )
+        np.testing.assert_array_equal(
+            res_panel.raw_empirical_p, res_groups.raw_empirical_p
+        )
+        np.testing.assert_array_equal(res_panel.model_coefs, res_groups.model_coefs)
+
+    def test_panel_id_conflicts_with_groups(self):
+        """panel_id= + groups= raises ValueError."""
+        X, y, panel_id, _ = _make_panel_data()
+        with pytest.raises(ValueError, match="panel_id.*groups.*cannot"):
+            permutation_test_regression(
+                X,
+                y,
+                n_permutations=20,
+                random_state=0,
+                panel_id=panel_id,
+                groups=panel_id,
+            )
+
+    def test_panel_id_conflicts_with_strategy(self):
+        """panel_id= + permutation_strategy= raises ValueError."""
+        X, y, panel_id, _ = _make_panel_data()
+        with pytest.raises(ValueError, match="panel_id.*permutation_strategy.*cannot"):
+            permutation_test_regression(
+                X,
+                y,
+                n_permutations=20,
+                random_state=0,
+                panel_id=panel_id,
+                permutation_strategy="between",
+            )
+
+    def test_time_id_without_panel_id_raises(self):
+        """time_id= without panel_id= raises ValueError."""
+        X, y, _, time_id = _make_panel_data()
+        with pytest.raises(ValueError, match="time_id.*requires.*panel_id"):
+            permutation_test_regression(
+                X,
+                y,
+                n_permutations=20,
+                random_state=0,
+                time_id=time_id,
+            )
+
+    def test_unbalanced_panel_warns(self):
+        """Unbalanced panels emit a warning."""
+        X, y, panel_id, time_id = _make_panel_data(balanced=False)
+        with pytest.warns(UserWarning, match="[Uu]nbalanced"):
+            permutation_test_regression(
+                X,
+                y,
+                n_permutations=20,
+                random_state=0,
+                panel_id=panel_id,
+                time_id=time_id,
+            )
+
+    def test_unsorted_panel_warns(self):
+        """Data not sorted by (panel, time) emits a warning."""
+        X, y, panel_id, time_id = _make_panel_data()
+        # Reverse the data to break sort order.
+        X_rev = X.iloc[::-1].reset_index(drop=True)
+        y_rev = y.iloc[::-1].reset_index(drop=True)
+        panel_rev = panel_id[::-1].copy()
+        time_rev = time_id[::-1].copy()
+        with pytest.warns(UserWarning, match="not sorted"):
+            permutation_test_regression(
+                X_rev,
+                y_rev,
+                n_permutations=20,
+                random_state=0,
+                panel_id=panel_rev,
+                time_id=time_rev,
+            )
+
+    def test_panel_id_as_column_name(self):
+        """panel_id= accepts a string column name from X."""
+        X, y, panel_id, time_id = _make_panel_data()
+        X_with_panel = X.copy()
+        X_with_panel["panel"] = panel_id
+        X_with_panel["time"] = time_id
+        # Use the feature columns only — panel/time are metadata.
+        result = permutation_test_regression(
+            X_with_panel[["x1", "x2", "panel", "time"]],
+            y,
+            n_permutations=20,
+            random_state=0,
+            panel_id="panel",
+            time_id="time",
+        )
+        assert result.permutation_strategy == "within"
+        diag = result.extended_diagnostics
+        assert "panel_diagnostics" in diag
+        assert diag["panel_diagnostics"]["n_panels"] == 10
+
+    def test_panel_id_bad_column_name_raises(self):
+        """panel_id= with a string not in X columns raises."""
+        X, y, _, _ = _make_panel_data()
+        with pytest.raises(ValueError, match="not found in X columns"):
+            permutation_test_regression(
+                X,
+                y,
+                n_permutations=20,
+                random_state=0,
+                panel_id="nonexistent",
+            )

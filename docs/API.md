@@ -24,12 +24,21 @@ permutation_test_regression(
     precision: int = 3,
     p_value_threshold_one: float = 0.05,
     p_value_threshold_two: float = 0.01,
+    p_value_threshold_three: float = 0.001,
     method: str = "ter_braak",
     confounders: list[str] | None = None,
     random_state: int | None = None,
     fit_intercept: bool = True,
-    family: str = "auto",
+    family: str | ModelFamily = "auto",
     n_jobs: int = 1,
+    backend: str | None = None,
+    groups: np.ndarray | list[int] | pd.Series | pd.DataFrame | None = None,
+    permutation_strategy: str | None = None,
+    permutation_constraints: Callable[[np.ndarray], np.ndarray] | None = None,
+    random_slopes: list[int] | dict[str, list[int]] | None = None,
+    confidence_level: float = 0.95,
+    panel_id: np.ndarray | list[int] | pd.Series | str | None = None,
+    time_id: np.ndarray | list[int] | pd.Series | str | None = None,
 ) -> IndividualTestResult | JointTestResult
 ```
 
@@ -38,7 +47,8 @@ Run a permutation test for regression coefficients.
 By default (`family="auto"`), detects binary vs. continuous outcomes and
 uses logistic or linear regression accordingly.  Pass an explicit family
 string (`"linear"`, `"logistic"`, `"poisson"`, `"negative_binomial"`,
-`"ordinal"`, `"multinomial"`) to override auto‑detection.
+`"ordinal"`, `"multinomial"`) or a pre‑configured `ModelFamily` instance
+to override auto‑detection.
 
 | Parameter | Description |
 |---|---|
@@ -48,12 +58,21 @@ string (`"linear"`, `"logistic"`, `"poisson"`, `"negative_binomial"`,
 | `precision` | Decimal places for reported p‑values. |
 | `p_value_threshold_one` | First significance level (marked `*`). |
 | `p_value_threshold_two` | Second significance level (marked `**`). |
-| `method` | `"ter_braak"`, `"kennedy"`, `"kennedy_joint"`, `"freedman_lane"`, or `"freedman_lane_joint"`. |
+| `p_value_threshold_three` | Third significance level (marked `***`). |
+| `method` | `"ter_braak"`, `"kennedy"`, `"kennedy_joint"`, `"freedman_lane"`, `"freedman_lane_joint"`, `"score"`, `"score_joint"`, or `"score_exact"`. |
 | `confounders` | Column names of confounders (required for Kennedy and Freedman–Lane methods). |
 | `random_state` | Seed for reproducibility. |
 | `fit_intercept` | Whether to include an intercept in the regression model. Set to `False` for through‑origin regression. |
-| `family` | Model family string. `"auto"` (default) detects binary `{0, 1}` targets → logistic, otherwise linear. Explicit values: `"linear"`, `"logistic"`, `"poisson"`, `"negative_binomial"`, `"ordinal"`, `"multinomial"`. |
+| `family` | Model family string **or** a `ModelFamily` instance. `"auto"` (default) detects binary `{0, 1}` targets → logistic, otherwise linear. Explicit values: `"linear"`, `"logistic"`, `"poisson"`, `"negative_binomial"`, `"ordinal"`, `"multinomial"`, `"linear_mixed"`, `"logistic_mixed"`, `"poisson_mixed"`. Pre‑configured instances (e.g. `NegativeBinomialFamily(alpha=2.0)`) are accepted directly. |
 | `n_jobs` | Number of parallel jobs for the permutation batch‑fit loop. `1` (default) is sequential; `-1` uses all CPU cores. Ignored when the JAX backend is active. |
+| `backend` | `"numpy"`, `"jax"`, or `None` (default). When `None`, the global policy from `set_backend()` is used. An explicit value overrides the global setting for this call only. |
+| `groups` | Exchangeability group labels. When provided, permutations are constrained to respect group structure rather than shuffling globally. Accepts a 1‑D array‑like of integer labels `(n_samples,)` or a `DataFrame` with one or more blocking columns (multi‑column DataFrames are cross‑classified into integer cell labels). |
+| `permutation_strategy` | Cell‑level permutation strategy: `"within"` shuffles only within cells, `"between"` permutes entire cells as units, `"two-stage"` composes both. Defaults to `"within"` when `groups` is provided. Cannot be set without `groups`. |
+| `permutation_constraints` | Optional post‑filter callback. Receives a `(B, n)` permutation array and must return a `(B', n)` array with `B' ≤ B` rows. Used for domain‑specific constraints that cannot be expressed via cell structure alone. |
+| `random_slopes` | Random‑slope column indices or `{factor: [indices]}` mapping for mixed‑effects families. Passed to `calibrate()` to build the random‑effects design matrix Z. |
+| `confidence_level` | Confidence level for all CI types (permutation, Wald, Clopper–Pearson, standardised). Defaults to `0.95`. |
+| `panel_id` | Panel (subject/unit) identifier for longitudinal data. When provided, automatically sets `groups=panel_id` and `permutation_strategy="within"`. Accepts a 1‑D array‑like of labels or a column name (string) in `X`. Cannot be used together with an explicit `groups=` argument. |
+| `time_id` | Time‑period identifier for longitudinal data. Only meaningful when `panel_id` is also provided. Used for validation checks: warns if data is not sorted by `(panel_id, time_id)` or if panels are unbalanced. |
 
 **Returns:** A dictionary containing model coefficients, empirical
 (permutation) and classical (asymptotic) p‑values, extended diagnostics,
@@ -101,7 +120,8 @@ Runtime‑checkable protocol that every family class must satisfy.
 | `reconstruct_y(predictions, permuted_residuals, rng)` | Build permuted response vectors. |
 | `fit_metric(y_true, y_pred)` | Scalar goodness‑of‑fit metric (e.g. RSS, deviance). |
 | `diagnostics(X, y, fit_intercept)` | Dict of model‑level diagnostics. |
-| `classical_p_values(X, y, fit_intercept)` | Asymptotic p‑values (t‑ or z‑test). |
+| `classical_p_values(X, y, fit_intercept, *, robust_se)` | Asymptotic p‑values (t‑ or z‑test). `robust_se=True` uses sandwich SEs. |
+| `score_project(X, y, feature_idx, confounders, *, y)` | Score‑test projection row for `method="score"`. |
 | `exchangeability_cells(X, y)` | Exchangeability cell labels (or `None` for global). |
 | `batch_fit(X, Y_matrix, fit_intercept, **kw)` | Fit B models with varying Y; shape `(B, p)`. |
 | `batch_fit_varying_X(X_batch, y, fit_intercept, **kw)` | Fit B models with varying X; shape `(B, p)`. |
@@ -340,10 +360,18 @@ Requires `groups=` keyword.
 ### `resolve_family`
 
 ```python
-resolve_family(family: str, y: np.ndarray) -> ModelFamily
+resolve_family(
+    family: str | ModelFamily,
+    y: np.ndarray | None = None,
+) -> ModelFamily
 ```
 
-Resolve a family string to a `ModelFamily` instance.
+Resolve a family string or instance to a concrete `ModelFamily`.
+
+When *family* is already a `ModelFamily` instance, it is returned
+as‑is (pass‑through).  This enables callers to pass pre‑configured
+instances (e.g. `NegativeBinomialFamily(alpha=2.0)`) without
+triggering fresh resolution or construction.
 
 | Value | Behaviour |
 |---|---|
