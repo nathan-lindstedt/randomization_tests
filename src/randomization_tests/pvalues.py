@@ -64,7 +64,7 @@ def calculate_p_values(
     fit_intercept: bool = True,
     *,
     family: ModelFamily,
-) -> tuple[list[str], list[str], np.ndarray, np.ndarray]:
+) -> tuple[list[str], list[str], np.ndarray, np.ndarray, np.ndarray]:
     """Calculate empirical (permutation) and classical (asymptotic) p-values.
 
     Classical p-values are delegated to ``family.classical_p_values()``.
@@ -97,11 +97,13 @@ def calculate_p_values(
 
     Returns:
         A four-element tuple
-        ``(permuted_p_values, classic_p_values, raw_empirical_p, raw_classic_p)``
+        ``(permuted_p_values, classic_p_values, raw_empirical_p, raw_classic_p, counts)``
         where the first two elements are lists of formatted p-value
         strings with significance markers (``*``, ``**``, or ``ns``),
-        and the last two are NumPy arrays of raw (unformatted) numeric
-        p-values used for downstream diagnostics.
+        the next two are NumPy arrays of raw (unformatted) numeric
+        p-values used for downstream diagnostics, and ``counts`` is
+        the per-feature count of permuted |β*| ≥ observed |β| used
+        for Clopper-Pearson p-value CIs.
     """
     X = _ensure_pandas_df(X, name="X")
     y = _ensure_pandas_df(y, name="y")
@@ -152,4 +154,4 @@ def calculate_p_values(
     permuted_p_values = [_fmt(p) for p in raw_p]
     classic_p_values = [_fmt(p) for p in raw_classic_p]
 
-    return permuted_p_values, classic_p_values, raw_p, raw_classic_p
+    return permuted_p_values, classic_p_values, raw_p, raw_classic_p, counts

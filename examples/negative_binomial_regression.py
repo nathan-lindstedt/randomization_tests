@@ -15,6 +15,8 @@ grossly understate standard errors.  NB2 (Var = μ + α·μ²) is the
 natural choice.
 """
 
+import warnings
+
 import numpy as np
 import pandas as pd
 from ucimlrepo import fetch_ucirepo
@@ -24,9 +26,13 @@ from randomization_tests import (
     identify_confounders,
     permutation_test_regression,
     print_confounder_table,
+    print_dataset_info_table,
     print_diagnostics_table,
+    print_family_info_table,
     print_joint_results_table,
+    print_protocol_usage_table,
     print_results_table,
+    resolve_family,
 )
 
 # ============================================================================
@@ -59,13 +65,31 @@ y = y_sub.copy()
 feature_names = X.columns.tolist()
 
 y_arr = np.ravel(y).astype(float)
-print(f"Dataset:           {bike_sharing.metadata.name}")
-print(f"Sample size:       {len(y_arr)}  (subsampled from {len(y_full)})")
-print(f"Predictors:        {feature_names}")
-print(f"Mean(y):           {y_arr.mean():.2f}")
-print(f"Var(y):            {y_arr.var():.2f}")
-print(f"Var/Mean ratio:    {y_arr.var() / y_arr.mean():.2f}  (>>1 → overdispersed)")
-print()
+var_mean_ratio = y_arr.var() / y_arr.mean()
+
+print_dataset_info_table(
+    name=bike_sharing.metadata.name,
+    n_observations=len(X),
+    n_features=X.shape[1],
+    feature_names=feature_names,
+    target_name=y.columns[0],
+    target_description="hourly rental bike count",
+    y_range=(int(y_arr.min()), int(y_arr.max())),
+    y_mean=float(y_arr.mean()),
+    y_var=float(y_arr.var()),
+    extra_stats={"Var/Mean": f"{var_mean_ratio:.2f}  (>>1 → overdispersed)"},
+)
+
+# ============================================================================
+# Family resolution
+# ============================================================================
+
+nb_family = resolve_family("negative_binomial")
+assert nb_family.name == "negative_binomial"
+
+print_family_info_table(
+    explicit_family=nb_family,
+)
 
 # ============================================================================
 # ter Braak (1992) — family="negative_binomial" (explicit)
@@ -85,14 +109,78 @@ print_diagnostics_table(
 )
 
 # ============================================================================
+# Kennedy (1995) individual — family="negative_binomial"
+# ============================================================================
+
+with warnings.catch_warnings():
+    warnings.filterwarnings("ignore", message=".*without confounders.*")
+    results_kennedy = permutation_test_regression(
+        X, y, method="kennedy", confounders=[], family="negative_binomial"
+    )
+print_results_table(
+    results_kennedy,
+    title="Kennedy (1995) Individual Permutation Test (family='negative_binomial')",
+)
+print_diagnostics_table(
+    results_kennedy,
+    title="Kennedy (1995) Individual Diagnostics (family='negative_binomial')",
+)
+
+# ============================================================================
+# Kennedy (1995) joint — family="negative_binomial"
+# ============================================================================
+
+with warnings.catch_warnings():
+    warnings.filterwarnings("ignore", message=".*without confounders.*")
+    results_kennedy_joint = permutation_test_regression(
+        X, y, method="kennedy_joint", confounders=[], family="negative_binomial"
+    )
+print_joint_results_table(
+    results_kennedy_joint,
+    title="Kennedy (1995) Joint Permutation Test (family='negative_binomial')",
+)
+
+# ============================================================================
+# Freedman–Lane (1983) individual — family="negative_binomial"
+# ============================================================================
+
+with warnings.catch_warnings():
+    warnings.filterwarnings("ignore", message=".*without confounders.*")
+    results_fl = permutation_test_regression(
+        X, y, method="freedman_lane", confounders=[], family="negative_binomial"
+    )
+print_results_table(
+    results_fl,
+    title="Freedman–Lane (1983) Individual Permutation Test (family='negative_binomial')",
+)
+print_diagnostics_table(
+    results_fl,
+    title="Freedman–Lane (1983) Individual Diagnostics (family='negative_binomial')",
+)
+
+# ============================================================================
+# Freedman–Lane (1983) joint — family="negative_binomial"
+# ============================================================================
+
+with warnings.catch_warnings():
+    warnings.filterwarnings("ignore", message=".*without confounders.*")
+    results_fl_joint = permutation_test_regression(
+        X, y, method="freedman_lane_joint", confounders=[], family="negative_binomial"
+    )
+print_joint_results_table(
+    results_fl_joint,
+    title="Freedman–Lane (1983) Joint Permutation Test (family='negative_binomial')",
+)
+
+# ============================================================================
 # Confounder identification
 # ============================================================================
-# Identify which features are confounders for each predictor
-# (correlated with both the predictor of interest and the outcome).
 
 all_confounder_results = {}
 for predictor in X.columns:
-    all_confounder_results[predictor] = identify_confounders(X, y, predictor=predictor)
+    all_confounder_results[predictor] = identify_confounders(
+        X, y, predictor=predictor, family="negative_binomial"
+    )
 
 print_confounder_table(
     all_confounder_results,
@@ -100,20 +188,20 @@ print_confounder_table(
 )
 
 predictors_with_confounders = {
-    pred: res["identified_confounders"]
+    pred: res.identified_confounders
     for pred, res in all_confounder_results.items()
-    if res["identified_confounders"]
+    if res.identified_confounders
 }
 
 # ============================================================================
-# Kennedy (1995) individual — family="negative_binomial"
+# Kennedy with identified confounders — family="negative_binomial"
 # ============================================================================
 
 if predictors_with_confounders:
     example_predictor = list(predictors_with_confounders.keys())[0]
     example_confounders = predictors_with_confounders[example_predictor]
 
-    results_kennedy = permutation_test_regression(
+    results_kc = permutation_test_regression(
         X,
         y,
         method="kennedy",
@@ -121,151 +209,85 @@ if predictors_with_confounders:
         family="negative_binomial",
     )
     print_results_table(
-        results_kennedy,
+        results_kc,
         title=(
             f"Kennedy (1995) for '{example_predictor}' "
             f"(controlling for {', '.join(example_confounders)}) "
-            f"[family='negative_binomial']"
+            f"(family='negative_binomial')"
         ),
     )
     print_diagnostics_table(
-        results_kennedy,
-        title="Kennedy (1995) Individual Diagnostics (family='negative_binomial')",
-    )
-
-# ============================================================================
-# Kennedy (1995) joint — family="negative_binomial"
-# ============================================================================
-
-if predictors_with_confounders:
-    results_kennedy_joint = permutation_test_regression(
-        X,
-        y,
-        method="kennedy_joint",
-        confounders=example_confounders,
-        family="negative_binomial",
-    )
-    print_joint_results_table(
-        results_kennedy_joint,
+        results_kc,
         title=(
-            f"Kennedy (1995) Joint "
-            f"(controlling for {', '.join(example_confounders)}) "
-            f"[family='negative_binomial']"
-        ),
-    )
-
-# ============================================================================
-# Freedman–Lane (1983) individual — family="negative_binomial"
-# ============================================================================
-
-if predictors_with_confounders:
-    results_fl = permutation_test_regression(
-        X,
-        y,
-        method="freedman_lane",
-        confounders=example_confounders,
-        family="negative_binomial",
-    )
-    print_results_table(
-        results_fl,
-        title=(
-            f"Freedman–Lane (1983) Individual "
-            f"(controlling for {', '.join(example_confounders)}) "
-            f"[family='negative_binomial']"
-        ),
-    )
-    print_diagnostics_table(
-        results_fl,
-        title="Freedman–Lane (1983) Individual Diagnostics (family='negative_binomial')",
-    )
-
-# ============================================================================
-# Freedman–Lane (1983) joint — family="negative_binomial"
-# ============================================================================
-
-if predictors_with_confounders:
-    results_fl_joint = permutation_test_regression(
-        X,
-        y,
-        method="freedman_lane_joint",
-        confounders=example_confounders,
-        family="negative_binomial",
-    )
-    print_joint_results_table(
-        results_fl_joint,
-        title=(
-            f"Freedman–Lane (1983) Joint "
-            f"(controlling for {', '.join(example_confounders)}) "
-            f"[family='negative_binomial']"
+            f"Kennedy (1995) Diagnostics for '{example_predictor}' "
+            f"(family='negative_binomial')"
         ),
     )
 
 # ============================================================================
 # Direct NegativeBinomialFamily protocol usage
 # ============================================================================
+# The ModelFamily protocol encapsulates every model-specific operation —
+# fitting, prediction, residual extraction, Y-reconstruction, batch
+# fitting, diagnostics, and classical p-values.  Below we exercise
+# each method directly for NegativeBinomialFamily.
 
 X_np = X.values.astype(float)
 n = len(y_arr)
 p = X_np.shape[1]
 family = NegativeBinomialFamily()
 
-print(f"\n{'=' * 80}")
-print("Direct NegativeBinomialFamily protocol usage")
-print(f"{'=' * 80}")
-print(f"  name:               {family.name}")
-print(f"  residual_type:      {family.residual_type}")
-print(f"  direct_permutation: {family.direct_permutation}")
-print(f"  metric_label:       {family.metric_label}")
-
 # validate_y
 family.validate_y(y_arr)
-print("  validate_y:         passed")
 
 # calibrate — estimate α from the observed data
-print(f"  alpha (before):     {family.alpha}")
 calibrated = family.calibrate(X_np, y_arr, fit_intercept=True)
 assert isinstance(calibrated, NegativeBinomialFamily)
-print(f"  alpha (after):      {calibrated.alpha:.4f}")
 
 # Idempotency check
 recalibrated = calibrated.calibrate(X_np, y_arr, fit_intercept=True)
 assert recalibrated is calibrated
-print("  idempotent:         True (recalibrate returns self)")
 
 # fit / predict / coefs / residuals (using calibrated instance)
 model = calibrated.fit(X_np, y_arr, fit_intercept=True)
 preds = calibrated.predict(model, X_np)
 coefs = calibrated.coefs(model)
 resids = calibrated.residuals(model, X_np, y_arr)
-print(f"  coefs:              {np.round(coefs, 4)}")
-print(f"  mean |residual|:    {np.mean(np.abs(resids)):.4f}")
 
 # fit_metric (NB deviance)
 deviance = calibrated.fit_metric(y_arr, preds)
-print(f"  NB deviance:        {deviance:.2f}")
 
 # reconstruct_y — NB-sampled reconstruction
 rng2 = np.random.default_rng(42)
 perm_resids = rng2.permutation(resids)
-y_star = calibrated.reconstruct_y(preds, perm_resids, rng2)
-print(f"  reconstruct_y:      shape={y_star.shape}, mean={np.mean(y_star):.4f}")
+y_star = calibrated.reconstruct_y(
+    preds[np.newaxis, :], perm_resids[np.newaxis, :], rng2
+)
 
-# batch_fit
+# batch_fit — fit NB GLM on B permuted Y vectors at once
 n_batch = 50
 perm_indices = np.array([rng2.permutation(n) for _ in range(n_batch)])
 Y_matrix = y_arr[perm_indices]
-batch_coefs = calibrated.batch_fit(X_np, Y_matrix, fit_intercept=True)
-print(f"  batch_fit:          shape={batch_coefs.shape} (B={n_batch}, p={p})")
+with warnings.catch_warnings():
+    warnings.filterwarnings("ignore", category=UserWarning)
+    batch_coefs = calibrated.batch_fit(X_np, Y_matrix, fit_intercept=True)
+n_nan = int(np.sum(np.any(np.isnan(batch_coefs), axis=1)))
 
 # diagnostics
 diag = calibrated.diagnostics(X_np, y_arr, fit_intercept=True)
-print(f"  diagnostics:        deviance={diag['deviance']}, α={diag['alpha']}")
+if diag["dispersion"] > 1.5:
+    dispersion_status = "⚠ OVERDISPERSION DETECTED — NB2 IS APPROPRIATE"
+else:
+    dispersion_status = "✓ NO OVERDISPERSION (α handles it)"
 
 # classical_p_values
 p_classical = calibrated.classical_p_values(X_np, y_arr, fit_intercept=True)
-print(f"  classical_p_values: {np.round(p_classical, 6)}")
 
 # exchangeability_cells (v0.4.0 stub)
 cells = calibrated.exchangeability_cells(X_np, y_arr)
 assert cells is None
-print("  exchangeability:    None (global)")
+
+print_protocol_usage_table(
+    results_ter_braak,
+    title="Direct NegativeBinomialFamily Protocol Usage",
+)

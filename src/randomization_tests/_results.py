@@ -205,6 +205,10 @@ class IndividualTestResult(_DictAccessMixin):
     extended_diagnostics: dict[str, Any]
     """Per-predictor diagnostics (VIF, standardised coefs, etc.)."""
 
+    confidence_intervals: dict[str, Any] = field(default_factory=dict)
+    """Confidence intervals dict (permutation, Wald, Clopper-Pearson,
+    standardised).  Empty when ``confidence_level`` is not provided."""
+
     # ---- Computation context (not serialised) ----------------------
     context: FitContext | None = field(default=None, repr=False, compare=False)
     """Pipeline computation context.  Carries intermediate artifacts
@@ -290,8 +294,62 @@ class JointTestResult(_DictAccessMixin):
     diagnostics: dict[str, Any]
     """Model diagnostics from statsmodels."""
 
+    extended_diagnostics: dict[str, Any] = field(default_factory=dict)
+    """Per-predictor diagnostics (parity with IndividualTestResult)."""
+
     # ---- Computation context (not serialised) ----------------------
     context: FitContext | None = field(default=None, repr=False, compare=False)
     """Pipeline computation context.  Carries intermediate artifacts
     (predictions, residuals, fit metric, etc.) for downstream display
     and debugging.  Excluded from ``to_dict()`` serialisation."""
+
+
+# ------------------------------------------------------------------ #
+# Confounder analysis result
+# ------------------------------------------------------------------ #
+
+
+@dataclass(frozen=True)
+class ConfounderAnalysisResult(_DictAccessMixin):
+    """Typed result from the confounder sieve.
+
+    Groups classified candidates by causal role:
+
+    * **confounders** — should be controlled for (X ← Z → Y).
+    * **mediators** — lie on the causal path (X → M → Y).
+    * **moderators** — change the strength of X → Y (informational;
+      variable stays in the confounder pool).
+    * **colliders** — must NOT be controlled for (X → Z ← Y).
+
+    Provides dict-like access and ``.to_dict()`` for backward
+    compatibility with the legacy ``dict`` return format.
+    """
+
+    _EXCLUDE_FROM_DICT: ClassVar[frozenset[str]] = frozenset()
+
+    predictor: str
+    """Predictor of interest."""
+
+    identified_confounders: list[str]
+    """Variables classified as confounders (should be controlled)."""
+
+    identified_mediators: list[str]
+    """Variables classified as mediators (should NOT be controlled)."""
+
+    identified_moderators: list[str]
+    """Variables classified as moderators (informational)."""
+
+    identified_colliders: list[str]
+    """Variables classified as colliders (must NOT be controlled)."""
+
+    screening_results: dict[str, Any]
+    """Output from :func:`screen_potential_confounders`."""
+
+    mediation_results: dict[str, Any] = field(default_factory=dict)
+    """Per-candidate mediation analysis results."""
+
+    moderation_results: dict[str, Any] = field(default_factory=dict)
+    """Per-candidate moderation analysis results."""
+
+    collider_results: dict[str, Any] = field(default_factory=dict)
+    """Per-candidate collider test results."""

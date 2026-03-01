@@ -156,6 +156,9 @@ class FitContext:
     confounders: list[str] = field(default_factory=list)
     """Confounder column names."""
 
+    confidence_level: float | None = None
+    """Requested confidence level for CIs (e.g. 0.95)."""
+
     # ---- Batch-fit stats -----------------------------------------
     batch_shape: tuple[int, ...] | None = None
     """Shape of the permuted-coefficients matrix ``(B, p)``."""

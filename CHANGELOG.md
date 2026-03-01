@@ -165,9 +165,73 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   exchangeability cells, crossed designs, one-step corrector validity
   (KS uniformity), end-to-end integration with
   `permutation_test_regression()`, PQL-fixed smoke tests.
+- **Four-stage confounder sieve** in `confounders.py`:
+  `identify_confounders()` now runs screen → collider → mediator →
+  moderator stages.  Returns `ConfounderAnalysisResult` frozen
+  dataclass (backward-compatible via `to_dict()` and `[]` access).
+  New parameters: `correlation_method`, `correction_method`, `groups`,
+  `n_bootstrap_mediation`, `n_bootstrap_moderation`.
+- **Collider detection** (`_collider_test()`): linear OLS t-test +
+  Pearson r amplification comparison.  GLM families use
+  `fam.fit()`/`fam.coefs()` with permutation-calibrated
+  non-collapsibility guard (200 permutations, 95th percentile null).
+  Multinomial returns `(False, NaN, NaN)`.
+- **Moderation analysis** (`moderation_analysis()`): BCa bootstrap
+  test for interaction X_c × Z_c.  Per-resample mean-centering,
+  collinearity guard (rank < 3 → skip with warning),
+  quasi-separation guard for GLM families, cluster bootstrap support.
+- **Screening upgrades** in `screen_potential_confounders()`:
+  - `correlation_method="partial"`: asymmetric partial correlation
+    (Z-Y partials out X; Z-X keeps marginal Pearson r).
+  - `correlation_method="distance"`: Székely & Rizzo bias-corrected
+    distance correlation with asymptotic t-test.  O(n²) complexity
+    warning when n > 10,000.
+  - `correction_method="holm"` / `"fdr_bh"`: per-leg multiple-testing
+    correction via `statsmodels.stats.multitest.multipletests`.
+- **Cluster bootstrap** for mediation and moderation:
+  `_cluster_bootstrap_indices()` resamples whole groups;
+  `_cluster_jackknife_indices()` for BCa acceleration.  Activated
+  via `groups=` parameter on `mediation_analysis()`,
+  `moderation_analysis()`, and `identify_confounders()`.
+- **Mixed-family fallback** (`_resolve_base_family()`): automatically
+  strips `_mixed` suffix for mediation/moderation/collider analysis,
+  reverting to the base family fit/coefs methods.
+- **E-value sensitivity analysis** (`compute_e_value()` in
+  `diagnostics.py`): family-dispatched conversion (linear → Cohen's d
+  → RR, logistic/ordinal → OR via Cornfield inequality,
+  poisson/negbin → direct RR, multinomial → NaN).  Optional
+  `baseline_prevalence` for exact RR.  Mixed-family names stripped.
+- **Rosenbaum bounds** (`rosenbaum_bounds()` in `diagnostics.py`):
+  worst-case p-values under hidden bias Γ.  Linear-only, binary
+  predictors only.  Rejects non-linear (NotImplementedError),
+  linear_mixed (exact name check), continuous predictors (ValueError).
+- **`ConfounderAnalysisResult`** frozen dataclass in `_results.py`:
+  9 fields with `_DictAccessMixin` for backward compatibility.
+- **Updated `print_confounder_table()`**: accepts
+  `ConfounderAnalysisResult`, new `correlation_method` and
+  `correction_method` parameters, shows colliders and moderators.
+- **60 confounder tests** covering partial/distance correlation,
+  multiple-testing correction, collider detection (linear + logistic
+  + multinomial + permutation guard), moderation, mixed-family
+  fallback, cluster bootstrap, collinearity guard, multinomial
+  exclusion, full sieve orchestrator, E-value (10 tests), and
+  Rosenbaum bounds (5 tests).
 
 ### Changed
 
+- **Confounder sieve batch optimisation (29× speedup)**:
+  `_collider_test()`, `mediation_analysis()`, `_bca_ci()`, and
+  `moderation_analysis()` in `confounders.py` now use
+  `batch_fit_paired()` and `batch_fit_varying_X()` (JAX vmap) for
+  bootstrap, jackknife, and permutation loops instead of sequential
+  `fam.fit()` calls.  Ordinal confounder identification on the Wine
+  Quality dataset (n=500, 5 predictors) drops from ~109s to ~3.8s.
+  Falls back to the sequential loop when the family lacks batch
+  methods or when cluster-bootstrap produces ragged index arrays.
+- **Ordinal example `n_permutations` increased**: all methods in
+  `examples/ordinal_regression.py` now use `n_permutations=999`
+  (previously 199), providing tighter p-value resolution with
+  negligible additional runtime via JAX vmap.
 - **`_reml_newton_solve` LM-Nielsen damping cap**: `lambda_max`
   changed from `0.5 * spectral_norm` to `1e16 * spectral_norm`.
   The previous cap permanently trapped the solver when the Laplace

@@ -1,5 +1,5 @@
 """
-Test Case 3: Ordinal Regression (Ordered Categorical Outcome)
+Test Case 5: Ordinal Regression (Ordered Categorical Outcome)
 Wine Quality dataset (UCI ML Repository ID=186)
 
 Demonstrates:
@@ -36,8 +36,11 @@ from randomization_tests import (
     identify_confounders,
     permutation_test_regression,
     print_confounder_table,
+    print_dataset_info_table,
     print_diagnostics_table,
+    print_family_info_table,
     print_joint_results_table,
+    print_protocol_usage_table,
     print_results_table,
     resolve_family,
 )
@@ -74,24 +77,33 @@ y = y.iloc[idx].reset_index(drop=True)
 y_min = int(y.values.min())
 y = y - y_min
 
-print(f"Dataset: {X.shape[0]} observations, {X.shape[1]} features")
-print(f"Outcome levels: {sorted(np.unique(y.values.ravel().astype(int)).tolist())}")
-print(f"Unique categories: {len(np.unique(y.values))}")
+y_vals = np.ravel(y.values).astype(int)
+ordinal_levels = sorted(np.unique(y_vals).tolist())
+
+print_dataset_info_table(
+    name=wine_quality.metadata.name,
+    n_observations=len(X),
+    n_features=X.shape[1],
+    feature_names=list(X.columns),
+    target_name="quality",
+    target_description="wine quality score (ordinal)",
+    extra_stats={
+        "Outcome Levels": str(ordinal_levels),
+        "Unique Categories": str(len(ordinal_levels)),
+    },
+)
 
 # ============================================================================
-# Verify resolve_family correctly resolves "ordinal"
+# Family resolution
 # ============================================================================
 
 ordinal_family = resolve_family("ordinal", np.ravel(y))
 assert ordinal_family.name == "ordinal"
-print(f"\nresolve_family('ordinal', y) → {ordinal_family.name!r}")
 assert isinstance(ordinal_family, OrdinalFamily)
-assert ordinal_family.direct_permutation is True
-print(f"  direct_permutation = {ordinal_family.direct_permutation}")
-print(f"  residual_type = {ordinal_family.residual_type!r}")
-print(f"  metric_label = {ordinal_family.metric_label!r}")
 
-_family = resolve_family("ordinal")
+print_family_info_table(
+    explicit_family=ordinal_family,
+)
 
 # ============================================================================
 # ter Braak (1992) — direct Y permutation (Manly 1997)
@@ -100,7 +112,7 @@ _family = resolve_family("ordinal")
 with warnings.catch_warnings():
     warnings.filterwarnings("ignore", message="Inverting hessian")
     results_ter_braak = permutation_test_regression(
-        X, y, method="ter_braak", family="ordinal", n_permutations=199
+        X, y, method="ter_braak", family="ordinal", n_permutations=999
     )
 print_results_table(
     results_ter_braak,
@@ -112,43 +124,19 @@ print_diagnostics_table(
 )
 
 # ============================================================================
-# Confounder analysis
-# ============================================================================
-
-all_confounder_results = {}
-for predictor in X.columns:
-    all_confounder_results[predictor] = identify_confounders(
-        X, y, predictor=predictor, family="ordinal"
-    )
-
-print_confounder_table(all_confounder_results, family=_family)
-
-# Collect confounders from any predictor that has them
-predictors_with_confounders = {
-    pred: res["identified_confounders"]
-    for pred, res in all_confounder_results.items()
-    if res["identified_confounders"]
-}
-if predictors_with_confounders:
-    example_predictor = list(predictors_with_confounders.keys())[0]
-    confounders = predictors_with_confounders[example_predictor]
-else:
-    confounders = X.columns[:2].tolist()
-print(f"\nUsing confounders: {confounders}")
-
-# ============================================================================
-# Kennedy (1995) individual — exposure-residual permutation
+# Kennedy (1995) individual — family="ordinal"
 # ============================================================================
 
 with warnings.catch_warnings():
+    warnings.filterwarnings("ignore", message=".*without confounders.*")
     warnings.filterwarnings("ignore", message="Inverting hessian")
     results_kennedy = permutation_test_regression(
         X,
         y,
         method="kennedy",
+        confounders=[],
         family="ordinal",
-        confounders=confounders,
-        n_permutations=199,
+        n_permutations=999,
     )
 print_results_table(
     results_kennedy,
@@ -160,21 +148,22 @@ print_diagnostics_table(
 )
 
 # ============================================================================
-# Kennedy (1995) joint — collective predictive improvement
+# Kennedy (1995) joint — family="ordinal"
 # ============================================================================
 
 with warnings.catch_warnings():
+    warnings.filterwarnings("ignore", message=".*without confounders.*")
     warnings.filterwarnings("ignore", message="Inverting hessian")
-    results_joint = permutation_test_regression(
+    results_kennedy_joint = permutation_test_regression(
         X,
         y,
         method="kennedy_joint",
+        confounders=[],
         family="ordinal",
-        confounders=confounders,
-        n_permutations=199,
+        n_permutations=999,
     )
 print_joint_results_table(
-    results_joint,
+    results_kennedy_joint,
     title="Kennedy (1995) Joint Permutation Test (family='ordinal')",
 )
 
@@ -193,64 +182,126 @@ for fl_method in ("freedman_lane", "freedman_lane_joint"):
             y,
             method=fl_method,
             family="ordinal",
-            confounders=confounders,
-            n_permutations=99,
+            confounders=[],
+            n_permutations=999,
         )
         print(f"ERROR: {fl_method} should have raised ValueError!")
     except ValueError as e:
         print(f"✓ {fl_method} correctly rejected: {str(e)[:80]}...")
 
 # ============================================================================
-# Direct protocol usage
+# Confounder identification
 # ============================================================================
 
-print("\n" + "=" * 80)
-print("Direct OrdinalFamily protocol usage")
-print("=" * 80)
+all_confounder_results = {}
+for predictor in X.columns:
+    all_confounder_results[predictor] = identify_confounders(
+        X, y, predictor=predictor, family="ordinal"
+    )
 
-fam = OrdinalFamily()
+print_confounder_table(
+    all_confounder_results,
+    title="Confounder Identification for All Predictors (Ordinal)",
+)
+
+predictors_with_confounders = {
+    pred: res.identified_confounders
+    for pred, res in all_confounder_results.items()
+    if res.identified_confounders
+}
+
+# ============================================================================
+# Kennedy with identified confounders — family="ordinal"
+# ============================================================================
+
+if predictors_with_confounders:
+    example_predictor = list(predictors_with_confounders.keys())[0]
+    example_confounders = predictors_with_confounders[example_predictor]
+
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message="Inverting hessian")
+        results_kc = permutation_test_regression(
+            X,
+            y,
+            method="kennedy",
+            family="ordinal",
+            confounders=example_confounders,
+            n_permutations=999,
+        )
+    print_results_table(
+        results_kc,
+        title=(
+            f"Kennedy (1995) for '{example_predictor}' "
+            f"(controlling for {', '.join(example_confounders)}) "
+            f"(family='ordinal')"
+        ),
+    )
+    print_diagnostics_table(
+        results_kc,
+        title=(
+            f"Kennedy (1995) Diagnostics for '{example_predictor}' (family='ordinal')"
+        ),
+    )
+
+# ============================================================================
+# Direct ModelFamily protocol usage
+# ============================================================================
+# The ModelFamily protocol encapsulates every model-specific operation —
+# fitting, prediction, residual extraction, Y-reconstruction, batch
+# fitting, diagnostics, and classical p-values.  Below we exercise
+# each method directly for OrdinalFamily.
+
+family = OrdinalFamily()
 X_np = X.values.astype(float)
 y_np = np.ravel(y.values).astype(float)
 
-# Validate y
-fam.validate_y(y_np)
-print("✓ validate_y passed")
+# validate_y
+family.validate_y(y_np)
 
-# Fit
-model = fam.fit(X_np, y_np)
-print(f"✓ fit: {len(fam.coefs(model))} slope coefficients")
-
-# Predict expected value
-preds = fam.predict(model, X_np)
-print(f"✓ predict: E[Y|X] range = [{preds.min():.2f}, {preds.max():.2f}]")
+# fit / predict / coefs
+model = family.fit(X_np, y_np, fit_intercept=True)
+preds = family.predict(model, X_np)
+coefs = family.coefs(model)
 
 # score / null_score — deviance
-deviance = fam.score(model, X_np, y_np)
-null_deviance = fam.null_score(y_np)
-print(f"✓ score: -2·llf = {deviance:.2f}")
-print(f"✓ null_score: -2·llnull = {null_deviance:.2f}")
-print(f"  Improvement: {null_deviance - deviance:.2f}")
+deviance = family.score(model, X_np, y_np)
+null_deviance = family.null_score(y_np)
 
-# Diagnostics
-diag = fam.diagnostics(X_np, y_np)
-print(f"✓ diagnostics: pseudo_R² = {diag['pseudo_r_squared']}")
-print(f"  thresholds = {diag['thresholds']}")
-
-# Classical p-values
-pvals = fam.classical_p_values(X_np, y_np)
-print(f"✓ classical_p_values: {pvals.shape[0]} values")
-
-# NotImplementedError checks
+# NotImplementedError checks — ordinal does not support residuals,
+# reconstruct_y, or fit_metric (the engine uses direct Y permutation).
 for method_name in ("residuals", "reconstruct_y", "fit_metric"):
     try:
         if method_name == "residuals":
-            fam.residuals(model, X_np, y_np)
+            family.residuals(model, X_np, y_np)
         elif method_name == "reconstruct_y":
             rng = np.random.default_rng(0)
-            fam.reconstruct_y(np.zeros((1, 5)), np.zeros((1, 5)), rng)
+            family.reconstruct_y(np.zeros((1, 5)), np.zeros((1, 5)), rng)
         elif method_name == "fit_metric":
-            fam.fit_metric(y_np, preds)
+            family.fit_metric(y_np, preds)
     except NotImplementedError:
-        print(f"✓ {method_name} correctly raises NotImplementedError")
+        pass  # Expected: ordinal does not support these methods
 
-print("\n✓ All ordinal tests passed!")
+# batch_fit — fit ordinal on B permuted Y vectors at once
+rng = np.random.default_rng(42)
+n_batch = 50
+perm_indices = np.array([rng.permutation(len(y_np)) for _ in range(n_batch)])
+Y_matrix = y_np[perm_indices]  # shape (B, n)
+with warnings.catch_warnings():
+    warnings.filterwarnings("ignore", category=UserWarning)
+    warnings.filterwarnings("ignore", message="Inverting hessian")
+    batch_coefs = family.batch_fit(X_np, Y_matrix, fit_intercept=True)
+n_nan = int(np.sum(np.any(np.isnan(batch_coefs), axis=1)))
+
+# diagnostics — proportional-odds summary
+diag = family.diagnostics(X_np, y_np, fit_intercept=True)
+
+# classical_p_values — Wald z-test via statsmodels
+p_classical = family.classical_p_values(X_np, y_np, fit_intercept=True)
+
+# exchangeability_cells — stub (returns None for global exchangeability)
+cells = family.exchangeability_cells(X_np, y_np)
+
+print_protocol_usage_table(
+    results_ter_braak,
+    title="Direct OrdinalFamily Protocol Usage",
+)

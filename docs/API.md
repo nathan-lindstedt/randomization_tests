@@ -462,35 +462,54 @@ identify_confounders(
     predictor: str,
     correlation_threshold: float = 0.1,
     p_value_threshold: float = 0.05,
-    n_bootstrap: int = 1000,
+    n_bootstrap_mediation: int = 1000,
+    n_bootstrap_moderation: int = 1000,
     confidence_level: float = 0.95,
     random_state: int | None = None,
-    family: str = "auto",
-) -> dict
+    family: str | ModelFamily = "auto",
+    correlation_method: str = "pearson",
+    correction_method: str | None = None,
+    groups: np.ndarray | None = None,
+) -> ConfounderAnalysisResult
 ```
 
-Two‑step confounder identification.
+Four‑stage confounder sieve.
 
-1. Screen for variables correlated with both predictor and outcome.
-2. Use mediation analysis to filter out mediators.
+Classifies candidate variables as colliders, mediators, moderators,
+or true confounders via sequential testing:
 
-Variables that pass screening but are **not** identified as mediators are
-classified as likely confounders.
+1. **Screen** — dual‑correlation with both predictor and outcome.
+2. **Collider test** — removes colliders (X → Z ← Y).
+3. **Mediator test** — removes mediators (X → M → Y).
+4. **Moderator test** — labels moderators (informational; stays in
+   confounder pool).
+
+The sieve is an **exploratory** tool for data‑driven confounder
+selection.  For guaranteed Type I error control, specify
+`confounders=` based on domain knowledge.
 
 | Parameter | Description |
 |---|---|
 | `X` | Feature matrix. Accepts pandas or Polars DataFrames. |
 | `y` | Target variable. |
 | `predictor` | Predictor of interest. |
-| `correlation_threshold` | Minimum absolute Pearson *r*. |
-| `p_value_threshold` | Significance cutoff. |
-| `n_bootstrap` | Bootstrap iterations for mediation analysis. |
+| `correlation_threshold` | Minimum absolute correlation to flag. |
+| `p_value_threshold` | Significance cutoff for screening. |
+| `n_bootstrap_mediation` | Bootstrap iterations for mediation tests. |
+| `n_bootstrap_moderation` | Bootstrap iterations for moderation tests. |
 | `confidence_level` | Confidence‑interval level. |
 | `random_state` | Seed for reproducibility. |
-| `family` | Model family string (`"auto"`, `"linear"`, `"logistic"`, `"poisson"`, `"negative_binomial"`, `"ordinal"`, `"multinomial"`). When non‑linear, the b‑path and total‑effect regressions use the family‑appropriate GLM instead of OLS. |
+| `family` | Model family string or object. Mixed families resolved to base. |
+| `correlation_method` | `"pearson"` (default), `"partial"`, or `"distance"`. |
+| `correction_method` | `None`, `"holm"`, or `"fdr_bh"` for multiple‑testing correction. |
+| `groups` | Optional group labels for cluster bootstrap (passed to mediation/moderation). |
 
-**Returns:** Dictionary with keys `identified_confounders`,
-`identified_mediators`, `screening_results`, and `mediation_results`.
+**Returns:** `ConfounderAnalysisResult` dataclass with fields
+`predictor`, `identified_confounders`, `identified_mediators`,
+`identified_moderators`, `identified_colliders`, `screening_results`,
+`mediation_results`, `moderation_results`, and `collider_results`.
+Supports `to_dict()` and dict‑style `[]` access for backward
+compatibility.
 
 ---
 
@@ -503,6 +522,8 @@ screen_potential_confounders(
     predictor: str,
     correlation_threshold: float = 0.1,
     p_value_threshold: float = 0.05,
+    correlation_method: str = "pearson",
+    correction_method: str | None = None,
 ) -> dict
 ```
 
@@ -516,12 +537,15 @@ A potential confounder *Z* satisfies `|r(Z, X)| >= threshold` **and**
 | `X` | Feature matrix. Accepts pandas or Polars DataFrames. |
 | `y` | Target variable. |
 | `predictor` | Name of the predictor of interest. |
-| `correlation_threshold` | Minimum absolute Pearson *r* to flag a variable. |
+| `correlation_threshold` | Minimum absolute Pearson *r* (or distance correlation) to flag. |
 | `p_value_threshold` | Maximum p‑value for significance. |
+| `correlation_method` | `"pearson"` (default), `"partial"`, or `"distance"`. When `"partial"`, the Z‑Y leg computes `partial_r(Z, Y | X)`. When `"distance"`, Székely & Rizzo's bias‑corrected distance correlation is used for both legs. |
+| `correction_method` | `None`, `"holm"`, or `"fdr_bh"`. Multiple‑testing correction applied per‑leg via `statsmodels.stats.multitest.multipletests`. |
 
 **Returns:** Dictionary with keys `predictor`, `potential_confounders`,
-`correlations_with_predictor`, `correlations_with_outcome`, and
-`excluded_variables`.
+`correlations_with_predictor`, `correlations_with_outcome`,
+`excluded_variables`, `correlation_method`, `correction_method`, and
+`adjusted_p_values`.
 
 ---
 
@@ -537,7 +561,8 @@ mediation_analysis(
     confidence_level: float = 0.95,
     precision: int = 4,
     random_state: int | None = None,
-    family: str = "auto",
+    family: str | ModelFamily = "auto",
+    groups: np.ndarray | None = None,
 ) -> dict
 ```
 
@@ -561,13 +586,57 @@ effect is the sole criterion for mediation.
 | `confidence_level` | Confidence‑interval level. |
 | `precision` | Decimal places for rounding. |
 | `random_state` | Seed for reproducibility. |
-| `family` | Model family string. When non‑linear, the b‑path (Y ~ X + M) and total‑effect (Y ~ X) regressions use the family‑appropriate GLM. |
+| `family` | Model family string or object. Mixed families are automatically resolved to their base family. |
+| `groups` | Optional 1‑D array of group labels for cluster bootstrap. When provided, uses cluster bootstrap (resample whole groups) and cluster jackknife for BCa acceleration. |
 
 **Returns:** Dictionary containing the mediation decomposition
 (`total_effect`, `direct_effect`, `indirect_effect`, `a_path`, `b_path`),
 BCa bootstrap CI (`indirect_effect_ci`), `ci_method` (`"BCa"`),
 `proportion_mediated`, `is_mediator` flag, and a textual
 `interpretation`.
+
+---
+
+### `moderation_analysis`
+
+```python
+moderation_analysis(
+    X: DataFrameLike,
+    y: DataFrameLike,
+    predictor: str,
+    moderator: str,
+    n_bootstrap: int = 5000,
+    confidence_level: float = 0.95,
+    precision: int = 4,
+    random_state: int | None = None,
+    family: str | ModelFamily = "auto",
+    groups: np.ndarray | None = None,
+) -> dict
+```
+
+Bootstrap test for moderation (interaction effect).
+
+Mean‑centers *predictor* and *moderator* **per resample** (no
+information leakage), constructs the interaction term X_c × Z_c,
+and fits Y ~ X_c + Z_c + X_c × Z_c.  The interaction coefficient
+is tested via BCa bootstrap CIs.
+
+| Parameter | Description |
+|---|---|
+| `X` | Feature matrix. Accepts pandas or Polars DataFrames. |
+| `y` | Target variable. |
+| `predictor` | Predictor (X). |
+| `moderator` | Candidate moderator (Z). |
+| `n_bootstrap` | Number of bootstrap samples. |
+| `confidence_level` | Confidence‑interval level. |
+| `precision` | Decimal places for rounding. |
+| `random_state` | Seed for reproducibility. |
+| `family` | Outcome family. Mixed families are automatically resolved to their base family. |
+| `groups` | Optional 1‑D array of group labels for cluster bootstrap. |
+
+**Returns:** Dictionary with keys `predictor`, `moderator`,
+`x_coef`, `z_coef`, `interaction_coef`, `interaction_ci`,
+`ci_method`, `is_moderator`, and `interpretation`.
 
 ---
 
@@ -656,31 +725,118 @@ directly from the result object.  The table has four sections:
 
 ```python
 print_confounder_table(
-    confounder_results: dict,
+    confounder_results: dict | ConfounderAnalysisResult,
     title: str = "Confounder Identification Results",
     correlation_threshold: float = 0.1,
     p_value_threshold: float = 0.05,
     n_bootstrap: int = 1000,
     confidence_level: float = 0.95,
     family: ModelFamily | None = None,
+    correlation_method: str = "pearson",
+    correction_method: str | None = None,
 ) -> None
 ```
 
 Print confounder identification results in a formatted ASCII table.
 
-Accepts either a single `identify_confounders` result dict or a
-`dict[str, dict]` mapping predictor names to their individual result
-dicts.
+Accepts either a single `identify_confounders` result dict,
+a `ConfounderAnalysisResult` dataclass, or a `dict[str, dict]`
+mapping predictor names to their individual result dicts.
 
 | Parameter | Description |
 |---|---|
-| `confounder_results` | Single result dict or `{predictor: result_dict}` mapping. |
+| `confounder_results` | Single result dict, `ConfounderAnalysisResult`, or `{predictor: result_dict}` mapping. |
 | `title` | Title for the output table. |
 | `correlation_threshold` | The `\|r\|` threshold used during screening (shown in header). |
 | `p_value_threshold` | Screening p‑value cutoff (shown in header). |
 | `n_bootstrap` | Bootstrap iterations for mediation (shown in header). |
 | `confidence_level` | CI level for mediation (shown in header). |
-| `family` | Optional `ModelFamily` instance (e.g. `PoissonFamily()`).  When supplied, the family name is shown in the table header. |
+| `family` | Optional `ModelFamily` instance. When supplied, the family name is shown in the header. |
+| `correlation_method` | `"pearson"`, `"partial"`, or `"distance"` (shown in header). |
+| `correction_method` | `None`, `"holm"`, or `"fdr_bh"` (shown in header). |
+
+---
+
+## Sensitivity Analysis
+
+### `compute_e_value`
+
+```python
+compute_e_value(
+    coefficient: float,
+    family: str,
+    ci_bound: float | None = None,
+    sd_x: float | None = None,
+    sd_y: float | None = None,
+    baseline_prevalence: float | None = None,
+) -> dict
+```
+
+Compute the E‑value for unmeasured confounding sensitivity.
+
+The E‑value is the minimum strength of association (on the RR scale)
+that an unmeasured confounder would need to have with both the treatment
+and the outcome to fully explain away the observed association.
+
+Family‑dispatched conversion:
+
+* **linear** — Standardize β → Cohen's d, then RR = exp(0.91 × d).
+  Requires `sd_x` and `sd_y`.
+* **logistic** / **ordinal** — OR = exp(β), then Cornfield inequality.
+  When `baseline_prevalence` is provided, computes exact RR.
+* **poisson** / **negative_binomial** — RR = exp(β) directly.
+* **multinomial** — Returns NaN with UserWarning.
+
+| Parameter | Description |
+|---|---|
+| `coefficient` | Estimated coefficient (log‑OR for logistic/ordinal, log‑RR for Poisson/NegBin, raw β for linear). |
+| `family` | Family name string. Mixed names (e.g. `"linear_mixed"`) are stripped to base. |
+| `ci_bound` | Optional CI bound for E‑value of CI. |
+| `sd_x` | Standard deviation of predictor (required for linear). |
+| `sd_y` | Standard deviation of outcome (required for linear). |
+| `baseline_prevalence` | Baseline outcome probability for exact RR conversion (logistic/ordinal). |
+
+**Returns:** Dictionary with keys `e_value`, `e_value_ci`, `rr`,
+`family`, and `interpretation`.
+
+**References:** VanderWeele, T. J. & Ding, P. (2017). Sensitivity
+analysis in observational research: introducing the E‑value. *Annals
+of Internal Medicine*, 167(4), 268–274.
+
+---
+
+### `rosenbaum_bounds`
+
+```python
+rosenbaum_bounds(
+    result: dict,
+    X: pd.DataFrame,
+    y: np.ndarray,
+    gammas: tuple[float, ...] = (1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0),
+    predictor_index: int | None = None,
+    alpha: float = 0.05,
+) -> dict
+```
+
+Rosenbaum sensitivity bounds for unmeasured confounding.
+
+Computes worst‑case p‑values under varying degrees of hidden bias Γ.
+**Restricted to LinearFamily with binary predictors.**
+
+| Parameter | Description |
+|---|---|
+| `result` | Permutation test result dict (must contain `"p_values"` and `"family"`). |
+| `X` | Design matrix used in the permutation test. |
+| `y` | Outcome vector. |
+| `gammas` | Sequence of Γ values to evaluate. |
+| `predictor_index` | Column index of the predictor (defaults to 0). |
+| `alpha` | Significance level for critical Γ. |
+
+**Returns:** Dictionary with `predictor`, `observed_p`, `gamma_values`,
+`worst_case_p`, `critical_gamma`, and `interpretation`.
+
+**Raises:** `NotImplementedError` for non‑linear or mixed families.
+`ValueError` for continuous predictors.
 
 ---
 

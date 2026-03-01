@@ -20,8 +20,11 @@ from randomization_tests import (
     identify_confounders,
     permutation_test_regression,
     print_confounder_table,
+    print_dataset_info_table,
     print_diagnostics_table,
+    print_family_info_table,
     print_joint_results_table,
+    print_protocol_usage_table,
     print_results_table,
     resolve_family,
 )
@@ -40,15 +43,38 @@ y_bc = (y_bc == "M").astype(int)
 selected_features = ["radius1", "texture1", "perimeter1", "smoothness1", "compactness1"]
 X_bc = X_bc[selected_features]
 
+print_dataset_info_table(
+    name=breast_cancer.metadata.name,
+    n_observations=len(X_bc),
+    n_features=X_bc.shape[1],
+    feature_names=list(X_bc.columns),
+    target_name="Diagnosis",
+    target_description="malignant (1) vs benign (0)",
+    y_range=(int(y_bc.values.min()), int(y_bc.values.max())),
+    y_mean=float(y_bc.values.mean()),
+    extra_stats={"Prevalence": f"{float(y_bc.values.mean()):.2%}"},
+)
+
 # ============================================================================
 # Verify resolve_family auto-detects "logistic" for binary Y
 # ============================================================================
 
-auto_family = resolve_family("auto", np.ravel(y_bc))
+with warnings.catch_warnings(record=True) as caught:
+    warnings.simplefilter("always")
+    auto_family = resolve_family("auto", np.ravel(y_bc))
 assert auto_family.name == "logistic", f"Expected 'logistic', got {auto_family.name!r}"
-print(f"resolve_family('auto', y) → {auto_family.name!r}")
 
-# ============================================================================# ter Braak (1992) \u2014 family="auto" (auto-detection)
+logistic_family = resolve_family("logistic", np.ravel(y_bc))
+assert logistic_family.name == "logistic"
+
+print_family_info_table(
+    auto_family=auto_family,
+    explicit_family=logistic_family,
+    advisory=[str(w.message) for w in caught],
+)
+
+# ============================================================================
+# ter Braak (1992) — family="auto" (auto-detection)
 # ============================================================================
 
 results_ter_braak_auto_bc = permutation_test_regression(
@@ -60,7 +86,8 @@ print_results_table(
     title="ter Braak (1992) Permutation Test (family='auto' \u2192 logistic)",
 )
 
-# ============================================================================# ter Braak (1992) — family="logistic" (explicit)
+# ============================================================================
+# ter Braak (1992) — family="logistic" (explicit)
 # ============================================================================
 
 results_ter_braak_bc = permutation_test_regression(
@@ -147,7 +174,7 @@ print_joint_results_table(
 all_confounder_results_bc = {}
 for predictor in X_bc.columns:
     all_confounder_results_bc[predictor] = identify_confounders(
-        X_bc, y_bc, predictor=predictor
+        X_bc, y_bc, predictor=predictor, family="logistic"
     )
 
 print_confounder_table(
@@ -156,9 +183,9 @@ print_confounder_table(
 )
 
 predictors_with_confounders_bc = {
-    pred: res["identified_confounders"]
+    pred: res.identified_confounders
     for pred, res in all_confounder_results_bc.items()
-    if res["identified_confounders"]
+    if res.identified_confounders
 }
 
 # ============================================================================
@@ -204,51 +231,42 @@ family = LogisticFamily()
 X_np = X_bc.values.astype(float)
 y_np = np.ravel(y_bc).astype(float)
 
-print(f"\n{'=' * 80}")
-print("Direct LogisticFamily protocol usage")
-print(f"{'=' * 80}")
-print(f"  name:               {family.name}")
-print(f"  residual_type:      {family.residual_type}")
-print(f"  direct_permutation: {family.direct_permutation}")
-
 # validate_y — should pass for binary {0, 1}
 family.validate_y(y_np)
-print("  validate_y:         passed")
 
 # fit / predict / coefs / residuals
 model = family.fit(X_np, y_np, fit_intercept=True)
 preds = family.predict(model, X_np)
 coefs = family.coefs(model)
 resids = family.residuals(model, X_np, y_np)
-print(f"  coefs:              {np.round(coefs, 4)}")
-print(f"  mean |residual|:    {np.mean(np.abs(resids)):.4f}")
-print(f"  pred range:         [{preds.min():.4f}, {preds.max():.4f}]")
 
 # fit_metric (deviance)
 deviance = family.fit_metric(y_np, preds)
-print(f"  deviance:           {deviance:.2f}")
 
 # reconstruct_y — clip + Bernoulli sampling (stochastic!)
 rng = np.random.default_rng(42)
 perm_resids = rng.permutation(resids)
-y_star = family.reconstruct_y(preds, perm_resids, rng)
-print(f"  reconstruct_y:      shape={y_star.shape}, unique={np.unique(y_star)}")
+y_star = family.reconstruct_y(preds[np.newaxis, :], perm_resids[np.newaxis, :], rng)
 
 # batch_fit — fit logistic on B permuted Y vectors at once
 n_batch = 50
 perm_indices = np.array([rng.permutation(len(y_np)) for _ in range(n_batch)])
 Y_matrix = y_np[perm_indices]  # shape (B, n)
-batch_coefs = family.batch_fit(X_np, Y_matrix, fit_intercept=True)
-print(
-    f"  batch_fit:          shape={batch_coefs.shape} (B={n_batch}, p={X_np.shape[1]})"
-)
+with warnings.catch_warnings():
+    warnings.filterwarnings("ignore", category=UserWarning)
+    batch_coefs = family.batch_fit(X_np, Y_matrix, fit_intercept=True)
+n_nan = int(np.sum(np.any(np.isnan(batch_coefs), axis=1)))
 
 # diagnostics — pseudo-R², LLR, AIC, BIC via statsmodels
 diag = family.diagnostics(X_np, y_np, fit_intercept=True)
-print(
-    f"  diagnostics:        pseudo_R²={diag['pseudo_r_squared']:.4f}, AIC={diag['aic']:.2f}"
-)
 
 # classical_p_values — Wald z-test via statsmodels
 p_classical = family.classical_p_values(X_np, y_np, fit_intercept=True)
-print(f"  classical_p_values: {np.round(p_classical, 6)}")
+
+# exchangeability_cells — stub (returns None for global exchangeability)
+cells = family.exchangeability_cells(X_np, y_np)
+
+print_protocol_usage_table(
+    results_ter_braak_bc,
+    title="Direct LogisticFamily Protocol Usage",
+)

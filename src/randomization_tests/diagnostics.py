@@ -71,6 +71,7 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 import pandas as pd
 import statsmodels.api as sm
+from scipy import stats as _sp_stats
 from statsmodels.stats.diagnostic import het_breuschpagan
 from statsmodels.tools.sm_exceptions import (
     ConvergenceWarning as SmConvergenceWarning,
@@ -110,6 +111,410 @@ if TYPE_CHECKING:
 #    increased.
 
 
+def _bca_percentile(
+    boot_dist: np.ndarray,
+    observed_stat: float,
+    jackknife_stats: np.ndarray,
+    alpha: float,
+) -> tuple[float, float]:
+    """Bias-corrected and accelerated (BCa) percentile interval.
+
+    Statistic-agnostic implementation of the BCa adjustment.
+    The three pieces — bias correction z₀, acceleration â, and
+    adjusted percentiles — are generic; the caller is responsible
+    for computing the observed statistic and jackknife replicates.
+
+    Args:
+        boot_dist: Bootstrap (or permutation) replicates of the
+            statistic, shape ``(B,)``.
+        observed_stat: Point estimate of the statistic.
+        jackknife_stats: Leave-one-out estimates, shape ``(n,)``.
+        alpha: ``1 - confidence_level`` (e.g. 0.05 for 95% CI).
+
+    Returns:
+        ``(ci_lower, ci_upper)`` tuple.
+    """
+    # --- Bias correction constant z₀ ---
+    prop_less = np.mean(boot_dist < observed_stat)
+    prop_less = np.clip(prop_less, 1e-10, 1 - 1e-10)
+    z0 = _sp_stats.norm.ppf(prop_less)
+
+    # --- Acceleration constant â via jackknife ---
+    theta_bar = np.mean(jackknife_stats)
+    diffs = theta_bar - jackknife_stats
+    a_hat = np.sum(diffs**3) / (6.0 * (np.sum(diffs**2)) ** 1.5 + 1e-10)
+
+    # --- Adjusted percentiles ---
+    z_alpha_lower = _sp_stats.norm.ppf(alpha / 2)
+    z_alpha_upper = _sp_stats.norm.ppf(1 - alpha / 2)
+
+    denom_lower = 1 - a_hat * (z0 + z_alpha_lower)
+    denom_upper = 1 - a_hat * (z0 + z_alpha_upper)
+
+    # Guard against division by zero / near-zero denominators which
+    # produce NaN or extreme percentiles.
+    if abs(denom_lower) < 1e-10 or abs(denom_upper) < 1e-10:
+        # Fall back to simple percentile CI.
+        ci_lower = float(np.percentile(boot_dist, (alpha / 2) * 100))
+        ci_upper = float(np.percentile(boot_dist, (1 - alpha / 2) * 100))
+        return ci_lower, ci_upper
+
+    p_lower = _sp_stats.norm.cdf(z0 + (z0 + z_alpha_lower) / denom_lower)
+    p_upper = _sp_stats.norm.cdf(z0 + (z0 + z_alpha_upper) / denom_upper)
+
+    # Clip to valid percentile range.
+    B = len(boot_dist)
+    p_lower = np.clip(p_lower, 0.5 / B, 1 - 0.5 / B)
+    p_upper = np.clip(p_upper, 0.5 / B, 1 - 0.5 / B)
+
+    # Guard against NaN from degenerate distributions.
+    if np.isnan(p_lower) or np.isnan(p_upper):
+        ci_lower = float(np.percentile(boot_dist, (alpha / 2) * 100))
+        ci_upper = float(np.percentile(boot_dist, (1 - alpha / 2) * 100))
+        return ci_lower, ci_upper
+
+    ci_lower = float(np.percentile(boot_dist, p_lower * 100))
+    ci_upper = float(np.percentile(boot_dist, p_upper * 100))
+
+    return ci_lower, ci_upper
+
+
+def compute_jackknife_coefs(
+    family: ModelFamily,
+    X: np.ndarray,
+    y_values: np.ndarray,
+    fit_intercept: bool,
+) -> np.ndarray | None:
+    """Leave-one-out coefficient estimates for BCa acceleration.
+
+    Computes ``n`` jackknife replicates by fitting the model with each
+    observation removed in turn.  Uses ``batch_fit_paired()`` for
+    vectorised LOO when the family supports it, falling back to a
+    sequential loop otherwise.
+
+    Args:
+        family: Model family instance.
+        X: Design matrix, shape ``(n, p)``.
+        y_values: Response vector, shape ``(n,)``.
+        fit_intercept: Whether the model includes an intercept.
+
+    Returns:
+        Jackknife coefficient matrix ``(n, p)`` or ``None`` when
+        ``n > 500`` (BCa's advantage over percentile CIs is
+        negligible at large *n*, and *n* refits is too expensive).
+    """
+    n, p = X.shape
+    if n > 500:
+        return None
+
+    # Build (n, n-1) leave-one-out index array.
+    loo_idx = np.empty((n, n - 1), dtype=int)
+    for i in range(n):
+        loo_idx[i] = np.concatenate([np.arange(i), np.arange(i + 1, n)])
+
+    # Vectorised path via batch_fit_paired (3-D X, 2-D Y).
+    if hasattr(family, "batch_fit_paired"):
+        X_loo = X[loo_idx]  # (n, n-1, p)
+        Y_loo = y_values[loo_idx].astype(float)  # (n, n-1)
+        try:
+            jack_coefs: np.ndarray = family.batch_fit_paired(
+                X_loo, Y_loo, fit_intercept=fit_intercept
+            )
+            # Ensure shape is (n, p) — multinomial returns (n, p) of
+            # Wald χ² values via coefs().
+            if jack_coefs.shape == (n, p):
+                return jack_coefs
+        except Exception:
+            logger.debug(
+                "batch_fit_paired failed for jackknife; falling back to "
+                "sequential loop",
+                exc_info=True,
+            )
+
+    # Sequential fallback (ordinal, multinomial, LMM, or batch failure).
+    jack_coefs_seq = np.empty((n, p))
+    for i in range(n):
+        X_loo_i = X[loo_idx[i]]
+        y_loo_i = y_values[loo_idx[i]].astype(float)
+        try:
+            model_i = family.fit(X_loo_i, y_loo_i, fit_intercept)
+            jack_coefs_seq[i] = family.coefs(model_i)[:p]
+        except Exception:
+            jack_coefs_seq[i] = np.nan
+    return jack_coefs_seq
+
+
+# ------------------------------------------------------------------ #
+# Confidence interval computation
+# ------------------------------------------------------------------ #
+
+
+def compute_permutation_ci(
+    permuted_coefs: np.ndarray,
+    model_coefs: np.ndarray,
+    method: str,
+    alpha: float,
+    jackknife_coefs: np.ndarray | None,
+    confounders: list[str],
+    feature_names: list[str],
+) -> np.ndarray:
+    """Confidence intervals for regression coefficients from the permutation distribution.
+
+    Applies strategy-aware centering: ter Braak and Freedman–Lane null
+    distributions are centred on zero and must be shifted by ``+β̂``
+    before CI computation.  Score and Kennedy distributions are already
+    centred on the observed coefficient.
+
+    When jackknife coefficients are available, BCa intervals are
+    computed via :func:`_bca_percentile`; otherwise simple shifted-
+    percentile intervals are returned.
+
+    Args:
+        permuted_coefs: Permuted coefficient matrix ``(B, p)``.
+        model_coefs: Observed coefficients ``(p,)``.
+        method: Strategy name (``"ter_braak"``, ``"freedman_lane"``,
+            ``"kennedy"``, ``"score"``).
+        alpha: ``1 - confidence_level``.
+        jackknife_coefs: Leave-one-out coefficients ``(n, p)`` or
+            ``None``.
+        confounders: Confounder column names.
+        feature_names: Feature column names.
+
+    Returns:
+        CI array of shape ``(p, 2)``.
+    """
+    p = len(model_coefs)
+    ci = np.empty((p, 2))
+
+    # Strategy-aware centering.
+    needs_shift = method in ("ter_braak", "freedman_lane")
+
+    for j in range(p):
+        # Confounder columns → NaN.
+        if feature_names[j] in confounders:
+            ci[j] = [np.nan, np.nan]
+            continue
+
+        col = permuted_coefs[:, j].copy()
+        if needs_shift:
+            col += model_coefs[j]
+
+        if jackknife_coefs is not None:
+            ci[j] = _bca_percentile(col, model_coefs[j], jackknife_coefs[:, j], alpha)
+        else:
+            lo = alpha / 2 * 100
+            hi = (1 - alpha / 2) * 100
+            ci[j] = [np.percentile(col, lo), np.percentile(col, hi)]
+
+    return ci
+
+
+def compute_pvalue_ci(
+    counts: np.ndarray,
+    n_permutations: int,
+    alpha: float,
+) -> np.ndarray:
+    """Clopper-Pearson exact binomial CIs for empirical p-values.
+
+    Aligned with the Phipson & Smyth (2010) ``(b+1)/(B+1)`` estimator:
+    ``successes = counts + 1``, ``trials = B + 1``.
+
+    Args:
+        counts: Number of permuted |β*| ≥ observed |β| per feature,
+            shape ``(p,)``.
+        n_permutations: Total permutation count *B*.
+        alpha: ``1 - confidence_level``.
+
+    Returns:
+        CI array of shape ``(p, 2)``.
+    """
+    p = len(counts)
+    ci = np.empty((p, 2))
+
+    successes = counts + 1
+    trials = n_permutations + 1
+
+    for j in range(p):
+        s = successes[j]
+        # Lower bound
+        if s == 0:
+            ci[j, 0] = 0.0
+        else:
+            ci[j, 0] = float(_sp_stats.beta.ppf(alpha / 2, s, trials - s + 1))
+        # Upper bound
+        if s == trials:
+            ci[j, 1] = 1.0
+        else:
+            ci[j, 1] = float(_sp_stats.beta.ppf(1 - alpha / 2, s + 1, trials - s))
+
+    return ci
+
+
+def compute_wald_ci(
+    observed_model: Any,
+    family: ModelFamily,
+    n_features: int,
+    alpha: float,
+    X: np.ndarray | None = None,
+    y: np.ndarray | None = None,
+    fit_intercept: bool = True,
+) -> tuple[np.ndarray, np.ndarray | None]:
+    """Classical Wald CIs from the fitted statsmodels model.
+
+    For **linear** and **logistic** families the pipeline uses sklearn
+    estimators that lack ``conf_int()``.  When the sklearn model is
+    detected (no ``conf_int`` attribute) and *X* / *y* are supplied,
+    a lightweight statsmodels OLS or Logit model is fitted on the fly
+    to obtain asymptotic Wald intervals.
+
+    Family dispatch:
+
+    - **Linear / Logistic / Poisson / Negative Binomial**:
+      ``model.conf_int(alpha)`` returns ``(p_aug, 2)`` with intercept.
+      Intercept row stripped → ``(p, 2)``.
+    - **Ordinal**: ``model.conf_int(alpha)`` returns
+      ``(p + K-1, 2)`` (slopes then thresholds).
+      Slice ``[:n_features]``.
+    - **Multinomial**: ``model.conf_int(alpha)`` returns
+      ``(K-1, p_aug, 2)`` (statsmodels ≥ 0.14) or
+      ``((K-1)·p_aug, 2)`` (older).  Reshaped to ``(p, K-1, 2)``
+      for per-category CIs.  Per-predictor Wald CI set to NaN.
+    - **Mixed models**: ``conf_int()`` if available from statsmodels.
+
+    Args:
+        observed_model: Fitted model object (sklearn or statsmodels).
+        family: Model family instance.
+        n_features: Number of slope features.
+        alpha: ``1 - confidence_level``.
+        X: Design matrix ``(n, p)`` — needed for statsmodels refit
+            when the primary model is an sklearn estimator.
+        y: Response vector ``(n,)`` — same purpose as *X*.
+        fit_intercept: Whether the model includes an intercept.
+
+    Returns:
+        ``(wald_ci, category_wald_ci)`` — ``wald_ci`` is ``(p, 2)``;
+        ``category_wald_ci`` is ``(p, K-1, 2)`` for multinomial,
+        ``None`` otherwise.
+    """
+    import statsmodels.api as sm
+
+    nan_ci = np.full((n_features, 2), np.nan)
+    name = family.name
+
+    # ── sklearn refit for linear / logistic ────────────────────── #
+    if name in ("linear", "logistic") and not hasattr(observed_model, "conf_int"):
+        if X is None or y is None:
+            return nan_ci, None
+        try:
+            X_aug = sm.add_constant(X) if fit_intercept else X
+            if name == "linear":
+                sm_model = sm.OLS(y, X_aug).fit()
+            else:
+                sm_model = sm.Logit(y, X_aug).fit(disp=0)
+            raw_ci = np.asarray(sm_model.conf_int(alpha))
+        except Exception:
+            return nan_ci, None
+    else:
+        try:
+            raw_ci = np.asarray(observed_model.conf_int(alpha))
+        except Exception:
+            return nan_ci, None
+
+    if name in ("linear", "logistic", "poisson", "negative_binomial"):
+        # Strip intercept row (row 0).
+        if raw_ci.shape[0] == n_features + 1:
+            return raw_ci[1 : n_features + 1], None
+        # No intercept case.
+        if raw_ci.shape[0] == n_features:
+            return raw_ci[:n_features], None
+        return nan_ci, None
+
+    if name in ("linear_mixed", "logistic_mixed", "poisson_mixed"):
+        # statsmodels MixedLMResults.conf_int() returns (p_aug, 2).
+        if raw_ci.shape[0] >= n_features + 1:
+            return raw_ci[1 : n_features + 1], None
+        if raw_ci.shape[0] >= n_features:
+            return raw_ci[:n_features], None
+        return nan_ci, None
+
+    if name == "ordinal":
+        # OrderedModel: slopes first, then thresholds.
+        if raw_ci.shape[0] >= n_features:
+            return raw_ci[:n_features], None
+        return nan_ci, None
+
+    if name == "multinomial":
+        # MNLogit conf_int() may return either:
+        #   - 3-D array of shape (K-1, p_aug, 2)   [statsmodels ≥ 0.14]
+        #   - 2-D array of shape ((K-1)·p_aug, 2)   [older releases]
+        # In both cases, strip the intercept column and transpose to
+        # (p, K-1, 2).
+        p_aug = n_features + 1
+
+        if raw_ci.ndim == 3:
+            # Already (K-1, p_aug, 2).
+            if raw_ci.shape[1] < p_aug:
+                return nan_ci, None
+            cat_ci = raw_ci[:, 1:, :].transpose(1, 0, 2)  # (p, K-1, 2)
+            return nan_ci, cat_ci
+
+        # 2-D fallback: ((K-1)·p_aug, 2).
+        n_rows = raw_ci.shape[0]
+        if n_rows < p_aug:
+            return nan_ci, None
+        k_minus_1 = n_rows // p_aug
+        if k_minus_1 * p_aug != n_rows:
+            return nan_ci, None
+        reshaped = raw_ci.reshape(k_minus_1, p_aug, 2)
+        cat_ci = reshaped[:, 1:, :].transpose(1, 0, 2)  # (p, K-1, 2)
+        return nan_ci, cat_ci
+
+    return nan_ci, None
+
+
+def compute_standardized_ci(
+    permutation_ci: np.ndarray,
+    model_coefs: np.ndarray,
+    X: pd.DataFrame,
+    y_values: np.ndarray,
+    family: ModelFamily,
+) -> np.ndarray:
+    """CIs for standardised (beta-weight) coefficients.
+
+    Applies the same per-feature scaling factor used in
+    :func:`compute_standardized_coefs` to the permutation CI endpoints.
+    This is valid because standardisation is a linear transformation
+    of the coefficient.
+
+    Args:
+        permutation_ci: Permutation CI array ``(p, 2)``.
+        model_coefs: Observed coefficients ``(p,)``.
+        X: Feature matrix.
+        y_values: Response vector.
+        family: Model family instance.
+
+    Returns:
+        Standardised CI array ``(p, 2)``.
+    """
+    p = len(model_coefs)
+    sd_x = np.std(X.values, axis=0, ddof=1)
+
+    if family.name == "multinomial":
+        return np.full((p, 2), np.nan)
+
+    if family.name in ("linear", "linear_mixed"):
+        sd_y = np.std(y_values, ddof=1)
+        if sd_y == 0:
+            return np.zeros((p, 2))
+        scale = sd_x / sd_y
+    else:
+        # Log-odds / log-link families.
+        scale = sd_x
+
+    result: np.ndarray = permutation_ci * scale[:, np.newaxis]
+    return result
+
+
 def compute_standardized_coefs(
     X: pd.DataFrame,
     y_values: np.ndarray,
@@ -118,8 +523,19 @@ def compute_standardized_coefs(
 ) -> np.ndarray:
     """Compute standardized (beta-weight) coefficients.
 
-    Linear:   β* = β · SD(X_j) / SD(Y)
-    Logistic: β* = β · SD(X_j)
+    The formula depends on the family's link function:
+
+    - **Identity link** (``"linear"``, ``"linear_mixed"``):
+      ``β* = β · SD(X_j) / SD(Y)`` — the classic beta weight.
+    - **Log-odds link** (``"logistic"``, ``"logistic_mixed"``,
+      ``"ordinal"``):
+      ``β* = β · SD(X_j)`` — log-odds change per one-SD increase.
+    - **Log link** (``"poisson"``, ``"poisson_mixed"``,
+      ``"negative_binomial"``):
+      ``β* = β · SD(X_j)`` — log-rate change per one-SD increase.
+    - **Multinomial** (``"multinomial"``):
+      returns ``NaN`` — ``coefs()`` returns Wald χ² statistics, not
+      regression coefficients, so standardisation is not meaningful.
 
     Args:
         X: Feature matrix.
@@ -135,24 +551,24 @@ def compute_standardized_coefs(
     # of each column of X.  Shape: (n_features,).
     sd_x = np.std(X.values, axis=0, ddof=1)
 
-    if family.name == "logistic":
-        # Logistic: β* = β · SD(X_j)
-        # The coefficient β_j is in log-odds units; multiplying by
-        # SD(X_j) gives the log-odds change per one-SD increase in
-        # X_j.  There is no natural SD(Y) for a binary outcome, so
-        # we omit the denominator.
-        result: np.ndarray = model_coefs * sd_x
-        return result
-    else:
-        # Linear: β* = β · SD(X_j) / SD(Y)
-        # This is the classic "beta weight" — the expected change in
-        # Y (in SD units) per one-SD change in X_j, holding all other
-        # predictors constant.  Guard against constant Y (sd_y == 0).
+    # Multinomial: coefs() returns Wald χ² statistics, not regression
+    # coefficients — standardisation is meaningless.
+    if family.name == "multinomial":
+        return np.full_like(model_coefs, np.nan, dtype=float)
+
+    # Identity-link families: classic beta weight β · SD(X) / SD(Y).
+    if family.name in ("linear", "linear_mixed"):
         sd_y = np.std(y_values, ddof=1)
         if sd_y == 0:
             return np.zeros_like(model_coefs)
-        result = model_coefs * sd_x / sd_y
+        result: np.ndarray = model_coefs * sd_x / sd_y
         return result
+
+    # Log-odds link (logistic, ordinal) and log link (Poisson, NB):
+    # β · SD(X_j).  There is no natural SD(Y) denominator on the
+    # link scale.
+    result = model_coefs * sd_x
+    return result
 
 
 def compute_vif(X: pd.DataFrame) -> np.ndarray:
@@ -864,6 +1280,357 @@ def _proportional_odds_test(
 #
 # compute_all_diagnostics() is the single entry point called by
 # core.permutation_test_regression().  It orchestrates every per-
+# ------------------------------------------------------------------ #
+# E-value sensitivity analysis (VanderWeele & Ding, 2017)
+# ------------------------------------------------------------------ #
+
+
+def compute_e_value(
+    coefficient: float,
+    family: str,
+    ci_bound: float | None = None,
+    sd_x: float | None = None,
+    sd_y: float | None = None,
+    baseline_prevalence: float | None = None,
+) -> dict:
+    """Compute the E-value for unmeasured confounding sensitivity.
+
+    The E-value is the minimum strength of association (on the RR
+    scale) that an unmeasured confounder would need to have with both
+    the treatment and the outcome to fully explain away the observed
+    association.  Larger E-values indicate more robust findings.
+
+    Family-dispatched conversion:
+
+    * **linear** — Standardize β → Cohen's d, then
+      RR = exp(0.91 × d).  Requires ``sd_x`` and ``sd_y``.
+    * **logistic** / **ordinal** — OR = exp(β), then
+      E = √OR + √(√OR × (√OR − 1)) (Cornfield inequality, conservative).
+      When ``baseline_prevalence`` is provided, computes exact
+      RR = OR / (1 − p₀ + p₀ × OR) for a tighter bound.
+    * **poisson** / **negative_binomial** — RR = exp(β) directly.
+    * **multinomial** — Returns NaN (Wald χ², not scalar log-odds).
+
+    Mixed-family names (e.g. ``"linear_mixed"``) are automatically
+    stripped to their base name.
+
+    Args:
+        coefficient: Estimated coefficient (log-OR for logistic/ordinal,
+            log-RR for Poisson/NegBin, raw β for linear).
+        family: Family name string (e.g. ``"linear"``, ``"logistic"``).
+        ci_bound: Optional CI bound to compute E-value for.
+        sd_x: Standard deviation of the predictor (linear only).
+        sd_y: Standard deviation of the outcome (linear only).
+        baseline_prevalence: Baseline outcome probability (logistic
+            / ordinal) for exact RR conversion.
+
+    Returns:
+        Dictionary with keys ``e_value``, ``e_value_ci``, ``rr``,
+        ``family``, and ``interpretation``.
+
+    References:
+        VanderWeele, T. J. & Ding, P. (2017). Sensitivity analysis in
+        observational research: introducing the E-value.  *Annals of
+        Internal Medicine*, 167(4), 268–274.
+    """
+    import math
+
+    # Strip _mixed suffix — fixed-effect coefficients have the same
+    # interpretation regardless of random-effects structure.
+    _MIXED_STRIP = {
+        "linear_mixed": "linear",
+        "logistic_mixed": "logistic",
+        "poisson_mixed": "poisson",
+    }
+    base_family = _MIXED_STRIP.get(family, family)
+
+    def _e_from_rr(rr: float) -> float:
+        """Standard E-value formula for RR."""
+        if rr < 1:
+            rr = 1 / rr
+        return float(rr + math.sqrt(rr * (rr - 1)))
+
+    def _e_from_or(or_val: float) -> float:
+        """Direct E-value formula for OR via Cornfield inequality."""
+        if or_val < 1:
+            or_val = 1 / or_val
+        sqrt_or = math.sqrt(or_val)
+        return float(sqrt_or + math.sqrt(sqrt_or * (sqrt_or - 1)))
+
+    # --- Multinomial guard ---
+    if base_family == "multinomial":
+        warnings.warn(
+            "No clean RR conversion exists for multinomial families. "
+            "Multinomial coefficients are Wald χ² statistics, not scalar "
+            "log-odds ratios.",
+            UserWarning,
+            stacklevel=2,
+        )
+        return {
+            "e_value": float("nan"),
+            "e_value_ci": float("nan"),
+            "rr": float("nan"),
+            "family": family,
+            "interpretation": ("E-value is not computable for multinomial families."),
+        }
+
+    # --- Compute RR and E-value by family ---
+    if base_family == "linear":
+        if sd_x is None or sd_y is None:
+            raise ValueError(
+                "sd_x and sd_y are required for linear family E-value "
+                "computation (Cohen's d conversion)."
+            )
+        d = coefficient * sd_x / sd_y  # Cohen's d
+        rr = math.exp(0.91 * abs(d))
+        e_val = _e_from_rr(rr)
+
+        # CI bound E-value.
+        if ci_bound is not None:
+            d_ci = ci_bound * sd_x / sd_y
+            rr_ci = math.exp(0.91 * abs(d_ci))
+            e_val_ci = _e_from_rr(rr_ci)
+        else:
+            e_val_ci = float("nan")
+
+    elif base_family in ("logistic", "ordinal"):
+        or_val = math.exp(coefficient)
+        if baseline_prevalence is not None:
+            p0 = baseline_prevalence
+            rr = or_val / (1 - p0 + p0 * or_val)
+            e_val = _e_from_rr(rr)
+        else:
+            rr = or_val  # Report OR; use direct formula.
+            e_val = _e_from_or(or_val)
+
+        if ci_bound is not None:
+            or_ci = math.exp(ci_bound)
+            if baseline_prevalence is not None:
+                rr_ci = or_ci / (1 - p0 + p0 * or_ci)
+                e_val_ci = _e_from_rr(rr_ci)
+            else:
+                e_val_ci = _e_from_or(or_ci)
+        else:
+            e_val_ci = float("nan")
+
+    elif base_family in ("poisson", "negative_binomial"):
+        rr = math.exp(coefficient)
+        e_val = _e_from_rr(rr)
+
+        if ci_bound is not None:
+            rr_ci = math.exp(ci_bound)
+            e_val_ci = _e_from_rr(rr_ci)
+        else:
+            e_val_ci = float("nan")
+
+    else:
+        raise ValueError(f"Unsupported family for E-value: {family!r}")
+
+    interpretation = (
+        f"E-value = {e_val:.2f}: an unmeasured confounder would need "
+        f"an association of at least RR = {e_val:.2f} with both the "
+        f"treatment and the outcome to explain away the observed effect."
+    )
+
+    return {
+        "e_value": round(e_val, 4),
+        "e_value_ci": round(e_val_ci, 4) if not math.isnan(e_val_ci) else float("nan"),
+        "rr": round(rr, 4),
+        "family": family,
+        "interpretation": interpretation,
+    }
+
+
+# ------------------------------------------------------------------ #
+# Rosenbaum bounds (Ding & Miratrix 2015 adaptation)
+# ------------------------------------------------------------------ #
+
+
+def rosenbaum_bounds(
+    result: dict,
+    X: pd.DataFrame,
+    y: np.ndarray,
+    gammas: tuple[float, ...] = (1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0),
+    predictor_index: int | None = None,
+    alpha: float = 0.05,
+) -> dict:
+    """Rosenbaum sensitivity bounds for unmeasured confounding.
+
+    Computes worst-case p-values under varying degrees of hidden bias Γ.
+    At Γ = 1, there is no hidden bias and the p-value equals the
+    observed p-value.  As Γ increases, the worst-case p-value grows.
+    The critical Γ is the smallest value where the test stops being
+    significant — a measure of robustness.
+
+    **Restricted to LinearFamily with binary predictors**.
+
+    * Non-linear families lack a linear decomposition for the contrast
+      vector.  Use :func:`compute_e_value` instead.
+    * LinearMixedFamily is rejected — REML estimation with
+      variance-components weighting invalidates the OLS contrast
+      vector $(X^TX)^{-1}X^T$.
+    * Continuous-exposure permutation tests permute regression
+      residuals, not binary treatment assignments, so the Rosenbaum
+      framework does not apply.  Generalisation via influence-function
+      sensitivity is deferred to v0.5.0+.
+
+    Args:
+        result: Permutation test result dict (must contain
+            ``"p_values"`` and optionally ``"family"``).
+        X: Design matrix used in the permutation test.
+        y: Outcome vector.
+        gammas: Sequence of Γ values to evaluate.
+        predictor_index: Column index of the predictor of interest
+            in *X*.  Defaults to 0.
+        alpha: Significance level for critical Γ.
+
+    Returns:
+        Dictionary with ``predictor``, ``observed_p``,
+        ``gamma_values``, ``worst_case_p``, ``critical_gamma``,
+        and ``interpretation``.
+
+    References:
+        Ding, P. & Miratrix, L. W. (2015). To adjust or not to adjust?
+        Sensitivity analysis of M-estimation and the role of the
+        propensity score. *Statistica Sinica*, 25(2), 643–666.
+
+        Rosenbaum, P. R. (2002). *Observational Studies* (2nd ed.).
+        Springer.
+    """
+    # --- Family guard: linear only ---
+    family_name = result.get("family", "linear")
+    if isinstance(family_name, str):
+        fam_name = family_name
+    else:
+        fam_name = getattr(family_name, "name", "linear")
+
+    if fam_name != "linear":
+        raise NotImplementedError(
+            "Rosenbaum bounds require a linear test statistic. "
+            "Use compute_e_value() for sensitivity analysis with "
+            "non-linear families."
+        )
+
+    # --- Binary predictor guard ---
+    if predictor_index is None:
+        predictor_index = 0
+    X_arr = np.asarray(X, dtype=float)
+    x = X_arr[:, predictor_index]
+    unique_vals = np.unique(x[~np.isnan(x)])
+    if len(unique_vals) != 2:
+        raise ValueError(
+            "Rosenbaum bounds require a binary predictor "
+            "(treatment/control). For continuous predictors, use "
+            "compute_e_value() for sensitivity analysis."
+        )
+
+    n = len(y)
+    y = np.asarray(y, dtype=float).ravel()
+
+    # Observed p-value.
+    p_values = result.get("p_values", {})
+    if isinstance(p_values, dict):
+        # Multi-predictor result — get the first or indexed predictor.
+        keys = list(p_values.keys())
+        if predictor_index < len(keys):
+            observed_p = float(p_values[keys[predictor_index]])
+        else:
+            observed_p = float(list(p_values.values())[0])
+    else:
+        observed_p = float(np.asarray(p_values).ravel()[predictor_index])
+
+    # Compute contrast vector c_i = [(X'X)^{-1}X']_{j,i}.
+    # Add intercept column for OLS.
+    ones = np.ones((n, 1))
+    X_design = np.column_stack([ones, X_arr])
+
+    try:
+        XtX_inv = np.linalg.inv(X_design.T @ X_design)
+    except np.linalg.LinAlgError:
+        return {
+            "predictor": predictor_index,
+            "observed_p": observed_p,
+            "gamma_values": list(gammas),
+            "worst_case_p": [float("nan")] * len(gammas),
+            "critical_gamma": float("nan"),
+            "interpretation": "Rosenbaum bounds unavailable: singular design matrix.",
+        }
+
+    # Contrast vector for predictor (predictor_index + 1 to skip intercept).
+    contrast = (XtX_inv @ X_design.T)[predictor_index + 1, :]
+
+    # Observed test statistic.
+    beta_hat = XtX_inv @ X_design.T @ y
+    t_obs = beta_hat[predictor_index + 1]
+
+    # Residual standard error.
+    p_design = X_design.shape[1]
+    residuals = y - X_design @ beta_hat
+    rse = float(np.sqrt(np.sum(residuals**2) / max(n - p_design, 1)))
+
+    # For each Γ, compute worst-case p-value.
+    worst_case_p: list[float] = []
+    critical_gamma = float("nan")
+
+    for gamma in gammas:
+        if gamma == 1.0:
+            worst_case_p.append(observed_p)
+            if observed_p >= alpha and np.isnan(critical_gamma):
+                critical_gamma = 1.0
+            continue
+
+        # Worst-case allocation: maximize the bias by flipping the
+        # unmeasured confounder to align with the observed effect
+        # direction.
+        log_gamma = np.log(gamma)
+
+        # Under worst-case Γ, the shifted null mean is:
+        #   E_Γ[T] = Σ_i c_i * Γ^{u_i} / Σ_i Γ^{u_i}
+        # where u_i ∈ {0, 1} is chosen to maximize deviation.
+        # For the worst case, set u_i = 1 for units where c_i
+        # has the sign of the observed statistic.
+        sign_match = contrast * np.sign(t_obs) > 0
+        u_worst = sign_match.astype(float)
+
+        # Shifted null expectation and variance.
+        weights = np.exp(log_gamma * u_worst)
+        weights /= weights.sum()
+
+        shifted_mean = np.sum(contrast * weights) * n
+        shifted_var = rse**2 * np.sum(contrast**2 * weights) * n
+
+        if shifted_var <= 0:
+            worst_case_p.append(1.0)
+        else:
+            z_shifted = (t_obs - shifted_mean) / np.sqrt(shifted_var)
+            p_gamma = float(2.0 * _sp_stats.norm.sf(abs(z_shifted)))
+            worst_case_p.append(p_gamma)
+
+        if worst_case_p[-1] >= alpha and np.isnan(critical_gamma):
+            critical_gamma = gamma
+
+    if np.isnan(critical_gamma) and all(p < alpha for p in worst_case_p):
+        critical_gamma = float(gammas[-1])  # Robust beyond tested range.
+
+    interpretation = (
+        f"Critical Γ = {critical_gamma:.1f}: the result remains significant "
+        f"at α={alpha} up to Γ = {critical_gamma:.1f}. An unmeasured "
+        f"confounder would need to change treatment odds by a factor of "
+        f"{critical_gamma:.1f} to alter the conclusion."
+    )
+
+    return {
+        "predictor": predictor_index,
+        "observed_p": round(observed_p, 6),
+        "gamma_values": list(gammas),
+        "worst_case_p": [round(p, 6) for p in worst_case_p],
+        "critical_gamma": round(critical_gamma, 2)
+        if not np.isnan(critical_gamma)
+        else float("nan"),
+        "interpretation": interpretation,
+    }
+
+
 # predictor and model-level diagnostic in one pass and returns a
 # flat dictionary suitable for inclusion in the results dict.  The
 # caller does not need to know which individual functions exist —

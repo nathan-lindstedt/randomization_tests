@@ -630,8 +630,13 @@ utilities for permutation distributions and graph topology.
 
 ### Causal screening
 
-- [ ] Supplement the existing Preacher & Hayes mediation analysis with
-  more robust approaches for distinguishing confounders from mediators:
+- [X] **v0.4.1** — Four-stage confounder sieve (screen → collider →
+  mediator → moderator), partial and distance correlation screening,
+  multiple-testing correction (Holm/FDR-BH), cluster bootstrap for
+  mediation/moderation, E-value and Rosenbaum bounds sensitivity
+  analysis, `ConfounderAnalysisResult` dataclass.
+- [ ] Supplement the sieve with causal direction testing for
+  distinguishing confounders from mediators:
   - **LiNGAM** (Shimizu et al., 2006) — exploits non-Gaussianity to
     identify causal direction in linear models.
   - **Additive noise models (ANM)** — nonparametric causal direction

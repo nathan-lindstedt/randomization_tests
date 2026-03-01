@@ -270,6 +270,7 @@ _INDIVIDUAL_FIELDS = {
     "permutation_strategy",
     "diagnostics",
     "extended_diagnostics",
+    "confidence_intervals",
 }
 
 _JOINT_FIELDS = {
@@ -292,6 +293,7 @@ _JOINT_FIELDS = {
     "p_value_threshold_three",
     "method",
     "diagnostics",
+    "extended_diagnostics",
 }
 
 
@@ -991,9 +993,13 @@ class TestConfounderFamilyIntegration:
 
     def test_multinomial_confounders(self) -> None:
         X, y = _multinomial_data()
-        result = identify_confounders(
-            X, y, predictor="x1", random_state=_SEED, family="multinomial"
-        )
+        import warnings
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            result = identify_confounders(
+                X, y, predictor="x1", random_state=_SEED, family="multinomial"
+            )
         assert "identified_confounders" in result
 
 

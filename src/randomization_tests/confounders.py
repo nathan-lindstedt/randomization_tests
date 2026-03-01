@@ -1,27 +1,36 @@
-"""Confounder identification via correlation screening and mediation analysis.
+"""Confounder sieve via correlation screening, mediation, moderation & collider analysis.
 
 Controlling for the right variables is critical in observational studies.
-A **confounder** Z is a variable that causally influences both the
-predictor X and the outcome Y, creating a spurious association between
-X and Y that does not reflect a genuine causal effect.  Failing to
-control for Z inflates (or deflates) the estimated effect of X.
+The confounder sieve identifies true confounders by systematically
+pulling out variables that play other causal roles — **colliders**,
+**mediators**, and **moderators** — from the set of candidates that
+pass dual-correlation screening.
 
-A **mediator** M lies on the causal pathway from X to Y (X → M → Y).
-Controlling for a mediator removes part of the *real* effect of X —
-almost always an analytic mistake unless the research question
-specifically asks about direct effects.
+Causal roles:
+
+* **Confounder** (X ← Z → Y): causes both X and Y, creating a
+  spurious association.  Should be controlled for.
+* **Mediator** (X → M → Y): lies on the causal pathway.  Controlling
+  for it removes part of the *real* effect.
+* **Moderator**: changes the *strength* of the X → Y relationship
+  (interaction effect).  Informational — does not invalidate the
+  Kennedy conditioning set.
+* **Collider** (X → Z ← Y): both X and Y cause Z.  Conditioning on a
+  collider **creates** spurious association — must *not* be controlled.
 
 Workflow:
     1. :func:`screen_potential_confounders` – find variables correlated
-       with both X and Y using Pearson *r*.  Any variable passing dual
-       correlation thresholds is a *candidate* confounder.
-    2. :func:`mediation_analysis` – apply the Preacher & Hayes (2004,
-       2008) bootstrap test of the indirect effect to each candidate.
-       If the indirect effect's BCa confidence interval excludes zero,
-       the candidate is reclassified as a mediator.
-    3. :func:`identify_confounders` – orchestrates Steps 1–2, returning
-       separate lists of confounders and mediators along with a
-       plain-language recommendation for the Kennedy method.
+       with both X and Y.  Supports Pearson, partial, and distance
+       correlation with optional multiple-testing correction.
+    2. :func:`identify_confounders` – orchestrates the four-stage sieve
+       (collider → mediator → moderator → confounder), returning a
+       :class:`~randomization_tests._results.ConfounderAnalysisResult`.
+
+The sieve is an **exploratory** tool for data-driven confounder
+selection.  For guaranteed Type I error control, specify
+``confounders=`` based on domain knowledge or a pre-registered
+analysis plan.  The permutation p-value is exact conditional on the
+selected conditioning set.
 
 References:
     Baron, R. M. & Kenny, D. A. (1986). The moderator–mediator
@@ -38,11 +47,29 @@ References:
 
     Efron, B. (1987). Better bootstrap confidence intervals.  *Journal
     of the American Statistical Association*, 82(397), 171–185.
+
+    Székely, G. J. & Rizzo, M. L. (2007). Measuring and testing
+    dependence by correlation of distances.  *The Annals of
+    Statistics*, 35(6), 2769–2794.
+
+    Székely, G. J. & Rizzo, M. L. (2013). The distance correlation
+    t-test of independence in high dimension.  *Journal of
+    Multivariate Analysis*, 117, 193–213.
+
+    VanderWeele, T. J. & Ding, P. (2017). Sensitivity analysis in
+    observational research: introducing the E-value.  *Annals of
+    Internal Medicine*, 167(4), 268–274.
+
+    Cameron, A. C., Gelbach, J. B. & Miller, D. L. (2008).
+    Bootstrap-based improvements for inference with clustered errors.
+    *Review of Economics and Statistics*, 90(3), 414–427.
 """
 
 from __future__ import annotations
 
 import logging
+import warnings
+from typing import TYPE_CHECKING
 
 import numpy as np
 from scipy import stats
@@ -51,7 +78,296 @@ from sklearn.linear_model import LinearRegression
 from ._compat import DataFrameLike, _ensure_pandas_df
 from .families import ModelFamily, resolve_family
 
+if TYPE_CHECKING:
+    from ._results import ConfounderAnalysisResult
+
 logger = logging.getLogger(__name__)
+
+# ------------------------------------------------------------------ #
+# Family fallback for the confounder sieve
+# ------------------------------------------------------------------ #
+#
+# The confounder sieve classifies causal roles (confounder, mediator,
+# moderator, collider) based on structural relationships in the DAG,
+# not distributional details.  Two categories of families need
+# remapping before the sieve can call ``fam.fit()``:
+#
+# 1. **Mixed families** (LinearMixedFamily, etc.) carry random-effects
+#    structure that is irrelevant for mediation/moderation decomposition
+#    of fixed-effect pathways.  Resolving to the base family prevents
+#    ``fam.fit()`` from requiring group labels that the confounder
+#    module does not manage.
+#
+# 2. **Calibration-required families** (NegativeBinomialFamily) need a
+#    nuisance parameter (dispersion α) estimated via ``calibrate()``
+#    before ``fit()`` works.  Falling back to the closest
+#    calibration-free family avoids that requirement.  Whether path
+#    coefficients are estimated via NB2 or Poisson does not change
+#    whether a variable is a confounder vs. mediator — that is a
+#    structural question about the DAG.
+
+_MIXED_TO_BASE: dict[str, str] = {
+    "linear_mixed": "linear",
+    "logistic_mixed": "logistic",
+    "poisson_mixed": "poisson",
+}
+
+_CALIBRATION_FALLBACK: dict[str, str] = {
+    "negative_binomial": "poisson",
+}
+
+
+def _resolve_base_family(
+    fam: ModelFamily,
+) -> tuple[ModelFamily, bool]:
+    """Resolve a family that the sieve cannot use directly.
+
+    Handles two cases:
+
+    1. Mixed families → base families (drops random-effects structure).
+    2. Calibration-required families → calibration-free counterparts.
+
+    Returns:
+        Tuple of (resolved_family, did_fallback).  *did_fallback* is
+        ``True`` when a remapping occurred so callers can log it.
+    """
+    base_name = _MIXED_TO_BASE.get(fam.name)
+    if base_name is not None:
+        logger.debug(
+            "Falling back from mixed family %r to base family %r "
+            "(mediation/moderation operates on fixed-effect pathways only)",
+            fam.name,
+            base_name,
+        )
+        return resolve_family(base_name), True
+
+    cal_name = _CALIBRATION_FALLBACK.get(fam.name)
+    if cal_name is not None:
+        logger.debug(
+            "Falling back from %r to %r "
+            "(confounder sieve does not require calibration-dependent "
+            "link function; structural DAG classification is invariant)",
+            fam.name,
+            cal_name,
+        )
+        return resolve_family(cal_name), True
+
+    return fam, False
+
+
+# ------------------------------------------------------------------ #
+# Cluster bootstrap helper
+# ------------------------------------------------------------------ #
+
+
+def _cluster_bootstrap_indices(
+    groups: np.ndarray,
+    n_bootstrap: int,
+    rng: np.random.Generator,
+) -> list[np.ndarray]:
+    """Generate bootstrap index arrays by resampling whole clusters.
+
+    Within-cluster observations are correlated, so resampling
+    individuals i.i.d. understates variance.  Cluster bootstrap
+    preserves the correlation structure (Cameron, Gelbach & Miller,
+    2008).
+
+    Args:
+        groups: 1-D array of group labels, length *n*.
+        n_bootstrap: Number of bootstrap replicates.
+        rng: NumPy random generator.
+
+    Returns:
+        List of *n_bootstrap* 1-D index arrays.  Each array
+        contains the observation indices for one replicate;
+        lengths may vary because selected clusters have
+        different sizes.
+    """
+    unique_labels = np.unique(groups)
+    n_groups = len(unique_labels)
+    # Pre-compute index sets for each group label.
+    group_indices: dict[object, np.ndarray] = {
+        label: np.where(groups == label)[0] for label in unique_labels
+    }
+    indices: list[np.ndarray] = []
+    for _ in range(n_bootstrap):
+        chosen = rng.choice(unique_labels, size=n_groups, replace=True)
+        indices.append(np.concatenate([group_indices[lab] for lab in chosen]))
+    return indices
+
+
+def _cluster_jackknife_indices(
+    groups: np.ndarray,
+) -> list[np.ndarray]:
+    """Generate leave-one-cluster-out index arrays.
+
+    Returns *G* index arrays (one per group), each containing all
+    observations except those in the left-out group.
+    """
+    unique_labels = np.unique(groups)
+    all_idx = np.arange(len(groups))
+    return [all_idx[groups != label] for label in unique_labels]
+
+
+# ------------------------------------------------------------------ #
+# Partial correlation helper
+# ------------------------------------------------------------------ #
+
+
+def _partial_correlation(
+    x: np.ndarray,
+    y: np.ndarray,
+    covariates: np.ndarray,
+) -> tuple[float, float]:
+    """Partial correlation between *x* and *y* controlling for *covariates*.
+
+    Regresses both *x* and *y* on *covariates* via OLS, then computes
+    Pearson *r* between the residuals.
+
+    The p-value uses df = n − k − 2 (not scipy's built-in n − 2),
+    which is the correct degrees of freedom for residualised data
+    where *k* covariates have been partialled out.
+
+    .. note::
+
+        P-values assume homoscedastic residuals.  For binary or count
+        outcomes, p-values are approximate.  Use
+        ``correlation_method='distance'`` for a distribution-free
+        alternative.
+
+    Args:
+        x: 1-D array, shape ``(n,)``.
+        y: 1-D array, shape ``(n,)``.
+        covariates: 2-D array, shape ``(n, k)``.
+
+    Returns:
+        ``(partial_r, p_value)`` tuple.
+    """
+    x = np.asarray(x).ravel()
+    y = np.asarray(y).ravel()
+    covariates = np.atleast_2d(covariates)
+    if covariates.shape[0] == 1 and covariates.shape[1] == len(x):
+        covariates = covariates.T  # fix (1, n) -> (n, 1)
+    n = len(x)
+    k = covariates.shape[1]
+
+    # Add intercept column for OLS.
+    C = np.column_stack([np.ones(n), covariates])
+
+    # Residualise x and y.
+    res_x = x - C @ np.linalg.lstsq(C, x, rcond=None)[0]
+    res_y = y - C @ np.linalg.lstsq(C, y, rcond=None)[0]
+
+    # Pearson r between residuals.
+    r_val: float = float(np.corrcoef(res_x, res_y)[0, 1])
+
+    # Manual t-test with corrected df = n - k - 2.
+    df = n - k - 2
+    if df <= 0 or abs(r_val) >= 1.0:
+        return r_val, 0.0 if abs(r_val) >= 1.0 else 1.0
+    t_stat = r_val * np.sqrt(df / (1.0 - r_val**2))
+    p_val: float = float(2.0 * stats.t.sf(abs(t_stat), df))
+    return r_val, p_val
+
+
+# ------------------------------------------------------------------ #
+# Distance correlation helper
+# ------------------------------------------------------------------ #
+
+
+def _distance_correlation(
+    x: np.ndarray,
+    y: np.ndarray,
+) -> tuple[float, float]:
+    """Bias-corrected distance correlation with asymptotic t-test.
+
+    Implements the Székely & Rizzo (2007) doubly-centered distance
+    matrix formula with the bias-corrected estimator from Székely &
+    Rizzo (2013).  The p-value uses the asymptotic t-test with
+    df = n(n − 3)/2 − 1, avoiding an expensive permutation loop.
+
+    Complexity is O(n²) in memory and time due to the pairwise
+    distance matrices.
+
+    Args:
+        x: 1-D array, shape ``(n,)``.
+        y: 1-D array, shape ``(n,)``.
+
+    Returns:
+        ``(dcor, p_value)`` tuple.  *dcor* is clamped to 0.0 when the
+        bias-corrected estimator is negative (returns p = 1.0).
+
+    Raises:
+        UserWarning: When n > 10,000 (O(n²) memory).
+    """
+    x = np.asarray(x, dtype=float).ravel()
+    y = np.asarray(y, dtype=float).ravel()
+    n = len(x)
+
+    if n > 10_000:
+        warnings.warn(
+            f"Distance correlation with n={n:,} requires O(n²) memory "
+            f"({n * n * 8 / 1e9:.1f} GB for each distance matrix). "
+            "Consider down-sampling or using correlation_method='pearson'.",
+            UserWarning,
+            stacklevel=2,
+        )
+
+    # Pairwise Euclidean distance matrices.
+    a = np.abs(x[:, None] - x[None, :])
+    b = np.abs(y[:, None] - y[None, :])
+
+    # Bias-corrected doubly-centered distances (Székely & Rizzo 2013).
+    # For a distance matrix d, the U-centered version is:
+    #   Ã_ij = a_ij - (1/(n-2)) * sum_k a_ik - (1/(n-2)) * sum_l a_lj
+    #          + (1/((n-1)(n-2))) * sum_{k,l} a_kl  for i != j
+    #   Ã_ii = 0  (diagonal is set to zero)
+    a_row = a.sum(axis=1)
+    a_total = a_row.sum()
+    b_row = b.sum(axis=1)
+    b_total = b_row.sum()
+
+    # U-centered matrices.
+    A = (
+        a
+        - a_row[:, None] / (n - 2)
+        - a_row[None, :] / (n - 2)
+        + a_total / ((n - 1) * (n - 2))
+    )
+    B = (
+        b
+        - b_row[:, None] / (n - 2)
+        - b_row[None, :] / (n - 2)
+        + b_total / ((n - 1) * (n - 2))
+    )
+    np.fill_diagonal(A, 0.0)
+    np.fill_diagonal(B, 0.0)
+
+    # Bias-corrected covariance and variances.
+    factor = 1.0 / (n * (n - 3))
+    dcov2 = factor * (A * B).sum()
+    dvar_x = factor * (A * A).sum()
+    dvar_y = factor * (B * B).sum()
+
+    # Distance correlation.
+    denom = np.sqrt(dvar_x * dvar_y)
+    if denom < 1e-15 or dcov2 < 0:
+        return 0.0, 1.0
+
+    dcor_sq = dcov2 / denom
+    if dcor_sq < 0:
+        return 0.0, 1.0
+    dcor = float(np.sqrt(max(dcor_sq, 0.0)))
+
+    # Asymptotic t-test (Székely & Rizzo 2013, Theorem 3).
+    M = n * (n - 3) / 2
+    df = M - 1
+    if df <= 0:
+        return dcor, 1.0
+    t_stat = np.sqrt(df) * dcov2 / np.sqrt(dvar_x * dvar_y - dcov2**2 + 1e-300)
+    p_val = float(stats.t.sf(abs(t_stat), df) * 2)
+    return dcor, p_val
+
 
 # ------------------------------------------------------------------ #
 # Step 1 – Correlation screening (Pearson r)
@@ -81,6 +397,8 @@ def screen_potential_confounders(
     predictor: str,
     correlation_threshold: float = 0.1,
     p_value_threshold: float = 0.05,
+    correlation_method: str = "pearson",
+    correction_method: str | None = None,
 ) -> dict:
     """Screen for variables correlated with both predictor and outcome.
 
@@ -91,15 +409,41 @@ def screen_potential_confounders(
         X: Feature matrix.  Accepts pandas or Polars DataFrames.
         y: Target variable.  Accepts pandas or Polars DataFrames.
         predictor: Name of the predictor of interest.
-        correlation_threshold: Minimum absolute Pearson *r* to flag a
-            variable.
+        correlation_threshold: Minimum absolute Pearson *r* (or
+            distance correlation) to flag a variable.
         p_value_threshold: Maximum p-value for significance.
+        correlation_method: ``"pearson"`` (default), ``"partial"``,
+            or ``"distance"``.  When ``"partial"``, the Z-Y leg
+            computes ``partial_r(Z, Y | X)`` (partials out only the
+            predictor to avoid masking co-occurring confounders),
+            while Z-X keeps marginal Pearson *r*.  When ``"distance"``,
+            Székely & Rizzo's bias-corrected distance correlation is
+            used for both legs.
+        correction_method: ``None`` (default), ``"holm"``, or
+            ``"fdr_bh"``.  Multiple-testing correction applied
+            **per-leg** (not pooled) via
+            :func:`statsmodels.stats.multitest.multipletests`.
+            With *K* candidates, the *K* Z-X p-values are corrected
+            together and the *K* Z-Y p-values separately, then the
+            conjunction (both adjusted p-values < threshold) decides.
 
     Returns:
         Dictionary with keys ``predictor``, ``potential_confounders``,
         ``correlations_with_predictor``, ``correlations_with_outcome``,
-        and ``excluded_variables``.
+        ``excluded_variables``, ``correlation_method``,
+        ``correction_method``, and ``adjusted_p_values``.
     """
+    if correlation_method not in ("pearson", "partial", "distance"):
+        raise ValueError(
+            f"correlation_method must be 'pearson', 'partial', or 'distance', "
+            f"got {correlation_method!r}"
+        )
+    if correction_method is not None and correction_method not in ("holm", "fdr_bh"):
+        raise ValueError(
+            f"correction_method must be None, 'holm', or 'fdr_bh', "
+            f"got {correction_method!r}"
+        )
+
     X = _ensure_pandas_df(X, name="X")
     y = _ensure_pandas_df(y, name="y")
 
@@ -107,29 +451,66 @@ def screen_potential_confounders(
     other_features = [c for c in X.columns if c != predictor]
     predictor_values = X[predictor].values
 
+    # --- First pass: compute raw correlations and p-values ---
+    raw_pred: list[tuple[float, float]] = []  # (r, p) for Z-X
+    raw_out: list[tuple[float, float]] = []  # (r, p) for Z-Y
+
+    for feature in other_features:
+        fv = X[feature].values
+
+        # Z-X leg: always marginal Pearson r (even for "partial").
+        if correlation_method == "distance":
+            corr_pred, p_pred = _distance_correlation(fv, predictor_values)
+        else:
+            corr_pred, p_pred = stats.pearsonr(fv, predictor_values)
+
+        # Z-Y leg: partial or distance depending on method.
+        if correlation_method == "partial":
+            corr_out, p_out = _partial_correlation(
+                fv, y_values, predictor_values.reshape(-1, 1)
+            )
+        elif correlation_method == "distance":
+            corr_out, p_out = _distance_correlation(fv, y_values)
+        else:
+            corr_out, p_out = stats.pearsonr(fv, y_values)
+
+        raw_pred.append((float(corr_pred), float(p_pred)))
+        raw_out.append((float(corr_out), float(p_out)))
+
+    # --- Multiple-testing correction (per-leg) ---
+    adjusted_p_pred = [p for _, p in raw_pred]
+    adjusted_p_out = [p for _, p in raw_out]
+    adj_p_pred_dict: dict[str, float] = {}
+    adj_p_out_dict: dict[str, float] = {}
+
+    if correction_method is not None and len(other_features) > 0:
+        from statsmodels.stats.multitest import multipletests
+
+        _, adj_pred_arr, _, _ = multipletests(
+            adjusted_p_pred, alpha=p_value_threshold, method=correction_method
+        )
+        _, adj_out_arr, _, _ = multipletests(
+            adjusted_p_out, alpha=p_value_threshold, method=correction_method
+        )
+        adjusted_p_pred = list(adj_pred_arr)
+        adjusted_p_out = list(adj_out_arr)
+
+    for i, feature in enumerate(other_features):
+        adj_p_pred_dict[feature] = adjusted_p_pred[i]
+        adj_p_out_dict[feature] = adjusted_p_out[i]
+
+    # --- Second pass: apply thresholds ---
     potential_confounders: list[str] = []
     correlations_with_predictor: dict = {}
     correlations_with_outcome: dict = {}
     excluded_variables: list[str] = []
 
-    for feature in other_features:
-        fv = X[feature].values
+    for i, feature in enumerate(other_features):
+        corr_pred, _ = raw_pred[i]
+        corr_out, _ = raw_out[i]
+        p_pred = adjusted_p_pred[i]
+        p_out = adjusted_p_out[i]
 
-        # Compute Pearson r and its two-sided p-value (t-test on r)
-        # for Z vs. X (predictor) and Z vs. Y (outcome).
-        #
-        # The p-value tests H0: ρ = 0 using t = r√(n-2) / √(1-r²),
-        # which follows a t-distribution with n-2 degrees of freedom
-        # under the null of zero population correlation.
-        corr_pred, p_pred = stats.pearsonr(fv, predictor_values)
-        corr_out, p_out = stats.pearsonr(fv, y_values)
-
-        # Dual-threshold criterion: Z is flagged as a potential
-        # confounder only if it is significantly correlated with
-        # BOTH the predictor AND the outcome.  The magnitude
-        # threshold (default |r| >= 0.1) prevents flagging trivially
-        # small associations in large samples where everything can
-        # be statistically significant.
         sig_pred = (abs(corr_pred) >= correlation_threshold) and (
             p_pred < p_value_threshold
         )
@@ -139,8 +520,16 @@ def screen_potential_confounders(
 
         if sig_pred and sig_out:
             potential_confounders.append(feature)
-            correlations_with_predictor[feature] = {"r": corr_pred, "p": p_pred}
-            correlations_with_outcome[feature] = {"r": corr_out, "p": p_out}
+            correlations_with_predictor[feature] = {
+                "r": corr_pred,
+                "p": raw_pred[i][1],
+                "p_adjusted": p_pred,
+            }
+            correlations_with_outcome[feature] = {
+                "r": corr_out,
+                "p": raw_out[i][1],
+                "p_adjusted": p_out,
+            }
         else:
             excluded_variables.append(feature)
 
@@ -150,7 +539,221 @@ def screen_potential_confounders(
         "correlations_with_predictor": correlations_with_predictor,
         "correlations_with_outcome": correlations_with_outcome,
         "excluded_variables": excluded_variables,
+        "correlation_method": correlation_method,
+        "correction_method": correction_method,
+        "adjusted_p_values": {
+            "predictor": adj_p_pred_dict,
+            "outcome": adj_p_out_dict,
+        },
     }
+
+
+# ------------------------------------------------------------------ #
+# Collider detection
+# ------------------------------------------------------------------ #
+#
+# A **collider** Z is caused by both X and Y: X → Z ← Y.
+# Conditioning on a collider *creates* a spurious association between
+# X and Y (Berkson's paradox).  This is the most dangerous
+# misclassification — hence colliders are tested first in the sieve.
+#
+# Detection relies on a two-part test:
+#   (1) **Significance**: Z has a significant relationship with Y
+#       after controlling for X.
+#   (2) **Amplification**: conditioning on Z *increases* the X-Y
+#       association magnitude (|partial| > |marginal|).
+#
+# Attenuation (|partial| < |marginal|) → confounder or mediator
+# (distinguished later by the mediation test).  Only amplification
+# signals a collider.
+#
+# **Suppressor pre-filtering**: true suppressors (correlated with X
+# but not Y) fail the Z-Y dual-threshold screen in Step 4 and never
+# reach the collider test, mitigating the conditioning-test
+# conflation with suppressors.
+#
+# **Suppressive confounder limitation**: a confounder whose confounding
+# direction *opposes* the true causal direction produces amplification
+# indistinguishable from a collider signal.  This miss is conservative
+# — biases toward the null, not away from it.  Full causal direction
+# testing (LiNGAM/ANM) deferred to v0.7.0.
+
+
+def _collider_test(
+    x: np.ndarray,
+    y: np.ndarray,
+    z: np.ndarray,
+    family: ModelFamily | None = None,
+    *,
+    n_perm_collider: int = 200,
+    random_state: int | None = None,
+) -> tuple[bool, float, float]:
+    """Family-aware collider detection (significance + amplification).
+
+    Args:
+        x: Predictor values, 1-D array.
+        y: Outcome values, 1-D array.
+        z: Candidate collider values, 1-D array.
+        family: Model family.  ``None`` or linear → OLS; GLM families
+            use ``fam.fit()``/``fam.coefs()``.  Multinomial is
+            rejected (returns ``(False, NaN, NaN)``).
+        n_perm_collider: Permutations for the non-collapsibility guard
+            (GLM families only).  Default 200.
+        random_state: Seed for the permutation test.
+
+    Returns:
+        ``(is_collider, coef_marginal, coef_partial)`` tuple.  For
+        GLMs, coefficients are on the link scale.  For linear, they
+        are Pearson *r* values.
+
+    Notes:
+        **Suppressor pre-filtering**: true suppressors (correlated
+        with X but not Y) are caught by the dual-threshold screen
+        and never reach this function.
+
+        **Suppressive confounder limitation**: a confounder whose
+        confounding direction opposes the true causal direction
+        produces amplification indistinguishable from a collider
+        signal.  Such variables get classified as colliders and
+        removed from the confounder pool, when they should stay in.
+        This miss is conservative: failing to control for a
+        suppressive confounder biases X → Y toward the null
+        (underestimation, not false positive).  Full causal direction
+        testing (LiNGAM / ANM) is deferred to v0.7.0.
+    """
+    x = np.asarray(x, dtype=float).ravel()
+    y = np.asarray(y, dtype=float).ravel()
+    z = np.asarray(z, dtype=float).ravel()
+
+    # --- Guard: near-constant Z ---
+    if np.var(z) < 1e-10:
+        return False, np.nan, np.nan
+
+    # --- Guard: multinomial family ---
+    is_glm = family is not None and family.name != "linear"
+    if family is not None and family.name == "multinomial":
+        return False, np.nan, np.nan
+
+    n = len(x)
+
+    if is_glm:
+        assert family is not None  # for type narrowing
+        # Marginal coefficient: Y ~ X
+        x_2d = x.reshape(-1, 1)
+        model_marginal = family.fit(x_2d, y, fit_intercept=True)
+        coef_marginal = float(family.coefs(model_marginal)[0])
+
+        # Partial coefficient: Y ~ X + Z
+        xz = np.column_stack([x, z])
+        model_partial = family.fit(xz, y, fit_intercept=True)
+        coef_partial = float(family.coefs(model_partial)[0])
+
+        # Significance test: is beta_Z significant?
+        beta_z = float(family.coefs(model_partial)[1])
+
+        # Wald z-test for beta_Z significance.
+        # Estimate se(beta_Z) via bootstrap (small B=100, just for
+        # significance decision).
+        try:
+            # Try to get p-value from the model summary if available.
+            p_z = float(model_partial.pvalues[2])  # intercept, X, Z
+        except (AttributeError, IndexError, TypeError):
+            # Fallback: Wald z-test from coefficient/se estimate.
+            try:
+                se_z = float(model_partial.bse[2])
+                z_stat = beta_z / se_z
+                p_z = float(2.0 * stats.norm.sf(abs(z_stat)))
+            except (AttributeError, IndexError, TypeError):
+                # If we can't get standard errors, use a liberal threshold.
+                p_z = 0.01 if abs(beta_z) > 1e-6 else 1.0
+
+        if p_z >= 0.05:
+            return False, coef_marginal, coef_partial
+
+        # Amplification check with permutation-calibrated threshold.
+        abs_marginal = abs(coef_marginal)
+        abs_partial = abs(coef_partial)
+
+        if abs_marginal < 1e-15:
+            # Cannot compute ratio when marginal coefficient is zero.
+            return False, coef_marginal, coef_partial
+
+        observed_delta = (abs_partial - abs_marginal) / abs_marginal
+
+        if observed_delta <= 0:
+            # No amplification — not a collider.
+            return False, coef_marginal, coef_partial
+
+        # Permutation null: permute Z to break the X→Z←Y structure.
+        # Any inflation under permuted Z is pure non-collapsibility.
+        rng = np.random.default_rng(random_state)
+
+        _can_batch = hasattr(family, "batch_fit_varying_X")
+        if _can_batch:
+            # --- Vectorised path: single batch_fit_varying_X call ---
+            B = n_perm_collider
+            z_perms = np.stack([rng.permutation(z) for _ in range(B)])  # (B, n)
+            x_tiled = np.broadcast_to(x.reshape(1, -1), (B, n))  # (B, n)
+            X_batch = np.stack([x_tiled, z_perms], axis=-1)  # (B, n, 2)
+            coefs_perm = family.batch_fit_varying_X(
+                X_batch, y, fit_intercept=True
+            )  # (B, p)
+            abs_perms = np.abs(coefs_perm[:, 0])  # x-coef
+            null_deltas = (abs_perms - abs_marginal) / abs_marginal
+        else:
+            # --- Sequential fallback ---
+            null_deltas = np.empty(n_perm_collider)
+            for i in range(n_perm_collider):
+                z_perm = rng.permutation(z)
+                xz_perm = np.column_stack([x, z_perm])
+                model_perm = family.fit(xz_perm, y, fit_intercept=True)
+                coef_perm = float(family.coefs(model_perm)[0])
+                abs_perm = abs(coef_perm)
+                null_deltas[i] = (abs_perm - abs_marginal) / abs_marginal
+
+        threshold = float(np.percentile(null_deltas, 95))
+        is_collider = observed_delta > threshold
+        return is_collider, coef_marginal, coef_partial
+
+    else:
+        # Linear: OLS t-test + Pearson r amplification comparison.
+
+        # Significance: t-test on beta_Z in Y ~ X + Z.
+        ones = np.ones((n, 1))
+        design = np.column_stack([ones, x, z])
+        beta, residuals, _, _ = np.linalg.lstsq(design, y, rcond=None)
+        beta_z = beta[2]
+
+        # Estimate residual standard error.
+        if len(residuals) > 0:
+            rss = float(residuals[0])
+        else:
+            rss = float(np.sum((y - design @ beta) ** 2))
+        df = n - 3  # intercept + x + z
+        if df <= 0:
+            return False, np.nan, np.nan
+        mse = rss / df
+        # Standard error of beta_z via (X'X)^{-1}.
+        try:
+            cov_beta = mse * np.linalg.inv(design.T @ design)
+            se_z = np.sqrt(cov_beta[2, 2])
+        except np.linalg.LinAlgError:
+            return False, np.nan, np.nan
+        t_stat = beta_z / se_z
+        p_z = float(2.0 * stats.t.sf(abs(t_stat), df))
+
+        if p_z >= 0.05:
+            r_marginal = float(np.corrcoef(x, y)[0, 1])
+            return False, r_marginal, r_marginal  # no amplification
+
+        # Amplification: compare |r(X,Y)| vs |r(X,Y|Z)|.
+        r_marginal, _ = stats.pearsonr(x, y)
+        r_partial, _ = _partial_correlation(x, y, z.reshape(-1, 1))
+        r_marginal = float(r_marginal)
+        r_partial = float(r_partial)
+
+        is_collider = abs(r_partial) > abs(r_marginal)
+        return is_collider, r_marginal, r_partial
 
 
 # ------------------------------------------------------------------ #
@@ -215,6 +818,7 @@ def mediation_analysis(
     precision: int = 4,
     random_state: int | None = None,
     family: str | ModelFamily = "auto",
+    groups: np.ndarray | None = None,
 ) -> dict:
     """Preacher & Hayes (2004, 2008) bootstrap test of the indirect effect.
 
@@ -230,7 +834,18 @@ def mediation_analysis(
 
     The bootstrap is **vectorised**: all *n_bootstrap* index arrays are
     pre-generated and the a-path / b-path regressions are batched via
-    :func:`numpy.linalg.lstsq`.
+    :func:`numpy.linalg.lstsq`.  When *groups* is provided, the
+    bootstrap resamples entire clusters to preserve within-cluster
+    correlation (Cameron, Gelbach & Miller, 2008).
+
+    .. note::
+
+        The ``proportion_mediated`` ratio ``indirect / total`` relies
+        on the decomposition $c = c' + ab$, which holds exactly for
+        linear models but is biased for non-linear models due to
+        non-collapsibility.  The ``is_mediator`` binary decision
+        (CI excludes zero) is unaffected — only the proportion
+        scalar is approximate for GLMs.
 
     Args:
         X: Feature matrix.  Accepts pandas or Polars DataFrames.
@@ -242,6 +857,12 @@ def mediation_analysis(
         confidence_level: Confidence-interval level.
         precision: Decimal places for rounding.
         random_state: Seed for reproducibility.
+        family: Outcome family.  Mixed families are automatically
+            resolved to their base family (mediation/moderation
+            decompose fixed-effect pathways).
+        groups: Optional 1-D array of group labels for cluster
+            bootstrap.  Should match the group labels used for
+            mixed-model estimation.
 
     Returns:
         Dictionary containing the mediation decomposition, BCa
@@ -269,18 +890,25 @@ def mediation_analysis(
     m_vals = X[mediator].values.reshape(-1, 1)
     n = len(y_values)
 
-    # Resolve the outcome family.  The a-path (M ~ X) always uses
-    # linear OLS because the mediator is assumed continuous.  The
-    # b-path (Y ~ X + M), total effect (Y ~ X), and direct effect
-    # (c') use the resolved family so that count, ordinal, and
-    # multinomial outcomes are modelled correctly.
+    # Resolve the outcome family.  Mixed families are resolved to
+    # their base family — mediation operates on fixed-effect pathways.
     fam = resolve_family(family, y_values)
+    fam, _was_mixed = _resolve_base_family(fam)
     _use_family = fam.name != "linear"
     logger.debug(
         "mediation_analysis: resolved family=%r, use_family=%s",
         fam.name,
         _use_family,
     )
+
+    # Cluster bootstrap support.
+    _use_cluster = groups is not None
+    if _use_cluster:
+        groups = np.asarray(groups).ravel()
+        if len(groups) != n:
+            raise ValueError(
+                f"groups length ({len(groups)}) must match sample size ({n})"
+            )
 
     # --- Observed paths (point estimates from the full sample) ---
 
@@ -323,67 +951,93 @@ def mediation_analysis(
     # of X's influence on Y that is channelled through M.
     indirect_effect = a_path * b_path
 
-    # --- Vectorised bootstrap for the indirect effect (a*b) ---
+    # --- Bootstrap for the indirect effect (a*b) ---
     #
     # For each of B bootstrap iterations we:
-    #   1. Resample n observations WITH replacement.
+    #   1. Resample n observations WITH replacement (or whole clusters).
     #   2. Recompute the a path (M on X) and b path (Y on X+M).
     #   3. Record the product a*·b* as one draw from the bootstrap
     #      distribution of the indirect effect.
-    #
-    # Pre-generating all B index arrays up front allows us to avoid
-    # Python-level RNG calls inside the loop.  The regressions
-    # themselves are computed via np.linalg.lstsq (the normal equation),
-    # which is faster than instantiating sklearn objects B times.
     rng = np.random.default_rng(random_state)
-    boot_idx = rng.choice(n, size=(n_bootstrap, n), replace=True)
+
+    if _use_cluster:
+        assert groups is not None
+        boot_idx_list = _cluster_bootstrap_indices(groups, n_bootstrap, rng)
+    else:
+        boot_idx_list = [
+            rng.choice(n, size=n, replace=True) for _ in range(n_bootstrap)
+        ]
 
     # Build the design matrix with an explicit intercept column for lstsq.
-    # lstsq solves  min‖Xβ - y‖²  directly, returning β = (X'X)⁻¹X'y
-    # (or the Moore-Penrose pseudoinverse for rank-deficient X).
     ones = np.ones((n, 1))
     X_a_design = np.hstack([ones, x_vals])  # (n, 2)
 
-    # --- Vectorised a-path: M ~ X (always linear OLS) ---
-    # Resample the design matrix and mediator for all B replicates at
-    # once, then solve B least-squares systems via a single batch
-    # lstsq.
-    X_a_boot = X_a_design[boot_idx]  # (B, n, 2)
-    M_boot = m_vals[boot_idx].reshape(n_bootstrap, n)  # (B, n)
+    # --- Compute bootstrap indirect effects ---
+    #
+    # When the family supports ``batch_fit_paired()`` (e.g. ordinal,
+    # logistic, Poisson via JAX vmap), the b-path regressions are
+    # batched into a single vectorised call — typically 30-50× faster
+    # than sequential ``fam.fit()`` loops.
+    _can_batch = _use_family and hasattr(fam, "batch_fit_paired")
+    boot_idx_arr = np.array(boot_idx_list)  # (B, n) or ragged for cluster
 
-    # Batch least-squares: solve each (n,2) @ coef = (n,) system
-    # in one vectorised call.  a_all_coefs[:, 1] is the a-path slope.
-    a_all_coefs = np.empty((n_bootstrap, 2))
-    for b_i in range(n_bootstrap):
-        coef, _, _, _ = np.linalg.lstsq(X_a_boot[b_i], M_boot[b_i], rcond=None)
-        a_all_coefs[b_i] = coef
-    a_boot_slopes = a_all_coefs[:, 1]  # (B,)
+    if _can_batch and boot_idx_arr.ndim == 2:
+        # --- Vectorised path: batch a-path + batch b-path -----------
+        # a-path: vectorised OLS via np.linalg.lstsq on stacked matrices
+        Xa_batch = X_a_design[boot_idx_arr]  # (B, n, 2)
+        M_batch = m_vals[boot_idx_arr].squeeze(-1)  # (B, n)
+        # Solve all a-paths at once: (B, n, 2) @ (2,) -> need per-row lstsq
+        # Use normal equations: a = (X'X)^{-1} X' M for each replicate
+        XtX = np.einsum("bij,bik->bjk", Xa_batch, Xa_batch)  # (B, 2, 2)
+        XtM = np.einsum("bij,bi->bj", Xa_batch, M_batch)  # (B, 2)
+        # solve expects (B, 2, 2) @ (B, 2, 1) → (B, 2, 1)
+        a_stars = np.linalg.solve(XtX, XtM[..., np.newaxis]).squeeze(-1)[:, 1]
 
-    # --- Vectorised b-path: Y ~ X + M ---
-    if _use_family:
-        # Build (B, n, 2) design and (B, n) response arrays, then
-        # call the family's batch_fit_paired to solve all B replicates
-        # in a single vmap'd kernel (JAX) or sequential loop (NumPy).
-        xm_full = np.hstack([x_vals, m_vals])  # (n, 2)
-        XM_boot = xm_full[boot_idx]  # (B, n, 2)
-        Y_boot = y_values[boot_idx].astype(float)  # (B, n)
-        b_all_coefs = fam.batch_fit_paired(
-            XM_boot, Y_boot, fit_intercept=True
-        )  # (B, 2)
-        b_boot_slopes = b_all_coefs[:, 1]  # mediator slope
+        # b-path: batch_fit_paired — all resampled (X, y) at once
+        Xb_batch = np.stack(
+            [
+                np.column_stack([x_vals[idx].ravel(), m_vals[idx].ravel()])
+                for idx in boot_idx_list
+            ]
+        )  # (B, n, 2)
+        Yb_batch = y_values[boot_idx_arr].astype(float)  # (B, n)
+
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore")
+            b_coefs = fam.batch_fit_paired(
+                Xb_batch, Yb_batch, fit_intercept=True
+            )  # (B, 2)
+        b_stars = b_coefs[:, 1]  # M→Y coefficient
+
+        bootstrap_indirect = a_stars * b_stars
     else:
-        # Linear OLS path — solve via lstsq with [1, X, M] design.
-        xm_design = np.hstack([ones, x_vals, m_vals])  # (n, 3)
-        XM_boot_lin = xm_design[boot_idx]  # (B, n, 3)
-        Y_boot_lin = y_values[boot_idx]  # (B, n)
-        b_boot_slopes = np.empty(n_bootstrap)
-        for b_i in range(n_bootstrap):
-            coef, _, _, _ = np.linalg.lstsq(
-                XM_boot_lin[b_i], Y_boot_lin[b_i], rcond=None
-            )
-            b_boot_slopes[b_i] = coef[2]  # mediator slope
+        # --- Sequential fallback (linear family or ragged clusters) -
+        bootstrap_indirect = np.empty(n_bootstrap)
+        for b_i, idx in enumerate(boot_idx_list):
+            # a-path: M ~ X (always linear OLS)
+            Xa_b = X_a_design[idx]
+            M_b = m_vals[idx].ravel()
+            coef_a, _, _, _ = np.linalg.lstsq(Xa_b, M_b, rcond=None)
+            a_star = coef_a[1]
 
-    bootstrap_indirect = a_boot_slopes * b_boot_slopes
+            # b-path: Y ~ X + M
+            if _use_family:
+                xm_b = np.column_stack([x_vals[idx].ravel(), m_vals[idx].ravel()])
+                y_b = y_values[idx].astype(float)
+                try:
+                    model_b = fam.fit(xm_b, y_b, fit_intercept=True)
+                    b_star = float(fam.coefs(model_b)[1])
+                except Exception:
+                    b_star = np.nan
+            else:
+                Xm_b = np.column_stack(
+                    [np.ones(len(idx)), x_vals[idx].ravel(), m_vals[idx].ravel()]
+                )
+                y_b = y_values[idx]
+                coef_b, _, _, _ = np.linalg.lstsq(Xm_b, y_b, rcond=None)
+                b_star = coef_b[2]
+
+            bootstrap_indirect[b_i] = a_star * b_star
 
     # --- BCa confidence interval (Efron, 1987) ---
     # The BCa interval adjusts the percentile endpoints of the bootstrap
@@ -394,12 +1048,12 @@ def mediation_analysis(
         bootstrap_indirect,
         indirect_effect,
         n,
-        boot_idx,
         x_vals,
         m_vals,
         y_values,
         confidence_level,
         family=fam if _use_family else None,
+        groups=groups,
     )
 
     # Decision criterion (Preacher & Hayes):
@@ -464,155 +1118,502 @@ def _bca_ci(
     bootstrap_dist: np.ndarray,
     observed_stat: float,
     n: int,
-    boot_idx: np.ndarray,
     x_vals: np.ndarray,
     m_vals: np.ndarray,
     y_values: np.ndarray,
     confidence_level: float,
     *,
     family: ModelFamily | None = None,
+    groups: np.ndarray | None = None,
 ) -> tuple[float, float]:
-    """Bias-corrected and accelerated (BCa) bootstrap CI.
+    """Bias-corrected and accelerated (BCa) bootstrap CI for mediation.
+
+    Computes the mediation-specific jackknife (a-path × b-path) and
+    delegates the generic BCa percentile adjustment to
+    :func:`diagnostics._bca_percentile`.  When *groups* is provided,
+    the jackknife is leave-one-cluster-out instead of
+    leave-one-observation-out.
 
     Args:
         bootstrap_dist: Array of bootstrap indirect-effect replicates.
         observed_stat: Observed indirect effect (a × b).
         n: Sample size.
-        boot_idx: Pre-generated bootstrap indices, shape
-            ``(n_bootstrap, n)``.
         x_vals: Predictor values, shape ``(n, 1)``.
         m_vals: Mediator values, shape ``(n, 1)``.
         y_values: Outcome values, shape ``(n,)``.
         confidence_level: Nominal coverage (e.g. 0.95).
+        family: Optional non-linear family for the b-path.
+        groups: Optional group labels for cluster jackknife.
 
     Returns:
         ``(ci_lower, ci_upper)`` tuple.
     """
+    from .diagnostics import _bca_percentile
+
     alpha = 1 - confidence_level
 
-    # --- Bias correction constant (z₀) ---
-    # z₀ measures the median bias of the bootstrap distribution relative
-    # to the observed statistic.  It is defined as:
-    #   z₀ = Φ⁻¹(#{θ̂* < θ̂} / B)
-    # where Φ⁻¹ is the standard normal quantile function, θ̂ is the
-    # observed indirect effect, and θ̂* are the bootstrap replicates.
-    # If the bootstrap distribution is centred on θ̂, exactly half the
-    # replicates fall below, giving z₀ = 0 (no bias).  A positive z₀
-    # means the bootstrap distribution is shifted left relative to θ̂.
-    prop_less = np.mean(bootstrap_dist < observed_stat)
-    # Clip to avoid ±inf from ppf at exactly 0 or 1
-    prop_less = np.clip(prop_less, 1e-10, 1 - 1e-10)
-    z0 = stats.norm.ppf(prop_less)
-
-    # --- Acceleration constant (â) via jackknife ---
-    # â captures the rate at which the standard error of θ̂ changes
-    # with the true parameter value (i.e., the skewness of the
-    # influence function).  It is estimated from jackknife replicates:
-    #
-    #   θ̂₍₋ᵢ₎ = indirect effect with observation i removed
-    #   θ̄     = mean of all n jackknife replicates
-    #   â      = Σᵢ (θ̄ - θ̂₍₋ᵢ₎)³ / [6 · (Σᵢ (θ̄ - θ̂₍₋ᵢ₎)²)^{3/2}]
-    #
-    # When the bootstrap distribution is symmetric, â ≈ 0 and BCa
-    # reduces to ordinary bias-corrected (BC) intervals.
-    ones = np.ones((n, 1))
-    X_a_full = np.hstack([ones, x_vals])  # (n, 2)
-
-    # --- Vectorised jackknife: leave-one-out index array ---
-    # Build (n, n-1) index array where row i omits observation i.
-    loo_idx = np.empty((n, n - 1), dtype=int)
-    for i in range(n):
-        loo_idx[i] = np.concatenate([np.arange(i), np.arange(i + 1, n)])
-
-    # a-path: always linear OLS.  Batch solve n leave-one-out systems.
-    X_a_jack = X_a_full[loo_idx]  # (n, n-1, 2)
-    M_jack = m_vals[loo_idx].reshape(n, n - 1)  # (n, n-1)
-    a_jack_coefs = np.empty((n, 2))
-    for i in range(n):
-        coef, _, _, _ = np.linalg.lstsq(X_a_jack[i], M_jack[i], rcond=None)
-        a_jack_coefs[i] = coef
-    a_jack_slopes = a_jack_coefs[:, 1]  # (n,)
-
-    # b-path: family-appropriate model when non-linear
-    if family is not None:
-        xm_full = np.hstack([x_vals, m_vals])  # (n, 2)
-        XM_jack = xm_full[loo_idx]  # (n, n-1, 2)
-        Y_jack = y_values[loo_idx].astype(float)  # (n, n-1)
-        b_jack_coefs = family.batch_fit_paired(
-            XM_jack, Y_jack, fit_intercept=True
-        )  # (n, 2)
-        b_jack_slopes = b_jack_coefs[:, 1]  # mediator slope
+    # --- Jackknife: leave-one-out or leave-one-cluster-out ---
+    if groups is not None:
+        jack_idx_list = _cluster_jackknife_indices(groups)
     else:
-        xm_design = np.hstack([ones, x_vals, m_vals])  # (n, 3)
-        XM_jack_lin = xm_design[loo_idx]  # (n, n-1, 3)
-        Y_jack_lin = y_values[loo_idx]  # (n, n-1)
-        b_jack_slopes = np.empty(n)
-        for i in range(n):
-            coef, _, _, _ = np.linalg.lstsq(XM_jack_lin[i], Y_jack_lin[i], rcond=None)
-            b_jack_slopes[i] = coef[2]  # mediator slope
+        jack_idx_list = [
+            np.concatenate([np.arange(i), np.arange(i + 1, n)]) for i in range(n)
+        ]
 
-    jackknife_indirect = a_jack_slopes * b_jack_slopes
+    n_jack = len(jack_idx_list)
+    ones_full = np.ones((n, 1))
+    X_a_full = np.hstack([ones_full, x_vals])  # (n, 2)
 
-    theta_bar = np.mean(jackknife_indirect)
-    diffs = theta_bar - jackknife_indirect
-    # The 1e-10 in the denominator prevents division by zero when all
-    # jackknife estimates are identical (perfectly symmetric case).
-    a_hat = np.sum(diffs**3) / (6.0 * (np.sum(diffs**2)) ** 1.5 + 1e-10)
+    # Batch the jackknife fits when the family supports batch_fit_paired.
+    _can_batch = family is not None and hasattr(family, "batch_fit_paired")
+    jack_idx_arr = np.array(jack_idx_list) if groups is None else None
 
-    # --- Adjusted percentiles ---
-    # The BCa interval replaces the naïve (α/2, 1-α/2) percentiles
-    # with adjusted percentiles that account for z₀ (bias) and â
-    # (acceleration):
-    #
-    #   α₁ = Φ( z₀ + (z₀ + z_{α/2}) / (1 - â·(z₀ + z_{α/2})) )
-    #   α₂ = Φ( z₀ + (z₀ + z_{1-α/2}) / (1 - â·(z₀ + z_{1-α/2})) )
-    #
-    # The CI endpoints are then the α₁-th and α₂-th percentiles of the
-    # bootstrap distribution.  When z₀=0 and â=0, this reduces to the
-    # simple percentile interval (α/2, 1-α/2).
-    z_alpha_lower = stats.norm.ppf(alpha / 2)
-    z_alpha_upper = stats.norm.ppf(1 - alpha / 2)
+    if _can_batch and jack_idx_arr is not None and jack_idx_arr.ndim == 2:
+        # --- Vectorised jackknife: batch a-path + batch b-path ------
 
-    p_lower = stats.norm.cdf(
-        z0 + (z0 + z_alpha_lower) / (1 - a_hat * (z0 + z_alpha_lower))
-    )
-    p_upper = stats.norm.cdf(
-        z0 + (z0 + z_alpha_upper) / (1 - a_hat * (z0 + z_alpha_upper))
-    )
+        # a-path: vectorised normal equations
+        Xa_jack = X_a_full[jack_idx_arr]  # (J, n-1, 2)
+        M_jack = m_vals[jack_idx_arr].squeeze(-1)  # (J, n-1)
+        XtX = np.einsum("bij,bik->bjk", Xa_jack, Xa_jack)  # (J, 2, 2)
+        XtM = np.einsum("bij,bi->bj", Xa_jack, M_jack)  # (J, 2)
+        a_jacks = np.linalg.solve(XtX, XtM[..., np.newaxis]).squeeze(-1)[:, 1]  # (J,)
 
-    # Clip adjusted percentiles to valid range [0.5/B, 1-0.5/B] so that
-    # np.percentile does not receive out-of-bounds values.  This can
-    # happen when z₀ or â are large (e.g. very biased or skewed
-    # bootstrap distributions).
-    p_lower = np.clip(p_lower, 0.5 / len(bootstrap_dist), 1 - 0.5 / len(bootstrap_dist))
-    p_upper = np.clip(p_upper, 0.5 / len(bootstrap_dist), 1 - 0.5 / len(bootstrap_dist))
+        # b-path: batch_fit_paired
+        Xb_jack = np.stack(
+            [
+                np.column_stack([x_vals[jidx].ravel(), m_vals[jidx].ravel()])
+                for jidx in jack_idx_list
+            ]
+        )  # (J, n-1, 2)
+        Yb_jack = y_values[jack_idx_arr].astype(float)  # (J, n-1)
 
-    # Extract the corrected percentiles from the bootstrap distribution.
-    # These are the BCa CI endpoints.
-    ci_lower = float(np.percentile(bootstrap_dist, p_lower * 100))
-    ci_upper = float(np.percentile(bootstrap_dist, p_upper * 100))
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore")
+            assert family is not None  # narrowed by _can_batch
+            b_coefs = family.batch_fit_paired(
+                Xb_jack, Yb_jack, fit_intercept=True
+            )  # (J, 2)
+        b_jacks = b_coefs[:, 1]
 
-    return ci_lower, ci_upper
+        jackknife_indirect = a_jacks * b_jacks
+    else:
+        # --- Sequential fallback ------------------------------------
+        jackknife_indirect = np.empty(n_jack)
+        for j, jidx in enumerate(jack_idx_list):
+            # a-path: always linear OLS
+            Xa_j = X_a_full[jidx]
+            M_j = m_vals[jidx].ravel()
+            coef_a, _, _, _ = np.linalg.lstsq(Xa_j, M_j, rcond=None)
+            a_j = coef_a[1]
+
+            # b-path: family-appropriate model when non-linear
+            if family is not None:
+                xm_j = np.column_stack([x_vals[jidx].ravel(), m_vals[jidx].ravel()])
+                y_j = y_values[jidx].astype(float)
+                try:
+                    model_j = family.fit(xm_j, y_j, fit_intercept=True)
+                    b_j = float(family.coefs(model_j)[1])
+                except Exception:
+                    b_j = np.nan
+            else:
+                Xm_j = np.column_stack(
+                    [np.ones(len(jidx)), x_vals[jidx].ravel(), m_vals[jidx].ravel()]
+                )
+                y_j = y_values[jidx]
+                coef_b, _, _, _ = np.linalg.lstsq(Xm_j, y_j, rcond=None)
+                b_j = coef_b[2]
+
+            jackknife_indirect[j] = a_j * b_j
+
+    return _bca_percentile(bootstrap_dist, observed_stat, jackknife_indirect, alpha)
 
 
 # ------------------------------------------------------------------ #
-# Step 3 – Orchestrator
+# Moderation analysis
 # ------------------------------------------------------------------ #
 #
-# The full workflow ties Steps 1 and 2 together:
-#   1. Screen all features (except the predictor of interest) for dual
-#      correlation with both X and Y.  Candidates that pass are
-#      potential confounders.
-#   2. For each candidate, run the Preacher & Hayes bootstrap mediation
-#      test.  If the BCa CI for the indirect effect excludes zero, the
-#      candidate is reclassified as a mediator.
-#   3. Remaining candidates (not mediators) are reported as confounders
-#      that should be controlled for in the Kennedy method.
+# A **moderator** Z changes the *strength* of the X → Y relationship
+# (interaction effect).  The statistical test fits:
 #
-# This two-stage pipeline prevents the common mistake of controlling
-# for mediators (which removes part of the real causal effect) while
-# still identifying genuine confounders (which introduce bias if
-# uncontrolled).
+#   Y = β₁·X_c + β₂·Z_c + β₃·(X_c × Z_c) + ε
+#
+# where X_c and Z_c are mean-centered (to reduce multicollinearity).
+# If the BCa CI for β₃ (the interaction coefficient) excludes zero,
+# Z is a moderator.
+#
+# Moderator labeling is **non-exclusive**: a variable can be both
+# moderator AND confounder.  The moderator flag is informational —
+# it tells the user to consider adding X × Z as a predictor, but
+# the variable stays in the confounder list for `confounders=`.
+
+
+def moderation_analysis(
+    X: DataFrameLike,
+    y: DataFrameLike,
+    predictor: str,
+    moderator: str,
+    n_bootstrap: int = 5000,
+    confidence_level: float = 0.95,
+    precision: int = 4,
+    random_state: int | None = None,
+    family: str | ModelFamily = "auto",
+    groups: np.ndarray | None = None,
+) -> dict:
+    """Bootstrap test for moderation (interaction effect).
+
+    Mean-centers *predictor* and *moderator* **per resample** (no
+    information leakage), constructs the interaction term
+    X_c × Z_c, and fits Y ~ X_c + Z_c + X_c × Z_c.  The interaction
+    coefficient is tested via BCa bootstrap CIs.
+
+    Args:
+        X: Feature matrix.  Accepts pandas or Polars DataFrames.
+        y: Target variable.  Accepts pandas or Polars DataFrames.
+        predictor: Predictor (X).
+        moderator: Candidate moderator (Z).
+        n_bootstrap: Number of bootstrap samples.
+        confidence_level: Confidence-interval level.
+        precision: Decimal places for rounding.
+        random_state: Seed for reproducibility.
+        family: Outcome family.  Mixed families are automatically
+            resolved to their base family.
+        groups: Optional 1-D array of group labels for cluster
+            bootstrap.
+
+    Returns:
+        Dictionary with keys ``predictor``, ``moderator``,
+        ``x_coef``, ``z_coef``, ``interaction_coef``,
+        ``interaction_ci``, ``ci_method``, ``is_moderator``,
+        and ``interpretation``.
+    """
+    from .diagnostics import _bca_percentile
+
+    X = _ensure_pandas_df(X, name="X")
+    y = _ensure_pandas_df(y, name="y")
+
+    y_values = np.ravel(y)
+    x_raw = X[predictor].values.astype(float)
+    z_raw = X[moderator].values.astype(float)
+    n = len(y_values)
+
+    # Resolve family (mixed → base).
+    fam = resolve_family(family, y_values)
+    fam, _was_mixed = _resolve_base_family(fam)
+    _use_family = fam.name != "linear"
+
+    # Cluster bootstrap support.
+    _use_cluster = groups is not None
+    if _use_cluster:
+        groups = np.asarray(groups).ravel()
+        if len(groups) != n:
+            raise ValueError(
+                f"groups length ({len(groups)}) must match sample size ({n})"
+            )
+
+    # --- Observed interaction coefficient (full sample) ---
+    x_c = x_raw - x_raw.mean()
+    z_c = z_raw - z_raw.mean()
+    xz = x_c * z_c
+
+    # Check for collinearity of interaction term with main effects.
+    design_check = np.column_stack([x_c, z_c, xz])
+    rank = np.linalg.matrix_rank(design_check)
+    if rank < 3:
+        warnings.warn(
+            f"Interaction term X×Z is collinear with main effects "
+            f"(design rank {rank} < 3). Skipping moderation test "
+            f"for '{moderator}'.",
+            UserWarning,
+            stacklevel=2,
+        )
+        return {
+            "predictor": predictor,
+            "moderator": moderator,
+            "x_coef": np.nan,
+            "z_coef": np.nan,
+            "interaction_coef": np.nan,
+            "interaction_ci": (np.nan, np.nan),
+            "ci_method": "BCa",
+            "is_moderator": False,
+            "interpretation": (
+                f"Moderation test skipped for '{moderator}': "
+                f"interaction term is collinear with main effects."
+            ),
+        }
+
+    if _use_family:
+        design_obs = np.column_stack([x_c, z_c, xz])
+        model_obs = fam.fit(design_obs, y_values.astype(float), fit_intercept=True)
+        obs_coefs = fam.coefs(model_obs)
+        x_coef = float(obs_coefs[0])
+        z_coef = float(obs_coefs[1])
+        interaction_coef = float(obs_coefs[2])
+    else:
+        ones = np.ones(n)
+        design_obs = np.column_stack([ones, x_c, z_c, xz])
+        beta, _, _, _ = np.linalg.lstsq(design_obs, y_values, rcond=None)
+        x_coef = float(beta[1])
+        z_coef = float(beta[2])
+        interaction_coef = float(beta[3])
+
+    # --- Bootstrap for the interaction coefficient ---
+    rng = np.random.default_rng(random_state)
+
+    if _use_cluster:
+        assert groups is not None
+        boot_idx_list = _cluster_bootstrap_indices(groups, n_bootstrap, rng)
+    else:
+        boot_idx_list = [
+            rng.choice(n, size=n, replace=True) for _ in range(n_bootstrap)
+        ]
+
+    boot_interaction = np.empty(n_bootstrap)
+    n_filtered = 0
+
+    # Batch the bootstrap fits when the family supports batch_fit_paired.
+    _can_batch = _use_family and hasattr(fam, "batch_fit_paired")
+    boot_idx_arr = np.array(boot_idx_list)
+
+    if _can_batch and boot_idx_arr.ndim == 2:
+        # --- Vectorised moderation bootstrap ------------------------
+        # Build per-resample design matrices with per-resample centering.
+        n_boot = boot_idx_arr.shape[0]
+        n_per = boot_idx_arr.shape[1]
+        Xmod_batch = np.empty((n_boot, n_per, 3))
+        Ymod_batch = np.empty((n_boot, n_per))
+
+        for b_i in range(n_boot):
+            idx = boot_idx_arr[b_i]
+            xb = x_raw[idx]
+            zb = z_raw[idx]
+            xb_c = xb - xb.mean()
+            zb_c = zb - zb.mean()
+            Xmod_batch[b_i] = np.column_stack([xb_c, zb_c, xb_c * zb_c])
+            Ymod_batch[b_i] = y_values[idx].astype(float)
+
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore")
+            batch_coefs = fam.batch_fit_paired(
+                Xmod_batch, Ymod_batch, fit_intercept=True
+            )  # (B, 3)
+        raw_interaction = batch_coefs[:, 2]
+
+        # Quasi-separation guard
+        bad_mask = np.isnan(raw_interaction) | (np.abs(raw_interaction) > 100)
+        n_filtered = int(np.sum(bad_mask))
+        boot_interaction = np.where(  # type: ignore[assignment]
+            bad_mask, np.nan, raw_interaction
+        )
+    else:
+        # --- Sequential fallback ------------------------------------
+        for b_i, idx in enumerate(boot_idx_list):
+            # Mean-center per resample to avoid information leakage.
+            xb = x_raw[idx]
+            zb = z_raw[idx]
+            xb_c = xb - xb.mean()
+            zb_c = zb - zb.mean()
+            xzb = xb_c * zb_c
+
+            if _use_family:
+                design_b = np.column_stack([xb_c, zb_c, xzb])
+                y_b = y_values[idx].astype(float)
+                try:
+                    model_b = fam.fit(design_b, y_b, fit_intercept=True)
+                    coef_int = float(fam.coefs(model_b)[2])
+                    # Quasi-separation guard.
+                    if np.isnan(coef_int) or abs(coef_int) > 100:
+                        boot_interaction[b_i] = np.nan
+                        n_filtered += 1
+                    else:
+                        boot_interaction[b_i] = coef_int
+                except Exception:
+                    boot_interaction[b_i] = np.nan
+                    n_filtered += 1
+            else:
+                ones_b = np.ones(len(idx))
+                design_b = np.column_stack([ones_b, xb_c, zb_c, xzb])
+                y_b = y_values[idx]
+                coef_b, _, _, _ = np.linalg.lstsq(design_b, y_b, rcond=None)
+                boot_interaction[b_i] = coef_b[3]
+
+    # Quasi-separation warning.
+    if n_filtered > 0:
+        pct_filtered = n_filtered / n_bootstrap * 100
+        if pct_filtered > 5:
+            warnings.warn(
+                f"{pct_filtered:.1f}% of bootstrap replicates were filtered "
+                f"due to quasi-complete separation or extreme coefficients "
+                f"in moderation analysis for '{moderator}'.",
+                UserWarning,
+                stacklevel=2,
+            )
+
+    # Drop NaN replicates for BCa computation.
+    valid_mask = ~np.isnan(boot_interaction)
+    boot_valid = boot_interaction[valid_mask]
+
+    if len(boot_valid) < 100:
+        warnings.warn(
+            f"Only {len(boot_valid)} valid bootstrap replicates for "
+            f"moderation analysis of '{moderator}'. Results may be unreliable.",
+            UserWarning,
+            stacklevel=2,
+        )
+        return {
+            "predictor": predictor,
+            "moderator": moderator,
+            "x_coef": np.round(x_coef, precision),
+            "z_coef": np.round(z_coef, precision),
+            "interaction_coef": np.round(interaction_coef, precision),
+            "interaction_ci": (np.nan, np.nan),
+            "ci_method": "BCa",
+            "is_moderator": False,
+            "interpretation": (
+                f"Moderation test unreliable for '{moderator}': "
+                f"too few valid bootstrap replicates ({len(boot_valid)})."
+            ),
+        }
+
+    # --- Jackknife for BCa acceleration ---
+    if _use_cluster:
+        assert groups is not None
+        jack_idx_list = _cluster_jackknife_indices(groups)
+    else:
+        jack_idx_list = [
+            np.concatenate([np.arange(i), np.arange(i + 1, n)]) for i in range(n)
+        ]
+
+    n_jack = len(jack_idx_list)
+    jack_interaction = np.empty(n_jack)
+
+    # Batch the jackknife fits when the family supports batch_fit_paired.
+    jack_idx_arr = np.array(jack_idx_list) if not _use_cluster else None
+
+    if _can_batch and jack_idx_arr is not None and jack_idx_arr.ndim == 2:
+        # --- Vectorised moderation jackknife ------------------------
+        n_j = jack_idx_arr.shape[1]
+        Xmod_jack = np.empty((n_jack, n_j, 3))
+        Ymod_jack = np.empty((n_jack, n_j))
+
+        for j in range(n_jack):
+            jidx = jack_idx_arr[j]
+            xj = x_raw[jidx]
+            zj = z_raw[jidx]
+            xj_c = xj - xj.mean()
+            zj_c = zj - zj.mean()
+            Xmod_jack[j] = np.column_stack([xj_c, zj_c, xj_c * zj_c])
+            Ymod_jack[j] = y_values[jidx].astype(float)
+
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore")
+            jack_coefs = fam.batch_fit_paired(
+                Xmod_jack, Ymod_jack, fit_intercept=True
+            )  # (J, 3)
+        jack_interaction = jack_coefs[:, 2]  # type: ignore[assignment]
+    else:
+        # --- Sequential fallback ------------------------------------
+        for j, jidx in enumerate(jack_idx_list):
+            xj = x_raw[jidx]
+            zj = z_raw[jidx]
+            xj_c = xj - xj.mean()
+            zj_c = zj - zj.mean()
+            xzj = xj_c * zj_c
+
+            if _use_family:
+                design_j = np.column_stack([xj_c, zj_c, xzj])
+                y_j = y_values[jidx].astype(float)
+                try:
+                    model_j = fam.fit(design_j, y_j, fit_intercept=True)
+                    jack_interaction[j] = float(fam.coefs(model_j)[2])
+                except Exception:
+                    jack_interaction[j] = np.nan
+            else:
+                ones_j = np.ones(len(jidx))
+                design_j = np.column_stack([ones_j, xj_c, zj_c, xzj])
+                y_j = y_values[jidx]
+                coef_j, _, _, _ = np.linalg.lstsq(design_j, y_j, rcond=None)
+                jack_interaction[j] = coef_j[3]
+
+    # Drop NaN jackknife values.
+    jack_valid = jack_interaction[~np.isnan(jack_interaction)]
+    if len(jack_valid) < 3:
+        ci_lower_val = float(np.nanpercentile(boot_valid, 2.5))
+        ci_upper_val = float(np.nanpercentile(boot_valid, 97.5))
+    else:
+        alpha = 1 - confidence_level
+        ci_lower_val, ci_upper_val = _bca_percentile(
+            boot_valid, interaction_coef, jack_valid, alpha
+        )
+
+    is_moderator = (ci_lower_val > 0) or (ci_upper_val < 0)
+
+    if is_moderator:
+        interpretation = (
+            f"'{moderator}' moderates the effect of '{predictor}' "
+            f"on the outcome (interaction BCa CI excludes zero). "
+            f"Consider including the interaction term X×Z as a predictor."
+        )
+    else:
+        interpretation = (
+            f"'{moderator}' does not significantly moderate the effect "
+            f"of '{predictor}' (interaction BCa CI includes zero)."
+        )
+
+    return {
+        "predictor": predictor,
+        "moderator": moderator,
+        "x_coef": np.round(x_coef, precision),
+        "z_coef": np.round(z_coef, precision),
+        "interaction_coef": np.round(interaction_coef, precision),
+        "interaction_ci": (
+            np.round(ci_lower_val, precision),
+            np.round(ci_upper_val, precision),
+        ),
+        "ci_method": "BCa",
+        "is_moderator": is_moderator,
+        "interpretation": interpretation,
+    }
+
+
+# ------------------------------------------------------------------ #
+# Four-stage confounder sieve
+# ------------------------------------------------------------------ #
+#
+# The sieve identifies true confounders by removing variables that
+# play other causal roles from the candidate pool.  Stages run in
+# priority order with sequential removal:
+#
+#   1. **Screen** — dual-correlation (Pearson / partial / distance)
+#      with optional multiple-testing correction.
+#   2. **Collider test** — significance + amplification.  Colliders
+#      are tested first because conditioning on a collider *creates*
+#      bias (most dangerous misclassification).  Removed from pool.
+#   3. **Mediator test** — Preacher & Hayes indirect effect bootstrap.
+#      Mediators are removed from pool (controlling for them removes
+#      part of the real effect).
+#   4. **Moderator test** — interaction-term bootstrap.  Moderators
+#      are NOT removed from pool (informational label only).
+#
+# What's left after stages 2–4 → identified confounders.
+#
+# **Post-selection inference caveat**: the sieve selects the
+# conditioning set from the same data used for the subsequent
+# permutation test.  The permutation p-value is exact *conditional on
+# the selected conditioning set*, but the conditioning set itself is
+# data-adaptive.  False collider classification (removing a true
+# confounder) can inflate Type I error.  False confounder
+# classification (including noise) is conservative — reduces power
+# but does not inflate Type I error in Kennedy/Freedman-Lane.
+#
+# For guaranteed Type I error control, specify ``confounders=`` based
+# on domain knowledge or a pre-registered analysis plan.
+#
+# **No multiple-testing correction within the sieve**: each sieve
+# stage tests a different hypothesis type (is Z a collider? a
+# mediator? a moderator?) — these are not repeated tests of the same
+# null.  Correction across different hypothesis types is contested
+# (Rothman, 1990).  The screening stage does offer optional correction
+# because those are repeated tests of the same type.
 
 
 def identify_confounders(
@@ -621,74 +1622,196 @@ def identify_confounders(
     predictor: str,
     correlation_threshold: float = 0.1,
     p_value_threshold: float = 0.05,
-    n_bootstrap: int = 1000,
+    n_bootstrap_mediation: int = 1000,
+    n_bootstrap_moderation: int = 1000,
     confidence_level: float = 0.95,
     random_state: int | None = None,
     family: str | ModelFamily = "auto",
-) -> dict:
-    """Two-step confounder identification.
+    correlation_method: str = "pearson",
+    correction_method: str | None = None,
+    groups: np.ndarray | None = None,
+) -> ConfounderAnalysisResult:
+    """Four-stage confounder sieve.
 
-    1. Screen for variables correlated with both predictor and outcome.
-    2. Use mediation analysis to filter out mediators.
+    Classifies candidate variables as colliders, mediators, moderators,
+    or true confounders via sequential testing:
 
-    Variables that pass screening but are **not** identified as
-    mediators are likely confounders.
+    1. **Screen** — dual-correlation with both predictor and outcome.
+    2. **Collider test** — removes colliders (X → Z ← Y).
+    3. **Mediator test** — removes mediators (X → M → Y).
+    4. **Moderator test** — labels moderators (informational; stays
+       in confounder pool).
+
+    The sieve is an **exploratory** tool for data-driven confounder
+    selection.  For guaranteed Type I error control, specify
+    ``confounders=`` based on domain knowledge or a pre-registered
+    analysis plan.  The permutation p-value is exact conditional on the
+    selected conditioning set.
 
     Args:
         X: Feature matrix.  Accepts pandas or Polars DataFrames.
         y: Target variable.  Accepts pandas or Polars DataFrames.
         predictor: Predictor of interest.
-        correlation_threshold: Minimum absolute Pearson *r*.
-        p_value_threshold: Significance cutoff.
-        n_bootstrap: Bootstrap iterations for mediation analysis.
+        correlation_threshold: Minimum absolute correlation to flag.
+        p_value_threshold: Significance cutoff for screening.
+        n_bootstrap_mediation: Bootstrap iterations for mediation.
+        n_bootstrap_moderation: Bootstrap iterations for moderation.
         confidence_level: Confidence-interval level.
         random_state: Seed for reproducibility.
+        family: Outcome family.  Mixed families resolved to base.
+        correlation_method: ``"pearson"``, ``"partial"``, or
+            ``"distance"`` (passed to screening).
+        correction_method: ``None``, ``"holm"``, or ``"fdr_bh"``
+            (passed to screening).
+        groups: Optional group labels for cluster bootstrap
+            (passed to mediation/moderation).
 
     Returns:
-        Dictionary with keys ``identified_confounders``,
-        ``identified_mediators``, ``screening_results``,
-        and ``mediation_results``.
+        :class:`ConfounderAnalysisResult` with classified candidates,
+        screening results, and per-candidate analysis details.
     """
+    from ._results import ConfounderAnalysisResult
+
     X = _ensure_pandas_df(X, name="X")
     y = _ensure_pandas_df(y, name="y")
+    y_values = np.ravel(y)
 
-    # Resolve family once to avoid repeated warnings in the loop below.
-    resolved_family = resolve_family(family, np.ravel(y))
+    # Resolve family once (mixed → base).
+    resolved_family = resolve_family(family, y_values)
+    resolved_family, _was_mixed = _resolve_base_family(resolved_family)
 
+    # --- Stage 1: Screen ---
     screening = screen_potential_confounders(
         X,
         y,
         predictor,
         correlation_threshold=correlation_threshold,
         p_value_threshold=p_value_threshold,
+        correlation_method=correlation_method,
+        correction_method=correction_method,
     )
-    candidates = screening["potential_confounders"]
+    candidates = list(screening["potential_confounders"])
 
-    identified_confounders: list[str] = []
-    identified_mediators: list[str] = []
-    mediation_results: dict = {}
+    # --- Multinomial early exit ---
+    if resolved_family.name == "multinomial":
+        warnings.warn(
+            "Multinomial outcomes produce multi-class Wald χ² statistics, "
+            "not scalar coefficient slopes. Mediation, moderation, and "
+            "collider analysis require directional scalar effects and are "
+            "not supported for multinomial families. All screened candidates "
+            "are reported as confounders.",
+            UserWarning,
+            stacklevel=2,
+        )
+        return ConfounderAnalysisResult(
+            predictor=predictor,
+            identified_confounders=candidates,
+            identified_mediators=[],
+            identified_moderators=[],
+            identified_colliders=[],
+            screening_results=screening,
+        )
+
+    # --- Stage 2: Collider test ---
+    identified_colliders: list[str] = []
+    collider_results: dict = {}
+    remaining = list(candidates)
+    predictor_values = X[predictor].values
 
     for candidate in candidates:
+        is_coll, coef_marg, coef_part = _collider_test(
+            predictor_values,
+            y_values,
+            X[candidate].values,
+            family=resolved_family if resolved_family.name != "linear" else None,
+            random_state=random_state,
+        )
+        collider_results[candidate] = {
+            "is_collider": is_coll,
+            "coef_marginal": float(coef_marg) if not np.isnan(coef_marg) else np.nan,
+            "coef_partial": float(coef_part) if not np.isnan(coef_part) else np.nan,
+        }
+        if is_coll:
+            identified_colliders.append(candidate)
+            remaining.remove(candidate)
+
+    # --- Stage 3: Mediator test ---
+    identified_mediators: list[str] = []
+    mediation_results_dict: dict = {}
+
+    for candidate in list(remaining):
         med = mediation_analysis(
             X,
             y,
             predictor,
             candidate,
-            n_bootstrap=n_bootstrap,
+            n_bootstrap=n_bootstrap_mediation,
             confidence_level=confidence_level,
             random_state=random_state,
             family=resolved_family,
+            groups=groups,
         )
-        mediation_results[candidate] = med
+        mediation_results_dict[candidate] = med
         if med["is_mediator"]:
             identified_mediators.append(candidate)
-        else:
-            identified_confounders.append(candidate)
+            remaining.remove(candidate)
 
-    return {
-        "predictor": predictor,
-        "identified_confounders": identified_confounders,
-        "identified_mediators": identified_mediators,
-        "screening_results": screening,
-        "mediation_results": mediation_results,
-    }
+    # --- Stage 4: Moderator test ---
+    identified_moderators: list[str] = []
+    moderation_results_dict: dict = {}
+
+    for candidate in list(remaining):
+        mod = moderation_analysis(
+            X,
+            y,
+            predictor,
+            candidate,
+            n_bootstrap=n_bootstrap_moderation,
+            confidence_level=confidence_level,
+            random_state=random_state,
+            family=resolved_family,
+            groups=groups,
+        )
+        moderation_results_dict[candidate] = mod
+        if mod["is_moderator"]:
+            identified_moderators.append(candidate)
+            # Do NOT remove from remaining — moderator label is non-exclusive.
+
+    # What's left → confounders.
+    identified_confounders = list(remaining)
+
+    # --- Collinearity guard (Step 10) ---
+    if len(identified_confounders) >= 2:
+        try:
+            confounder_vals = X[identified_confounders].values
+            pred_vals = X[predictor].values
+            # Regress predictor on identified confounders.
+            ones = np.ones((len(pred_vals), 1))
+            design = np.column_stack([ones, confounder_vals])
+            beta, _, _, _ = np.linalg.lstsq(design, pred_vals, rcond=None)
+            pred_hat = design @ beta
+            ss_res = np.sum((pred_vals - pred_hat) ** 2)
+            ss_tot = np.sum((pred_vals - pred_vals.mean()) ** 2)
+            r_squared = 1 - ss_res / ss_tot if ss_tot > 0 else 0.0
+            if r_squared > 0.95:
+                warnings.warn(
+                    f"Identified confounders explain {r_squared:.1%} of "
+                    f"predictor variance. Kennedy/Freedman-Lane test may "
+                    f"have low power. Consider reducing the confounder set.",
+                    UserWarning,
+                    stacklevel=2,
+                )
+        except Exception:
+            pass  # Non-critical diagnostic — silently skip on error.
+
+    return ConfounderAnalysisResult(
+        predictor=predictor,
+        identified_confounders=identified_confounders,
+        identified_mediators=identified_mediators,
+        identified_moderators=identified_moderators,
+        identified_colliders=identified_colliders,
+        screening_results=screening,
+        mediation_results=mediation_results_dict,
+        moderation_results=moderation_results_dict,
+        collider_results=collider_results,
+    )

@@ -259,7 +259,7 @@ class TestPrintConfounderTable:
         }
         print_confounder_table(results)
         out = capsys.readouterr().out
-        assert "No confounders or mediators identified" in out
+        assert "No confounders, mediators, colliders, or moderators identified" in out
 
     def test_mediator_note_shown(self, capsys):
         """Notes section appears when a mediator is detected."""
@@ -292,8 +292,8 @@ class TestPrintConfounderTable:
             confidence_level=0.99,
         )
         out = capsys.readouterr().out
-        assert "|r| >= 0.2" in out
-        assert "p < 0.01" in out
+        assert "|r|>=0.2" in out
+        assert "p<0.01" in out
         assert "B=5000" in out
         assert "99% CI" in out
 

@@ -40,7 +40,7 @@ class TestCalculatePValues:
         X, y = self._make_linear_data()
         model_coefs = np.array([3.0, 0.0])
         permuted_coefs = np.random.default_rng(0).standard_normal((500, 2))
-        emp, asy, raw_emp, raw_asy = calculate_p_values(
+        emp, asy, raw_emp, raw_asy, _counts = calculate_p_values(
             X, y, permuted_coefs, model_coefs, family=LinearFamily()
         )
         assert len(emp) == 2
@@ -52,7 +52,7 @@ class TestCalculatePValues:
         X, y = self._make_binary_data()
         model_coefs = np.array([2.0, 0.0])
         permuted_coefs = np.random.default_rng(0).standard_normal((500, 2))
-        emp, asy, raw_emp, raw_asy = calculate_p_values(
+        emp, asy, raw_emp, raw_asy, _counts = calculate_p_values(
             X, y, permuted_coefs, model_coefs, family=LogisticFamily()
         )
         assert len(emp) == 2

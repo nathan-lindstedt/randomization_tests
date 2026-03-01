@@ -15,7 +15,7 @@ permutation test adds value.
 from __future__ import annotations
 
 import textwrap
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
@@ -521,13 +521,15 @@ def print_diagnostics_table(
 
 
 def print_confounder_table(
-    confounder_results: dict,
+    confounder_results: dict[str, Any] | object,
     title: str = "Confounder Identification Results",
     correlation_threshold: float = 0.1,
     p_value_threshold: float = 0.05,
     n_bootstrap: int = 1000,
     confidence_level: float = 0.95,
     family: ModelFamily | None = None,
+    correlation_method: str | None = None,
+    correction_method: str | None = None,
 ) -> None:
     """Print confounder identification results in a formatted ASCII table.
 
@@ -548,13 +550,14 @@ def print_confounder_table(
        because they transmit the causal effect.
 
     Accepts either a single :func:`identify_confounders` result dict
-    (for one predictor) or a ``dict[str, dict]`` mapping predictor
-    names to their individual result dicts (for multiple predictors).
+    (or :class:`ConfounderAnalysisResult` dataclass), or a
+    ``dict[str, dict]`` mapping predictor names to their individual
+    result dicts (for multiple predictors).
 
     Args:
-        confounder_results: Either a single result dict (must contain
-            ``identified_confounders`` and ``predictor`` keys) or a
-            dict mapping predictor names to result dicts.
+        confounder_results: Either a single result dict / dataclass
+            (must contain ``identified_confounders`` and ``predictor``
+            keys) or a dict mapping predictor names to result dicts.
         title: Title for the output table.
         correlation_threshold: The ``|r|`` threshold used during
             screening (displayed in the parameter header).
@@ -564,17 +567,26 @@ def print_confounder_table(
             (displayed in the parameter header).
         confidence_level: Confidence-interval level used for mediation
             (displayed in the parameter header).
+        correlation_method: Correlation method used during screening.
+        correction_method: Multiple-testing correction method.
     """
     W = 80
 
     # ── Normalise input ────────────────────────────────────────── #
+    # Accept ConfounderAnalysisResult dataclass — convert to dict.
+    if hasattr(confounder_results, "to_dict") and not isinstance(
+        confounder_results, dict
+    ):
+        confounder_results = confounder_results.to_dict()
+    assert isinstance(confounder_results, dict)
+
     # A single identify_confounders() result has an
     # "identified_confounders" key at the top level.  A multi-
     # predictor dict has predictor names as keys, each mapping to a
     # result dict.  Detecting this lets the function accept both
     # forms without requiring the caller to wrap a single result.
     if "identified_confounders" in confounder_results:
-        results_by_pred: dict[str, dict] = {
+        results_by_pred: dict[str, Any] = {
             confounder_results["predictor"]: confounder_results,
         }
     else:
@@ -593,31 +605,48 @@ def print_confounder_table(
     # to inspect the calling code.
 
     ci_pct = int(confidence_level * 100)
-    print(
-        f"Screening: |r| >= {correlation_threshold}, "
-        f"p < {p_value_threshold}   "
-        f"Mediation: BCa bootstrap (B={n_bootstrap}, {ci_pct}% CI)"
+    corr_label = (correlation_method or "pearson").capitalize()
+    screen_line = (
+        f"Screen: |r|>={correlation_threshold}, "
+        f"p<{p_value_threshold} ({corr_label}"
+        + (f", {correction_method}" if correction_method else "")
+        + ")"
     )
+    med_line = f"BCa bootstrap (B={n_bootstrap}, {ci_pct}% CI)"
+    # Keep within 80 chars: join on one line if it fits, else two.
+    combined = f"{screen_line}   {med_line}"
+    if len(combined) <= W:
+        print(combined)
+    else:
+        print(screen_line)
+        print(med_line)
     if family is not None:
         print(f"Family:    {family.name}")
     print("-" * W)
 
     # ── Partition predictors ───────────────────────────────────── #
-    # Separate predictors with findings (confounders and/or
-    # mediators) from those without, preserving insertion order so
-    # the table matches the feature order in the dataset.
+    # Separate predictors with findings (confounders, mediators,
+    # colliders, moderators) from those without.
 
     has_findings: dict[str, dict] = {}
     no_findings: list[str] = []
     has_mediators = False
+    has_colliders = False
+    has_moderators = False
 
     for pred, res in results_by_pred.items():
         confounders = res.get("identified_confounders", [])
         mediators = res.get("identified_mediators", [])
-        if confounders or mediators:
+        colliders = res.get("identified_colliders", [])
+        moderators = res.get("identified_moderators", [])
+        if confounders or mediators or colliders or moderators:
             has_findings[pred] = res
             if mediators:
                 has_mediators = True
+            if colliders:
+                has_colliders = True
+            if moderators:
+                has_moderators = True
         else:
             no_findings.append(pred)
 
@@ -644,6 +673,8 @@ def print_confounder_table(
 
             confounders = res.get("identified_confounders", [])
             mediators = res.get("identified_mediators", [])
+            colliders = res.get("identified_colliders", [])
+            moderators = res.get("identified_moderators", [])
 
             if confounders:
                 conf_str = ", ".join(confounders)
@@ -664,9 +695,29 @@ def print_confounder_table(
                         indent=indent_label,
                     )
                 )
+
+            if colliders:
+                coll_str = ", ".join(colliders)
+                print(
+                    _wrap(
+                        f"  Colliders:      {coll_str}",
+                        width=W,
+                        indent=indent_label,
+                    )
+                )
+
+            if moderators:
+                mod_str = ", ".join(moderators)
+                print(
+                    _wrap(
+                        f"  Moderators:     {mod_str}",
+                        width=W,
+                        indent=indent_label,
+                    )
+                )
     else:
         # No predictor had any findings at all.
-        print("  No confounders or mediators identified for any predictor.")
+        print("  No confounders, mediators, colliders, or moderators identified.")
 
     # ── Clean predictors ───────────────────────────────────────── #
     # List predictors with no findings in a compact comma-separated
@@ -694,6 +745,18 @@ def print_confounder_table(
             "Mediators transmit the causal effect of the predictor "
             "on the outcome. Do not control for them as confounders "
             "in the Kennedy method."
+        )
+    if has_colliders:
+        notes.append(
+            "Controlling for colliders introduces bias — do NOT add "
+            "to confounders=. Colliders are caused by BOTH the "
+            "predictor and the outcome (X → Z ← Y)."
+        )
+    if has_moderators:
+        notes.append(
+            "Moderators change the strength of the predictor's effect. "
+            "Consider including the interaction term X×Z as a predictor. "
+            "Moderator variables remain in the confounder list."
         )
 
     if notes:

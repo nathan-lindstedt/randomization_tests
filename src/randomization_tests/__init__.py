@@ -39,13 +39,15 @@ Public API:
 
 from ._config import get_backend, set_backend
 from ._context import FitContext
-from ._results import IndividualTestResult, JointTestResult
+from ._results import ConfounderAnalysisResult, IndividualTestResult, JointTestResult
 from .confounders import (
     identify_confounders,
     mediation_analysis,
+    moderation_analysis,
     screen_potential_confounders,
 )
 from .core import permutation_test_regression
+from .diagnostics import compute_e_value, rosenbaum_bounds
 from .display import (
     print_confounder_table,
     print_dataset_info_table,
@@ -72,12 +74,16 @@ from .permutations import generate_unique_permutations
 from .pvalues import calculate_p_values
 
 __all__ = [
+    "ConfounderAnalysisResult",
     "IndividualTestResult",
     "JointTestResult",
     "FitContext",
     "permutation_test_regression",
+    "compute_e_value",
     "identify_confounders",
     "mediation_analysis",
+    "moderation_analysis",
+    "rosenbaum_bounds",
     "screen_potential_confounders",
     "print_confounder_table",
     "print_dataset_info_table",

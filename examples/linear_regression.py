@@ -20,8 +20,11 @@ from randomization_tests import (
     identify_confounders,
     permutation_test_regression,
     print_confounder_table,
+    print_dataset_info_table,
     print_diagnostics_table,
+    print_family_info_table,
     print_joint_results_table,
+    print_protocol_usage_table,
     print_results_table,
     resolve_family,
 )
@@ -34,15 +37,37 @@ real_estate_valuation = fetch_ucirepo(id=477)
 X = real_estate_valuation.data.features
 y = real_estate_valuation.data.targets
 
+print_dataset_info_table(
+    name=real_estate_valuation.metadata.name,
+    n_observations=len(X),
+    n_features=X.shape[1],
+    feature_names=list(X.columns),
+    target_name=y.columns[0],
+    y_range=(float(y.values.min()), float(y.values.max())),
+    y_mean=float(y.values.mean()),
+    y_var=float(y.values.var()),
+)
+
 # ============================================================================
 # Verify resolve_family auto-detects "linear" for continuous Y
 # ============================================================================
 
-auto_family = resolve_family("auto", np.ravel(y))
+with warnings.catch_warnings(record=True) as caught:
+    warnings.simplefilter("always")
+    auto_family = resolve_family("auto", np.ravel(y))
 assert auto_family.name == "linear", f"Expected 'linear', got {auto_family.name!r}"
-print(f"resolve_family('auto', y) → {auto_family.name!r}")
 
-# ============================================================================# ter Braak (1992) \u2014 family="auto" (auto-detection)
+linear_family = resolve_family("linear", np.ravel(y))
+assert linear_family.name == "linear"
+
+print_family_info_table(
+    auto_family=auto_family,
+    explicit_family=linear_family,
+    advisory=[str(w.message) for w in caught],
+)
+
+# ============================================================================
+# ter Braak (1992) — family="auto" (auto-detection)
 # ============================================================================
 
 results_ter_braak_auto = permutation_test_regression(
@@ -54,7 +79,8 @@ print_results_table(
     title="ter Braak (1992) Permutation Test (family='auto' \u2192 linear)",
 )
 
-# ============================================================================# ter Braak (1992) — family="linear" (explicit)
+# ============================================================================
+# ter Braak (1992) — family="linear" (explicit)
 # ============================================================================
 
 results_ter_braak = permutation_test_regression(
@@ -74,9 +100,11 @@ assert results_ter_braak.family.name == "linear"
 # Kennedy (1995) individual — family="linear"
 # ============================================================================
 
-results_kennedy = permutation_test_regression(
-    X, y, method="kennedy", confounders=[], family="linear"
-)
+with warnings.catch_warnings():
+    warnings.filterwarnings("ignore", message=".*without confounders.*")
+    results_kennedy = permutation_test_regression(
+        X, y, method="kennedy", confounders=[], family="linear"
+    )
 print_results_table(
     results_kennedy,
     title="Kennedy (1995) Individual Permutation Test (family='linear')",
@@ -90,9 +118,11 @@ print_diagnostics_table(
 # Kennedy (1995) joint — family="linear"
 # ============================================================================
 
-results_kennedy_joint = permutation_test_regression(
-    X, y, method="kennedy_joint", confounders=[], family="linear"
-)
+with warnings.catch_warnings():
+    warnings.filterwarnings("ignore", message=".*without confounders.*")
+    results_kennedy_joint = permutation_test_regression(
+        X, y, method="kennedy_joint", confounders=[], family="linear"
+    )
 print_joint_results_table(
     results_kennedy_joint,
     title="Kennedy (1995) Joint Permutation Test (family='linear')",
@@ -136,7 +166,9 @@ print_joint_results_table(
 
 all_confounder_results = {}
 for predictor in X.columns:
-    all_confounder_results[predictor] = identify_confounders(X, y, predictor=predictor)
+    all_confounder_results[predictor] = identify_confounders(
+        X, y, predictor=predictor, family="linear"
+    )
 
 print_confounder_table(
     all_confounder_results,
@@ -144,9 +176,9 @@ print_confounder_table(
 )
 
 predictors_with_confounders = {
-    pred: res["identified_confounders"]
+    pred: res.identified_confounders
     for pred, res in all_confounder_results.items()
-    if res["identified_confounders"]
+    if res.identified_confounders
 }
 
 # ============================================================================
@@ -189,48 +221,42 @@ family = LinearFamily()
 X_np = X.values.astype(float)
 y_np = np.ravel(y).astype(float)
 
-print(f"\n{'=' * 80}")
-print("Direct LinearFamily protocol usage")
-print(f"{'=' * 80}")
-print(f"  name:               {family.name}")
-print(f"  residual_type:      {family.residual_type}")
-print(f"  direct_permutation: {family.direct_permutation}")
-
 # validate_y — should pass without error for continuous Y
 family.validate_y(y_np)
-print("  validate_y:         passed")
 
 # fit / predict / coefs / residuals
 model = family.fit(X_np, y_np, fit_intercept=True)
 preds = family.predict(model, X_np)
 coefs = family.coefs(model)
 resids = family.residuals(model, X_np, y_np)
-print(f"  coefs:              {coefs}")
-print(f"  mean |residual|:    {np.mean(np.abs(resids)):.4f}")
 
 # fit_metric (RSS)
 rss = family.fit_metric(y_np, preds)
-print(f"  RSS:                {rss:.2f}")
 
 # reconstruct_y — additive: ŷ + π(e)
 rng = np.random.default_rng(42)
 perm_resids = rng.permutation(resids)
-y_star = family.reconstruct_y(preds, perm_resids, rng)
-print(f"  reconstruct_y:      shape={y_star.shape}, mean={np.mean(y_star):.4f}")
+y_star = family.reconstruct_y(preds[np.newaxis, :], perm_resids[np.newaxis, :], rng)
 
 # batch_fit — fit OLS on B permuted Y vectors at once
-n_batch = 100
+n_batch = 50
 perm_indices = np.array([rng.permutation(len(y_np)) for _ in range(n_batch)])
 Y_matrix = y_np[perm_indices]  # shape (B, n)
-batch_coefs = family.batch_fit(X_np, Y_matrix, fit_intercept=True)
-print(
-    f"  batch_fit:          shape={batch_coefs.shape} (B={n_batch}, p={X_np.shape[1]})"
-)
+with warnings.catch_warnings():
+    warnings.filterwarnings("ignore", category=UserWarning)
+    batch_coefs = family.batch_fit(X_np, Y_matrix, fit_intercept=True)
+n_nan = int(np.sum(np.any(np.isnan(batch_coefs), axis=1)))
 
 # diagnostics — OLS summary via statsmodels
 diag = family.diagnostics(X_np, y_np, fit_intercept=True)
-print(f"  diagnostics:        R²={diag['r_squared']:.4f}, F={diag['f_statistic']:.2f}")
 
 # classical_p_values — Wald t-test via statsmodels
 p_classical = family.classical_p_values(X_np, y_np, fit_intercept=True)
-print(f"  classical_p_values: {np.round(p_classical, 6)}")
+
+# exchangeability_cells — stub (returns None for global exchangeability)
+cells = family.exchangeability_cells(X_np, y_np)
+
+print_protocol_usage_table(
+    results_ter_braak,
+    title="Direct LinearFamily Protocol Usage",
+)

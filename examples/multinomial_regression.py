@@ -23,8 +23,11 @@ from randomization_tests import (
     identify_confounders,
     permutation_test_regression,
     print_confounder_table,
+    print_dataset_info_table,
     print_diagnostics_table,
+    print_family_info_table,
     print_joint_results_table,
+    print_protocol_usage_table,
     print_results_table,
     resolve_family,
 )
@@ -49,10 +52,28 @@ X_wine = X_wine[selected_features]
 
 y_values = np.ravel(y_wine)
 class_names = ["class_0", "class_1", "class_2"]
-print(f"Classes: {dict(enumerate(class_names))}")
-print(f"Class counts: {dict(zip(class_names, np.bincount(y_values), strict=True))}")
+counts = np.bincount(y_values)
+
+print_dataset_info_table(
+    name=wine.metadata.name,
+    n_observations=len(X_wine),
+    n_features=X_wine.shape[1],
+    feature_names=list(X_wine.columns),
+    target_name="class",
+    target_description="wine cultivar (3 classes)",
+    extra_stats={
+        "Classes": ", ".join(class_names),
+        "Class Counts": ", ".join(
+            f"{c}: {n}" for c, n in zip(class_names, counts, strict=True)
+        ),
+    },
+)
 
 _family = resolve_family("multinomial")
+
+print_family_info_table(
+    explicit_family=_family,
+)
 
 # ============================================================================
 # ter Braak (1992) — family="multinomial"
@@ -124,9 +145,9 @@ print_confounder_table(
 )
 
 predictors_with_confounders = {
-    pred: res["identified_confounders"]
+    pred: res.identified_confounders
     for pred, res in all_confounder_results.items()
-    if res["identified_confounders"]
+    if res.identified_confounders
 }
 
 # ============================================================================
@@ -177,54 +198,55 @@ family = MultinomialFamily()
 X_np = X_wine.values.astype(float)
 y_np = y_values.astype(float)
 
-print(f"\n{'=' * 80}")
-print("Direct MultinomialFamily protocol usage")
-print(f"{'=' * 80}")
-print(f"  name:               {family.name}")
-print(f"  residual_type:      {family.residual_type}")
-print(f"  direct_permutation: {family.direct_permutation}")
-
 # validate_y — should pass for {0, 1, 2}
 family.validate_y(y_np)
-print("  validate_y:         passed")
 
 # fit / predict / coefs
 model = family.fit(X_np, y_np, fit_intercept=True)
 preds = family.predict(model, X_np)
 wald_chi2 = family.coefs(model)
-print(f"  Wald χ²:            {np.round(wald_chi2, 4)}")
-print(f"  E[Y|X] range:      [{preds.min():.4f}, {preds.max():.4f}]")
 
 # category_coefs — (p, K-1) coefficient matrix
 cat_coefs = family.category_coefs(model)
-print(f"  category_coefs:     shape={cat_coefs.shape}")
-for j in range(cat_coefs.shape[0]):
-    print(f"    {selected_features[j]}: {np.round(cat_coefs[j], 4)}")
 
 # score / null_score — deviance
 dev = family.score(model, X_np, y_np)
 dev_null = family.null_score(y_np)
-print(f"  deviance (full):    {dev:.2f}")
-print(f"  deviance (null):    {dev_null:.2f}")
+
+# NotImplementedError checks — multinomial does not support residuals,
+# reconstruct_y, or fit_metric (the engine uses direct Y permutation).
+for method_name in ("residuals", "reconstruct_y", "fit_metric"):
+    try:
+        if method_name == "residuals":
+            family.residuals(model, X_np, y_np)
+        elif method_name == "reconstruct_y":
+            _rng = np.random.default_rng(0)
+            family.reconstruct_y(np.zeros((1, 5)), np.zeros((1, 5)), _rng)
+        elif method_name == "fit_metric":
+            family.fit_metric(y_np, preds)
+    except NotImplementedError:
+        pass  # Expected: multinomial does not support these methods
 
 # batch_fit — fit multinomial on B permuted Y vectors at once
 rng = np.random.default_rng(42)
 n_batch = 50
 perm_indices = np.array([rng.permutation(len(y_np)) for _ in range(n_batch)])
 Y_matrix = y_np[perm_indices]  # shape (B, n)
-batch_stats = family.batch_fit(X_np, Y_matrix, fit_intercept=True)
-print(
-    f"  batch_fit:          shape={batch_stats.shape} (B={n_batch}, p={X_np.shape[1]})"
-)
+with warnings.catch_warnings():
+    warnings.filterwarnings("ignore", category=UserWarning)
+    batch_stats = family.batch_fit(X_np, Y_matrix, fit_intercept=True)
+n_nan = int(np.sum(np.any(np.isnan(batch_stats), axis=1)))
 
 # diagnostics — pseudo-R², LL, AIC, BIC, category counts
 diag = family.diagnostics(X_np, y_np, fit_intercept=True)
-print(
-    f"  diagnostics:        pseudo_R²={diag['pseudo_r_squared']:.4f}, "
-    f"AIC={diag['aic']:.2f}"
-)
-print(f"  category counts:    {diag['category_counts']}")
 
 # classical_p_values — Wald χ²(K-1) p-values
 p_classical = family.classical_p_values(X_np, y_np, fit_intercept=True)
-print(f"  classical_p_values: {np.round(p_classical, 6)}")
+
+# exchangeability_cells — stub (returns None for global exchangeability)
+cells = family.exchangeability_cells(X_np, y_np)
+
+print_protocol_usage_table(
+    results_ter_braak,
+    title="Direct MultinomialFamily Protocol Usage",
+)

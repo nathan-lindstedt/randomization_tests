@@ -29,7 +29,14 @@ from ._compat import DataFrameLike, _ensure_pandas_df
 from ._context import FitContext
 from ._results import IndividualTestResult, JointTestResult
 from ._strategies import resolve_strategy
-from .diagnostics import compute_all_diagnostics
+from .diagnostics import (
+    compute_all_diagnostics,
+    compute_jackknife_coefs,
+    compute_permutation_ci,
+    compute_pvalue_ci,
+    compute_standardized_ci,
+    compute_wald_ci,
+)
 from .engine import PermutationEngine
 from .families import ModelFamily
 from .permutations import _between_cell_total
@@ -62,6 +69,7 @@ def permutation_test_regression(
     permutation_strategy: str | None = None,
     permutation_constraints: Callable[[np.ndarray], np.ndarray] | None = None,
     random_slopes: list[int] | dict[str, list[int]] | None = None,
+    confidence_level: float = 0.95,
 ) -> IndividualTestResult | JointTestResult:
     """Run a permutation test for regression coefficients.
 
@@ -137,6 +145,10 @@ def permutation_test_regression(
             a ``(B', n)`` array with ``B' ≤ B`` rows.  Used to
             apply domain-specific constraints that cannot be
             expressed via cell structure alone.
+        confidence_level: Confidence level for all CI types
+            (permutation, Wald, Clopper-Pearson, standardised).
+            Defaults to 0.95.  The resulting CIs are stored in
+            ``result.confidence_intervals``.
 
     Returns:
         Typed result object containing coefficients, p-values,
@@ -203,6 +215,7 @@ def permutation_test_regression(
     ctx.method = method
     ctx.n_permutations = n_permutations
     ctx.confounders = confounders or []
+    ctx.confidence_level = confidence_level
 
     # ---- Engine (family + backend + observed model + perm indices) -
     engine = PermutationEngine(
@@ -276,6 +289,7 @@ def permutation_test_regression(
         p_value_threshold_three=p_value_threshold_three,
         n_permutations=n_permutations,
         fit_intercept=fit_intercept,
+        confidence_level=confidence_level,
     )
 
 
@@ -692,9 +706,10 @@ def _package_individual_result(
     p_value_threshold_three: float,
     n_permutations: int,
     fit_intercept: bool,
+    confidence_level: float = 0.95,
 ) -> IndividualTestResult:
     """Build an :class:`IndividualTestResult` from an individual strategy's output."""
-    permuted_p_values, classic_p_values, raw_empirical_p, raw_classic_p = (
+    permuted_p_values, classic_p_values, raw_empirical_p, raw_classic_p, counts = (
         calculate_p_values(
             X,
             y,
@@ -739,6 +754,55 @@ def _package_individual_result(
     n_nan = int(np.sum(np.any(np.isnan(permuted_coefs), axis=1)))
     engine.ctx.convergence_count = permuted_coefs.shape[0] - n_nan
 
+    # ---- Confidence intervals ------------------------------------
+    alpha = 1.0 - confidence_level
+    feature_names_list = list(X.columns)
+    confounder_list = confounders or []
+
+    jackknife_coefs = compute_jackknife_coefs(
+        engine.family,
+        X.values.astype(float),
+        y_values,
+        fit_intercept,
+    )
+
+    perm_ci = compute_permutation_ci(
+        permuted_coefs,
+        engine.model_coefs,
+        method,
+        alpha,
+        jackknife_coefs,
+        confounder_list,
+        feature_names_list,
+    )
+
+    pval_ci = compute_pvalue_ci(counts, n_permutations, alpha)
+
+    wald_ci, cat_ci = compute_wald_ci(
+        engine.ctx.observed_model,
+        engine.family,
+        len(engine.model_coefs),
+        alpha,
+        X=X.values.astype(float),
+        y=y_values,
+        fit_intercept=fit_intercept,
+    )
+
+    std_ci = compute_standardized_ci(
+        perm_ci, engine.model_coefs, X, y_values, engine.family
+    )
+
+    ci_dict: dict[str, Any] = {
+        "permutation_ci": perm_ci.tolist(),
+        "pvalue_ci": pval_ci.tolist(),
+        "wald_ci": wald_ci.tolist(),
+        "standardized_ci": std_ci.tolist(),
+        "confidence_level": confidence_level,
+        "ci_method": "bca" if jackknife_coefs is not None else "percentile",
+    }
+    if cat_ci is not None:
+        ci_dict["category_wald_ci"] = cat_ci.tolist()
+
     result = IndividualTestResult(
         model_coefs=engine.model_coefs.tolist(),
         permuted_coefs=permuted_coefs.tolist(),
@@ -750,16 +814,17 @@ def _package_individual_result(
         p_value_threshold_two=p_value_threshold_two,
         p_value_threshold_three=p_value_threshold_three,
         method=method,
-        confounders=confounders or [],
+        confounders=confounder_list,
         family=engine.family,
         backend=engine.backend_name,
-        feature_names=list(X.columns),
+        feature_names=feature_names_list,
         target_name=str(y.columns[0]),
         n_permutations=n_permutations,
         groups=engine.groups,
         permutation_strategy=engine.permutation_strategy,
         diagnostics=engine.diagnostics,
         extended_diagnostics=extended_diagnostics,
+        confidence_intervals=ci_dict,
         context=engine.ctx,
     )
     return result

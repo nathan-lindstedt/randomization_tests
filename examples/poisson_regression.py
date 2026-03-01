@@ -197,9 +197,9 @@ print_confounder_table(
 )
 
 predictors_with_confounders = {
-    pred: res["identified_confounders"]
+    pred: res.identified_confounders
     for pred, res in all_confounder_results.items()
-    if res["identified_confounders"]
+    if res.identified_confounders
 }
 
 # ============================================================================
