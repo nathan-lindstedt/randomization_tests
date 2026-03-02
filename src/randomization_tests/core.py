@@ -899,8 +899,8 @@ def _package_individual_result(
     if method in ("kennedy", "freedman_lane", "score") and confounders:
         for i, col in enumerate(X.columns):
             if col in confounders:
-                permuted_p_values[i] = "N/A (confounder)"
-                classic_p_values[i] = "N/A (confounder)"
+                permuted_p_values[i] = "(confounder)"
+                classic_p_values[i] = "(confounder)"
                 raw_empirical_p[i] = np.nan
                 raw_classic_p[i] = np.nan
 
@@ -949,6 +949,13 @@ def _package_individual_result(
     )
 
     pval_ci = compute_pvalue_ci(counts, n_permutations, alpha)
+
+    # Mask pval_ci for confounders — their counts are pipeline
+    # artefacts, not tested hypotheses.
+    if confounders:
+        for i, col in enumerate(X.columns):
+            if col in confounders:
+                pval_ci[i] = [np.nan, np.nan]
 
     wald_ci, cat_ci = compute_wald_ci(
         engine.ctx.observed_model,

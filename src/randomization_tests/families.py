@@ -369,13 +369,16 @@ class ModelFamily(Protocol):
     def display_diagnostics(
         self,
         diagnostics: dict[str, Any],
-    ) -> tuple[list[tuple[str, str]], list[str]]:
+    ) -> tuple[list[tuple[str, str, str]], list[str]]:
         """Return model-level diagnostic lines and interpretive notes.
 
-        The first element is a list of ``(label, formatted_value)``
-        pairs rendered in the "Model-level Diagnostics" section.  The
-        second element is a list of plain-text warning strings appended
-        to the "Notes" section when a diagnostic flags a concern.
+        The first element is a list of ``(label, stat, detail)``
+        3-tuples rendered in the "Model-level Diagnostics" section.
+        ``label`` is left-justified in a 28-char column, ``stat`` is
+        left-justified in a 14-char column, and ``detail`` occupies
+        the remaining width.  The second element is a list of
+        plain-text warning strings appended to the "Notes" section
+        when a diagnostic flags a concern.
 
         Bundling notes with lines keeps ``display.py`` fully
         family-agnostic — each family owns both its diagnostic values
@@ -386,7 +389,8 @@ class ModelFamily(Protocol):
                 result object.
 
         Returns:
-            ``(lines, notes)`` — diagnostic lines and warning strings.
+            ``(lines, notes)`` — diagnostic 3-tuples and warning
+            strings.
         """
         ...
 
@@ -1128,23 +1132,29 @@ class LinearFamily:
     def display_diagnostics(
         self,
         diagnostics: dict[str, Any],
-    ) -> tuple[list[tuple[str, str]], list[str]]:
+    ) -> tuple[list[tuple[str, str, str]], list[str]]:
         """Return diagnostic lines and notes for the linear family."""
-        lines: list[tuple[str, str]] = []
+        lines: list[tuple[str, str, str]] = []
         notes: list[str] = []
         bp = diagnostics.get("breusch_pagan", {})
         if bp:
+            lm_stat = bp.get("lm_stat", "N/A")
+            lm_stat_str = (
+                f"{lm_stat:.4f}" if isinstance(lm_stat, float) else str(lm_stat)
+            )
+            f_stat = bp.get("f_stat", "N/A")
+            f_stat_str = f"{f_stat:.4f}" if isinstance(f_stat, float) else str(f_stat)
             lines.append(
                 (
                     "Breusch-Pagan LM:",
-                    f"{bp.get('lm_stat', 'N/A'):>10}   "
+                    lm_stat_str,
                     f"p = {_fmt_p(bp.get('lm_p_value'))}",
                 )
             )
             lines.append(
                 (
                     "Breusch-Pagan F:",
-                    f"{bp.get('f_stat', 'N/A'):>10}   "
+                    f_stat_str,
                     f"p = {_fmt_p(bp.get('f_p_value'))}",
                 )
             )
@@ -1699,19 +1709,29 @@ class LogisticFamily:
     def display_diagnostics(
         self,
         diagnostics: dict[str, Any],
-    ) -> tuple[list[tuple[str, str]], list[str]]:
+    ) -> tuple[list[tuple[str, str, str]], list[str]]:
         """Return diagnostic lines and notes for the logistic family."""
-        lines: list[tuple[str, str]] = []
+        lines: list[tuple[str, str, str]] = []
         notes: list[str] = []
         dr = diagnostics.get("deviance_residuals", {})
         if dr:
-            lines.append(("Deviance resid. mean:", f"{dr.get('mean', 'N/A'):>10}"))
-            lines.append(("Deviance resid. var:", f"{dr.get('variance', 'N/A'):>10}"))
-            lines.append(("|d_i| > 2 count:", f"{dr.get('n_extreme', 'N/A'):>10}"))
+            mean_val = dr.get("mean", "N/A")
+            mean_str = (
+                f"{mean_val:.4f}" if isinstance(mean_val, float) else str(mean_val)
+            )
+            var_val = dr.get("variance", "N/A")
+            var_str = f"{var_val:.4f}" if isinstance(var_val, float) else str(var_val)
+            n_ext = dr.get("n_extreme", "N/A")
+            n_ext_str = str(n_ext)
+            rz_val = dr.get("runs_test_z", "N/A")
+            rz_str = f"{rz_val:.4f}" if isinstance(rz_val, float) else str(rz_val)
+            lines.append(("Deviance resid. mean:", mean_str, ""))
+            lines.append(("Deviance resid. var:", var_str, ""))
+            lines.append(("|d_i| > 2 count:", n_ext_str, ""))
             lines.append(
                 (
                     "Runs test Z:",
-                    f"{dr.get('runs_test_z', 'N/A'):>10}   "
+                    rz_str,
                     f"p = {_fmt_p(dr.get('runs_test_p'))}",
                 )
             )
@@ -1935,10 +1955,10 @@ class LogisticFamily:
         Deviance_reduced − Deviance_full as its test statistic,
         mirroring the likelihood-ratio test.
 
-        ``y_pred`` is clipped to [0.001, 0.999] to avoid log(0).
+        ``y_pred`` is clipped to [1e-15, 1-1e-15] to avoid log(0).
         """
-        # Clip predictions to avoid log(0) / inf in cross-entropy.
-        y_pred_safe = np.clip(y_pred, 0.001, 0.999)
+        # Numerical guard for log(0); matches _numpy.py batch path (1e-15).
+        y_pred_safe = np.clip(y_pred, 1e-15, 1 - 1e-15)
         return float(2.0 * log_loss(y_true, y_pred_safe, normalize=False))
 
     # ---- Scoring (joint test interface) ----------------------------
@@ -1961,7 +1981,7 @@ class LogisticFamily:
     # (The logistic intercept β₀ satisfies P = 1/(1+exp(−β₀)) = ȳ,
     # i.e. β₀ = log(ȳ/(1−ȳ)), which gives predicted probability ȳ.)
     #
-    # Predictions are clipped to [0.001, 0.999] before computing
+    # Predictions are clipped to [1e-15, 1-1e-15] before computing
     # deviance to avoid log(0) singularities.
 
     def score(self, model: Any, X: np.ndarray, y: np.ndarray) -> float:
@@ -1984,15 +2004,16 @@ class LogisticFamily:
         where n₁ = Σyᵢ and n₀ = n − n₁.  This is the maximum
         deviance for any logistic model with an intercept.
 
-        When ``fit_intercept=False``, predicts p̂ = 0.5 (logistic
-        sigmoid of zero) — but we pass 0.0 through ``fit_metric``
-        which clips to 0.001, giving a conservative baseline.
+        When ``fit_intercept=False``, predicts p̂ = σ(0) = 0.5
+        — the logistic sigmoid of zero, which is the correct
+        no-intercept null.
         """
         n = len(y)
         if fit_intercept:
             preds = np.full(n, np.mean(y), dtype=float)
         else:
-            preds = np.zeros(n, dtype=float)
+            # No-intercept null: σ(0) = 0.5 for all observations.
+            preds = np.full(n, 0.5, dtype=float)
         return self.fit_metric(y, preds)
 
     # ---- Diagnostics & classical inference -------------------------
@@ -2329,22 +2350,23 @@ class PoissonFamily:
     def display_diagnostics(
         self,
         diagnostics: dict[str, Any],
-    ) -> tuple[list[tuple[str, str]], list[str]]:
+    ) -> tuple[list[tuple[str, str, str]], list[str]]:
         """Return diagnostic lines and notes for the Poisson family."""
-        lines: list[tuple[str, str]] = []
+        lines: list[tuple[str, str, str]] = []
         notes: list[str] = []
         gof = diagnostics.get("poisson_gof", {})
         if gof:
-            lines.append(
-                (
-                    "Pearson \u03c7\u00b2:",
-                    f"{gof.get('pearson_chi2', 'N/A'):>10}",
-                )
+            chi2_val = gof.get("pearson_chi2", "N/A")
+            chi2_str = (
+                f"{chi2_val:.4f}" if isinstance(chi2_val, float) else str(chi2_val)
             )
-            lines.append(("Deviance:", f"{gof.get('deviance', 'N/A'):>10}"))
+            dev_val = gof.get("deviance", "N/A")
+            dev_str = f"{dev_val:.4f}" if isinstance(dev_val, float) else str(dev_val)
             disp = gof.get("dispersion", None)
             disp_str = f"{disp:.4f}" if disp is not None else "N/A"
-            lines.append(("Dispersion:", f"{disp_str:>10}"))
+            lines.append(("Pearson \u03c7\u00b2:", chi2_str, ""))
+            lines.append(("Deviance:", dev_str, ""))
+            lines.append(("Dispersion:", disp_str, ""))
             if gof.get("overdispersed", False):
                 notes.append(
                     f"Dispersion = {disp_str}: overdispersion "
@@ -2633,7 +2655,8 @@ class PoissonFamily:
         if fit_intercept:
             preds = np.full(n, np.mean(y), dtype=float)
         else:
-            preds = np.zeros(n, dtype=float)
+            # No-intercept null: μ̂ = exp(0) = 1 for all observations.
+            preds = np.ones(n, dtype=float)
         return self.fit_metric(y, preds)
 
     # ---- Diagnostics & classical inference -------------------------
@@ -2963,25 +2986,26 @@ class NegativeBinomialFamily:
     def display_diagnostics(
         self,
         diagnostics: dict[str, Any],
-    ) -> tuple[list[tuple[str, str]], list[str]]:
+    ) -> tuple[list[tuple[str, str, str]], list[str]]:
         """Return diagnostic lines and notes for the negative binomial family."""
-        lines: list[tuple[str, str]] = []
+        lines: list[tuple[str, str, str]] = []
         notes: list[str] = []
         gof = diagnostics.get("nb_gof", {})
         if gof:
-            lines.append(
-                (
-                    "Pearson \u03c7\u00b2:",
-                    f"{gof.get('pearson_chi2', 'N/A'):>10}",
-                )
+            chi2_val = gof.get("pearson_chi2", "N/A")
+            chi2_str = (
+                f"{chi2_val:.4f}" if isinstance(chi2_val, float) else str(chi2_val)
             )
-            lines.append(("Deviance:", f"{gof.get('deviance', 'N/A'):>10}"))
+            dev_val = gof.get("deviance", "N/A")
+            dev_str = f"{dev_val:.4f}" if isinstance(dev_val, float) else str(dev_val)
             disp = gof.get("dispersion", None)
             disp_str = f"{disp:.4f}" if disp is not None else "N/A"
-            lines.append(("Dispersion:", f"{disp_str:>10}"))
             alpha_val = gof.get("alpha", None)
             alpha_str = f"{alpha_val:.4f}" if alpha_val is not None else "N/A"
-            lines.append(("\u03b1 (NB Dispersion):", f"{alpha_str:>10}"))
+            lines.append(("Pearson \u03c7\u00b2:", chi2_str, ""))
+            lines.append(("Deviance:", dev_str, ""))
+            lines.append(("Dispersion:", disp_str, ""))
+            lines.append(("\u03b1 (NB Dispersion):", alpha_str, ""))
             if gof.get("overdispersed", False):
                 notes.append(
                     f"Dispersion = {disp_str}: residual "
@@ -3240,7 +3264,8 @@ class NegativeBinomialFamily:
         if fit_intercept:
             preds = np.full(n, np.mean(y), dtype=float)
         else:
-            preds = np.zeros(n, dtype=float)
+            # No-intercept null: μ̂ = exp(0) = 1 for all observations.
+            preds = np.ones(n, dtype=float)
         return self.fit_metric(y, preds)
 
     # ---- Diagnostics & classical inference -------------------------
@@ -3623,21 +3648,21 @@ class OrdinalFamily:
     def display_diagnostics(
         self,
         diagnostics: dict[str, Any],
-    ) -> tuple[list[tuple[str, str]], list[str]]:
+    ) -> tuple[list[tuple[str, str, str]], list[str]]:
         """Return diagnostic lines and notes for the ordinal family."""
-        lines: list[tuple[str, str]] = []
+        lines: list[tuple[str, str, str]] = []
         notes: list[str] = []
         gof = diagnostics.get("ordinal_gof", {})
         if gof:
             pr2 = gof.get("pseudo_r_squared", None)
             pr2_str = f"{pr2:.4f}" if pr2 is not None else "N/A"
-            lines.append(("Pseudo R-sq:", f"{pr2_str:>10}"))
+            lines.append(("Pseudo R-sq:", pr2_str, ""))
             ll = gof.get("log_likelihood", None)
             ll_str = f"{ll:.4f}" if ll is not None else "N/A"
-            lines.append(("Log-Likelihood:", f"{ll_str:>10}"))
+            lines.append(("Log-Likelihood:", ll_str, ""))
             n_cats = gof.get("n_categories", None)
             n_cats_str = str(n_cats) if n_cats is not None else "N/A"
-            lines.append(("Categories:", f"{n_cats_str:>10}"))
+            lines.append(("Categories:", n_cats_str, ""))
             # Proportional odds test
             po_chi2 = gof.get("prop_odds_chi2", None)
             po_p = gof.get("prop_odds_p", None)
@@ -3646,12 +3671,13 @@ class OrdinalFamily:
                 lines.append(
                     (
                         "Prop. Odds \u03c7\u00b2:",
-                        f"{po_chi2_str:>10}   p = {_fmt_p(po_p)}",
+                        po_chi2_str,
+                        f"p = {_fmt_p(po_p)}",
                     )
                 )
                 po_df = gof.get("prop_odds_df", None)
                 if po_df is not None:
-                    lines.append(("Prop. Odds df:", f"{po_df:>10}"))
+                    lines.append(("Prop. Odds df:", str(po_df), ""))
                 if po_p is not None and po_p < 0.05:
                     notes.append(
                         "Proportional odds "
@@ -4244,30 +4270,30 @@ class MultinomialFamily:
     def display_diagnostics(
         self,
         diagnostics: dict[str, Any],
-    ) -> tuple[list[tuple[str, str]], list[str]]:
+    ) -> tuple[list[tuple[str, str, str]], list[str]]:
         """Return diagnostic lines and notes for the multinomial family."""
-        lines: list[tuple[str, str]] = []
+        lines: list[tuple[str, str, str]] = []
         notes: list[str] = []
         gof = diagnostics.get("multinomial_gof", {})
         if gof:
             pr2 = gof.get("pseudo_r_squared", None)
             pr2_str = f"{pr2:.4f}" if pr2 is not None else "N/A"
-            lines.append(("Pseudo R-sq:", f"{pr2_str:>10}"))
+            lines.append(("Pseudo R-sq:", pr2_str, ""))
             ll = gof.get("log_likelihood", None)
             ll_str = f"{ll:.4f}" if ll is not None else "N/A"
-            lines.append(("Log-Likelihood:", f"{ll_str:>10}"))
+            lines.append(("Log-Likelihood:", ll_str, ""))
             n_cats = gof.get("n_categories", None)
             n_cats_str = str(n_cats) if n_cats is not None else "N/A"
-            lines.append(("Categories:", f"{n_cats_str:>10}"))
+            lines.append(("Categories:", n_cats_str, ""))
             llr_p = gof.get("llr_p_value", None)
             if llr_p is not None:
-                lines.append(("LLR p-value:", f"{_fmt_p(llr_p):>10}"))
+                lines.append(("LLR p-value:", _fmt_p(llr_p), ""))
             cat_counts = gof.get("category_counts", {})
             if cat_counts:
                 counts_str = ", ".join(
                     f"{k}: {v}" for k, v in sorted(cat_counts.items())
                 )
-                lines.append(("Category counts:", counts_str))
+                lines.append(("Category counts:", counts_str, ""))
         return lines, notes
 
     def compute_extended_diagnostics(

@@ -290,7 +290,13 @@ if _CAN_IMPORT_JAX:
             Standard errors ``(p,)`` as a NumPy array.
         """
         H = hess_fn(beta)
-        cov = jnp.linalg.inv(H)
+        # Hessian may be singular at convergence boundary (e.g. perfect
+        # separation); pinv returns finite but inflated SEs.
+        # JAX's linalg.solve does not raise on singular matrices — it
+        # silently returns NaN/Inf — so we check finiteness explicitly.
+        cov = jnp.linalg.solve(H, jnp.eye(H.shape[0]))
+        if not jnp.all(jnp.isfinite(cov)):
+            cov = jnp.linalg.pinv(H)
         return np.asarray(jnp.sqrt(jnp.abs(jnp.diag(cov))))
 
     # ============================================================== #
@@ -960,8 +966,15 @@ if _CAN_IMPORT_JAX:
         """
         XtW = X_aug.T * W_diag[None, :]  # (p_aug, n)
         fisher = XtW @ X_aug  # (p_aug, p_aug) — Fisher information
-        fisher_inv = np.linalg.inv(fisher)
-        A_row = fisher_inv[feature_idx] @ X_aug.T  # (n,) — NO W on right
+        # solve(Fisher, e_j) extracts row j of I⁻¹ without full inversion;
+        # pinv fallback for singular/near-singular Fisher (e.g. perfect
+        # separation).
+        e_j = np.zeros(fisher.shape[0])
+        e_j[feature_idx] = 1.0
+        try:
+            A_row = np.linalg.solve(fisher, e_j) @ X_aug.T  # (n,)
+        except np.linalg.LinAlgError:
+            A_row = np.linalg.pinv(fisher)[feature_idx] @ X_aug.T
         return A_row  # type: ignore[no-any-return]
 
     # ============================================================== #
@@ -1075,6 +1088,8 @@ if _CAN_IMPORT_JAX:
         NLL = Σ [exp(Xβ) − y·(Xβ)]   (constant log(y!) dropped).
         """
         eta = X @ beta
+        # Clip to prevent exp overflow (|η| > 709 → inf); matches GLMM Poisson bound.
+        eta = jnp.clip(eta, -20.0, 20.0)
         mu = jnp.exp(eta)
         return jnp.sum(mu - y * eta)
 
@@ -1085,7 +1100,9 @@ if _CAN_IMPORT_JAX:
         y: jnp.ndarray,
     ) -> jnp.ndarray:
         """Gradient of Poisson NLL: X'(μ − y) where μ = exp(Xβ)."""
-        mu = jnp.exp(X @ beta)
+        # Clip to prevent exp overflow; matches GLMM Poisson bound.
+        eta = jnp.clip(X @ beta, -20.0, 20.0)
+        mu = jnp.exp(eta)
         return X.T @ (mu - y)
 
     @jit
@@ -1095,7 +1112,8 @@ if _CAN_IMPORT_JAX:
         y: jnp.ndarray,  # noqa: ARG001
     ) -> jnp.ndarray:
         """Hessian of Poisson NLL: X' diag(μ) X where μ = exp(Xβ)."""
-        mu = jnp.exp(X @ beta)
+        # Clip to prevent exp overflow; matches GLMM Poisson bound.
+        mu = jnp.exp(jnp.clip(X @ beta, -20.0, 20.0))
         return (X.T * mu[None, :]) @ X
 
     def _make_poisson_solver(

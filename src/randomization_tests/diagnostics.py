@@ -224,6 +224,10 @@ def compute_jackknife_coefs(
             )
             # Ensure shape is (n, p) — multinomial returns (n, p) of
             # Wald χ² values via coefs().
+            # Multinomial: coefs() returns Wald χ² statistics (non-negative,
+            # right-skewed). BCa's normality assumption may produce distorted
+            # intervals for these values. Consider interpreting BCa CIs with
+            # caution for multinomial families.
             if jack_coefs.shape == (n, p):
                 return jack_coefs
         except Exception:
@@ -384,14 +388,11 @@ def compute_pvalue_ci(
     successes = counts + 1  # (p,)
     trials = n_permutations + 1
 
-    # Lower bound: Beta.ppf(α/2, s, n-s+1), with s=0 → 0
-    a_lo = np.maximum(successes, 1)  # guard against a=0
+    # Lower bound: Beta.ppf(α/2, s, n-s+1).
+    # Phipson & Smyth (2010) +1 correction guarantees successes ≥ 1,
+    # so no zero-success guard needed.
     b_lo = trials - successes + 1
-    lower = np.where(
-        successes == 0,
-        0.0,
-        _sp_stats.beta.ppf(alpha / 2, a_lo, b_lo),
-    )
+    lower = _sp_stats.beta.ppf(alpha / 2, successes, b_lo)
 
     # Upper bound: Beta.ppf(1−α/2, s+1, n-s), with s=n → 1
     a_hi = successes + 1
@@ -1400,22 +1401,32 @@ def compute_permutation_coverage(
     # essentially zero (25! ≈ 1.6 × 10²⁵) and the string is purely
     # informational.
     n_factorial: int | str
+    coverage_pct: str
+    n_factorial_str: str
     try:
         n_factorial = math.factorial(n_samples)
         coverage = n_permutations / n_factorial
+        n_factorial_str = f"{n_factorial:,}"
         if coverage >= 0.001:
-            coverage_str = f"{coverage:.1%} of {n_factorial:,} possible"
+            coverage_pct = f"{coverage:.1%}"
+            coverage_str = f"{coverage_pct} of {n_factorial_str} possible"
         else:
-            coverage_str = f"< 0.1% of {n_factorial:.2e} possible"
+            coverage_pct = "< 0.1%"
+            n_factorial_str = f"{n_factorial:.2e}"
+            coverage_str = f"{coverage_pct} of {n_factorial_str} possible"
     except (OverflowError, ValueError):
         n_factorial = "overflow"
         coverage = 0.0
-        coverage_str = f"{n_permutations:,} of > 10^{n_samples} possible"
+        coverage_pct = "< 0.1%"
+        n_factorial_str = f"{n_samples}!"
+        coverage_str = f"{n_permutations:,} of {n_factorial_str} possible"
 
     return {
         "coverage": coverage,
         "n_factorial": n_factorial,
         "coverage_str": coverage_str,
+        "coverage_pct": coverage_pct,
+        "n_factorial_str": n_factorial_str,
     }
 
 
@@ -1867,6 +1878,12 @@ def rosenbaum_bounds(
 
         Rosenbaum, P. R. (2002). *Observational Studies* (2nd ed.).
         Springer.
+
+    Notes:
+        The variance formula uses a single RSE and assumes
+        homoscedastic residuals (constant σ² across all units).
+        Under heteroscedasticity, bounds may be anti-conservative.
+        See Rosenbaum (2002), §4.3.
     """
     # --- Family guard: linear only ---
     family_name = result.get("family", "linear")
@@ -1976,6 +1993,11 @@ def rosenbaum_bounds(
         weights /= weights.sum()
 
         shifted_mean = np.sum(contrast * weights) * n
+        # NOTE: Variance uses a single RSE — this assumes homoscedastic
+        # residuals (constant σ² across all units). Under
+        # heteroscedasticity, bounds may be anti-conservative.
+        # Ref: Rosenbaum (2002), §4.3, assumes constant treatment
+        # assignment probabilities within strata.
         shifted_var = rse**2 * np.sum(contrast**2 * weights) * n
 
         if shifted_var <= 0:

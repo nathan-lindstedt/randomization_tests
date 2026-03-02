@@ -412,7 +412,7 @@ def _distance_correlation(
     df = M - 1
     if df <= 0:
         return dcor, 1.0
-    t_stat = np.sqrt(df) * dcov2 / np.sqrt(dvar_x * dvar_y - dcov2**2 + 1e-300)
+    t_stat = np.sqrt(df) * dcov2 / np.sqrt(max(dvar_x * dvar_y - dcov2**2, 1e-300))
     p_val = float(stats.t.sf(abs(t_stat), df) * 2)
     return dcor, p_val
 

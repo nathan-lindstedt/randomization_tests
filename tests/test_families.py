@@ -2479,3 +2479,57 @@ class TestCalibrate:
     def test_protocol_conformance(self):
         """calibrate() is on the ModelFamily protocol."""
         assert hasattr(ModelFamily, "calibrate")
+
+
+# ------------------------------------------------------------------ #
+# No-intercept null_score predictions (audit fix Steps 1-2)
+# ------------------------------------------------------------------ #
+
+
+class TestNoInterceptNullScore:
+    """Verify no-intercept null_score produces correct predictions."""
+
+    def test_logistic_no_intercept_null_finite(self, rng):
+        """Logistic no-intercept null → σ(0) = 0.5, finite deviance."""
+        n = 80
+        y = rng.binomial(1, 0.3, size=n).astype(float)
+        family = LogisticFamily()
+        ns_no_int = family.null_score(y, fit_intercept=False)
+        ns_int = family.null_score(y, fit_intercept=True)
+        assert np.isfinite(ns_no_int)
+        assert ns_no_int > 0
+        # No-intercept null should be >= intercept null (worse fit).
+        assert ns_no_int >= ns_int - 1e-6
+
+    def test_poisson_no_intercept_null_finite(self, rng):
+        """Poisson no-intercept null → exp(0) = 1, finite deviance."""
+        n = 80
+        y = rng.poisson(lam=3.0, size=n).astype(float)
+        family = PoissonFamily()
+        ns_no_int = family.null_score(y, fit_intercept=False)
+        ns_int = family.null_score(y, fit_intercept=True)
+        assert np.isfinite(ns_no_int)
+        assert ns_no_int > 0
+        assert ns_no_int >= ns_int - 1e-6
+
+    def test_nb_no_intercept_null_finite(self, rng):
+        """NB2 no-intercept null → exp(0) = 1, finite deviance."""
+        n = 80
+        y = rng.poisson(lam=3.0, size=n).astype(float)
+        family = NegativeBinomialFamily(alpha=1.0)
+        ns_no_int = family.null_score(y, fit_intercept=False)
+        ns_int = family.null_score(y, fit_intercept=True)
+        assert np.isfinite(ns_no_int)
+        assert ns_no_int > 0
+        assert ns_no_int >= ns_int - 1e-6
+
+    def test_logistic_clip_consistency(self, rng):
+        """Logistic fit_metric with extreme predictions is finite and consistent."""
+        n = 50
+        y = rng.binomial(1, 0.5, size=n).astype(float)
+        family = LogisticFamily()
+        # Predictions very close to 0 and 1
+        preds = np.where(y == 1, 1 - 1e-14, 1e-14)
+        metric = family.fit_metric(y, preds)
+        assert np.isfinite(metric)
+        assert metric > 0

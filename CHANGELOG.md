@@ -5,6 +5,109 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.2] - Unreleased
+
+### Fixed
+
+- **Logistic null-score prediction** (`LogisticFamily.null_score`):
+  intercept-free null now predicts σ(0)=0.5 instead of 0, matching
+  the logistic link at η=0.
+- **Poisson/NB null-score prediction** (`PoissonFamily.null_score`,
+  `NegativeBinomialFamily.null_score`): intercept-free null now
+  predicts exp(0)=1 instead of 0, matching the log-link at η=0.
+- **Logistic clipping harmonisation**: `LogisticFamily.fit_metric`
+  clipping changed from `[0.001, 0.999]` to `[1e-15, 1−1e-15]`,
+  consistent with the numerically stable softplus NLL path.
+- **Engine error message**: removed hardcoded family list from
+  score-project error message; now dynamically names the family
+  that lacks `score_project()`.
+- **Clopper-Pearson dead branch**: removed unreachable
+  `np.maximum(successes, 1)` guard and `np.where(successes == 0)`
+  branch in `_clopper_pearson_ci`, since `successes` is always ≥ 1.
+- **Confounder p-value label**: changed `"N/A (confounder)"` to
+  `"(confounder)"` — the `"N/A"` prefix was redundant clutter.
+- **Confounder `pval_ci` masking**: Clopper-Pearson CIs are now
+  set to NaN for confounder features at the data layer (`core.py`),
+  preventing misleading CI display in both results and diagnostics
+  tables.
+- **Confounder `± margin` sub-row**: confounders now render a blank
+  sub-row instead of a `± margin` line, preventing spurious `[!]`
+  markers and `n_permutations` recommendations.
+- **Confounder P-Val CI in diagnostics**: NaN CIs now render as em
+  dash `—` in the diagnostics table P-Val CI column.
+
+### Changed
+
+- **Fisher SE singularity guard** (`_fisher_information_se` in
+  `_jax.py`): replaced bare `jnp.linalg.inv` with
+  `jnp.linalg.solve` + finiteness check → `jnp.linalg.pinv`
+  fallback.  JAX does not raise on singular matrices, so the guard
+  checks for NaN/Inf explicitly instead of using try/except.
+- **Score projection singularity guard**
+  (`_glm_score_projection_row` in `_jax.py`): replaced
+  `np.linalg.inv(fisher)` with `np.linalg.solve(fisher, e_j)` +
+  `try/except LinAlgError` → `np.linalg.pinv` fallback.
+- **Poisson eta overflow guard** (`_poisson_nll`, `_poisson_grad`,
+  `_poisson_hessian` in `_jax.py`): clipped η to `[-20, 20]`
+  before `jnp.exp(η)` to prevent overflow.
+- **Score strategy regularisation** (`score.py`): added
+  `Σ_k += 1e-10·I` before `np.linalg.solve(Σ_k, …)` to stabilise
+  near-singular cluster scatter matrices.
+- **GLMM Fisher upgrade** (`LogisticMixedFamily.score_project`,
+  `PoissonMixedFamily.score_project`): upgraded from diagonal
+  `U_j / I_{jj}` to full inverse `[I⁻¹]_{jj}` with `try/except
+  LinAlgError` → `pinv` fallback.
+- **Distance correlation denominator** (`confounders.py`): changed
+  `dvar_x * dvar_y - dcov² + 1e-300` to
+  `max(dvar_x * dvar_y - dcov², 1e-300)` to prevent negative
+  argument to `np.sqrt`.
+
+### Added
+
+- **GLMM deviance note** (`LogisticMixedFamily.diagnostics`,
+  `PoissonMixedFamily.diagnostics`): diagnostics dict now includes
+  `"deviance_note": "marginal (fixed-effects only)"` to clarify
+  that deviance excludes BLUPs Zb̂.
+- **Rosenbaum homoscedasticity documentation**: added `Notes`
+  section to `rosenbaum_bounds` docstring and inline comment
+  documenting the equal-variance assumption and its implications
+  for heteroscedastic data.
+- **BCa multinomial limitation comment**: added inline comment in
+  `_jackknife_coefs` documenting that BCa bootstrap assumes an
+  approximate pivot, which the multinomial χ² statistic does not
+  satisfy exactly.
+- **13 new tests**: `TestNoInterceptNullScore` (4),
+  `TestSingularityGuards` (1), `TestSingularHessianSE` (1),
+  `TestPoissonEtaOverflow` (1),
+  `test_small_n_near_constant_returns_finite` (1),
+  `TestConfounderDisplay` (5).
+
+### Changed (Model Diagnostics Polish)
+
+- **3-column model-level diagnostics grid**: restructured the
+  Model-level Diagnostics section of `print_diagnostics_table` into
+  a consistent Label (28ch) | Stat (14ch) | Detail layout, matching
+  the per-feature diagnostics alignment.
+- **`display_diagnostics()` protocol**: return type changed from
+  `list[tuple[str, str]]` to `list[tuple[str, str, str]]` across
+  all 10 family implementations (7 in `families.py`, 3 in
+  `families_mixed.py`) and the `ModelFamily` protocol signature.
+- **Cook's D rendering**: now shows `"3 obs."` in the stat column
+  and `"threshold = 0.0400"` in the detail column.
+- **Coverage label**: shortened from `"Permutation coverage:"` to
+  `"Coverage:"`.
+- **Coverage sufficiency verdict**: coverage line now ends with
+  `"— sufficient"` or `"— borderline"`, computed inline from
+  Clopper-Pearson CIs (whether any non-confounder CI straddles a
+  significance threshold).
+- **Coverage `n!` notation**: factorial overflow denominator now
+  renders as `414!` instead of `> 10^414`.
+- **`compute_permutation_coverage`**: returns two additional keys
+  `coverage_pct` and `n_factorial_str` for display decomposition.
+- **7 new tests**: `TestModelLevelDiagnosticsRendering` (7) covering
+  3-column alignment, Cook's D, coverage sufficient/borderline,
+  line width ≤ 80, B/denominator, and factorial overflow notation.
+
 ## [0.4.1] - Unreleased
 
 ### Added

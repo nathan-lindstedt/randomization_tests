@@ -269,14 +269,14 @@ def _extract_variance_components(
 
 def _format_variance_components(
     vc: dict[str, Any],
-) -> list[tuple[str, str]]:
-    """Format variance-component factors as ``(label, value)`` display lines.
+) -> list[tuple[str, str, str]]:
+    """Format variance-component factors as ``(label, stat, detail)`` display lines.
 
     Shared by the ``display_diagnostics()`` methods of all three mixed
     families.  The caller appends family-specific rows (σ², ICC,
     dispersion, convergence notes) before and/or after these lines.
     """
-    lines: list[tuple[str, str]] = []
+    lines: list[tuple[str, str, str]] = []
     for k_info in vc.get("factors", []):
         k = k_info["index"]
         d_k = k_info["d_k"]
@@ -284,17 +284,20 @@ def _format_variance_components(
         if d_k == 1:
             tau2 = k_info["intercept_var"]
             tag = f" ({label})" if label else ""
-            lines.append((f"τ² (intercept{tag}):", f"{tau2:.4f}"))
+            lines.append((f"τ² (intercept{tag}):", f"{tau2:.4f}", ""))
         else:
             tag = f" [{label}]" if label else ""
-            lines.append((f"τ² (intercept{tag}):", f"{k_info['intercept_var']:.4f}"))
+            lines.append(
+                (f"τ² (intercept{tag}):", f"{k_info['intercept_var']:.4f}", "")
+            )
             for s_idx, sv in enumerate(k_info.get("slope_vars", [])):
-                lines.append((f"τ² (slope {s_idx}{tag}):", f"{sv:.4f}"))
+                lines.append((f"τ² (slope {s_idx}{tag}):", f"{sv:.4f}", ""))
             for corr_entry in k_info.get("correlations", []):
                 lines.append(
                     (
                         f"ρ ({corr_entry['label']}{tag}):",
                         f"{corr_entry['value']:.4f}",
+                        "",
                     )
                 )
     return lines
@@ -517,7 +520,7 @@ class LinearMixedFamily:
     def display_diagnostics(
         self,
         diagnostics: dict[str, Any],
-    ) -> tuple[list[tuple[str, str]], list[str]]:
+    ) -> tuple[list[tuple[str, str, str]], list[str]]:
         """Return diagnostic lines and notes for the LMM family.
 
         Variance components are presented as individual labelled rows:
@@ -528,7 +531,7 @@ class LinearMixedFamily:
         * ``ρ (int, slope j)`` — intercept–slope correlation (when >1 RE)
         * ``ICC`` — intraclass correlation coefficient
         """
-        lines: list[tuple[str, str]] = []
+        lines: list[tuple[str, str, str]] = []
         notes: list[str] = []
         lmm = diagnostics.get("lmm_gof", {})
         if not lmm:
@@ -537,7 +540,7 @@ class LinearMixedFamily:
         # σ² (residual)
         sigma2 = lmm.get("sigma2")
         if sigma2 is not None:
-            lines.append(("σ² (residual):", f"{sigma2:.4f}"))
+            lines.append(("σ² (residual):", f"{sigma2:.4f}", ""))
 
         # Variance components — flattened representation
         vc = lmm.get("variance_components", {})
@@ -546,7 +549,7 @@ class LinearMixedFamily:
         # ICC
         icc = lmm.get("icc")
         if icc is not None:
-            lines.append(("ICC:", f"{icc:.4f}"))
+            lines.append(("ICC:", f"{icc:.4f}", ""))
 
         # Convergence note
         conv = lmm.get("converged")
@@ -1760,9 +1763,9 @@ class LogisticMixedFamily(_GLMMBatchStubMixin):
     def display_diagnostics(
         self,
         diagnostics: dict[str, Any],
-    ) -> tuple[list[tuple[str, str]], list[str]]:
+    ) -> tuple[list[tuple[str, str, str]], list[str]]:
         """Variance component lines for logistic GLMM."""
-        lines: list[tuple[str, str]] = []
+        lines: list[tuple[str, str, str]] = []
         notes: list[str] = []
         glmm = diagnostics.get("glmm_gof", {})
         if not glmm:
@@ -1773,7 +1776,7 @@ class LogisticMixedFamily(_GLMMBatchStubMixin):
 
         icc = glmm.get("icc")
         if icc is not None:
-            lines.append(("ICC:", f"{icc:.4f}"))
+            lines.append(("ICC:", f"{icc:.4f}", ""))
 
         conv = glmm.get("converged")
         if conv is not None and not conv:
@@ -1941,7 +1944,12 @@ class LogisticMixedFamily(_GLMMBatchStubMixin):
         score_weights = X_full[:, j] * self.V_inv_diag  # (n,)
         E_pi = residuals[perm_indices]  # (B, n)
         U_j = E_pi @ score_weights  # (B,)
-        return np.asarray(U_j / self.fisher_info[j, j])  # (B,)
+        # Full Fisher inverse [I⁻¹]_{jj} accounts for cross-correlations.
+        try:
+            fisher_inv_jj = np.linalg.inv(self.fisher_info)[j, j]
+        except np.linalg.LinAlgError:
+            fisher_inv_jj = np.linalg.pinv(self.fisher_info)[j, j]
+        return np.asarray(U_j * fisher_inv_jj)  # (B,)
 
     # ---- Permutation helpers ---------------------------------------
 
@@ -2033,7 +2041,9 @@ class LogisticMixedFamily(_GLMMBatchStubMixin):
             "n_features": X.shape[1],
             "n_groups": n_groups,
             "re_summary": re_summary,
+            # Marginal deviance (fixed effects only, excludes BLUPs Zb̂).
             "deviance": np.round(deviance, 4),
+            "deviance_note": "marginal (fixed-effects only)",
             "icc": np.round(icc, 4),
             "variance_components": {"factors": factors},
             "converged": self.converged,
@@ -2229,9 +2239,9 @@ class PoissonMixedFamily(_GLMMBatchStubMixin):
     def display_diagnostics(
         self,
         diagnostics: dict[str, Any],
-    ) -> tuple[list[tuple[str, str]], list[str]]:
+    ) -> tuple[list[tuple[str, str, str]], list[str]]:
         """Variance component lines for Poisson GLMM."""
-        lines: list[tuple[str, str]] = []
+        lines: list[tuple[str, str, str]] = []
         notes: list[str] = []
         glmm = diagnostics.get("glmm_gof", {})
         if not glmm:
@@ -2242,11 +2252,11 @@ class PoissonMixedFamily(_GLMMBatchStubMixin):
 
         icc = glmm.get("icc")
         if icc is not None:
-            lines.append(("ICC:", f"{icc:.4f}"))
+            lines.append(("ICC:", f"{icc:.4f}", ""))
 
         disp = glmm.get("dispersion")
         if disp is not None:
-            lines.append(("Dispersion:", f"{disp:.4f}"))
+            lines.append(("Dispersion:", f"{disp:.4f}", ""))
             if disp > 1.5:
                 notes.append(
                     f"Dispersion = {disp:.4f}: overdispersion "
@@ -2414,7 +2424,12 @@ class PoissonMixedFamily(_GLMMBatchStubMixin):
         score_weights = X_full[:, j] * self.V_inv_diag  # (n,)
         E_pi = residuals[perm_indices]  # (B, n)
         U_j = E_pi @ score_weights  # (B,)
-        return np.asarray(U_j / self.fisher_info[j, j])  # (B,)
+        # Full Fisher inverse [I⁻¹]_{jj} accounts for cross-correlations.
+        try:
+            fisher_inv_jj = np.linalg.inv(self.fisher_info)[j, j]
+        except np.linalg.LinAlgError:
+            fisher_inv_jj = np.linalg.pinv(self.fisher_info)[j, j]
+        return np.asarray(U_j * fisher_inv_jj)  # (B,)
 
     # ---- Permutation helpers ---------------------------------------
 
@@ -2516,7 +2531,9 @@ class PoissonMixedFamily(_GLMMBatchStubMixin):
             "n_features": X.shape[1],
             "n_groups": n_groups,
             "re_summary": re_summary,
+            # Marginal deviance (fixed effects only, excludes BLUPs Zb̂).
             "deviance": np.round(deviance, 4),
+            "deviance_note": "marginal (fixed-effects only)",
             "dispersion": np.round(dispersion, 4),
             "icc": np.round(icc, 4),
             "variance_components": {"factors": factors},

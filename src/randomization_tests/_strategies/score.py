@@ -419,6 +419,9 @@ class ScoreExactStrategy:
             theta_k = log_chol[theta_offset : theta_offset + n_chol_k]
             L_k = _fill_lower_triangular_np(theta_k, d_k)  # θ → L_k
             Sigma_k = L_k @ L_k.T  # L_k L_k' = Σ_k
+            # Σ_k can be singular when REML estimates variance at the
+            # boundary (τ² = 0); regularise for stable inversion.
+            Sigma_k += 1e-10 * np.eye(d_k)
             Sigma_k_inv = np.linalg.solve(Sigma_k, np.eye(d_k))  # Σ_k⁻¹
             block_k = np.kron(np.eye(G_k), Sigma_k_inv)  # I_G ⊗ Σ_k⁻¹
             size_k = G_k * d_k

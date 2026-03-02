@@ -131,8 +131,8 @@ class TestKennedyIndividual:
             random_state=42,
         )
         # x3 should be marked as confounder
-        assert result["permuted_p_values"][2] == "N/A (confounder)"
-        assert result["classic_p_values"][2] == "N/A (confounder)"
+        assert result["permuted_p_values"][2] == "(confounder)"
+        assert result["classic_p_values"][2] == "(confounder)"
 
     def test_logistic_no_confounders(self):
         X, y = _make_binary_data()
@@ -274,7 +274,7 @@ class TestFitInterceptFalse:
             fit_intercept=False,
         )
         assert result["method"] == "kennedy"
-        assert result["permuted_p_values"][2] == "N/A (confounder)"
+        assert result["permuted_p_values"][2] == "(confounder)"
 
     def test_kennedy_logistic_no_intercept(self):
         X, y = _make_binary_data()
@@ -516,7 +516,7 @@ class TestFamilyParameter:
             family="linear",
         )
         assert result.family.name == "linear"
-        assert result["permuted_p_values"][2] == "N/A (confounder)"
+        assert result["permuted_p_values"][2] == "(confounder)"
 
     def test_kennedy_joint_with_explicit_family(self):
         """Kennedy joint method should work with an explicit family."""
@@ -763,9 +763,9 @@ class TestFreedmanLaneIndividual:
         assert result["method"] == "freedman_lane"
         assert result.family.name == "linear"
         assert len(result["model_coefs"]) == 3
-        # x3 is a confounder — its p-value should be N/A
-        assert result["permuted_p_values"][2] == "N/A (confounder)"
-        assert result["classic_p_values"][2] == "N/A (confounder)"
+        # x3 is a confounder — its p-value should be masked
+        assert result["permuted_p_values"][2] == "(confounder)"
+        assert result["classic_p_values"][2] == "(confounder)"
         assert np.isnan(result["raw_empirical_p"][2])
 
     def test_linear_no_confounders_warns(self):
@@ -802,7 +802,7 @@ class TestFreedmanLaneIndividual:
         assert result["method"] == "freedman_lane"
         # z1 is a confounder
         z1_idx = list(X.columns).index("z1")
-        assert result["permuted_p_values"][z1_idx] == "N/A (confounder)"
+        assert result["permuted_p_values"][z1_idx] == "(confounder)"
 
     def test_logistic_no_confounders_warns(self):
         """Freedman–Lane logistic without confounders warns."""

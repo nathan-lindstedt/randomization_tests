@@ -120,8 +120,8 @@ class TestKennedyIndividualSmoke:
         )
         assert result["method"] == "kennedy"
         # Confounders should be marked N/A
-        assert result["permuted_p_values"][3] == "N/A (confounder)"
-        assert result["permuted_p_values"][4] == "N/A (confounder)"
+        assert result["permuted_p_values"][3] == "(confounder)"
+        assert result["permuted_p_values"][4] == "(confounder)"
 
 
 @pytest.mark.slow

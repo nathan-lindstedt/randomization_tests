@@ -154,8 +154,7 @@ class PermutationEngine:
             except NotImplementedError:
                 raise ValueError(
                     f"method='{method}' requires family='{self.family.name}' "
-                    f"to implement score_project().  Supported families: "
-                    f"'linear', 'linear_mixed'.  Use method='ter_braak' or "
+                    f"to implement score_project().  Use method='ter_braak' or "
                     f"method='freedman_lane' instead."
                 ) from None
             except Exception:

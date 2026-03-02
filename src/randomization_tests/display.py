@@ -222,33 +222,38 @@ def print_results_table(
         print(f"{trunc_feat:<{fc}}{coef_str}  {emp_p[i]:>23} {asy_p[i]:>23}")
 
         # Sub-row: ± margin from the Clopper-Pearson CI, aligned
-        # under the empirical p-value column.
+        # under the empirical p-value column.  Confounders get a
+        # blank sub-row (no meaningful permutation p-value).
         if pval_ci is not None and i < len(pval_ci):
             lo, hi = pval_ci[i]
-            margin = (hi - lo) / 2
-            marker = _significance_marker(lo, hi, thresholds)
-            # Scientific e-notation when margin < 0.001 (smaller
-            # than 3 decimal places can represent); 3 dp otherwise.
-            if margin < 0.001 and margin > 0:
-                num_str = f"{margin:.0e}"
+            if np.isnan(lo) or np.isnan(hi):
+                # Confounder — print blank sub-row for vertical spacing.
+                print(f"{'':<33}{'':>22}")
             else:
-                num_str = f"{margin:.3f}"
-            core = f"\u00b1 {num_str}"
-            # Right-align core in 17 chars so the decimal of
-            # "\u00b1 0.XXX" aligns with the p-value decimal above.
-            # Fixed 5-char suffix for the [!] marker so it never
-            # shifts the number.
-            _warn_suffix = "  [!]" if marker else "     "
-            margin_display = f"{core:>17}{_warn_suffix}"
-            # 22 (feat) + 9 (coef) + 2 (gap) = 33 chars of prefix.
-            print(f"{'':<33}{margin_display}")
-            if marker:
-                # Identify which threshold is straddled to recommend B
-                raw_p = float(results.raw_empirical_p[i])
-                for t in thresholds:
-                    if lo < t < hi:
-                        borderline_features.append((feat, raw_p, t))
-                        break
+                margin = (hi - lo) / 2
+                marker = _significance_marker(lo, hi, thresholds)
+                # Scientific e-notation when margin < 0.001 (smaller
+                # than 3 decimal places can represent); 3 dp otherwise.
+                if margin < 0.001 and margin > 0:
+                    num_str = f"{margin:.0e}"
+                else:
+                    num_str = f"{margin:.3f}"
+                core = f"\u00b1 {num_str}"
+                # Right-align core in 17 chars so the decimal of
+                # "\u00b1 0.XXX" aligns with the p-value decimal above.
+                # Fixed 5-char suffix for the [!] marker so it never
+                # shifts the number.
+                _warn_suffix = "  [!]" if marker else "     "
+                margin_display = f"{core:>17}{_warn_suffix}"
+                # 22 (feat) + 9 (coef) + 2 (gap) = 33 chars of prefix.
+                print(f"{'':<33}{margin_display}")
+                if marker:
+                    # Identify which threshold is straddled to recommend B
+                    raw_p = float(results.raw_empirical_p[i])
+                    for t in thresholds:
+                        if lo < t < hi:
+                            borderline_features.append((feat, raw_p, t))
+                            break
 
         # Blank row between feature groups for vertical spacing
         if i < len(feature_names) - 1:
@@ -568,8 +573,12 @@ def print_diagnostics_table(
         if show_pval_ci:
             if pval_ci is not None and i < len(pval_ci):
                 lo, hi = pval_ci[i]
-                ci_str = f"[{lo:.3f}, {hi:.3f}]"
-                ci_str = f"{ci_str:>16}"
+                if np.isnan(lo) or np.isnan(hi):
+                    # Confounder — no meaningful p-value CI.
+                    ci_str = f"{'—':>14}  "
+                else:
+                    ci_str = f"[{lo:.3f}, {hi:.3f}]"
+                    ci_str = f"{ci_str:>16}"
             else:
                 ci_str = f"{'—':>14}  "
 
@@ -648,14 +657,15 @@ def print_diagnostics_table(
     # ── Model-level Diagnostics ────────────────────────────────── #
 
     lw = 28  # label column width (not counting 2-space indent)
+    sw = 14  # stat column width
 
     print("-" * W)
     print("Model-level Diagnostics")
     print("-" * W)
 
     diag_lines, diag_notes = family.display_diagnostics(ext)
-    for label, value in diag_lines:
-        print(f"  {label:<{lw}}{value}")
+    for label, stat, detail in diag_lines:
+        print(f"  {label:<{lw}}{stat:<{sw}}{detail}")
     notes.extend(diag_notes)
 
     # Cook's distance
@@ -663,9 +673,9 @@ def print_diagnostics_table(
     if cd:
         n_inf = cd.get("n_influential", 0)
         thresh = cd.get("threshold", 0)
-        cd_val = f"{n_inf}   threshold = {thresh:.4f}"
+        n_inf_str = f"{n_inf} obs."
         cd_label = "Cook's D (> 4/n):"
-        print(f"  {cd_label:<{lw}}{cd_val}")
+        print(f"  {cd_label:<{lw}}{n_inf_str:<{sw}}threshold = {thresh:.4f}")
         if isinstance(n_inf, (int, float)) and n_inf > 0:
             notes.append(
                 f"{int(n_inf)} obs. with Cook's D > {thresh:.4f} "
@@ -673,11 +683,40 @@ def print_diagnostics_table(
                 f"influential points."
             )
 
-    # Permutation coverage
+    # Permutation coverage with sufficiency verdict
     pc = ext.get("permutation_coverage", {})
     if pc:
-        cov_str = pc.get("coverage_str", "N/A")
-        print(f"  {'Permutation coverage:':<{lw}}{cov_str}")
+        cov_pct = pc.get("coverage_pct", "")
+        n_fact_str = pc.get("n_factorial_str", "")
+        n_perm = getattr(results, "n_permutations", None)
+        b_str = f"{n_perm:,}" if n_perm is not None else "?"
+
+        # Compute sufficiency verdict from Clopper-Pearson CIs
+        ci = getattr(results, "confidence_intervals", None) or {}
+        pval_ci_list: list[list[float]] | None = ci.get("pvalue_ci")
+        thresholds = [
+            getattr(results, "p_value_threshold_one", 0.05),
+            getattr(results, "p_value_threshold_two", 0.01),
+            getattr(results, "p_value_threshold_three", 0.001),
+        ]
+        emp_p_vals = getattr(results, "permuted_p_values", []) or []
+        is_borderline = False
+        if pval_ci_list is not None:
+            for idx, (lo_v, hi_v) in enumerate(pval_ci_list):
+                # Skip confounders
+                if idx < len(emp_p_vals) and emp_p_vals[idx] == "(confounder)":
+                    continue
+                if np.isnan(lo_v) or np.isnan(hi_v):
+                    continue
+                for t in thresholds:
+                    if lo_v < t < hi_v:
+                        is_borderline = True
+                        break
+                if is_borderline:
+                    break
+        verdict = "borderline" if is_borderline else "sufficient"
+        detail = f"B = {b_str} / {n_fact_str} \u2014 {verdict}"
+        print(f"  {'Coverage:':<{lw}}{cov_pct:<{sw}}{detail}")
 
     # ── Notes ──────────────────────────────────────────────────── #
 

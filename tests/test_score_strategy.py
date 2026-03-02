@@ -511,7 +511,7 @@ class TestConfounderMasking:
         )
         idx_x3 = list(X.columns).index("x3")
         assert np.isnan(result.raw_empirical_p[idx_x3])
-        assert "N/A" in result.permuted_p_values[idx_x3]
+        assert result.permuted_p_values[idx_x3] == "(confounder)"
 
     def test_non_confounder_not_masked(self) -> None:
         X, y = _linear_data()
@@ -596,3 +596,26 @@ class TestDeterminism:
             confounders=["x3"],
         )
         assert r1.p_value == r2.p_value
+
+
+# ------------------------------------------------------------------ #
+# Singularity guards (audit fix Steps 3, 7)
+# ------------------------------------------------------------------ #
+
+
+class TestSingularityGuards:
+    """Verify score projection handles singular matrices gracefully."""
+
+    def test_collinear_fisher_returns_finite(self) -> None:
+        """_glm_score_projection_row with collinear design -> finite result."""
+        from randomization_tests._backends._jax import _glm_score_projection_row
+
+        n, p = 50, 3
+        X = np.random.default_rng(42).standard_normal((n, p))
+        # Make column 2 a duplicate of column 1 -> singular Fisher
+        X[:, 2] = X[:, 1]
+        X_aug = np.column_stack([np.ones(n), X])
+        W_diag = np.ones(n) * 0.25  # logistic working weights
+        result = _glm_score_projection_row(X_aug, W_diag, feature_idx=1)
+        assert np.all(np.isfinite(result))
+        assert result.shape == (n,)

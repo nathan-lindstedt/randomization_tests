@@ -426,3 +426,56 @@ class TestNB2Autodiff:
             H_fd[:, j] = (gp - gm) / (2 * eps)
 
         np.testing.assert_allclose(H_auto, H_fd, atol=1e-4, rtol=1e-4)
+
+
+# ------------------------------------------------------------------ #
+# Singularity & overflow guards (audit fix Steps 4, 5)
+# ------------------------------------------------------------------ #
+
+
+class TestSingularHessianSE:
+    """Verify _fisher_information_se handles singular Hessians."""
+
+    def test_singular_hessian_returns_finite_se(self):
+        """Singular Hessian -> finite (large) SEs, not exception."""
+        import jax.numpy as jnp
+
+        from randomization_tests._backends._jax import _CAN_IMPORT_JAX
+
+        if not _CAN_IMPORT_JAX:
+            pytest.skip("JAX not available")
+
+        from randomization_tests._backends._jax import _fisher_information_se
+
+        # Singular Hessian: rank-1 matrix
+        def hess_fn(beta):
+            return jnp.ones((3, 3))
+
+        beta = jnp.zeros(3)
+        se = _fisher_information_se(hess_fn, beta)
+        assert se.shape == (3,)
+        assert np.all(np.isfinite(se))
+
+
+class TestPoissonEtaOverflow:
+    """Verify Poisson NLL/grad/hessian handle extreme eta values."""
+
+    def test_poisson_nll_extreme_eta_finite(self):
+        """Poisson NLL with huge eta (1000) should return finite value."""
+        import jax.numpy as jnp
+
+        from randomization_tests._backends._jax import (
+            _CAN_IMPORT_JAX,
+            _poisson_nll,
+        )
+
+        if not _CAN_IMPORT_JAX:
+            pytest.skip("JAX not available")
+
+        n = 10
+        X = jnp.eye(n)
+        y = jnp.ones(n)
+        # beta values that would make eta = 1000 (overflow without clip)
+        beta = jnp.full(n, 1000.0)
+        nll = float(_poisson_nll(beta, X, y))
+        assert np.isfinite(nll)

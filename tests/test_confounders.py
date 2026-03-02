@@ -169,6 +169,16 @@ class TestDistanceCorrelation:
         assert dcor >= 0.0
         assert 0 <= p_val <= 1.0
 
+    def test_small_n_near_constant_returns_finite(self):
+        """Small n with near-constant columns -> (0.0, 1.0), not NaN."""
+        x = np.array([1.0, 1.0, 1.001, 1.0])
+        y = np.array([2.0, 2.0, 2.001, 2.0])
+        dcor, p_val = _distance_correlation(x, y)
+        assert np.isfinite(dcor)
+        assert np.isfinite(p_val)
+        assert dcor >= 0.0
+        assert 0 <= p_val <= 1.0
+
     def test_large_n_warning(self):
         """n > 10,000 should emit a UserWarning about memory."""
         x = np.arange(10_001, dtype=float)
