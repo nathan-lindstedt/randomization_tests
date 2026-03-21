@@ -55,6 +55,7 @@ import numpy as np
 import pandas as pd
 
 from ..families import _augment_intercept, fit_reduced
+from . import _apply_randomization
 
 if TYPE_CHECKING:
     from ..families import ModelFamily
@@ -89,6 +90,7 @@ class ScoreIndividualStrategy:
         model_coefs: np.ndarray | None = None,
         fit_intercept: bool = True,
         n_jobs: int = 1,
+        randomization: str = "permute",
     ) -> np.ndarray:
         """Run the score projection permutation algorithm.
 
@@ -104,6 +106,7 @@ class ScoreIndividualStrategy:
                 coefficient scale.
             fit_intercept: Whether to include an intercept.
             n_jobs: Unused (score is fully vectorised).
+            randomization: ``"permute"`` (default) or ``"sign_flip"``.
 
         Returns:
             Array of shape ``(B, n_features)`` with permuted
@@ -153,6 +156,7 @@ class ScoreIndividualStrategy:
                 perm_indices,
                 fit_intercept=fit_intercept,
                 y=y_values,
+                randomization=randomization,
             )  # (B,) — raw score (sans constant)
 
             # Step 5: Add constant offset to put on coefficient scale.
@@ -170,6 +174,7 @@ class ScoreIndividualStrategy:
                 identity,
                 fit_intercept=fit_intercept,
                 y=y_values,
+                randomization="permute",  # identity uses index mode
             )[0]  # scalar — A_j @ e (unpermuted)
             result[:, j] = model_coefs[j] + (raw_scores - observed_raw)
 
@@ -205,6 +210,7 @@ class ScoreJointStrategy:
         model_coefs: np.ndarray | None = None,
         fit_intercept: bool = True,
         n_jobs: int = 1,
+        randomization: str = "permute",
     ) -> tuple[float, np.ndarray, str, list[str]]:
         """Run the joint score projection permutation algorithm.
 
@@ -224,6 +230,7 @@ class ScoreJointStrategy:
             model_coefs: Observed coefficients ``(p,)``.
             fit_intercept: Whether to include an intercept.
             n_jobs: Unused (score is fully vectorised).
+            randomization: ``"permute"`` (default) or ``"sign_flip"``.
 
         Returns:
             ``(obs_improvement, perm_improvements, metric_type,
@@ -246,23 +253,38 @@ class ScoreJointStrategy:
             Z = np.zeros((n, 0))  # (n, 0)
 
         # Reduced model (confounders only).
-        _, preds_reduced = fit_reduced(family, Z, y_values, fit_intercept)
+        reduced_model, preds_reduced = fit_reduced(family, Z, y_values, fit_intercept)
 
         # Observed improvement: reduced metric - full metric.
-        base_metric = family.fit_metric(y_values, preds_reduced)
+        if reduced_model is not None:
+            base_metric = family.score(reduced_model, Z, y_values)
+        else:
+            base_metric = family.null_score(y_values, fit_intercept)
         full_model = family.fit(X_np, y_values, fit_intercept)
-        preds_full = family.predict(full_model, X_np)
-        obs_improvement = base_metric - family.fit_metric(y_values, preds_full)
+        obs_improvement = base_metric - family.score(full_model, X_np, y_values)
 
-        # Full-model residuals — permuted to build Y*.
-        full_resids = family.residuals(full_model, X_np, y_values)  # (n,)
+        # Build permuted Y.
+        if family.direct_permutation:
+            # Direct-permutation families (ordinal, multinomial) do not support
+            # residual reconstruction — permute Y directly instead.
+            Y_perm = y_values[perm_indices]  # (B, n)
+        else:
+            # Full-model residuals — resampled to build Y*.
+            full_resids = family.residuals(full_model, X_np, y_values)  # (n,)
 
-        # Build permuted Y*: ŷ_reduced + e_π[full-model].
-        perm_resids = full_resids[perm_indices]  # (B, n)
-        rng = np.random.default_rng(int(perm_indices[0, 0]))
-        Y_perm = family.reconstruct_y(
-            preds_reduced[np.newaxis, :], perm_resids, rng
-        )  # (B, n)
+            # Build resampled Y*: ŷ_reduced + resampled(e[full-model]).
+            perm_resids = _apply_randomization(
+                full_resids, perm_indices, randomization
+            )  # (B, n)
+            # Shift by row length so sign-flip values (±1) become positive.
+            rng = np.random.default_rng(
+                (perm_indices[0].astype(np.int64) + perm_indices.shape[1]).astype(
+                    np.uint64
+                )
+            )
+            Y_perm = family.reconstruct_y(
+                preds_reduced[np.newaxis, :], perm_resids, rng
+            )  # (B, n)
 
         # For each permutation, compute full-model scores and RSS.
         # Reuse batch_fit_and_score — same as Freedman–Lane joint.
@@ -314,6 +336,7 @@ class ScoreExactStrategy:
         model_coefs: np.ndarray | None = None,
         fit_intercept: bool = True,
         n_jobs: int = 1,
+        randomization: str = "permute",
     ) -> np.ndarray:
         """PQL-fixed exact permutation via vmapped IRLS.
 
@@ -331,13 +354,25 @@ class ScoreExactStrategy:
             model_coefs: Observed coefficients ``(p,)``.
             fit_intercept: Whether to include an intercept.
             n_jobs: Unused (vmap handles vectorisation).
+            randomization: ``"permute"`` only — sign-flip is not
+                supported (PQL-fixed permutes Y directly).
 
         Returns:
             ``(B, n_features)`` with permuted coefficients.
 
         Raises:
-            ValueError: If the family is not a GLMM (no ``log_chol``).
+            ValueError: If the family is not a GLMM (no ``log_chol``)
+                or if ``randomization="sign_flip"``.
         """
+        # ---- Guard: sign-flip not supported ----------------------
+        if randomization == "sign_flip":
+            raise ValueError(
+                "method='score_exact' does not support sign-flip "
+                "randomization.  score_exact permutes Y directly via "
+                "PQL-fixed IRLS — there are no residuals to flip.  "
+                "Use method='score' for sign-flip score projection."
+            )
+
         # ---- Guard: GLMM only ------------------------------------
         if not hasattr(family, "log_chol") or family.log_chol is None:
             raise ValueError(

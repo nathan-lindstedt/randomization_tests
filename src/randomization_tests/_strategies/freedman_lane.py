@@ -53,6 +53,7 @@ import numpy as np
 import pandas as pd
 
 from ..families import fit_reduced
+from . import _apply_randomization
 
 if TYPE_CHECKING:
     from ..families import ModelFamily
@@ -79,6 +80,7 @@ class FreedmanLaneIndividualStrategy:
         model_coefs: np.ndarray | None = None,
         fit_intercept: bool = True,
         n_jobs: int = 1,
+        randomization: str = "permute",
     ) -> np.ndarray:
         """Run the Freedman–Lane individual permutation algorithm.
 
@@ -92,6 +94,7 @@ class FreedmanLaneIndividualStrategy:
                 fill confounder slots.
             fit_intercept: Whether to include an intercept.
             n_jobs: Parallelism level for the batch-fit step.
+            randomization: ``"permute"`` (default) or ``"sign_flip"``.
 
         Returns:
             Array of shape ``(B, n_features)`` with permuted
@@ -106,10 +109,14 @@ class FreedmanLaneIndividualStrategy:
         X_np = X.values.astype(float)  # (n, p) full design matrix
         n_perm, n = perm_indices.shape  # B permutations, n observations
 
-        # Deterministic RNG seeded from the first permutation index.
+        # Deterministic RNG seeded from the first row of perm_indices.
         # Ensures stochastic reconstruction steps (e.g. Bernoulli
-        # sampling for logistic) are reproducible.
-        rng = np.random.default_rng(int(perm_indices[0, 0]))
+        # sampling for logistic) are reproducible for both permutation
+        # (0..n-1) and sign-flip (±1) matrices; shift makes all values
+        # positive so they are valid as seed entries.
+        rng = np.random.default_rng(
+            (perm_indices[0].astype(np.int64) + perm_indices.shape[1]).astype(np.uint64)
+        )
 
         # Step 1: Fit the FULL model Y ~ X and get residuals.
         # Unlike ter Braak, we use full-model residuals because they
@@ -129,10 +136,13 @@ class FreedmanLaneIndividualStrategy:
         _, preds_reduced = fit_reduced(family, Z, y_values, fit_intercept)
         # preds_reduced = ŷ_Z, shape (n,)
 
-        # Step 3: Permute full-model residuals.
-        # Fancy-indexing with (B, n) index array broadcasts the 1-D
-        # residual vector into B shuffled copies in one shot.
-        permuted_resids = full_resids[perm_indices]  # (B, n)
+        # Step 3: Resample full-model residuals.
+        # For permutation: fancy-indexing broadcasts the 1-D
+        # residual vector into B shuffled copies.
+        # For sign-flip: element-wise ±1 multiplication.
+        permuted_resids = _apply_randomization(
+            full_resids, perm_indices, randomization
+        )  # (B, n)
 
         # Step 4: Reconstruct Y* = ŷ_Z + π(e).
         # For linear: direct addition.  For logistic: clamp to [0,1]
@@ -207,6 +217,7 @@ class FreedmanLaneJointStrategy:
         model_coefs: np.ndarray | None = None,
         fit_intercept: bool = True,
         n_jobs: int = 1,
+        randomization: str = "permute",
     ) -> tuple[float, np.ndarray, str, list[str]]:
         """Run the Freedman–Lane joint permutation algorithm.
 
@@ -223,8 +234,12 @@ class FreedmanLaneJointStrategy:
         X_np = X.values.astype(float)  # (n, p) full design matrix
         n_perm, n = perm_indices.shape  # B permutations, n observations
 
-        # Deterministic RNG for stochastic reconstruction.
-        rng = np.random.default_rng(int(perm_indices[0, 0]))
+        # Deterministic RNG seeded from the first row of perm_indices.
+        # Shift by row length so sign-flip values (±1) become positive;
+        # permutation values (0..n-1) remain distinct and non-negative.
+        rng = np.random.default_rng(
+            (perm_indices[0].astype(np.int64) + perm_indices.shape[1]).astype(np.uint64)
+        )
 
         # Z = confounder design matrix (n, q_z).
         if confounders:
@@ -273,7 +288,9 @@ class FreedmanLaneJointStrategy:
         # the improvement delta = S_reduced - S_full.
 
         # Vectorised reconstruction: (B, n)
-        perm_resids_batch = full_resids[perm_indices]  # (B, n)
+        perm_resids_batch = _apply_randomization(
+            full_resids, perm_indices, randomization
+        )  # (B, n)
         preds_reduced_tiled = np.broadcast_to(preds_reduced[np.newaxis, :], (n_perm, n))
         Y_star_batch = family.reconstruct_y(
             preds_reduced_tiled, perm_resids_batch, rng

@@ -5,6 +5,131 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.4] - Unreleased
+
+### Changed
+
+- **API.md**: fixed stale `ar_order` description (GLS→FGLS with Cholesky
+  whitening), corrected MultinomialFamily.coefs() from "LRT chi-squared"
+  to "Wald χ²", updated NB `calibrate()` from duck-typed to protocol method.
+- **QUICKSTART.md**: added missing methods (Manly, score, score_exact) to
+  available methods table, updated AR section terminology (GLS→FGLS).
+- **Version bump to 0.4.4**: `__version__` in `__init__.py` and `version`
+  in `pyproject.toml` updated from `"0.4.3"` to `"0.4.4"`.
+- **Lint cleanup**: removed unused imports (`fit_reduced`, `Callable`),
+  dead code (`K` assignments, unreachable `_validate_node` call, unused
+  `n_perm`), unquoted forward-reference type annotations, used `enumerate()`
+  for cell-id loop.
+
+## [0.4.3] - Unreleased
+
+### Added
+
+- **Score-based AR correction for longitudinal panel data**
+  (`ar_order` parameter): new `ar_order: int | None` parameter
+  on `randomization_test_regression()` folds an AR(p) working-
+  correlation structure into the score projection matrix.  For
+  linear families, `calibrate()` pre-computes an OLS projection
+  on the Cholesky-whitened design matrix
+  $A^* = \text{pinv}(L X)$ (FGLS); for GLM families,
+  `score_project()` whitens both X and residuals before
+  projection.  `LinearMixedFamily` is also supported via the
+  Woodbury identity.  Requires `panel_id=`, `time_id=`, and
+  a score-based method.  Includes pooled Yule-Walker estimation,
+  Durbin-Watson / Ljung-Box before/after diagnostics, and
+  validation guards.
+- **New module `_ar.py`**: stateless AR(p) utilities —
+  `estimate_ar_coefficients()`, `build_ar_precision_block()`,
+  `apply_ar_precision()`, `apply_ar_cholesky_transform()`,
+  `ar_diagnostics()`.
+- **LinearFamily refactored to cached calibration**: `calibrate()`
+  now returns a new `LinearFamily(projection_A=...)` instance with
+  a cached pseudoinverse (or FGLS projection when AR is active),
+  matching the frozen-dataclass-with-calibration pattern used by
+  `NegativeBinomialFamily` and `LinearMixedFamily`.
+- **27 new tests**: `test_ar.py` (14 unit tests),
+  `test_ar_integration.py` (40 integration tests including
+  AR whitening correctness, Type I error rate validation, and
+  Durbin-Watson whitening verification).
+- **Longitudinal regression example**: `examples/longitudinal_regression.py`
+  demonstrates AR correction on UCI Bike Sharing dataset.
+- **FGLS asymptotic p-values for AR-corrected models**: when
+  `ar_order=` is active, `classical_p_values()` applies a
+  Cholesky whitening transformation derived from the same AR(p)
+  coefficients used by the permutation engine, producing
+  Feasible GLS Wald p-values that are a true apples-to-apples
+  asymptotic comparison.  New helpers `build_ar_cholesky_factor()`
+  and `apply_ar_cholesky_transform()` in `_ar.py`.
+- **Cluster-robust asymptotic p-values**: when `groups=` or
+  `panel_id=` is provided, `classical_p_values()` uses
+  `cov_type='cluster'` (linear, Poisson, NB) or
+  `GLM(Binomial())` with cluster SEs (logistic) so that
+  asymptotic inference accounts for within-cluster dependence.
+  Ordinal and multinomial families emit a `UserWarning` since
+  cluster-robust SEs are not available for those models.
+
+### Changed
+
+- **Consolidated `sign_flip_test_regression()` into
+  `randomization_test_regression()`**: the standalone sign-flip
+  function is removed.  Sign-flip tests are now invoked via
+  `randomization_test_regression(..., randomization="sign_flip")`.
+  The new `randomization` parameter accepts `"permute"` (default)
+  or `"sign_flip"`.
+- **Renamed `n_permutations` → `n_randomizations`** on the public
+  API, result dataclasses (`IndividualTestResult`,
+  `JointTestResult`), `FitContext`, display helpers, and all
+  user-facing messages.
+- **Renamed `n_flips` → `n_randomizations`** (absorbed into the
+  unified `randomization_test_regression` signature).
+- **Renamed `resampling` → `randomization`** throughout strategy
+  modules and internal APIs to reflect the correct statistical
+  terminology.
+
+### Fixed
+
+- **Asymptotic p-values ignored panel/group structure**: all non-mixed
+  `classical_p_values()` methods used naive i.i.d. OLS/GLM even when
+  `groups=` or `panel_id=` was provided.  The permutation test
+  respected within-group structure but the asymptotic comparison did
+  not, producing misleading divergence diagnostics.  Now threads
+  `groups` through `calculate_p_values()` to the family and applies
+  cluster-robust SEs.
+- **Panel-only score guard preserved for cluster-robust path**: the
+  score guard that resets within-panel permutation to global when
+  `panel_id=` is used without `ar_order=` now preserves the panel
+  groups for `ctx.groups` so that cluster-robust asymptotic SEs are
+  still applied even when the permutation strategy is global.
+- **AR(1) Cholesky factor boundary condition**: the hand-coded
+  bidiagonal AR(1) Cholesky factor had an incorrect (0,0) entry of
+  1.0 instead of the correct value from the covariance Cholesky
+  decomposition.  Replaced with the general Cholesky-of-covariance
+  path that handles all AR orders correctly.
+- **`apply_ar_precision` argument order** (`_jax.py`,
+  `families_mixed.py`): fixed positional argument order in calls to
+  `apply_ar_precision()` within the REML solver and statsmodels
+  Woodbury path — `(v, panel_indices, panel_lengths, ar_coefs)` was
+  incorrectly called as `(v, ar_coefs, panel_indices, panel_lengths)`.
+- **AR whitening non-commutativity bug** (`LinearFamily.calibrate()`,
+  `LinearFamily.score_project()`): the GLS projection
+  $A = (X^T \Omega^{-1} X)^{-1} X^T \Omega^{-1}$ was built on
+  unwhitened X, but residuals were permuted before whitening.
+  Because Cholesky whitening does not commute with permutation
+  ($L e_\pi \neq (L e)_\pi$), permuted scores were in a mismatched
+  basis.  Fixed by switching to FGLS: `calibrate()` now builds
+  $A^* = \text{pinv}(L X)$ and `score_project()` whitens residuals
+  via `apply_ar_cholesky_transform()` before permutation.
+- **LogisticFamily AR correction was a silent no-op**
+  (`LogisticFamily.score_project()`): `calibrate()` estimated and
+  stored AR coefficients but `score_project()` completely ignored
+  them.  Fixed by adding Cholesky whitening of both X and residuals
+  in `score_project()`, matching the pattern in Poisson and NB.
+- **Removed dead `omega_inv_apply` code path**
+  (`_glm_score_projection_row()` in `_jax.py`): the
+  `omega_inv_apply` parameter and its AR-adjusted branch were
+  removed — all AR-capable families now whiten X before calling
+  this function, making the Ω⁻¹ path obsolete.
+
 ## [0.4.2] - Unreleased
 
 ### Fixed
@@ -32,7 +157,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   tables.
 - **Confounder `± margin` sub-row**: confounders now render a blank
   sub-row instead of a `± margin` line, preventing spurious `[!]`
-  markers and `n_permutations` recommendations.
+  markers and `n_randomizations` recommendations.
 - **Confounder P-Val CI in diagnostics**: NaN CIs now render as em
   dash `—` in the diagnostics table P-Val CI column.
 
@@ -112,7 +237,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **`groups=` parameter** on `permutation_test_regression()`:
+- **`groups=` parameter** on `randomization_test_regression()`:
   accepts array-like integer labels, `pd.Series`, or `pd.DataFrame`
   (single-column extracted as 1-D; multi-column cross-classified into
   integer cell labels).  When provided, permutations respect group
@@ -158,7 +283,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   candidates in one `np.tile` + per-cell `rng.permuted(axis=1)` call
   with post-hoc hash dedup, replacing one-at-a-time Python loop.
 - **Safety cap on global generator gap-fill**: the previously
-  unbounded `while count < n_permutations` gap-fill loop in
+  unbounded `while count < n_randomizations` gap-fill loop in
   `generate_unique_permutations` now has a `max_attempts` bound,
   preventing hangs in degenerate edge cases.
 - **19 new tests** for the new code paths: `TestUnrankWithinCell` (4),
@@ -174,7 +299,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   between-cell permutations are available, directing users to
   `'within'` or `'two-stage'` as alternatives.
 - **End-to-end engine benchmark** (`benchmarks/profile_endtoend.py`):
-  measures full `permutation_test_regression()` pipeline wall time
+  measures full `randomization_test_regression()` pipeline wall time
   across 14 scenarios varying predictor count (p=1–20), sample size
   (n=100–1000), model family (linear, logistic, Poisson), and
   permutation strategy (global, within, two-stage).  Generates 3
@@ -261,10 +386,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **P-value CIs in diagnostics table** (`print_diagnostics_table`):
     new `P-Val CI` column shows `[lo, hi]` alongside the MC SE
     column (non-Exp-R² layouts).
-  - **`n_permutations` recommendation**: when borderline p-values
+  - **`n_randomizations` recommendation**: when borderline p-values
     are detected, a Notes line recommends minimum B to resolve the
     ambiguity, computed by inverting the Clopper-Pearson width formula.
-  - **`_recommend_n_permutations` helper**: computes minimum B using
+  - **`_recommend_n_randomizations` helper**: computes minimum B using
     normal approximation to Clopper-Pearson half-width, clamped to
     `[100, 10_000_000]`.
   - 18 new tests covering all Phase 6 display features.
@@ -276,7 +401,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     to the autosummary block: `moderation_analysis`, `compute_e_value`,
     `rosenbaum_bounds`, `ConfounderAnalysisResult`,
     `IndividualTestResult`, `JointTestResult`.
-  - **API.md signature update**: `permutation_test_regression` now
+  - **API.md signature update**: `randomization_test_regression` now
     documents all 22 parameters including `p_value_threshold_three`,
     `backend`, `groups`, `permutation_strategy`,
     `permutation_constraints`, `random_slopes`, `confidence_level`,
@@ -361,7 +486,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   properties, diagnostics completeness, display formatting,
   exchangeability cells, crossed designs, one-step corrector validity
   (KS uniformity), end-to-end integration with
-  `permutation_test_regression()`, PQL-fixed smoke tests.
+  `randomization_test_regression()`, PQL-fixed smoke tests.
 - **Four-stage confounder sieve** in `confounders.py`:
   `identify_confounders()` now runs screen → collider → mediator →
   moderator stages.  Returns `ConfounderAnalysisResult` frozen
@@ -414,7 +539,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   exclusion, full sieve orchestrator, E-value (10 tests), and
   Rosenbaum bounds (5 tests).
 - **`panel_id=` and `time_id=` convenience parameters** on
-  `permutation_test_regression()`: syntactic sugar for
+  `randomization_test_regression()`: syntactic sugar for
   `groups=panel_id, permutation_strategy="within"`.  When
   `panel_id` is provided, permutations are automatically
   constrained to within-panel shuffling.  `time_id` enables
@@ -475,8 +600,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Quality dataset (n=500, 5 predictors) drops from ~109s to ~3.8s.
   Falls back to the sequential loop when the family lacks batch
   methods or when cluster-bootstrap produces ragged index arrays.
-- **Ordinal example `n_permutations` increased**: all methods in
-  `examples/ordinal_regression.py` now use `n_permutations=999`
+- **Ordinal example `n_randomizations` increased**: all methods in
+  `examples/ordinal_regression.py` now use `n_randomizations=999`
   (previously 199), providing tighter p-value resolution with
   negligible additional runtime via JAX vmap.
 - **`_reml_newton_solve` LM-Nielsen damping cap**: `lambda_max`
@@ -575,7 +700,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   loop (*n* iterations) refactored from sequential `fit()` calls to
   single `batch_fit_paired()` calls.  6 new JAX methods, 6 NumPy
   fallbacks, protocol + 6 family implementations.
-- **`backend=` parameter** on `permutation_test_regression()` /
+- **`backend=` parameter** on `randomization_test_regression()` /
   `PermutationEngine`: `"numpy"`, `"jax"`, or `None` (auto-resolve).
   Enables test injection and per-call backend selection.
 - **`family: str | ModelFamily`** parameter widening: users can pass
@@ -657,7 +782,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `family`, `feature_names`, and `target_name` directly from the
   result object — no parameter passing required.
 - **New result fields:** `feature_names`, `target_name`,
-  `n_permutations`, `groups`, and `permutation_strategy` added to
+  `n_randomizations`, `groups`, and `permutation_strategy` added to
   both `IndividualTestResult` and `JointTestResult`.
 
 ### Changed
@@ -717,8 +842,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Kennedy when predictors are correlated.
 - **`PermutationEngine` class:** resolves family, backend, calibration,
   and permutation indices at construction time.
-  `permutation_test_regression()` is now a thin wrapper.
-- **`family=` parameter** on `permutation_test_regression()`,
+  `randomization_test_regression()` is now a thin wrapper.
+- **`family=` parameter** on `randomization_test_regression()`,
   `identify_confounders()`, `mediation_analysis()`, and
   `print_confounder_table()`.
 - **`n_jobs=` parameter** for joblib parallelisation of batch-fit loops
@@ -847,7 +972,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Optional Polars input support: all public API functions (`permutation_test_regression`,
+- Optional Polars input support: all public API functions (`randomization_test_regression`,
   `screen_potential_confounders`, `mediation_analysis`, `identify_confounders`,
   `calculate_p_values`) now accept `polars.DataFrame` and `polars.LazyFrame`
   in addition to `pandas.DataFrame`. Polars inputs are converted to pandas at
@@ -862,7 +987,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `permutation_test_regression` supporting ter Braak (1992), Kennedy (1995)
+- `randomization_test_regression` supporting ter Braak (1992), Kennedy (1995)
   individual, and Kennedy (1995) joint methods.
 - Vectorised OLS via batch pseudoinverse multiplication.
 - Optional JAX backend (`jax.vmap` + `jax.grad` Newton-Raphson) for batched

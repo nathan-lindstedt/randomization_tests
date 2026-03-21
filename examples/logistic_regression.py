@@ -18,7 +18,6 @@ from ucimlrepo import fetch_ucirepo
 from randomization_tests import (
     LogisticFamily,
     identify_confounders,
-    permutation_test_regression,
     print_confounder_table,
     print_dataset_info_table,
     print_diagnostics_table,
@@ -26,6 +25,7 @@ from randomization_tests import (
     print_joint_results_table,
     print_protocol_usage_table,
     print_results_table,
+    randomization_test_regression,
     resolve_family,
 )
 
@@ -77,7 +77,7 @@ print_family_info_table(
 # ter Braak (1992) — family="auto" (auto-detection)
 # ============================================================================
 
-results_ter_braak_auto_bc = permutation_test_regression(
+results_ter_braak_auto_bc = randomization_test_regression(
     X_bc, y_bc, method="ter_braak", family="auto"
 )
 assert results_ter_braak_auto_bc.family.name == "logistic"
@@ -90,7 +90,7 @@ print_results_table(
 # ter Braak (1992) — family="logistic" (explicit)
 # ============================================================================
 
-results_ter_braak_bc = permutation_test_regression(
+results_ter_braak_bc = randomization_test_regression(
     X_bc, y_bc, method="ter_braak", family="logistic"
 )
 print_results_table(
@@ -109,7 +109,7 @@ assert results_ter_braak_bc.family.name == "logistic"
 
 with warnings.catch_warnings():
     warnings.filterwarnings("ignore", message=".*without confounders.*")
-    results_kennedy_bc = permutation_test_regression(
+    results_kennedy_bc = randomization_test_regression(
         X_bc, y_bc, method="kennedy", confounders=[], family="logistic"
     )
 print_results_table(
@@ -127,7 +127,7 @@ print_diagnostics_table(
 
 with warnings.catch_warnings():
     warnings.filterwarnings("ignore", message=".*without confounders.*")
-    results_kennedy_joint_bc = permutation_test_regression(
+    results_kennedy_joint_bc = randomization_test_regression(
         X_bc, y_bc, method="kennedy_joint", confounders=[], family="logistic"
     )
 print_joint_results_table(
@@ -141,7 +141,7 @@ print_joint_results_table(
 
 with warnings.catch_warnings():
     warnings.filterwarnings("ignore", message=".*without confounders.*")
-    results_fl_bc = permutation_test_regression(
+    results_fl_bc = randomization_test_regression(
         X_bc, y_bc, method="freedman_lane", confounders=[], family="logistic"
     )
 print_results_table(
@@ -159,7 +159,7 @@ print_diagnostics_table(
 
 with warnings.catch_warnings():
     warnings.filterwarnings("ignore", message=".*without confounders.*")
-    results_fl_joint_bc = permutation_test_regression(
+    results_fl_joint_bc = randomization_test_regression(
         X_bc, y_bc, method="freedman_lane_joint", confounders=[], family="logistic"
     )
 print_joint_results_table(
@@ -196,7 +196,7 @@ if predictors_with_confounders_bc:
     example_predictor_bc = list(predictors_with_confounders_bc.keys())[0]
     example_confounders_bc = predictors_with_confounders_bc[example_predictor_bc]
 
-    results_kc_bc = permutation_test_regression(
+    results_kc_bc = randomization_test_regression(
         X_bc,
         y_bc,
         method="kennedy",

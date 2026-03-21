@@ -172,7 +172,7 @@ single vectorised call, avoiding the overhead of separate
 ### `backend=` parameter on `PermutationEngine`
 
 - [X] Add `backend=` parameter to `PermutationEngine` constructor
-  and `permutation_test_regression()`.  When supplied, skip
+  and `randomization_test_regression()`.  When supplied, skip
   auto-resolution via `resolve_backend()`.
 
 ### Display refactor — family-driven formatting
@@ -242,7 +242,7 @@ family-specific diagnostic computation into the protocol:
 - [X] `print_confounder_table`: `family: ModelFamily | None = None`
   (drop `str` from union type).
 - [X] New fields added to result objects: `feature_names: list[str]`,
-  `target_name: str`, `n_permutations: int`,
+  `target_name: str`, `n_randomizations: int`,
   `groups: np.ndarray | None`,
   `permutation_strategy: str | None`.
 
@@ -257,22 +257,22 @@ applies only to paired or within-subject designs where the
 difference scores are symmetric about zero under the null.  Because
 the assumption domain differs from that of permutation tests —
 symmetry governs within-unit comparisons, exchangeability governs
-between-unit comparisons — sign-flipping is exposed as a **separate
-public entry point** rather than as a `method` on
-`permutation_test_regression()`.
+between-unit comparisons — sign-flipping is accessed via the
+`randomization="sign_flip"` parameter on
+`randomization_test_regression()`.
 
-- [ ] `sign_flip_test_regression()`: separate public function with
-  input validation requiring paired structure (two-column response or
-  pre-computed difference vector).
-- [ ] Resampling module `sign_flips.py` (parallel to `permutations.py`)
+- [X] `randomization_test_regression(randomization="sign_flip")`: unified
+  public function with Freedman–Lane framework using Rademacher (±1)
+  multipliers on residuals.
+- [X] Randomization module `sign_flips.py` (parallel to `permutations.py`)
   generating the 2ⁿ reference distribution of sign-flip assignments.
-- [ ] Integrates with `ModelFamily`: sign-flip the residuals returned
+- [X] Integrates with `ModelFamily`: sign-flip the residuals returned
   by `family.residuals()`, reconstruct via `family.reconstruct_y()`.
   No family-specific code needed.
-- [ ] Documentation clearly distinguishes the symmetry assumption from
+- [X] Documentation clearly distinguishes the symmetry assumption from
   the exchangeability assumption, including when each is appropriate
   and when each is violated.
-- [ ] Standard in neuroimaging (FSL PALM supports both permutation
+- [X] Standard in neuroimaging (FSL PALM supports both permutation
   and sign-flip).
 
 ### Exchangeability cells
@@ -394,7 +394,13 @@ special case of within-group exchangeability).
   wave variable is provided, preserving the temporal dependency
   structure within each unit.
 - [X] Support for both balanced and unbalanced panels.
-- [ ] Optional autoregressive residual structure for the reduced model.
+- [X] Optional autoregressive residual structure for the reduced model.
+- [X] Cluster-robust asymptotic p-values when `groups=` or `panel_id=`
+  is provided, so asymptotic inference accounts for within-cluster
+  dependence.
+- [X] FGLS (Feasible GLS) asymptotic p-values when `ar_order=` is
+  active, using the same AR(p) Cholesky whitening as the permutation
+  engine for an apples-to-apples comparison.
 
 ### Inferential improvements
 
@@ -403,7 +409,7 @@ special case of within-group exchangeability).
   finite number of permutations are drawn.  Displayed as `± margin`
   sub-rows in `print_results_table()` and `[lo, hi]` column in
   `print_diagnostics_table()`.  Borderline detection via
-  `_significance_marker()` with `[!]` flag; `_recommend_n_permutations()`
+  `_significance_marker()` with `[!]` flag; `_recommend_n_randomizations()`
   suggests minimum B to resolve ambiguity.
 - [ ] Adaptive stopping: optionally halt the permutation loop early
   once the CI for the p-value is narrow enough to determine
@@ -415,54 +421,33 @@ special case of within-group exchangeability).
   required.
 - [ ] Conditional Monte Carlo: permute within the sufficient-statistic
   strata of a nuisance parameter for exact conditional tests.
+  **Deferred to v0.5.0** — the current `score_exact` is GLMM-only
+  (PQL-fixed vmap); a general exact-enumeration mode for non-GLMM
+  families is needed first for sufficient-statistic conditioning to
+  have a meaningful integration point.
 
 ### Compatibility validation module
 
 Consolidates the distributed method-incompatibility checks scattered
 across `core.py` and `engine.py` into a single `_validation.py`
-module with a structured compatibility matrix.  This is the last
-v0.4.x item — it lands after mixed-effects (new constraint
-dimensions), sign-flip (new family/method incompatibilities), and
-inferential improvements have expanded the constraint surface to the
-point where centralisation pays for itself.  The v0.5.0 graph
-compiler consumes this module directly for per-equation validation.
+module with a structured compatibility matrix.  **Deferred to v0.5.0**
+— audit of the codebase (142 validation checks total) found that the
+existing checks are already well-organized into natural groupings:
+method/family guards in `engine.py __init__()`, sign-flip/AR/confounder
+guards in `core.py _validate_and_prepare_inputs()`, and group/cell
+guards in `core.py _validate_groups()`.  Messages are already
+consistent (what was requested, why incompatible, what to use instead).
+Centralising now would add indirection without changing behaviour.
+The v0.5.0 graph compiler — which needs programmatic
+`validate_compatibility()` access for per-equation validation — is the
+right trigger for this work.
 
-- [ ] New `_validation.py` module containing a compatibility matrix
-  that maps `(family, method, strategy, data_shape)` tuples to
-  outcomes: proceed, warn with guidance, or raise with guidance.
-- [ ] Structured guidance messages with a consistent format across all
-  incompatibilities: what was requested, why it is incompatible, and
-  which alternatives are valid.  Messages reference the correct
-  `permutation_strategy` or `method` parameter names so users can
-  act on them directly.
-- [ ] Refactor existing distributed checks to delegate to the
-  compatibility matrix:
-  - Between-cell infeasibility (`ValueError` / `UserWarning` in
-    `core.py` `_resolve_groups_and_strategy()`)
-  - Freedman–Lane rejection for ordinal/multinomial (`ValueError`
-    in `engine.py`)
-  - Kennedy without confounders (`UserWarning` in `engine.py` +
-    Notes section in display)
-  - Freedman–Lane without confounders (`UserWarning` — reduces to
-    ter Braak)
-  - `n_jobs != 1` with JAX backend (`UserWarning` in `core.py`)
-  - `n_jobs != 1` with vectorised linear OLS (`UserWarning` in
-    `core.py`)
-  - Sign-flip rejection for direct-permutation families
-    (`ValueError`)
-  - Mixed-effects family + incompatible permutation strategy
-- [ ] `validate_compatibility(family, method, strategy, groups, data_shape) -> list[ValidationIssue]` public function returning a
-  list of typed issue objects (`ValidationIssue(level, code, message, suggestion)`).  `level` is `"error"` or `"warning"`.
-  The engine calls this once during construction; the graph compiler
-  calls it per equation during compilation.
-- [ ] Forward-compatibility hook: the `ValidationIssue.code` field
-  (e.g. `"BETWEEN_INFEASIBLE"`, `"FREEDMAN_LANE_NO_RESIDUALS"`,
-  `"SIGN_FLIP_DIRECT_PERMUTATION"`) enables the v0.5.0 graph
-  compiler to programmatically inspect and handle issues rather
-  than catching exceptions.
-- [ ] Tests: one test per existing check verifying it still fires
-  through the new centralised path, plus tests for the new
-  mixed-effects and sign-flip constraint combinations.
+- [ ] `_validation.py` module with compatibility matrix and
+  `validate_compatibility()` public function.
+- [ ] `ValidationIssue(level, code, message, suggestion)` typed
+  objects for programmatic handling by the graph compiler.
+- [ ] Refactor 19 compatibility checks from `core.py` and `engine.py`
+  to delegate to the compatibility matrix.
 
 ---
 
@@ -724,7 +709,7 @@ cell system, and structured result objects are all frozen.
 
 ### Benchmarks
 
-- [ ] Runtime benchmarks across *n*, *n_permutations*, *n_features*,
+- [ ] Runtime benchmarks across *n*, *n_randomizations*, *n_features*,
   and *n_equations* for each model family.
 - [ ] Comparison against naive (non-vectorised) implementations to
   quantify the performance gains from batch algebra and JAX.

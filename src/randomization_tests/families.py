@@ -701,6 +701,7 @@ class ModelFamily(Protocol):
         fit_intercept: bool = True,
         *,
         robust_se: bool = False,
+        groups: np.ndarray | None = None,
     ) -> np.ndarray:
         """Compute classical (asymptotic) p-values.
 
@@ -716,6 +717,12 @@ class ModelFamily(Protocol):
                 SEs (heteroscedasticity-robust).  Requires JAX for
                 non-linear families; falls back to ``cov_type='HC1'``
                 with statsmodels for linear/logistic/Poisson/NB.
+            groups: Cluster/panel labels of shape ``(n,)`` for
+                cluster-robust standard errors.  When provided,
+                uses ``cov_type='cluster'`` (statsmodels) so that
+                the asymptotic p-values account for within-cluster
+                dependence — matching the permutation test's
+                within-group structure.
 
         Returns:
             Array of p-values of shape ``(p,)``, one per slope
@@ -743,10 +750,13 @@ class ModelFamily(Protocol):
         """Return group labels defining exchangeability cells, or ``None``.
 
         Under v0.4.0 the permutation engine will restrict permutations
-        to within-cell shuffles when this returns a non-``None`` array.
+        to within-cell shuffles when this returns a non-``None`` array
+        or :class:`ExchangeabilityTree`.
+
         Families that assume global exchangeability (linear, logistic)
         return ``None``; families with structured residuals (e.g.
-        mixed-effects) may return cluster labels.
+        mixed-effects) may return cluster labels (flat array) or an
+        ``ExchangeabilityTree`` for multi-factor designs.
 
         This method exists on the protocol now so that v0.4.0 can
         call it on any family without a protocol-breaking change.
@@ -756,7 +766,8 @@ class ModelFamily(Protocol):
             y: Response vector ``(n,)``.
 
         Returns:
-            Integer label array ``(n,)`` or ``None`` for global
+            Integer label array ``(n,)``, an
+            ``ExchangeabilityTree``, or ``None`` for global
             exchangeability.
         """
         ...
@@ -820,6 +831,7 @@ class ModelFamily(Protocol):
         *,
         fit_intercept: bool = True,
         y: np.ndarray | None = None,
+        randomization: str = "permute",
     ) -> np.ndarray:
         """Project permuted residuals onto feature *j* via a single matmul.
 
@@ -841,11 +853,16 @@ class ModelFamily(Protocol):
             X: Full design matrix ``(n, p)`` — no intercept column.
             feature_idx: Zero-based index of the feature being tested.
             residuals: Reduced-model residuals ``(n,)``.
-            perm_indices: Permutation indices ``(B, n)``.
+            perm_indices: Randomization matrix ``(B, n)``.  When
+                ``randomization="permute"``, contains integer indices
+                in ``[0, n)`` (dtype int64).  When
+                ``randomization="sign_flip"``, contains ±1 values
+                (dtype int8).
             fit_intercept: Whether the model includes an intercept.
             y: Response vector ``(n,)`` — required for GLM families
                 that need working weights from a reduced-model fit.
                 Linear and mixed families may ignore this.
+            randomization: ``"permute"`` (default) or ``"sign_flip"``.
 
         Returns:
             Raw score array of shape ``(B,)``.
@@ -1077,10 +1094,16 @@ class LinearFamily:
     Y-reconstruction is additive (``ŷ + permuted residuals``), and
     the joint-test metric is residual sum of squares (RSS).
 
-    The class is stateless — all data flows through method arguments.
-    ``batch_fit`` delegates to the active backend (NumPy pseudoinverse
-    or JAX ``vmap``'d ``lstsq``).
+    ``calibrate()`` caches the pseudoinverse projection matrix so
+    that ``score_project()`` avoids redundant recomputation.  When
+    ``ar_order`` is provided, ``calibrate()`` builds an OLS projection
+    on the Cholesky-whitened design matrix (FGLS).
     """
+
+    projection_A: np.ndarray | None = None
+    ar_coefs: np.ndarray | None = None
+    _panel_indices: np.ndarray | None = None
+    _panel_lengths: np.ndarray | None = None
 
     _backend_slug: ClassVar[str] = "ols"
 
@@ -1165,6 +1188,98 @@ class LinearFamily:
                     f"heteroscedastic residuals detected; "
                     f"exchangeability assumption may be violated."
                 )
+
+        # ---- Panel / AR diagnostics --------------------------------
+        pd_ = diagnostics.get("panel_diagnostics", {})
+        if pd_:
+            n_pan = pd_.get("n_panels", "?")
+            balanced = pd_.get("balanced", False)
+            bal_tag = "bal." if balanced else "unbal."
+            obs_min = pd_.get("obs_per_panel_min", "?")
+            obs_max = pd_.get("obs_per_panel_max", "?")
+            lines.append(
+                (
+                    "Panels:",
+                    f"{n_pan} ({bal_tag})",
+                    f"T = {obs_min}–{obs_max}"
+                    if obs_min != obs_max
+                    else f"T = {obs_min}",
+                )
+            )
+
+            ar_order = pd_.get("ar_order")
+            ar_coefs = pd_.get("ar_coefficients")
+            if ar_order is not None and ar_coefs is not None:
+                coef_str = ", ".join(f"{c:.4f}" for c in ar_coefs)
+                lines.append(
+                    (
+                        f"AR({ar_order}) coefficients:",
+                        f"[{coef_str}]",
+                        "",
+                    )
+                )
+
+            dw_before = pd_.get("durbin_watson_before")
+            dw_after = pd_.get("durbin_watson_after")
+            if dw_before is not None:
+                lines.append(
+                    (
+                        "Durbin\u2013Watson (before):",
+                        f"{dw_before:.4f}",
+                        "",
+                    )
+                )
+            if dw_after is not None:
+                lines.append(
+                    (
+                        "Durbin\u2013Watson (after):",
+                        f"{dw_after:.4f}",
+                        "",
+                    )
+                )
+            if dw_before is not None and dw_after is not None:
+                if abs(dw_after - 2.0) < abs(dw_before - 2.0):
+                    notes.append(
+                        f"AR({ar_order}) correction improved "
+                        f"Durbin\u2013Watson from {dw_before:.4f} "
+                        f"toward 2.0 ({dw_after:.4f})."
+                    )
+                else:
+                    notes.append(
+                        f"AR({ar_order}) Durbin\u2013Watson did not "
+                        f"improve \u2014 residuals may have higher-order "
+                        f"structure."
+                    )
+
+            lb_before = pd_.get("ljung_box_before", {})
+            lb_after = pd_.get("ljung_box_after", {})
+            if lb_before:
+                q_val = lb_before.get("Q", float("nan"))
+                p_val = lb_before.get("p_value", float("nan"))
+                lines.append(
+                    (
+                        "Ljung\u2013Box Q (before):",
+                        f"{q_val:.2f}",
+                        f"p = {_fmt_p(p_val)}",
+                    )
+                )
+            if lb_after:
+                q_val = lb_after.get("Q", float("nan"))
+                p_val = lb_after.get("p_value", float("nan"))
+                lines.append(
+                    (
+                        "Ljung\u2013Box Q (after):",
+                        f"{q_val:.2f}",
+                        f"p = {_fmt_p(p_val)}",
+                    )
+                )
+                if p_val < 0.05:
+                    notes.append(
+                        f"Ljung\u2013Box p = {p_val:.4f} after AR({ar_order}) "
+                        f"correction: significant residual autocorrelation "
+                        f"remains."
+                    )
+
         return lines, notes
 
     def compute_extended_diagnostics(
@@ -1278,21 +1393,38 @@ class LinearFamily:
         *,
         fit_intercept: bool = True,
         y: np.ndarray | None = None,  # noqa: ARG002
+        randomization: str = "permute",
     ) -> np.ndarray:
-        """Score projection via OLS pseudoinverse row.
+        """Score projection via cached pseudoinverse (or GLS) row.
 
-        Computes ``pinv(X_aug)[j] @ residuals[perm_indices]`` for
-        all B permutations simultaneously — a single matmul.
+        Uses the pre-computed ``projection_A`` from ``calibrate()``
+        when available; falls back to inline ``pinv`` otherwise.
 
-        This is mathematically equivalent to the coefficient from
-        ``batch_fit(X, Y*)[:, j]`` where ``Y* = ŷ_red + e_π``,
-        up to a constant offset that the score strategy adds.
+        Computes ``A[j] @ residuals[perm_indices]`` for all B
+        permutations simultaneously — a single matmul.
         """
-        X_full = _augment_intercept(X, fit_intercept)
+        from ._strategies import _apply_randomization
+
         j = feature_idx + 1 if fit_intercept else feature_idx
-        pinv = np.linalg.pinv(X_full)
-        projection_row = pinv[j]  # (n,) — j-th row of pseudoinverse
-        E_pi = residuals[perm_indices]  # (B, n)
+        if self.projection_A is not None:
+            projection_row = self.projection_A[j]  # (n,)
+        else:
+            # Defensive fallback for uncalibrated instances.
+            X_full = _augment_intercept(X, fit_intercept)
+            pinv = np.linalg.pinv(X_full)
+            projection_row = pinv[j]
+
+        # When AR-calibrated, whiten residuals before randomization.
+        # projection_A was built on pinv(L @ X), so residuals must also
+        # be in the whitened space for dimensional consistency.
+        if self.ar_coefs is not None and self._panel_lengths is not None:
+            from ._ar import apply_ar_cholesky_transform
+
+            residuals = apply_ar_cholesky_transform(
+                residuals, self._panel_lengths, self.ar_coefs
+            )
+
+        E_pi = _apply_randomization(residuals, perm_indices, randomization)  # (B, n)
         return np.asarray(E_pi @ projection_row)  # (B,)
 
     # ---- Permutation helpers ---------------------------------------
@@ -1439,6 +1571,7 @@ class LinearFamily:
         fit_intercept: bool = True,
         *,
         robust_se: bool = False,
+        groups: np.ndarray | None = None,
     ) -> np.ndarray:
         """Asymptotic t-test p-values via statsmodels OLS.
 
@@ -1448,14 +1581,35 @@ class LinearFamily:
 
         When ``robust_se=True``, uses Eicker–Huber–White (HC1)
         heteroscedasticity-consistent standard errors.
+
+        When ``groups`` is provided, uses cluster-robust standard
+        errors (``cov_type='cluster'``) so that asymptotic p-values
+        account for within-cluster dependence.
+
+        When the family has been calibrated with AR(p) coefficients,
+        applies the FGLS (Feasible Generalised Least Squares)
+        Cholesky transformation so that asymptotic p-values reflect
+        the same working-correlation structure as the permutation
+        test — an apples-to-apples comparison.
         """
         X_sm = _augment_intercept(X, fit_intercept)
+
+        # ---- FGLS whitening when AR(p) coefficients are available ----
+        if self.ar_coefs is not None and self._panel_lengths is not None:
+            from ._ar import apply_ar_cholesky_transform
+
+            X_sm = apply_ar_cholesky_transform(X_sm, self._panel_lengths, self.ar_coefs)
+            y = apply_ar_cholesky_transform(y, self._panel_lengths, self.ar_coefs)
+
         with _suppress_sm_warnings(convergence=False, separation=False):
             # Near-singular X'X can trigger floating-point warnings in
             # the Wald SE computation; suppress them because the user
             # cares about the permutation p-value, not the asymptotic one.
             fit_kw: dict[str, Any] = {}
-            if robust_se:
+            if groups is not None:
+                fit_kw["cov_type"] = "cluster"
+                fit_kw["cov_kwds"] = {"groups": groups}
+            elif robust_se:
                 fit_kw["cov_type"] = "HC1"
             sm_model = sm.OLS(y, X_sm).fit(**fit_kw)
         # sm_model.pvalues includes the intercept at index 0 when
@@ -1494,8 +1648,73 @@ class LinearFamily:
         fit_intercept: bool = True,
         **kwargs: Any,
     ) -> Self:
-        """No-op — linear models have no nuisance parameters."""
-        return self
+        """Cache pseudoinverse projection (or FGLS projection with AR).
+
+        Without ``ar_order``: computes ``pinv(X_aug)`` and returns a
+        new ``LinearFamily(projection_A=...)`` — same math as the
+        inline path, just cached.
+
+        With ``ar_order``: fits the full OLS model, extracts within-
+        panel residuals, estimates AR(p) coefficients via pooled
+        Yule-Walker, and builds the OLS projection on the
+        Cholesky-whitened design matrix :math:`A^* = \\text{pinv}(L X)`.
+
+        Returns a **new** ``LinearFamily`` instance (frozen dataclass).
+        Idempotent — returns ``self`` if already calibrated.
+        """
+        if self.projection_A is not None:
+            return self
+
+        X_aug = _augment_intercept(X, fit_intercept)
+
+        ar_order = kwargs.get("ar_order")
+        if ar_order is None:
+            # Pure refactor path: cache pinv for score_project().
+            proj = np.linalg.pinv(X_aug)
+            return LinearFamily(projection_A=proj)
+
+        # --- AR(p) FGLS projection (whiten X, then OLS) ---
+        from ._ar import estimate_ar_coefficients
+
+        panel_indices = kwargs["panel_indices"]
+        panel_lengths = kwargs["panel_lengths"]
+
+        # Step 1: full OLS residuals for AR estimation (standard FGLS
+        # step 1).  Using only the intercept-only residuals would retain
+        # the regression signal Xβ, attenuating the AR autocovariance by
+        # Var(ε) / (Var(Xβ) + Var(ε)) and biasing ρ̂ downward.
+        beta_ols = np.linalg.lstsq(X_aug, y, rcond=None)[0]
+        resid_ols = y - X_aug @ beta_ols
+
+        # Step 2: split residuals by panel.
+        residuals_by_panel: list[np.ndarray] = []
+        start = 0
+        for length in panel_lengths:
+            T = int(length)
+            residuals_by_panel.append(resid_ols[start : start + T])
+            start += T
+
+        # Step 3: estimate AR coefficients.
+        ar_coefs_hat = estimate_ar_coefficients(residuals_by_panel, ar_order)
+
+        # Step 4: OLS projection on whitened X.
+        #
+        # The correct FGLS approach for permutation tests is to whiten
+        # the design matrix (L @ X where Ω⁻¹ = L'L) and build an OLS
+        # projection on the whitened space.  score_project() then
+        # whitens the residuals before permutation, ensuring the
+        # permuted quantities are approximately exchangeable.
+        from ._ar import apply_ar_cholesky_transform
+
+        X_whitened = apply_ar_cholesky_transform(X_aug, panel_lengths, ar_coefs_hat)
+        proj = np.linalg.pinv(X_whitened)
+
+        return LinearFamily(
+            projection_A=proj,
+            ar_coefs=ar_coefs_hat,
+            _panel_indices=panel_indices,
+            _panel_lengths=panel_lengths,
+        )
 
     # ---- Batch fitting (hot loop) ----------------------------------
     #
@@ -1654,10 +1873,15 @@ class LogisticFamily:
     the probability scale (``Y − P̂``), reconstruction uses Bernoulli
     sampling, and the joint-test metric is deviance.
 
-    The class is stateless — all data flows through method arguments.
     ``batch_fit`` delegates to the active backend (sklearn loop or
-    JAX ``vmap``'d Newton–Raphson).
+    JAX ``vmap``'d Newton–Raphson).  When ``ar_order`` is supplied
+    via ``calibrate()``, score projection whitens the design matrix
+    and residuals before projection (FGLS).
     """
+
+    ar_coefs: np.ndarray | None = None
+    _panel_indices: np.ndarray | None = None
+    _panel_lengths: np.ndarray | None = None
 
     _backend_slug: ClassVar[str] = "logistic"
 
@@ -1863,6 +2087,7 @@ class LogisticFamily:
         *,
         fit_intercept: bool = True,
         y: np.ndarray | None = None,
+        randomization: str = "permute",
     ) -> np.ndarray:
         """Score projection via Fisher-information-weighted projection.
 
@@ -1876,6 +2101,8 @@ class LogisticFamily:
 
         Requires ``y`` to fit the reduced model and compute μ̂.
         """
+        from ._strategies import _apply_randomization
+
         if y is None:
             raise ValueError(
                 "LogisticFamily.score_project() requires y to compute "
@@ -1901,10 +2128,23 @@ class LogisticFamily:
         # Step 3: Projection row from full X.
         X_full = _augment_intercept(X, fit_intercept)
         j_aug = feature_idx + 1 if fit_intercept else feature_idx
+
+        # When AR-calibrated, whiten both X and residuals (FGLS).
+        # Working weights W stay from the unwhitened reduced-model fit.
+        if self.ar_coefs is not None and self._panel_lengths is not None:
+            from ._ar import apply_ar_cholesky_transform
+
+            X_full = apply_ar_cholesky_transform(
+                X_full, self._panel_lengths, self.ar_coefs
+            )
+            residuals = apply_ar_cholesky_transform(
+                residuals, self._panel_lengths, self.ar_coefs
+            )
+
         projection_row = _glm_score_projection_row(X_full, W_diag, j_aug)
 
-        # Step 4: Permuted scores via single matmul.
-        E_pi = residuals[perm_indices]  # (B, n)
+        # Step 4: Resampled scores via single matmul.
+        E_pi = _apply_randomization(residuals, perm_indices, randomization)  # (B, n)
         return np.asarray(E_pi @ projection_row)  # (B,)
 
     # ---- Permutation helpers ---------------------------------------
@@ -2079,6 +2319,7 @@ class LogisticFamily:
         fit_intercept: bool = True,
         *,
         robust_se: bool = False,
+        groups: np.ndarray | None = None,
     ) -> np.ndarray:
         """Asymptotic Wald z-test p-values for logistic regression.
 
@@ -2087,16 +2328,21 @@ class LogisticFamily:
 
         When ``robust_se=True``, uses Eicker–Huber–White sandwich
         SEs for heteroscedasticity-robust inference.
-        """
-        # ---- JAX path (preferred) -----------------------------------
-        try:
-            from ._backends._jax import _classical_p_values_logistic
 
-            return _classical_p_values_logistic(
-                X, y, fit_intercept, robust_se=robust_se
-            )
-        except ImportError:
-            pass
+        When ``groups`` is provided, uses cluster-robust standard
+        errors via ``sm.GLM`` with ``Binomial()`` (equivalent to logit
+        but supports ``cov_type='cluster'`` at fit time).
+        """
+        # ---- JAX path (preferred — skip when cluster SEs needed) ----
+        if groups is None:
+            try:
+                from ._backends._jax import _classical_p_values_logistic
+
+                return _classical_p_values_logistic(
+                    X, y, fit_intercept, robust_se=robust_se
+                )
+            except ImportError:
+                pass
 
         # ---- statsmodels fallback ------------------------------------
         X_sm = _augment_intercept(X, fit_intercept)
@@ -2105,9 +2351,16 @@ class LogisticFamily:
             # making Wald p-values meaningless.  Suppress the warning
             # because the user relies on permutation p-values.
             fit_kw: dict[str, Any] = {"disp": 0}
-            if robust_se:
-                fit_kw["cov_type"] = "HC1"
-            sm_model = sm.Logit(y, X_sm).fit(**fit_kw)
+            if groups is not None:
+                # sm.Logit doesn't support cov_type='cluster'; use the
+                # equivalent GLM(Binomial()) which does.
+                fit_kw["cov_type"] = "cluster"
+                fit_kw["cov_kwds"] = {"groups": groups}
+                sm_model = sm.GLM(y, X_sm, family=sm.families.Binomial()).fit(**fit_kw)
+            else:
+                if robust_se:
+                    fit_kw["cov_type"] = "HC1"
+                sm_model = sm.Logit(y, X_sm).fit(**fit_kw)
         # sm_model.pvalues includes the intercept at index 0 when
         # fit_intercept is True; strip it to match the protocol contract.
         pvals = sm_model.pvalues[1:] if fit_intercept else sm_model.pvalues
@@ -2139,8 +2392,47 @@ class LogisticFamily:
         fit_intercept: bool = True,
         **kwargs: Any,
     ) -> Self:
-        """No-op — logistic models have no nuisance parameters."""
-        return self
+        """Estimate AR coefficients when ``ar_order`` is provided.
+
+        Without ``ar_order``: no-op, returns ``self``.
+        With ``ar_order``: fits the full logistic model, extracts
+        probability-scale residuals per panel, estimates AR(p)
+        coefficients, and returns a new instance with AR state.
+        Idempotent — returns ``self`` if AR state is already set.
+        """
+        ar_order = kwargs.get("ar_order")
+        if ar_order is None:
+            return self
+        if self.ar_coefs is not None:
+            return self
+
+        from ._ar import estimate_ar_coefficients
+
+        panel_indices = kwargs["panel_indices"]
+        panel_lengths = kwargs["panel_lengths"]
+
+        # Fit full logistic model, extract probability-scale residuals
+        # (standard FGLS step 1).  Intercept-only residuals retain Xβ
+        # and attenuate the AR autocovariance estimate.
+        X_aug = _augment_intercept(X, fit_intercept)
+        with _suppress_sm_warnings():
+            full_model = sm.Logit(y, X_aug).fit(disp=0, maxiter=200)
+        mu_full = np.clip(full_model.predict(X_aug), 1e-10, 1 - 1e-10)
+        resid_full = y - mu_full
+
+        residuals_by_panel: list[np.ndarray] = []
+        start = 0
+        for length in panel_lengths:
+            T = int(length)
+            residuals_by_panel.append(resid_full[start : start + T])
+            start += T
+
+        ar_coefs_hat = estimate_ar_coefficients(residuals_by_panel, ar_order)
+        return LogisticFamily(
+            ar_coefs=ar_coefs_hat,
+            _panel_indices=panel_indices,
+            _panel_lengths=panel_lengths,
+        )
 
     # ---- Batch fitting (hot loop) ----------------------------------
     #
@@ -2290,10 +2582,15 @@ class PoissonFamily:
     scale (y − μ̂), reconstruction uses Poisson sampling on the
     response scale, and the joint-test metric is deviance.
 
-    The class is stateless — all data flows through method arguments.
     ``batch_fit`` delegates to the active backend (JAX or NumPy)
-    via ``resolve_backend()``.
+    via ``resolve_backend()``.  When ``ar_order`` is supplied via
+    ``calibrate()``, score projection whitens the design matrix
+    and residuals before projection (FGLS).
     """
+
+    ar_coefs: np.ndarray | None = None
+    _panel_indices: np.ndarray | None = None
+    _panel_lengths: np.ndarray | None = None
 
     _backend_slug: ClassVar[str] = "poisson"
 
@@ -2502,6 +2799,7 @@ class PoissonFamily:
         *,
         fit_intercept: bool = True,
         y: np.ndarray | None = None,
+        randomization: str = "permute",
     ) -> np.ndarray:
         """Score projection via Fisher-information-weighted projection.
 
@@ -2515,6 +2813,8 @@ class PoissonFamily:
 
         Requires ``y`` to fit the reduced model and compute μ̂.
         """
+        from ._strategies import _apply_randomization
+
         if y is None:
             raise ValueError(
                 "PoissonFamily.score_project() requires y to compute "
@@ -2540,10 +2840,23 @@ class PoissonFamily:
         # Step 3: Projection row from full X.
         X_full = _augment_intercept(X, fit_intercept)
         j_aug = feature_idx + 1 if fit_intercept else feature_idx
+
+        # When AR-calibrated, whiten both X and residuals (FGLS).
+        # Working weights W stay from the unwhitened reduced-model fit.
+        if self.ar_coefs is not None and self._panel_lengths is not None:
+            from ._ar import apply_ar_cholesky_transform
+
+            X_full = apply_ar_cholesky_transform(
+                X_full, self._panel_lengths, self.ar_coefs
+            )
+            residuals = apply_ar_cholesky_transform(
+                residuals, self._panel_lengths, self.ar_coefs
+            )
+
         projection_row = _glm_score_projection_row(X_full, W_diag, j_aug)
 
-        # Step 4: Permuted scores via single matmul.
-        E_pi = residuals[perm_indices]  # (B, n)
+        # Step 4: Randomized scores via single matmul.
+        E_pi = _apply_randomization(residuals, perm_indices, randomization)  # (B, n)
         return np.asarray(E_pi @ projection_row)  # (B,)
 
     # ---- Permutation helpers ---------------------------------------
@@ -2707,6 +3020,7 @@ class PoissonFamily:
         fit_intercept: bool = True,
         *,
         robust_se: bool = False,
+        groups: np.ndarray | None = None,
     ) -> np.ndarray:
         """Asymptotic Wald z-test p-values for Poisson regression.
 
@@ -2715,20 +3029,29 @@ class PoissonFamily:
 
         When ``robust_se=True``, uses Eicker–Huber–White sandwich
         SEs for heteroscedasticity-robust inference.
-        """
-        # ---- JAX path (preferred) -----------------------------------
-        try:
-            from ._backends._jax import _classical_p_values_poisson
 
-            return _classical_p_values_poisson(X, y, fit_intercept, robust_se=robust_se)
-        except ImportError:
-            pass
+        When ``groups`` is provided, uses cluster-robust standard
+        errors (``cov_type='cluster'``).
+        """
+        # ---- JAX path (preferred — skip when cluster SEs needed) ----
+        if groups is None:
+            try:
+                from ._backends._jax import _classical_p_values_poisson
+
+                return _classical_p_values_poisson(
+                    X, y, fit_intercept, robust_se=robust_se
+                )
+            except ImportError:
+                pass
 
         # ---- statsmodels fallback ------------------------------------
         X_sm = _augment_intercept(X, fit_intercept)
         with _suppress_sm_warnings():
             fit_kw: dict[str, Any] = {"disp": 0}
-            if robust_se:
+            if groups is not None:
+                fit_kw["cov_type"] = "cluster"
+                fit_kw["cov_kwds"] = {"groups": groups}
+            elif robust_se:
                 fit_kw["cov_type"] = "HC1"
             sm_model = sm.GLM(y, X_sm, family=sm.families.Poisson()).fit(**fit_kw)
         pvals = sm_model.pvalues[1:] if fit_intercept else sm_model.pvalues
@@ -2761,8 +3084,47 @@ class PoissonFamily:
         fit_intercept: bool = True,
         **kwargs: Any,
     ) -> Self:
-        """No-op — Poisson models have no nuisance parameters."""
-        return self
+        """Estimate AR coefficients when ``ar_order`` is provided.
+
+        Without ``ar_order``: no-op, returns ``self``.
+        With ``ar_order``: fits the full Poisson model, extracts
+        response-scale residuals per panel, estimates AR(p)
+        coefficients, and returns a new instance with AR state.
+        Idempotent — returns ``self`` if AR state is already set.
+        """
+        ar_order = kwargs.get("ar_order")
+        if ar_order is None:
+            return self
+        if self.ar_coefs is not None:
+            return self
+
+        from ._ar import estimate_ar_coefficients
+
+        panel_indices = kwargs["panel_indices"]
+        panel_lengths = kwargs["panel_lengths"]
+
+        # Fit full Poisson model, extract response-scale residuals
+        # (standard FGLS step 1).  Intercept-only residuals retain Xβ
+        # and attenuate the AR autocovariance estimate.
+        X_aug = _augment_intercept(X, fit_intercept)
+        with _suppress_sm_warnings():
+            full_model = sm.Poisson(y, X_aug).fit(disp=0, maxiter=200)
+        mu_full = np.maximum(full_model.predict(X_aug), 1e-10)
+        resid_full = y - mu_full
+
+        residuals_by_panel: list[np.ndarray] = []
+        start = 0
+        for length in panel_lengths:
+            T = int(length)
+            residuals_by_panel.append(resid_full[start : start + T])
+            start += T
+
+        ar_coefs_hat = estimate_ar_coefficients(residuals_by_panel, ar_order)
+        return PoissonFamily(
+            ar_coefs=ar_coefs_hat,
+            _panel_indices=panel_indices,
+            _panel_lengths=panel_lengths,
+        )
 
     # ---- Batch fitting (hot loop) ----------------------------------
     #
@@ -2927,6 +3289,10 @@ class NegativeBinomialFamily:
     """
 
     alpha: float | None = None
+    ar_coefs: np.ndarray | None = None
+    _panel_indices: np.ndarray | None = None
+    _panel_lengths: np.ndarray | None = None
+
     _backend_slug: ClassVar[str] = "negbin"
 
     @property
@@ -3120,6 +3486,7 @@ class NegativeBinomialFamily:
         *,
         fit_intercept: bool = True,
         y: np.ndarray | None = None,
+        randomization: str = "permute",
     ) -> np.ndarray:
         """Score projection via Fisher-information-weighted projection.
 
@@ -3133,6 +3500,8 @@ class NegativeBinomialFamily:
 
         Requires ``y`` to fit the reduced model and compute μ̂.
         """
+        from ._strategies import _apply_randomization
+
         if y is None:
             raise ValueError(
                 "NegativeBinomialFamily.score_project() requires y to "
@@ -3162,10 +3531,23 @@ class NegativeBinomialFamily:
         # Step 3: Projection row from full X.
         X_full = _augment_intercept(X, fit_intercept)
         j_aug = feature_idx + 1 if fit_intercept else feature_idx
+
+        # When AR-calibrated, whiten both X and residuals (FGLS).
+        # Working weights W stay from the unwhitened reduced-model fit.
+        if self.ar_coefs is not None and self._panel_lengths is not None:
+            from ._ar import apply_ar_cholesky_transform
+
+            X_full = apply_ar_cholesky_transform(
+                X_full, self._panel_lengths, self.ar_coefs
+            )
+            residuals = apply_ar_cholesky_transform(
+                residuals, self._panel_lengths, self.ar_coefs
+            )
+
         projection_row = _glm_score_projection_row(X_full, W_diag, j_aug)
 
-        # Step 4: Permuted scores via single matmul.
-        E_pi = residuals[perm_indices]  # (B, n)
+        # Step 4: Randomized scores via single matmul.
+        E_pi = _apply_randomization(residuals, perm_indices, randomization)  # (B, n)
         return np.asarray(E_pi @ projection_row)  # (B,)
 
     # ---- Permutation helpers ---------------------------------------
@@ -3305,6 +3687,7 @@ class NegativeBinomialFamily:
         fit_intercept: bool = True,
         *,
         robust_se: bool = False,
+        groups: np.ndarray | None = None,
     ) -> np.ndarray:
         """Asymptotic Wald z-test p-values for NB2 regression.
 
@@ -3313,24 +3696,31 @@ class NegativeBinomialFamily:
 
         When ``robust_se=True``, uses Eicker–Huber–White sandwich
         SEs for heteroscedasticity-robust inference.
+
+        When ``groups`` is provided, uses cluster-robust standard
+        errors (``cov_type='cluster'``).
         """
         alpha = self._require_alpha("classical_p_values")
 
-        # ---- JAX path (preferred) -----------------------------------
-        try:
-            from ._backends._jax import _classical_p_values_negbin
+        # ---- JAX path (preferred — skip when cluster SEs needed) ----
+        if groups is None:
+            try:
+                from ._backends._jax import _classical_p_values_negbin
 
-            return _classical_p_values_negbin(
-                X, y, alpha, fit_intercept, robust_se=robust_se
-            )
-        except ImportError:
-            pass
+                return _classical_p_values_negbin(
+                    X, y, alpha, fit_intercept, robust_se=robust_se
+                )
+            except ImportError:
+                pass
 
         # ---- statsmodels fallback ------------------------------------
         X_sm = _augment_intercept(X, fit_intercept)
         with _suppress_sm_warnings():
             fit_kw: dict[str, Any] = {"disp": 0}
-            if robust_se:
+            if groups is not None:
+                fit_kw["cov_type"] = "cluster"
+                fit_kw["cov_kwds"] = {"groups": groups}
+            elif robust_se:
                 fit_kw["cov_type"] = "HC1"
             sm_model = sm.GLM(y, X_sm, family=self._nb_family(alpha)).fit(**fit_kw)
         pvals = sm_model.pvalues[1:] if fit_intercept else sm_model.pvalues
@@ -3412,16 +3802,56 @@ class NegativeBinomialFamily:
         Returns:
             A calibrated ``NegativeBinomialFamily`` with α resolved.
         """
-        if self.alpha is not None:
+        ar_order = kwargs.get("ar_order")
+        alpha_resolved = self.alpha
+
+        # Track the full-model fit so the AR section can reuse it rather
+        # than fitting a second (null-model) NB just for residuals.
+        nb_full_model = None
+
+        if alpha_resolved is None:
+            X_sm = _augment_intercept(X, fit_intercept)
+            with _suppress_sm_warnings(separation=False):
+                nb_full_model = sm.NegativeBinomial(y, X_sm).fit(disp=0, maxiter=200)
+            alpha_resolved = float(np.exp(nb_full_model.lnalpha))
+
+        if ar_order is None:
+            if self.alpha is not None:
+                return self
+            return NegativeBinomialFamily(alpha=alpha_resolved)
+
+        if self.ar_coefs is not None and self.alpha is not None:
             return self
-        X_sm = _augment_intercept(X, fit_intercept)
-        with _suppress_sm_warnings(separation=False):
-            nb_model = sm.NegativeBinomial(y, X_sm).fit(disp=0, maxiter=200)
-        alpha_hat = float(np.exp(nb_model.lnalpha))
-        # ``@final`` makes ``Self ≡ NegativeBinomialFamily``, so
-        # returning a new instance of the same class satisfies the
-        # ``-> Self`` annotation without a type: ignore.
-        return NegativeBinomialFamily(alpha=alpha_hat)
+
+        from ._ar import estimate_ar_coefficients
+
+        panel_indices = kwargs["panel_indices"]
+        panel_lengths = kwargs["panel_lengths"]
+
+        # Full-model residuals for AR estimation (standard FGLS step 1).
+        # Reuse the alpha-estimation fit if it exists; otherwise fit now.
+        # Intercept-only residuals retain Xβ and attenuate ρ̂ downward.
+        X_aug = _augment_intercept(X, fit_intercept)
+        if nb_full_model is None:
+            with _suppress_sm_warnings(separation=False):
+                nb_full_model = sm.NegativeBinomial(y, X_aug).fit(disp=0, maxiter=200)
+        mu_full = np.maximum(nb_full_model.predict(X_aug), 1e-10)
+        resid_full = y - mu_full
+
+        residuals_by_panel: list[np.ndarray] = []
+        start = 0
+        for length in panel_lengths:
+            T = int(length)
+            residuals_by_panel.append(resid_full[start : start + T])
+            start += T
+
+        ar_coefs_hat = estimate_ar_coefficients(residuals_by_panel, ar_order)
+        return NegativeBinomialFamily(
+            alpha=alpha_resolved,
+            ar_coefs=ar_coefs_hat,
+            _panel_indices=panel_indices,
+            _panel_lengths=panel_lengths,
+        )
 
     # ---- Batch fitting (hot loop) ----------------------------------
     #
@@ -3809,17 +4239,136 @@ class OrdinalFamily:
         self,
         X: np.ndarray,
         feature_idx: int,
-        residuals: np.ndarray,
+        residuals: np.ndarray,  # noqa: ARG002 — unused; ordinal uses R-matrix
         perm_indices: np.ndarray,
         *,
         fit_intercept: bool = True,
-        y: np.ndarray | None = None,  # noqa: ARG002
+        y: np.ndarray | None = None,
+        randomization: str = "permute",
     ) -> np.ndarray:
-        """Not implemented — ordinal score projection requires Plan C."""
-        raise NotImplementedError(
-            f"score_project() not implemented for family='{self.name}'. "
-            f"Use method='ter_braak' or method='freedman_lane' instead."
-        )
+        """Exact score projection for the proportional-odds ordinal model.
+
+        Computes the permutation test statistic for feature *j* via the
+        exact ordinal score function, vectorised over all *B* permutations.
+
+        Mathematical basis:
+
+        For the proportional-odds logistic model with thresholds α and
+        linear predictor η = X·β:
+
+        .. math::
+
+            R[i,k] = \\frac{f(\\alpha_{k-1} - \\eta_i) - f(\\alpha_k - \\eta_i)}
+                          {P(Y=k \\mid \\eta_i)}
+
+        where *f* = σ(1−σ) is the logistic density.  These are the exact
+        score residuals for the slope coefficients.
+
+        The Fisher information weight for observation *i* is:
+
+        .. math::
+
+            W_i = \\sum_k R[i,k]^2 \\cdot P(Y=k \\mid \\eta_i)
+
+        The projection row (without intercept augmentation — thresholds
+        absorb it) is :math:`A_j = [(X^\\top W X)^{-1} X^\\top]_j`.
+
+        The score for permutation *b* is gathered via:
+
+        .. math::
+
+            V[b,i] = R[i,\\, y[\\text{perm\\_indices}[b,i]]]
+
+        and the final statistic is :math:`V \\cdot A_j` — shape ``(B,)``.
+
+        Args:
+            X: Full design matrix ``(n, p)`` — **not** intercept-augmented.
+            feature_idx: Index of the feature being tested.
+            residuals: Ignored — ordinal uses the R-matrix gather instead.
+            perm_indices: Permutation indices ``(B, n)``.
+            fit_intercept: Accepted for protocol compatibility; thresholds
+                serve as ordinal intercepts so this has no effect here.
+            y: Observed response ``(n,)`` — required.
+            randomization: ``"permute"`` only; sign-flip is not supported.
+
+        Returns:
+            Permuted score statistics of shape ``(B,)``.
+
+        Raises:
+            NotImplementedError: If ``randomization="sign_flip"`` or JAX
+                is not available.
+            ValueError: If ``y`` is not provided.
+        """
+        if randomization == "sign_flip":
+            raise NotImplementedError(
+                "OrdinalFamily.score_project() does not support sign_flip. "
+                "Ordinal responses are not sign-flippable."
+            )
+        if y is None:
+            raise ValueError("OrdinalFamily.score_project() requires y.")
+
+        try:
+            from ._backends._jax import _glm_score_projection_row
+        except ImportError:
+            raise NotImplementedError(
+                "OrdinalFamily.score_project() requires JAX. "
+                "Use method='manly' or method='kennedy' instead."
+            ) from None
+
+        n = len(y)
+
+        # 1. Fit reduced model (exclude feature j) at null.
+        X_red = np.delete(X, feature_idx, axis=1)  # (n, p-1)
+        reduced_model, _ = fit_reduced(self, X_red, y, fit_intercept)
+
+        if reduced_model is None:
+            # No remaining predictors: null (thresholds-only) model.
+            # OrdinalFamily cannot fit a zero-column exog via statsmodels
+            # (Hessian becomes singular), so derive analytically from
+            # empirical category proportions.
+            _, counts = np.unique(y, return_counts=True)
+            probs = np.tile(counts / n, (n, 1)).astype(float)  # (n, K)
+            eta = np.zeros(n)  # no linear predictor
+            cum_probs = np.clip(np.cumsum(counts / n)[:-1], 1e-10, 1 - 1e-10)
+            thresholds = np.log(cum_probs / (1 - cum_probs))  # logit → α̂ (K-1,)
+        else:
+            # 2. Category probabilities (n, K) and linear predictor from null fit.
+            probs = np.asarray(reduced_model.predict())  # (n, K)
+            n_red = X_red.shape[1]
+            beta_red = np.asarray(reduced_model.params[:n_red])  # slopes
+            thresholds = np.asarray(reduced_model.params[n_red:])  # α̂ (K-1,)
+            eta = X_red @ beta_red  # (n,) linear predictor at null
+
+        # 3. R[i,k] = exact ordinal score residual.
+        #    Boundaries: α_{-1} = -∞, α_K = +∞.
+        alpha_ext = np.concatenate([[-np.inf], thresholds, [np.inf]])  # (K+1,)
+
+        def _f(u: np.ndarray) -> np.ndarray:
+            """Logistic density f(u) = σ(u)(1−σ(u)), numerically safe."""
+            u = np.clip(u, -500, 500)
+            s = 1.0 / (1.0 + np.exp(-u))
+            return s * (1.0 - s)  # type: ignore[no-any-return]
+
+        lo = alpha_ext[:-1][np.newaxis, :] - eta[:, np.newaxis]  # (n, K)
+        hi = alpha_ext[1:][np.newaxis, :] - eta[:, np.newaxis]  # (n, K)
+        probs_safe = np.maximum(probs, 1e-12)
+        R = (_f(lo) - _f(hi)) / probs_safe  # (n, K)
+
+        # 4. Fisher information weights W[i] = Σ_k R[i,k]² P(Y=k|η_i).
+        W = np.sum(R**2 * probs, axis=1)  # (n,)
+        W = np.maximum(W, 1e-10)
+
+        # 5. Projection row. OrdinalFamily does NOT augment X with an
+        #    intercept column (thresholds absorb it), so pass X directly
+        #    and use feature_idx without the +1 offset applied by GLMs.
+        projection_row = _glm_score_projection_row(X, W, feature_idx)  # (n,)
+
+        # 6. Gather: V[b,i] = R[i, y[perm_indices[b,i]]] — vectorised.
+        y_int = y.astype(int)
+        y_permuted = y_int[perm_indices]  # (B, n)
+        V = R[np.arange(n)[np.newaxis, :], y_permuted]  # (B, n)
+
+        return np.asarray(V @ projection_row)  # (B,)
 
     # ---- Permutation helpers ---------------------------------------
 
@@ -3994,6 +4543,7 @@ class OrdinalFamily:
         fit_intercept: bool = True,
         *,
         robust_se: bool = False,
+        groups: np.ndarray | None = None,
     ) -> np.ndarray:
         """Asymptotic Wald z-test p-values for ordinal regression.
 
@@ -4002,7 +4552,20 @@ class OrdinalFamily:
 
         When ``robust_se=True``, uses Eicker–Huber–White sandwich
         SEs (JAX path only — the statsmodels fallback ignores it).
+
+        ``groups`` is accepted for protocol compatibility but
+        cluster-robust SEs are not available for ordinal models.
+        A warning is emitted when ``groups`` is not None.
         """
+        if groups is not None:
+            warnings.warn(
+                "Cluster-robust standard errors are not available for "
+                "ordinal models.  The asymptotic p-values will use "
+                "unclustered SEs and may not match the permutation "
+                "test's within-group structure.",
+                UserWarning,
+                stacklevel=2,
+            )
         K = int(len(np.unique(y)))
         n_features = X.shape[1]
 
@@ -4452,17 +5015,121 @@ class MultinomialFamily:
         self,
         X: np.ndarray,
         feature_idx: int,
-        residuals: np.ndarray,
+        residuals: np.ndarray,  # noqa: ARG002 — unused; multinomial uses I_jj gather
         perm_indices: np.ndarray,
         *,
         fit_intercept: bool = True,
-        y: np.ndarray | None = None,  # noqa: ARG002
+        y: np.ndarray | None = None,
+        randomization: str = "permute",
     ) -> np.ndarray:
-        """Not implemented — multinomial score projection requires Plan C."""
-        raise NotImplementedError(
-            f"score_project() not implemented for family='{self.name}'. "
-            f"Use method='ter_braak' or method='freedman_lane' instead."
+        """Exact score chi-square projection for the multinomial logit model.
+
+        Computes the permutation score chi-square for feature *j* via the
+        exact multinomial score function, vectorised over all *B*
+        permutations.
+
+        Mathematical basis:
+
+        For multinomial logit with reference category 0 and *K*−1
+        non-reference categories, the score vector for feature j is:
+
+        .. math::
+
+            U_j(b)[k] = \\sum_i x_{ij} \\cdot
+                         (\\mathbf{1}\\{y[\\text{perm}[b,i]]=k\\} - P(Y=k|x_i))
+            \\quad k=1,\\ldots,K-1
+
+        The Fisher information sub-matrix for feature j is:
+
+        .. math::
+
+            I_{jj} = \\sum_i x_{ij}^2
+                      [\\operatorname{diag}(P_i[1:]) - P_i[1:] P_i[1:]^\\top]
+
+        The scalar test statistic is the score chi-square:
+
+        .. math::
+
+            S_j(b) = U_j(b)^\\top I_{jj}^{-1} U_j(b)
+            \\quad (\\chi^2 \\text{ with } K-1 \\text{ df})
+
+        This is asymptotically equivalent to the Wald χ² returned by
+        ``coefs()``, so the ScoreIndividualStrategy offset correctly
+        centres the permutation distribution on the observed Wald χ².
+
+        Args:
+            X: Full design matrix ``(n, p)`` — **not** intercept-augmented.
+            feature_idx: Index of the feature being tested (in X).
+            residuals: Ignored — multinomial uses the score chi-square
+                statistic instead.
+            perm_indices: Permutation indices ``(B, n)``.
+            fit_intercept: Whether to include an intercept in reduced
+                model fits (passed through to ``fit()``).
+            y: Observed response ``(n,)`` — required.
+            randomization: ``"permute"`` only; sign-flip is not supported.
+
+        Returns:
+            Permuted score chi-square statistics of shape ``(B,)``.
+
+        Raises:
+            NotImplementedError: If ``randomization="sign_flip"``.
+            ValueError: If ``y`` is not provided.
+        """
+        if randomization == "sign_flip":
+            raise NotImplementedError(
+                "MultinomialFamily.score_project() does not support sign_flip. "
+                "Multinomial responses are not sign-flippable."
+            )
+        if y is None:
+            raise ValueError("MultinomialFamily.score_project() requires y.")
+
+        n = len(y)
+
+        # 1. Fit reduced model (exclude feature j) at null.
+        X_red = np.delete(X, feature_idx, axis=1)  # (n, p-1)
+        reduced_model, _ = fit_reduced(self, X_red, y, fit_intercept)
+
+        if reduced_model is None:
+            # No remaining predictors: null (intercept-only) probabilities.
+            # Use empirical proportions = MLE for intercept-only model.
+            _, counts = np.unique(y, return_counts=True)
+            K = len(counts)
+            probs = np.tile(counts / n, (n, 1)).astype(float)  # (n, K)
+        else:
+            probs = np.asarray(reduced_model.predict())  # (n, K)
+
+        K = probs.shape[1]
+        P_ref = probs[:, 1:]  # (n, K-1) — non-reference category probs
+
+        # 2. x_j from full (un-augmented) design matrix.
+        x_j = X[:, feature_idx]  # (n,)
+        x_j2 = x_j**2  # (n,) — squared feature values
+
+        # 3. Fisher information sub-matrix I_jj for feature j.
+        #    I_jj = Σ_i x_ij² × [diag(P_i[1:]) - P_i[1:] P_i[1:]']  (K-1 × K-1)
+        I_jj = np.einsum("i,ik->k", x_j2, P_ref) * np.eye(K - 1) - np.einsum(
+            "i,ik,il->kl", x_j2, P_ref, P_ref
         )
+        try:
+            I_jj_inv = np.linalg.inv(I_jj)
+        except np.linalg.LinAlgError:
+            I_jj_inv = np.linalg.pinv(I_jj)
+
+        # 4. One-hot encode permuted y for non-reference categories: (B, n, K-1).
+        y_int = y.astype(int)
+        y_permuted = y_int[perm_indices]  # (B, n)
+        # Y_onehot[b, i, k] = 1{y_permuted[b,i] == k+1}  (non-reference)
+        Y_onehot = (
+            y_permuted[:, :, np.newaxis] == np.arange(1, K)[np.newaxis, np.newaxis, :]
+        )  # (B, n, K-1), bool
+
+        # 5. Score vectors U_j(b) = Σ_i x_ij × (1{y_perm[b,i]=k} - P(Y=k|x_i))
+        resid_matrix = Y_onehot - P_ref[np.newaxis, :, :]  # (B, n, K-1)
+        U_j = np.einsum("i,bik->bk", x_j, resid_matrix)  # (B, K-1)
+
+        # 6. Score chi-square: S_j(b) = U_j(b)' I_jj_inv U_j(b).
+        tmp = U_j @ I_jj_inv  # (B, K-1)
+        return np.sum(tmp * U_j, axis=1)  # type: ignore[no-any-return]  # (B,) chi-square values
 
     # ---- Permutation helpers ---------------------------------------
 
@@ -4630,6 +5297,7 @@ class MultinomialFamily:
         fit_intercept: bool = True,
         *,
         robust_se: bool = False,
+        groups: np.ndarray | None = None,
     ) -> np.ndarray:
         """Asymptotic Wald χ² p-values for multinomial regression.
 
@@ -4640,10 +5308,23 @@ class MultinomialFamily:
         When ``robust_se=True``, uses Eicker–Huber–White sandwich
         SEs (JAX path only — the fallback ignores it).
 
+        ``groups`` is accepted for protocol compatibility but
+        cluster-robust SEs are not available for multinomial models.
+        A warning is emitted when ``groups`` is not None.
+
         Returns one p-value per slope predictor.  Each p-value is
         the survival function of the χ²(K-1) distribution evaluated
         at the predictor's Wald χ² statistic.
         """
+        if groups is not None:
+            warnings.warn(
+                "Cluster-robust standard errors are not available for "
+                "multinomial models.  The asymptotic p-values will use "
+                "unclustered SEs and may not match the permutation "
+                "test's within-group structure.",
+                UserWarning,
+                stacklevel=2,
+            )
         K = int(len(np.unique(y)))
         n_features = X.shape[1]
 

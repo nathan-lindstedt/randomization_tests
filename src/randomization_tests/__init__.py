@@ -9,13 +9,15 @@ with exchangeability-cell constraints.
 
 Public API:
     .. autosummary::
-        permutation_test_regression
+        randomization_test_regression
         identify_confounders
         mediation_analysis
         moderation_analysis
         screen_potential_confounders
         compute_e_value
         rosenbaum_bounds
+        print_ar_comparison_table
+        print_comparison_table
         print_confounder_table
         print_dataset_info_table
         print_diagnostics_table
@@ -23,8 +25,13 @@ Public API:
         print_joint_results_table
         print_protocol_usage_table
         print_results_table
+        print_symmetry_table
+        ExchangeabilityTree
+        ExchangeabilityNode
         calculate_p_values
         generate_unique_permutations
+        generate_sign_flips
+        validate_symmetry
         get_backend
         set_backend
         ModelFamily
@@ -55,9 +62,11 @@ from .confounders import (
     moderation_analysis,
     screen_potential_confounders,
 )
-from .core import permutation_test_regression
+from .core import randomization_test_regression
 from .diagnostics import compute_e_value, rosenbaum_bounds
 from .display import (
+    print_ar_comparison_table,
+    print_comparison_table,
     print_confounder_table,
     print_dataset_info_table,
     print_diagnostics_table,
@@ -65,8 +74,10 @@ from .display import (
     print_joint_results_table,
     print_protocol_usage_table,
     print_results_table,
+    print_symmetry_table,
 )
 from .engine import PermutationEngine
+from .exchangeability import ExchangeabilityNode, ExchangeabilityTree
 from .families import (
     LinearFamily,
     LogisticFamily,
@@ -81,19 +92,22 @@ from .families import (
 from .families_mixed import LinearMixedFamily, LogisticMixedFamily, PoissonMixedFamily
 from .permutations import generate_unique_permutations
 from .pvalues import calculate_p_values
+from .sign_flips import generate_sign_flips, validate_symmetry
 
 __all__ = [
     "ConfounderAnalysisResult",
     "IndividualTestResult",
     "JointTestResult",
     "FitContext",
-    "permutation_test_regression",
+    "randomization_test_regression",
     "compute_e_value",
     "identify_confounders",
     "mediation_analysis",
     "moderation_analysis",
     "rosenbaum_bounds",
     "screen_potential_confounders",
+    "print_ar_comparison_table",
+    "print_comparison_table",
     "print_confounder_table",
     "print_dataset_info_table",
     "print_diagnostics_table",
@@ -101,8 +115,11 @@ __all__ = [
     "print_joint_results_table",
     "print_protocol_usage_table",
     "print_results_table",
+    "print_symmetry_table",
     "calculate_p_values",
     "generate_unique_permutations",
+    "generate_sign_flips",
+    "validate_symmetry",
     "get_backend",
     "set_backend",
     "ModelFamily",
@@ -118,6 +135,8 @@ __all__ = [
     "resolve_family",
     "register_family",
     "PermutationEngine",
+    "ExchangeabilityTree",
+    "ExchangeabilityNode",
 ]
 
-__version__ = "0.4.2"
+__version__ = "0.4.4"

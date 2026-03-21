@@ -21,7 +21,6 @@ from ucimlrepo import fetch_ucirepo
 from randomization_tests import (
     MultinomialFamily,
     identify_confounders,
-    permutation_test_regression,
     print_confounder_table,
     print_dataset_info_table,
     print_diagnostics_table,
@@ -29,6 +28,7 @@ from randomization_tests import (
     print_joint_results_table,
     print_protocol_usage_table,
     print_results_table,
+    randomization_test_regression,
     resolve_family,
 )
 
@@ -79,7 +79,7 @@ print_family_info_table(
 # ter Braak (1992) — family="multinomial"
 # ============================================================================
 
-results_ter_braak = permutation_test_regression(
+results_ter_braak = randomization_test_regression(
     X_wine, y_wine, method="ter_braak", family="multinomial"
 )
 print_results_table(
@@ -98,7 +98,7 @@ assert results_ter_braak.family.name == "multinomial"
 
 with warnings.catch_warnings():
     warnings.filterwarnings("ignore", message=".*without confounders.*")
-    results_kennedy = permutation_test_regression(
+    results_kennedy = randomization_test_regression(
         X_wine, y_wine, method="kennedy", confounders=[], family="multinomial"
     )
 print_results_table(
@@ -116,7 +116,7 @@ print_diagnostics_table(
 
 with warnings.catch_warnings():
     warnings.filterwarnings("ignore", message=".*without confounders.*")
-    results_kennedy_joint = permutation_test_regression(
+    results_kennedy_joint = randomization_test_regression(
         X_wine,
         y_wine,
         method="kennedy_joint",
@@ -158,7 +158,7 @@ if predictors_with_confounders:
     example_predictor = list(predictors_with_confounders.keys())[0]
     example_confounders = predictors_with_confounders[example_predictor]
 
-    results_kc = permutation_test_regression(
+    results_kc = randomization_test_regression(
         X_wine,
         y_wine,
         method="kennedy",

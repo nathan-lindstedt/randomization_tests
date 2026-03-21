@@ -21,9 +21,8 @@ Two code paths:
 
 * **Residual path** — standard residual-permutation for families with
   well-defined residuals (linear, logistic, Poisson, negative binomial).
-* **Direct Y permutation (Manly 1997)** — for families where residuals
-  are ill-defined (e.g. ordinal, multinomial).  Controlled by
-  ``family.direct_permutation``.
+* **Direct Y permutation families** are rejected with a ``ValueError``
+  directing the user to ``method="manly"`` or ``method="kennedy"``.
 
 Reference:
     ter Braak, C. J. F. (1992). Permutation versus bootstrap
@@ -34,20 +33,20 @@ Reference:
 
 from __future__ import annotations
 
-import warnings
 from typing import TYPE_CHECKING
 
 import numpy as np
 import pandas as pd
 
 from ..families import fit_reduced
+from . import _apply_randomization
 
 if TYPE_CHECKING:
     from ..families import ModelFamily
 
 
 class TerBraakStrategy:
-    """Residual-permutation strategy (ter Braak 1992 / Manly 1997).
+    """Residual-permutation strategy (ter Braak 1992).
 
     Individual test: returns ``np.ndarray`` of shape ``(B, n_features)``.
     """
@@ -65,6 +64,7 @@ class TerBraakStrategy:
         model_coefs: np.ndarray | None = None,
         fit_intercept: bool = True,
         n_jobs: int = 1,
+        randomization: str = "permute",
     ) -> np.ndarray:
         """Run the ter Braak permutation algorithm.
 
@@ -78,6 +78,7 @@ class TerBraakStrategy:
             model_coefs: Unused.
             fit_intercept: Whether to include an intercept.
             n_jobs: Parallelism level for the batch-fit step.
+            randomization: ``"permute"`` (default) or ``"sign_flip"``.
 
         Returns:
             Array of shape ``(B, n_features)`` with permuted
@@ -87,41 +88,32 @@ class TerBraakStrategy:
         n_perm, n = perm_indices.shape  # B permutations, n observations
         n_features = X_np.shape[1]  # p = number of predictors
 
-        # --- Direct Y permutation path (Manly 1997) ---
-        # For families where residuals are not well-defined (e.g.
-        # ordinal, multinomial), permute Y directly rather than going
-        # through the residual pipeline.  This is a simpler but less
-        # powerful test: it permutes the *entire* response, not just
-        # the unexplained part, so it tests marginal rather than
-        # partial association.
+        # --- Guard: reject direct-permutation families -------------
+        # Families like ordinal and multinomial have no well-defined
+        # residuals, so the ter Braak residual-permutation pipeline
+        # cannot run.  Direct the user to Manly (direct Y permutation)
+        # or Kennedy (exposure-model residuals).
         if family.direct_permutation:
-            warnings.warn(
-                f"family='{family.name}' does not support residual-based "
-                f"permutation (residuals are not well-defined for this "
-                f"model type).  Falling back to direct Y permutation "
-                f"(Manly 1997), which tests marginal rather than partial "
-                f"association and may have lower power than the residual-"
-                f"based ter Braak (1992) procedure.  Consider the Kennedy "
-                f"method as an alternative — it permutes exposure-model "
-                f"residuals (linear OLS) and does not require response-"
-                f"model residuals.",
-                UserWarning,
-                stacklevel=4,
+            raise ValueError(
+                f"ter Braak method requires well-defined residuals but "
+                f"family='{family.name}' uses direct Y permutation.  "
+                f"Use method='manly' (direct Y permutation, Manly 1997) "
+                f"or method='kennedy' (exposure-model residuals, "
+                f"Kennedy 1995) instead."
             )
-            # Fancy-index y_values with the (B, n) permutation matrix
-            # to produce B shuffled response vectors simultaneously.
-            Y_perm = y_values[perm_indices]  # (B, n)
-            # batch_fit returns (B, p) coefficient matrix.
-            return family.batch_fit(X_np, Y_perm, fit_intercept, n_jobs=n_jobs)
 
         # --- Standard residual-permutation path (ter Braak 1992) ---
         result = np.zeros((n_perm, n_features))  # (B, p) permuted coefficients
 
-        # Derive a deterministic RNG from the first permutation index
+        # Derive a deterministic RNG from the first row of perm_indices
         # so that any stochastic reconstruction step (e.g. Bernoulli
         # sampling for logistic residuals → binary Y) is reproducible
-        # given the same permutation matrix.
-        rng = np.random.default_rng(int(perm_indices[0, 0]))
+        # given the same permutation/sign-flip matrix.  Shifting by
+        # perm_indices.shape[1] converts sign-flip values (±1) to
+        # positive integers while keeping permutation indices unique.
+        rng = np.random.default_rng(
+            (perm_indices[0].astype(np.int64) + perm_indices.shape[1]).astype(np.uint64)
+        )
 
         # Loop over each feature j ∈ {0, …, p−1}.  Each iteration
         # tests H₀(j): β_j = 0, i.e. feature j has no effect on Y
@@ -149,10 +141,13 @@ class TerBraakStrategy:
                 # are raw: e = Y − ŷ.
                 resids_red = y_values - preds_red  # (n,)
 
-            # Step 2: Permute the residual vector.
-            # Fancy-indexing with (B, n) indices broadcasts the 1-D
+            # Step 2: Resample the residual vector.
+            # For permutation: fancy-indexing broadcasts the 1-D
             # residual array into B shuffled copies.
-            permuted_resids = resids_red[perm_indices]  # (B, n)
+            # For sign-flip: element-wise ±1 multiplication.
+            permuted_resids = _apply_randomization(
+                resids_red, perm_indices, randomization
+            )  # (B, n)
 
             # Step 3: Reconstruct permuted response vectors.
             # Y* = ŷ₋ⱼ + π(e₋ⱼ) for linear family.

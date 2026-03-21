@@ -2,14 +2,14 @@
 
 Covers: empty data, single-feature models, constant columns, perfect
 separation, permutation counts near n!, NaN/Inf/non-numeric inputs,
-multi-column y, confounder validation, and n_permutations bounds.
+multi-column y, confounder validation, and n_randomizations bounds.
 """
 
 import numpy as np
 import pandas as pd
 import pytest
 
-from randomization_tests.core import permutation_test_regression
+from randomization_tests.core import randomization_test_regression
 from randomization_tests.permutations import generate_unique_permutations
 
 # ------------------------------------------------------------------ #
@@ -45,13 +45,13 @@ class TestEmptyData:
         X = pd.DataFrame({"x1": pd.Series([], dtype=float)})
         y = pd.DataFrame({"y": pd.Series([], dtype=float)})
         with pytest.raises(ValueError, match="at least one observation"):
-            permutation_test_regression(X, y, n_permutations=10)
+            randomization_test_regression(X, y, n_randomizations=10)
 
     def test_zero_columns_raises(self) -> None:
         X = pd.DataFrame(index=range(10))
         y = pd.DataFrame({"y": np.random.default_rng(0).standard_normal(10)})
         with pytest.raises(ValueError, match="at least one feature"):
-            permutation_test_regression(X, y, n_permutations=10)
+            randomization_test_regression(X, y, n_randomizations=10)
 
 
 # ------------------------------------------------------------------ #
@@ -64,8 +64,8 @@ class TestSingleFeature:
 
     def test_ter_braak_linear(self) -> None:
         X, y = _linear_data()
-        result = permutation_test_regression(
-            X, y, n_permutations=50, method="ter_braak", random_state=0
+        result = randomization_test_regression(
+            X, y, n_randomizations=50, method="ter_braak", random_state=0
         )
         assert len(result["model_coefs"]) == 1
         assert len(result["permuted_p_values"]) == 1
@@ -74,16 +74,16 @@ class TestSingleFeature:
     def test_kennedy_linear(self) -> None:
         X, y = _linear_data()
         with pytest.warns(UserWarning, match="without confounders"):
-            result = permutation_test_regression(
-                X, y, n_permutations=50, method="kennedy", random_state=0
+            result = randomization_test_regression(
+                X, y, n_randomizations=50, method="kennedy", random_state=0
             )
         assert len(result["model_coefs"]) == 1
 
     def test_kennedy_joint_linear(self) -> None:
         X, y = _linear_data()
         with pytest.warns(UserWarning, match="without confounders"):
-            result = permutation_test_regression(
-                X, y, n_permutations=50, method="kennedy_joint", random_state=0
+            result = randomization_test_regression(
+                X, y, n_randomizations=50, method="kennedy_joint", random_state=0
             )
         assert "p_value" in result
         assert 0 <= result["p_value"] <= 1
@@ -94,23 +94,23 @@ class TestSingleFeature:
         with pytest.raises(
             ValueError, match="ter Braak.*logistic.*at least 2 features"
         ):
-            permutation_test_regression(
-                X, y, n_permutations=50, method="ter_braak", random_state=0
+            randomization_test_regression(
+                X, y, n_randomizations=50, method="ter_braak", random_state=0
             )
 
     def test_kennedy_logistic(self) -> None:
         X, y = _binary_data()
         with pytest.warns(UserWarning, match="without confounders"):
-            result = permutation_test_regression(
-                X, y, n_permutations=50, method="kennedy", random_state=0
+            result = randomization_test_regression(
+                X, y, n_randomizations=50, method="kennedy", random_state=0
             )
         assert len(result["model_coefs"]) == 1
 
     def test_kennedy_joint_logistic(self) -> None:
         X, y = _binary_data()
         with pytest.warns(UserWarning, match="without confounders"):
-            result = permutation_test_regression(
-                X, y, n_permutations=50, method="kennedy_joint", random_state=0
+            result = randomization_test_regression(
+                X, y, n_randomizations=50, method="kennedy_joint", random_state=0
             )
         assert "p_value" in result
 
@@ -126,13 +126,13 @@ class TestConstantColumn:
         X = pd.DataFrame({"x1": rng.standard_normal(50), "x_const": np.full(50, 5.0)})
         y = pd.DataFrame({"y": rng.standard_normal(50)})
         with pytest.raises(ValueError, match="zero variance.*x_const"):
-            permutation_test_regression(X, y, n_permutations=10)
+            randomization_test_regression(X, y, n_randomizations=10)
 
     def test_all_constant(self) -> None:
         X = pd.DataFrame({"x1": np.ones(50), "x2": np.full(50, 3.0)})
         y = pd.DataFrame({"y": np.random.default_rng(0).standard_normal(50)})
         with pytest.raises(ValueError, match="zero variance"):
-            permutation_test_regression(X, y, n_permutations=10)
+            randomization_test_regression(X, y, n_randomizations=10)
 
 
 # ------------------------------------------------------------------ #
@@ -168,8 +168,8 @@ class TestPerfectSeparation:
 
     def test_ter_braak(self, separated_data: tuple[pd.DataFrame, pd.DataFrame]) -> None:
         X, y = separated_data
-        result = permutation_test_regression(
-            X, y, n_permutations=50, method="ter_braak", random_state=0
+        result = randomization_test_regression(
+            X, y, n_randomizations=50, method="ter_braak", random_state=0
         )
         assert all(np.isfinite(result["raw_empirical_p"]))
         assert result.family.name == "logistic"
@@ -177,8 +177,8 @@ class TestPerfectSeparation:
     def test_kennedy(self, separated_data: tuple[pd.DataFrame, pd.DataFrame]) -> None:
         X, y = separated_data
         with pytest.warns(UserWarning, match="without confounders"):
-            result = permutation_test_regression(
-                X, y, n_permutations=50, method="kennedy", random_state=0
+            result = randomization_test_regression(
+                X, y, n_randomizations=50, method="kennedy", random_state=0
             )
         assert all(np.isfinite(result["raw_empirical_p"]))
 
@@ -187,8 +187,8 @@ class TestPerfectSeparation:
     ) -> None:
         X, y = separated_data
         with pytest.warns(UserWarning, match="without confounders"):
-            result = permutation_test_regression(
-                X, y, n_permutations=50, method="kennedy_joint", random_state=0
+            result = randomization_test_regression(
+                X, y, n_randomizations=50, method="kennedy_joint", random_state=0
             )
         assert np.isfinite(result["p_value"])
 
@@ -205,7 +205,7 @@ class TestPermutationCountNearFactorial:
         """Request 700 of 719 available (exclude_identity=True)."""
         perms = generate_unique_permutations(
             n_samples=6,
-            n_permutations=700,
+            n_randomizations=700,
             random_state=0,
             exclude_identity=True,
         )
@@ -218,7 +218,7 @@ class TestPermutationCountNearFactorial:
         """Request exactly 719 (all non-identity permutations)."""
         perms = generate_unique_permutations(
             n_samples=6,
-            n_permutations=719,
+            n_randomizations=719,
             random_state=0,
             exclude_identity=True,
         )
@@ -229,7 +229,7 @@ class TestPermutationCountNearFactorial:
         with pytest.raises(ValueError, match="720.*719"):
             generate_unique_permutations(
                 n_samples=6,
-                n_permutations=720,
+                n_randomizations=720,
                 random_state=0,
                 exclude_identity=True,
             )
@@ -238,7 +238,7 @@ class TestPermutationCountNearFactorial:
         """Request all 720 with exclude_identity=False."""
         perms = generate_unique_permutations(
             n_samples=6,
-            n_permutations=720,
+            n_randomizations=720,
             random_state=0,
             exclude_identity=False,
         )
@@ -247,12 +247,12 @@ class TestPermutationCountNearFactorial:
         assert len(unique_rows) == 720
 
     def test_end_to_end_small_n(self) -> None:
-        """Run a full test with small n where n_permutations ≈ n!."""
+        """Run a full test with small n where n_randomizations ≈ n!."""
         rng = np.random.default_rng(42)
         X = pd.DataFrame({"x1": rng.standard_normal(6)})
         y = pd.DataFrame({"y": rng.standard_normal(6)})
-        result = permutation_test_regression(
-            X, y, n_permutations=100, method="ter_braak", random_state=0
+        result = randomization_test_regression(
+            X, y, n_randomizations=100, method="ter_braak", random_state=0
         )
         assert len(result["model_coefs"]) == 1
 
@@ -267,31 +267,31 @@ class TestBadData:
         X = pd.DataFrame({"x1": [1.0, 2.0, 3.0, 4.0, 5.0]})
         y = pd.DataFrame({"y": [1.0, 2.0, np.nan, 4.0, 5.0]})
         with pytest.raises(ValueError, match="y contains NaN"):
-            permutation_test_regression(X, y, n_permutations=10)
+            randomization_test_regression(X, y, n_randomizations=10)
 
     def test_inf_in_y(self) -> None:
         X = pd.DataFrame({"x1": [1.0, 2.0, 3.0, 4.0, 5.0]})
         y = pd.DataFrame({"y": [1.0, 2.0, np.inf, 4.0, 5.0]})
         with pytest.raises(ValueError, match="y contains infinite"):
-            permutation_test_regression(X, y, n_permutations=10)
+            randomization_test_regression(X, y, n_randomizations=10)
 
     def test_nan_in_X(self) -> None:
         X = pd.DataFrame({"x1": [1.0, np.nan, 3.0, 4.0, 5.0]})
         y = pd.DataFrame({"y": [1.0, 2.0, 3.0, 4.0, 5.0]})
         with pytest.raises(ValueError, match="X contains NaN"):
-            permutation_test_regression(X, y, n_permutations=10)
+            randomization_test_regression(X, y, n_randomizations=10)
 
     def test_inf_in_X(self) -> None:
         X = pd.DataFrame({"x1": [1.0, 2.0, np.inf, 4.0, 5.0]})
         y = pd.DataFrame({"y": [1.0, 2.0, 3.0, 4.0, 5.0]})
         with pytest.raises(ValueError, match="X contains infinite"):
-            permutation_test_regression(X, y, n_permutations=10)
+            randomization_test_regression(X, y, n_randomizations=10)
 
     def test_non_numeric_column(self) -> None:
         X = pd.DataFrame({"x1": [1.0, 2.0, 3.0], "region": ["a", "b", "c"]})
         y = pd.DataFrame({"y": [1.0, 2.0, 3.0]})
         with pytest.raises(ValueError, match="non-numeric dtype.*region"):
-            permutation_test_regression(X, y, n_permutations=10)
+            randomization_test_regression(X, y, n_randomizations=10)
 
 
 # ------------------------------------------------------------------ #
@@ -306,7 +306,7 @@ class TestMultiColumnY:
             {"y1": [1.0, 2.0, 3.0, 4.0, 5.0], "y2": [5.0, 4.0, 3.0, 2.0, 1.0]}
         )
         with pytest.raises(ValueError, match="single column.*2 columns"):
-            permutation_test_regression(X, y, n_permutations=10)
+            randomization_test_regression(X, y, n_randomizations=10)
 
 
 # ------------------------------------------------------------------ #
@@ -319,24 +319,24 @@ class TestShapeMismatch:
         X = pd.DataFrame({"x1": [1.0, 2.0, 3.0]})
         y = pd.DataFrame({"y": [1.0, 2.0, 3.0, 4.0, 5.0]})
         with pytest.raises(ValueError, match="3 rows.*5 elements"):
-            permutation_test_regression(X, y, n_permutations=10)
+            randomization_test_regression(X, y, n_randomizations=10)
 
 
 # ------------------------------------------------------------------ #
-# 9. n_permutations bounds
+# 9. n_randomizations bounds
 # ------------------------------------------------------------------ #
 
 
 class TestNPermutationsBounds:
     def test_zero_permutations_raises(self) -> None:
         X, y = _linear_data()
-        with pytest.raises(ValueError, match="n_permutations must be >= 1"):
-            permutation_test_regression(X, y, n_permutations=0)
+        with pytest.raises(ValueError, match="n_randomizations must be >= 1"):
+            randomization_test_regression(X, y, n_randomizations=0)
 
     def test_negative_permutations_raises(self) -> None:
         X, y = _linear_data()
-        with pytest.raises(ValueError, match="n_permutations must be >= 1"):
-            permutation_test_regression(X, y, n_permutations=-5)
+        with pytest.raises(ValueError, match="n_randomizations must be >= 1"):
+            randomization_test_regression(X, y, n_randomizations=-5)
 
 
 # ------------------------------------------------------------------ #
@@ -350,20 +350,20 @@ class TestConfounderValidation:
         X = pd.DataFrame({"x1": rng.standard_normal(50), "x2": rng.standard_normal(50)})
         y = pd.DataFrame({"y": rng.standard_normal(50)})
         with pytest.raises(ValueError, match="Confounders not found.*age"):
-            permutation_test_regression(
-                X, y, n_permutations=10, method="kennedy", confounders=["age"]
+            randomization_test_regression(
+                X, y, n_randomizations=10, method="kennedy", confounders=["age"]
             )
 
     def test_kennedy_without_confounders_warns(self) -> None:
         X, y = _linear_data()
         with pytest.warns(UserWarning, match="without confounders"):
-            permutation_test_regression(
-                X, y, n_permutations=50, method="kennedy", random_state=0
+            randomization_test_regression(
+                X, y, n_randomizations=50, method="kennedy", random_state=0
             )
 
     def test_kennedy_joint_without_confounders_warns(self) -> None:
         X, y = _linear_data()
         with pytest.warns(UserWarning, match="without confounders"):
-            permutation_test_regression(
-                X, y, n_permutations=50, method="kennedy_joint", random_state=0
+            randomization_test_regression(
+                X, y, n_randomizations=50, method="kennedy_joint", random_state=0
             )

@@ -542,7 +542,7 @@ def batch_permutation_test(
     result: REMLResult,
     X_raw: np.ndarray,
     y: np.ndarray,
-    n_permutations: int = 2000,
+    n_randomizations: int = 2000,
     seed: int = 123,
     *,
     fit_intercept: bool = True,
@@ -569,7 +569,7 @@ def batch_permutation_test(
     # Generate permutation indices
     rng = np.random.default_rng(seed)
     perm_indices = np.array(
-        [rng.permutation(n) for _ in range(n_permutations)]
+        [rng.permutation(n) for _ in range(n_randomizations)]
     )  # (B, n)
 
     # ── The key operation: batch matmul via JAX ──
@@ -585,7 +585,7 @@ def batch_permutation_test(
     t0 = time.perf_counter()
     beta_perms = np.asarray(_batch_project(A_j, e_j, perm_j))  # (B, p)
     elapsed = time.perf_counter() - t0
-    print(f"  Batch matmul: {n_permutations} permutations in {elapsed:.4f}s")
+    print(f"  Batch matmul: {n_randomizations} permutations in {elapsed:.4f}s")
 
     # Observed β (for each coef, one-sided |t| test)
     beta_obs = result.beta
@@ -594,7 +594,7 @@ def batch_permutation_test(
     p_values = np.zeros(p)
     for j in range(p):
         p_values[j] = (np.sum(np.abs(beta_perms[:, j]) >= np.abs(beta_obs[j])) + 1) / (
-            n_permutations + 1
+            n_randomizations + 1
         )
 
     return p_values
@@ -605,7 +605,7 @@ def batch_permutation_test_within_cells(
     X_raw: np.ndarray,
     y: np.ndarray,
     cells: np.ndarray,
-    n_permutations: int = 2000,
+    n_randomizations: int = 2000,
     seed: int = 123,
     *,
     fit_intercept: bool = True,
@@ -641,8 +641,8 @@ def batch_permutation_test_within_cells(
     unique_cells = np.unique(cells)
     cell_indices = {int(c): np.where(cells == c)[0] for c in unique_cells}
 
-    perm_indices = np.zeros((n_permutations, n), dtype=int)
-    for b in range(n_permutations):
+    perm_indices = np.zeros((n_randomizations, n), dtype=int)
+    for b in range(n_randomizations):
         perm = np.arange(n)
         for c in unique_cells:
             cidx = cell_indices[int(c)]
@@ -665,7 +665,7 @@ def batch_permutation_test_within_cells(
     n_cells_count = len(unique_cells)
     cell_size = n // n_cells_count
     print(
-        f"  Within-cell batch matmul: {n_permutations} perms × "
+        f"  Within-cell batch matmul: {n_randomizations} perms × "
         f"{n_cells_count} cells (size {cell_size}) in {elapsed:.4f}s"
     )
 
@@ -674,7 +674,7 @@ def batch_permutation_test_within_cells(
     p_values = np.zeros(p_dim)
     for j in range(p_dim):
         p_values[j] = (np.sum(np.abs(beta_perms[:, j]) >= np.abs(beta_obs[j])) + 1) / (
-            n_permutations + 1
+            n_randomizations + 1
         )
 
     return p_values
@@ -759,7 +759,7 @@ def test_balanced_nested():
 
     # Projection matrix test
     print()
-    p_vals = batch_permutation_test(result, X, y, n_permutations=2000)
+    p_vals = batch_permutation_test(result, X, y, n_randomizations=2000)
     print(f"  Permutation p-values (incl intercept): {p_vals}")
     print(f"  Intercept significant (expected): p={p_vals[0]:.4f}")
     print(f"  x0 significant (β=1.5):          p={p_vals[1]:.4f}")
@@ -795,7 +795,7 @@ def test_unbalanced_nested():
 
     # Projection matrix test
     print()
-    p_vals = batch_permutation_test(result, X, y, n_permutations=2000)
+    p_vals = batch_permutation_test(result, X, y, n_randomizations=2000)
     print(f"  Permutation p-values: {p_vals}")
 
     return ok1 and ok2 and ok3
@@ -1011,7 +1011,7 @@ def test_crossed_re():
 
     # ── (g) Batch permutation runs ──
     print()
-    p_vals = batch_permutation_test(result, X_raw, y, n_permutations=2000)
+    p_vals = batch_permutation_test(result, X_raw, y, n_randomizations=2000)
     print(f"  Permutation p-values: {p_vals}")
     ok_perm = True
 
@@ -1202,7 +1202,7 @@ def test_large_unbalanced():
 
     # Batch permutation
     print()
-    p_vals = batch_permutation_test(result, X, y, n_permutations=3000)
+    p_vals = batch_permutation_test(result, X, y, n_randomizations=3000)
     print(f"  Permutation p-values: {p_vals}")
     # β_true = [2.0, -1.0, 0.5, 0.0, -0.3]
     # expect: intercept sig, x0 sig, x1 sig, x2 maybe, x3 NOT, x4 maybe
@@ -1416,14 +1416,14 @@ def test_nested_within_exchangeability():
     # Same A, same matmul, just restrict permutation to within cells.
     print()
     p_vals_within = batch_permutation_test_within_cells(
-        result, X_raw, y, cells, n_permutations=2000
+        result, X_raw, y, cells, n_randomizations=2000
     )
     print(f"  Within-cell p-values: {p_vals_within}")
     print(f"  x0 (β=1.5): p={p_vals_within[1]:.4f}")
     print(f"  x1 (β=-0.8): p={p_vals_within[2]:.4f}")
 
     # Also run global permutation for comparison
-    p_vals_global = batch_permutation_test(result, X_raw, y, n_permutations=2000)
+    p_vals_global = batch_permutation_test(result, X_raw, y, n_randomizations=2000)
     print(f"\n  Global p-values:      {p_vals_global}")
     print("  (Within-cell is exchangeability-correct; global is liberal)")
 

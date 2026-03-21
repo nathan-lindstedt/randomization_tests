@@ -364,7 +364,7 @@ def compute_permutation_ci(
 
 def compute_pvalue_ci(
     counts: np.ndarray,
-    n_permutations: int,
+    n_randomizations: int,
     alpha: float,
 ) -> np.ndarray:
     """Clopper-Pearson exact binomial CIs for empirical p-values.
@@ -379,14 +379,14 @@ def compute_pvalue_ci(
     Args:
         counts: Number of permuted |β*| ≥ observed |β| per feature,
             shape ``(p,)``.
-        n_permutations: Total permutation count *B*.
+        n_randomizations: Total permutation count *B*.
         alpha: ``1 - confidence_level``.
 
     Returns:
         CI array of shape ``(p, 2)``.
     """
     successes = counts + 1  # (p,)
-    trials = n_permutations + 1
+    trials = n_randomizations + 1
 
     # Lower bound: Beta.ppf(α/2, s, n-s+1).
     # Phipson & Smyth (2010) +1 correction guarantees successes ≥ 1,
@@ -668,7 +668,7 @@ def compute_vif(X: pd.DataFrame) -> np.ndarray:
 
 def compute_monte_carlo_se(
     raw_p_values: np.ndarray,
-    n_permutations: int,
+    n_randomizations: int,
 ) -> np.ndarray:
     """Compute Monte Carlo standard error of empirical p-values.
 
@@ -679,7 +679,7 @@ def compute_monte_carlo_se(
 
     Args:
         raw_p_values: Numeric empirical p-values, shape ``(n_features,)``.
-        n_permutations: Number of permutations (B).
+        n_randomizations: Number of permutations (B).
 
     Returns:
         Array of standard errors, shape ``(n_features,)``.
@@ -693,7 +693,7 @@ def compute_monte_carlo_se(
     # of roughly [0.044, 0.056].  This tells the user the p-value is
     # well-resolved.  Near p̂ = 0.5, SE is maximised at ~0.007.
     p = np.asarray(raw_p_values)
-    result: np.ndarray = np.sqrt(p * (1.0 - p) / (n_permutations + 1))
+    result: np.ndarray = np.sqrt(p * (1.0 - p) / (n_randomizations + 1))
     return result
 
 
@@ -1380,7 +1380,7 @@ def compute_cooks_distance(
 
 def compute_permutation_coverage(
     n_samples: int,
-    n_permutations: int,
+    n_randomizations: int,
 ) -> dict:
     """Compute effective permutation coverage of the sample space.
 
@@ -1389,7 +1389,7 @@ def compute_permutation_coverage(
 
     Args:
         n_samples: Number of observations (n).
-        n_permutations: Number of permutations drawn (B).
+        n_randomizations: Number of permutations drawn (B).
 
     Returns:
         Dictionary with ``coverage`` (float), ``n_factorial`` (int or
@@ -1405,7 +1405,7 @@ def compute_permutation_coverage(
     n_factorial_str: str
     try:
         n_factorial = math.factorial(n_samples)
-        coverage = n_permutations / n_factorial
+        coverage = n_randomizations / n_factorial
         n_factorial_str = f"{n_factorial:,}"
         if coverage >= 0.001:
             coverage_pct = f"{coverage:.1%}"
@@ -1419,7 +1419,7 @@ def compute_permutation_coverage(
         coverage = 0.0
         coverage_pct = "< 0.1%"
         n_factorial_str = f"{n_samples}!"
-        coverage_str = f"{n_permutations:,} of {n_factorial_str} possible"
+        coverage_str = f"{n_randomizations:,} of {n_factorial_str} possible"
 
     return {
         "coverage": coverage,
@@ -1655,7 +1655,7 @@ def _proportional_odds_test(
 # ------------------------------------------------------------------ #
 #
 # compute_all_diagnostics() is the single entry point called by
-# core.permutation_test_regression().  It orchestrates every per-
+# core.randomization_test_regression().  It orchestrates every per-
 # ------------------------------------------------------------------ #
 # E-value sensitivity analysis (VanderWeele & Ding, 2017)
 # ------------------------------------------------------------------ #
@@ -2049,12 +2049,13 @@ def compute_all_diagnostics(
     *,
     raw_empirical_p: np.ndarray,
     raw_classic_p: np.ndarray,
-    n_permutations: int,
+    n_randomizations: int,
     p_value_threshold: float = 0.05,
     method: str = "ter_braak",
     confounders: list[str] | None = None,
     fit_intercept: bool = True,
     panel_id: np.ndarray | None = None,
+    ctx: Any = None,
 ) -> dict:
     """Compute all extended diagnostics in one call.
 
@@ -2068,7 +2069,7 @@ def compute_all_diagnostics(
             to helper functions.
         raw_empirical_p: Numeric empirical p-values.
         raw_classic_p: Numeric classical p-values.
-        n_permutations: Number of permutations (B).
+        n_randomizations: Number of permutations (B).
         p_value_threshold: Significance level for divergence flags.
         method: Permutation method (``'ter_braak'``, ``'kennedy'``,
             or ``'kennedy_joint'``).  Exposure R² is computed only
@@ -2089,7 +2090,7 @@ def compute_all_diagnostics(
 
     # Store the permutation count so downstream display code can
     # report B alongside Monte Carlo SE without a separate lookup.
-    result["n_permutations"] = n_permutations
+    result["n_randomizations"] = n_randomizations
 
     # ---- Per-predictor diagnostics ----
     # Each of these returns an array of length n_features, one value
@@ -2106,7 +2107,7 @@ def compute_all_diagnostics(
 
     result["monte_carlo_se"] = compute_monte_carlo_se(
         raw_empirical_p,
-        n_permutations,
+        n_randomizations,
     ).tolist()
 
     result["divergence_flags"] = compute_divergence_flags(
@@ -2158,7 +2159,7 @@ def compute_all_diagnostics(
     # Permutation coverage
     result["permutation_coverage"] = compute_permutation_coverage(
         n_samples=len(y_values),
-        n_permutations=n_permutations,
+        n_randomizations=n_randomizations,
     )
 
     # Exposure R² — Kennedy individual method only, and only when
@@ -2180,12 +2181,70 @@ def compute_all_diagnostics(
     if panel_id is not None:
         _, panel_counts = np.unique(panel_id, return_counts=True)
         n_panels = len(panel_counts)
-        result["panel_diagnostics"] = {
+        panel_diag: dict[str, Any] = {
             "n_panels": n_panels,
             "obs_per_panel_min": int(panel_counts.min()),
             "obs_per_panel_max": int(panel_counts.max()),
             "obs_per_panel_mean": float(np.mean(panel_counts)),
             "balanced": bool(panel_counts.min() == panel_counts.max()),
         }
+
+        # ---- AR diagnostics (Step 17) ----
+        if ctx is not None and getattr(ctx, "ar_order", None) is not None:
+            from ._ar import ar_diagnostics
+
+            ar_coefs = getattr(ctx, "ar_coefficients", None)
+            panel_diag["ar_order"] = ctx.ar_order
+            panel_diag["ar_coefficients"] = (
+                ar_coefs.tolist() if ar_coefs is not None else None
+            )
+
+            # Build within-panel OLS residuals for AR diagnostics.
+            # Full OLS residuals (y − Xβ̂) expose the true AR structure;
+            # null-model residuals (y − mean(y)) retain Xβ and attenuate
+            # the Durbin-Watson statistic, masking the autocorrelation.
+            X_aug_diag = (
+                np.column_stack([np.ones(len(y_values)), X.values.astype(float)])
+                if fit_intercept
+                else X.values.astype(float)
+            )
+            beta_diag = np.linalg.lstsq(X_aug_diag, y_values, rcond=None)[0]
+            raw_resid = y_values - X_aug_diag @ beta_diag
+
+            panel_int = np.zeros(len(panel_id), dtype=np.intp)
+            uniq, inverse = np.unique(panel_id, return_inverse=True)
+            panel_int[:] = inverse
+            residuals_by_panel: list[np.ndarray] = []
+            for g in range(len(uniq)):
+                mask = panel_int == g
+                residuals_by_panel.append(raw_resid[mask])
+
+            # Before AR correction.
+            diag_before = ar_diagnostics(residuals_by_panel)
+            panel_diag["durbin_watson_before"] = diag_before["durbin_watson"]
+            panel_diag["ljung_box_before"] = {
+                "Q": diag_before["ljung_box_Q"],
+                "p_value": diag_before["ljung_box_p"],
+            }
+
+            # After AR filtering: e*_t = e_t - Σ_k ρ̂_k e_{t-k}
+            if ar_coefs is not None:
+                filtered_by_panel: list[np.ndarray] = []
+                for resid in residuals_by_panel:
+                    T = len(resid)
+                    p = len(ar_coefs)
+                    filtered = resid.copy()
+                    for t in range(p, T):
+                        for k in range(p):
+                            filtered[t] -= ar_coefs[k] * resid[t - k - 1]
+                    filtered_by_panel.append(filtered)
+                diag_after = ar_diagnostics(filtered_by_panel)
+                panel_diag["durbin_watson_after"] = diag_after["durbin_watson"]
+                panel_diag["ljung_box_after"] = {
+                    "Q": diag_after["ljung_box_Q"],
+                    "p_value": diag_after["ljung_box_p"],
+                }
+
+        result["panel_diagnostics"] = panel_diag
 
     return result

@@ -951,12 +951,18 @@ if _CAN_IMPORT_JAX:
         .. math::
             A_j = [(X^\top W X)^{-1} X^\top]_j
 
+        When AR correction is active, callers whiten both *X* and the
+        residuals before calling this function (FGLS approach), so no
+        special handling is needed here.
+
         Note: W appears only in the Fisher information (X'WX), NOT
         in the score projection (X'e).  This matches the score test
         definition where U = X'(y - μ̂).
 
         Args:
-            X_aug: Augmented design matrix ``(n, p_aug)``.
+            X_aug: Augmented design matrix ``(n, p_aug)``.  When AR
+                correction is active, this should already be whitened
+                (L @ X) by the caller.
             W_diag: Working weights ``(n,)`` — ``Var(μ̂)`` for
                 canonical link families (e.g. μ̂(1−μ̂) for logistic).
             feature_idx: Index into the *augmented* parameter vector.
@@ -2012,6 +2018,9 @@ if _CAN_IMPORT_JAX:
         max_iter: int = 500,
         tol: float = _DEFAULT_TOL,
         solver: str = "newton",
+        ar_coefs: np.ndarray | None = None,
+        panel_indices: np.ndarray | None = None,
+        panel_lengths: np.ndarray | None = None,
     ) -> REMLResult:
         """Henderson-based REML solver with JAX autodiff.
 
@@ -2130,11 +2139,36 @@ if _CAN_IMPORT_JAX:
             theta_offset += n_chol_k
 
         # Sufficient statistics (numpy — for post-convergence recovery)
-        XtX_np = X.T @ X
-        XtZ_np = X.T @ Z
-        ZtZ_np = Z.T @ Z
-        Xty_np = X.T @ y
-        Zty_np = Z.T @ y
+        # When AR correction is active, replace standard cross-products
+        # with Ω⁻¹-weighted versions so the Woodbury identity inverts
+        # Ṽ = Ω + Z Γ Z' instead of I + Z Γ Z'.
+        if ar_coefs is not None and panel_indices is not None:
+            from .._ar import apply_ar_precision
+
+            Omega_inv_X = apply_ar_precision(X, panel_indices, panel_lengths, ar_coefs)  # type: ignore[arg-type]
+            Omega_inv_Z = apply_ar_precision(Z, panel_indices, panel_lengths, ar_coefs)  # type: ignore[arg-type]
+            Omega_inv_y = apply_ar_precision(
+                y.reshape(-1, 1),
+                panel_indices,
+                panel_lengths,  # type: ignore[arg-type]
+                ar_coefs,
+            ).ravel()
+
+            XtX_np = Omega_inv_X.T @ X
+            XtZ_np = Omega_inv_X.T @ Z
+            ZtZ_np = Omega_inv_Z.T @ Z
+            Xty_np = Omega_inv_X.T @ y
+            Zty_np = Omega_inv_Z.T @ y
+
+            # For β/σ² recovery we also need Ω⁻¹-weighted inner products
+            yOiy = float(Omega_inv_y @ y)
+        else:
+            XtX_np = X.T @ X
+            XtZ_np = X.T @ Z
+            ZtZ_np = Z.T @ Z
+            Xty_np = X.T @ y
+            Zty_np = Z.T @ y
+            yOiy = float(y @ y)
 
         # Henderson C₂₂ = Z'Z + Γ⁻¹
         C22 = ZtZ_np + Gamma_inv
@@ -2150,9 +2184,7 @@ if _CAN_IMPORT_JAX:
 
         # Quadratic form Q → profiled σ̂²
         w = Zty_np - XtZ_np.T @ beta_hat
-        r_norm_sq = (
-            float(y @ y) - 2.0 * Xty_np @ beta_hat + beta_hat @ XtX_np @ beta_hat
-        )
+        r_norm_sq = yOiy - 2.0 * Xty_np @ beta_hat + beta_hat @ XtX_np @ beta_hat
         C22_inv_w = np.linalg.solve(C22, w)
         Q = float(r_norm_sq - w @ C22_inv_w)
         sigma2_hat = Q / (n - p)
@@ -2164,8 +2196,21 @@ if _CAN_IMPORT_JAX:
             re_covariances.append(sigma2_hat * Sigma_k_ratio)
 
         # Projection matrix A = S⁻¹ X'Ṽ⁻¹  (σ²-free)
-        C22_inv_Zt = np.linalg.solve(C22, Z.T)  # (q, n)
-        Xt_Vtilde_inv = X.T - XtZ_np @ C22_inv_Zt  # (p, n)
+        # When AR is active, the Ω⁻¹-weighted cross-products already
+        # encode the working-correlation, so the same algebra applies
+        # with the substituted sufficient statistics.
+        C22_inv_Zt_or_OiZt = np.linalg.solve(
+            C22,
+            (
+                Omega_inv_Z.T
+                if ar_coefs is not None and panel_indices is not None
+                else Z.T
+            ),
+        )  # (q, n)
+        Xt_or_OiXt = (
+            Omega_inv_X.T if ar_coefs is not None and panel_indices is not None else X.T
+        )
+        Xt_Vtilde_inv = Xt_or_OiXt - XtZ_np @ C22_inv_Zt_or_OiZt  # (p, n)
         A = np.linalg.solve(S, Xt_Vtilde_inv)  # (p, n)
 
         return REMLResult(

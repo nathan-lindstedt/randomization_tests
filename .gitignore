@@ -41,8 +41,8 @@ _debug_*.py
 _smoke_*.py
 
 # Prompts / planning
-.github/prompts/
-.github/copilot-instructions.md
+.claude/prompts/
+.claude/CLAUDE.md
 
 # Documents and notes
 research/hypergraph-ecosystem-synergies.md

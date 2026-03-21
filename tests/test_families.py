@@ -2423,7 +2423,6 @@ class TestCalibrate:
     """Verify calibrate() is a protocol method with correct semantics."""
 
     _NO_OP_FAMILIES = [
-        LinearFamily,
         LogisticFamily,
         PoissonFamily,
         OrdinalFamily,
@@ -2475,6 +2474,25 @@ class TestCalibrate:
         result = family.calibrate(X, y, fit_intercept=True)
         assert result is family
         assert result.alpha == 1.5
+
+    def test_linear_returns_calibrated_instance(self, continuous_data):
+        """LinearFamily.calibrate() returns new instance with projection_A."""
+        X, y = continuous_data
+        family = LinearFamily()
+        assert family.projection_A is None
+        calibrated = family.calibrate(X, y, fit_intercept=True)
+        assert calibrated is not family
+        assert calibrated.projection_A is not None
+        # projection_A shape: (p+1, n) when fit_intercept=True
+        assert calibrated.projection_A.shape == (X.shape[1] + 1, X.shape[0])
+
+    def test_linear_idempotent(self, continuous_data):
+        """Calling calibrate() on an already-calibrated Linear returns self."""
+        X, y = continuous_data
+        family = LinearFamily()
+        calibrated = family.calibrate(X, y, fit_intercept=True)
+        again = calibrated.calibrate(X, y, fit_intercept=True)
+        assert again is calibrated
 
     def test_protocol_conformance(self):
         """calibrate() is on the ModelFamily protocol."""
@@ -2533,3 +2551,112 @@ class TestNoInterceptNullScore:
         metric = family.fit_metric(y, preds)
         assert np.isfinite(metric)
         assert metric > 0
+
+
+# ------------------------------------------------------------------ #
+# Cluster-robust classical_p_values
+# ------------------------------------------------------------------ #
+
+
+class TestClusterRobustClassicalPValues:
+    """Verify that groups= activates cluster-robust SEs."""
+
+    @pytest.fixture()
+    def clustered_linear_data(self, rng):
+        """Clustered data where cluster-robust SEs differ from OLS."""
+        n_clusters = 20
+        cluster_size = 10
+        n = n_clusters * cluster_size
+        groups = np.repeat(np.arange(n_clusters), cluster_size)
+        # Cluster-level effect makes within-cluster obs correlated
+        cluster_effects = rng.normal(0, 5, size=n_clusters)
+        X = rng.normal(size=(n, 2))
+        y = 2 * X[:, 0] + cluster_effects[groups] + rng.normal(0, 1, size=n)
+        return X, y, groups
+
+    def test_linear_cluster_differs(self, clustered_linear_data):
+        """Linear cluster-robust p-values differ from unclustered."""
+        X, y, groups = clustered_linear_data
+        family = LinearFamily()
+        p_ols = family.classical_p_values(X, y)
+        p_cr = family.classical_p_values(X, y, groups=groups)
+        assert p_ols.shape == p_cr.shape == (2,)
+        assert not np.allclose(p_ols, p_cr), (
+            "Cluster-robust p-values should differ from OLS"
+        )
+
+    def test_linear_no_groups_unchanged(self, rng):
+        """Without groups, p-values are identical to before."""
+        X = rng.normal(size=(100, 2))
+        y = 2 * X[:, 0] + rng.normal(0, 1, size=100)
+        family = LinearFamily()
+        p1 = family.classical_p_values(X, y)
+        p2 = family.classical_p_values(X, y, groups=None)
+        np.testing.assert_array_equal(p1, p2)
+
+    def test_logistic_cluster_differs(self, rng):
+        """Logistic cluster-robust p-values differ from unclustered."""
+        n_clusters = 30
+        cluster_size = 10
+        n = n_clusters * cluster_size
+        groups = np.repeat(np.arange(n_clusters), cluster_size)
+        cluster_effects = rng.normal(0, 2, size=n_clusters)
+        X = rng.normal(size=(n, 2))
+        logits = X[:, 0] + cluster_effects[groups]
+        y = rng.binomial(1, 1 / (1 + np.exp(-logits)), size=n).astype(float)
+        family = LogisticFamily()
+        p_plain = family.classical_p_values(X, y)
+        p_cr = family.classical_p_values(X, y, groups=groups)
+        assert p_plain.shape == p_cr.shape == (2,)
+        assert not np.allclose(p_plain, p_cr)
+
+    def test_poisson_cluster_differs(self, rng):
+        """Poisson cluster-robust p-values differ from unclustered."""
+        n_clusters = 30
+        cluster_size = 10
+        n = n_clusters * cluster_size
+        groups = np.repeat(np.arange(n_clusters), cluster_size)
+        cluster_effects = rng.normal(0, 1, size=n_clusters)
+        X = rng.normal(size=(n, 2))
+        mu = np.exp(0.5 * X[:, 0] + cluster_effects[groups])
+        y = rng.poisson(mu).astype(float)
+        family = PoissonFamily()
+        p_plain = family.classical_p_values(X, y)
+        p_cr = family.classical_p_values(X, y, groups=groups)
+        assert p_plain.shape == p_cr.shape == (2,)
+        assert not np.allclose(p_plain, p_cr)
+
+    def test_nb_cluster_differs(self, rng):
+        """NB cluster-robust p-values differ from unclustered."""
+        n_clusters = 30
+        cluster_size = 10
+        n = n_clusters * cluster_size
+        groups = np.repeat(np.arange(n_clusters), cluster_size)
+        cluster_effects = rng.normal(0, 1, size=n_clusters)
+        X = rng.normal(size=(n, 2))
+        mu = np.exp(0.5 * X[:, 0] + cluster_effects[groups])
+        y = rng.poisson(mu).astype(float)
+        family = NegativeBinomialFamily()
+        family = family.calibrate(X, y)
+        p_plain = family.classical_p_values(X, y)
+        p_cr = family.classical_p_values(X, y, groups=groups)
+        assert p_plain.shape == p_cr.shape == (2,)
+        assert not np.allclose(p_plain, p_cr)
+
+    def test_ordinal_warns_on_groups(self, rng):
+        """Ordinal emits UserWarning when groups is provided."""
+        X = rng.normal(size=(100, 2))
+        y = rng.choice([0, 1, 2], size=100).astype(float)
+        groups = np.repeat(np.arange(10), 10)
+        family = OrdinalFamily()
+        with pytest.warns(UserWarning, match="Cluster-robust.*ordinal"):
+            family.classical_p_values(X, y, groups=groups)
+
+    def test_multinomial_warns_on_groups(self, rng):
+        """Multinomial emits UserWarning when groups is provided."""
+        X = rng.normal(size=(100, 2))
+        y = rng.choice([0, 1, 2], size=100).astype(float)
+        groups = np.repeat(np.arange(10), 10)
+        family = MultinomialFamily()
+        with pytest.warns(UserWarning, match="Cluster-robust.*multinomial"):
+            family.classical_p_values(X, y, groups=groups)

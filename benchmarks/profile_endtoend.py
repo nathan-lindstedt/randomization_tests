@@ -1,4 +1,4 @@
-"""End-to-end engine benchmark — full permutation_test_regression() pipeline.
+"""End-to-end engine benchmark — full randomization_test_regression() pipeline.
 
 Measures wall time for the complete pipeline (permutation generation →
 model fitting → scoring → p-value computation) across realistic
@@ -43,7 +43,7 @@ import pandas as pd
 
 # Ensure the package is importable when running from the repo root.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-from randomization_tests import permutation_test_regression  # noqa: E402
+from randomization_tests import randomization_test_regression  # noqa: E402
 
 # ====================================================================== #
 #  Scenario definitions                                                   #
@@ -312,7 +312,7 @@ def _run_single(
     groups: np.ndarray,
     confounders: list[str],
 ) -> dict:
-    """Run permutation_test_regression for one scenario/strategy/B combo.
+    """Run randomization_test_regression for one scenario/strategy/B combo.
 
     Returns a dict of timing + metadata for the results table.
     """
@@ -322,7 +322,7 @@ def _run_single(
     kwargs: dict = {
         "X": X_df,
         "y": y_df,
-        "n_permutations": B,
+        "n_randomizations": B,
         "method": method,
         "random_state": RANDOM_STATE,
         "family": scenario["family"],
@@ -343,7 +343,7 @@ def _run_single(
     t0 = time.perf_counter()
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        result = permutation_test_regression(**kwargs)
+        result = randomization_test_regression(**kwargs)
     elapsed = time.perf_counter() - t0
 
     # Extract result type to verify it worked

@@ -21,7 +21,7 @@ pip install -e ".[jax]"
 ```python
 import pandas as pd
 from randomization_tests import (
-    permutation_test_regression,
+    randomization_test_regression,
     print_diagnostics_table,
     print_results_table,
 )
@@ -31,9 +31,9 @@ X = pd.DataFrame({"x1": [1, 2, 3, 4, 5], "x2": [5, 4, 3, 2, 1]})
 y = pd.DataFrame({"y": [2.1, 4.0, 5.8, 8.2, 9.9]})
 
 # Run a ter Braak (1992) permutation test
-results = permutation_test_regression(
+results = randomization_test_regression(
     X, y,
-    n_permutations=1_000,
+    n_randomizations=1_000,
     method="ter_braak",
     random_state=42,
 )
@@ -54,12 +54,45 @@ print_diagnostics_table(results)
 | Kennedy (1995) joint | `"kennedy_joint"` | Test whether predictors collectively improve fit beyond confounders. |
 | Freedman–Lane (1983) individual | `"freedman_lane"` | Permute full-model residuals, reconstruct from reduced-model fitted values. Better power than Kennedy when predictors are correlated. |
 | Freedman–Lane (1983) joint | `"freedman_lane_joint"` | Joint version of Freedman–Lane. |
+| Manly (1997) individual | `"manly"` | Permute Y directly; valid for ordinal/multinomial families. |
+| Manly (1997) joint | `"manly_joint"` | Joint version of Manly. |
+| Score individual | `"score"` | Score-test projection; supports all families including mixed-effects. |
+| Score joint | `"score_joint"` | Joint version of score test. |
+| Score exact | `"score_exact"` | Exact score test via PQL-fixed vmap IRLS; GLMM families only. |
 
 Kennedy and Freedman–Lane methods require the `confounders` parameter
 (a list of column names).
 
 > **Note:** Ordinal and multinomial families do not support Freedman–Lane
 > methods (residuals are ill-defined for these model types).
+
+## Sign-flip tests
+
+Sign-flip tests replace permutation with Rademacher (±1) multipliers
+applied to residuals.  They are valid when the error distribution is
+symmetric about zero — a weaker assumption than exchangeability.
+
+```python
+from randomization_tests import randomization_test_regression, validate_symmetry
+
+# Check symmetry assumption before running
+sym = validate_symmetry(y.values.ravel() - y.values.mean())
+print(f"Symmetric: {sym['is_symmetric']}  (p={sym['p_value']:.3f})")
+
+# Run a sign-flip test (Freedman–Lane with ±1 multipliers)
+results = randomization_test_regression(
+    X, y,
+    n_randomizations=5_000,
+    random_state=42,
+    randomization="sign_flip",
+)
+
+print_results_table(results)
+```
+
+Sign-flip tests support the same families as permutation tests, except
+ordinal and multinomial (which raise `ValueError`).  Confounders are
+supported via the `confounders` parameter, identical to Freedman–Lane.
 
 ## Confounder identification
 
@@ -101,7 +134,7 @@ import polars as pl
 X_pl = pl.DataFrame({"x1": [1, 2, 3, 4, 5], "x2": [5, 4, 3, 2, 1]})
 y_pl = pl.DataFrame({"y": [2.1, 4.0, 5.8, 8.2, 9.9]})
 
-results = permutation_test_regression(X_pl, y_pl, random_state=42)
+results = randomization_test_regression(X_pl, y_pl, random_state=42)
 ```
 
 ## Intercept control
@@ -109,7 +142,7 @@ results = permutation_test_regression(X_pl, y_pl, random_state=42)
 By default an intercept is included.  For through-origin regression:
 
 ```python
-results = permutation_test_regression(
+results = randomization_test_regression(
     X, y, fit_intercept=False, random_state=42,
 )
 ```
@@ -166,16 +199,16 @@ string for count, ordinal, or multinomial outcomes.
 ### Poisson (count data)
 
 ```python
-results = permutation_test_regression(
-    X, y, family="poisson", n_permutations=1_000, random_state=42,
+results = randomization_test_regression(
+    X, y, family="poisson", n_randomizations=1_000, random_state=42,
 )
 ```
 
 ### Negative binomial (overdispersed counts)
 
 ```python
-results = permutation_test_regression(
-    X, y, family="negative_binomial", n_permutations=1_000, random_state=42,
+results = randomization_test_regression(
+    X, y, family="negative_binomial", n_randomizations=1_000, random_state=42,
 )
 ```
 
@@ -183,8 +216,8 @@ results = permutation_test_regression(
 
 ```python
 # y must be integer-coded with ≥ 3 levels (0, 1, 2, ...)
-results = permutation_test_regression(
-    X, y, family="ordinal", n_permutations=1_000, random_state=42,
+results = randomization_test_regression(
+    X, y, family="ordinal", n_randomizations=1_000, random_state=42,
 )
 ```
 
@@ -192,12 +225,61 @@ results = permutation_test_regression(
 
 ```python
 # y must be integer-coded with ≥ 3 classes (0, 1, 2, ...)
-results = permutation_test_regression(
-    X, y, family="multinomial", n_permutations=1_000, random_state=42,
+results = randomization_test_regression(
+    X, y, family="multinomial", n_randomizations=1_000, random_state=42,
 )
 ```
 
 See `examples/` for complete worked examples of each family.
+
+## Longitudinal data with AR errors
+
+For panel / longitudinal data with serially correlated errors, use
+`ar_order=` to apply an FGLS autoregressive correction that
+Cholesky-whitens the design matrix and residuals before score projection.
+This requires `panel_id=` (unit identifier),
+`time_id=` (temporal index), and a score-based method.
+
+```python
+import numpy as np
+import pandas as pd
+from randomization_tests import randomization_test_regression
+
+# Simulated panel: 20 subjects, 10 time points each
+rng = np.random.default_rng(42)
+n_panels, n_times = 20, 10
+n = n_panels * n_times
+panel_id = np.repeat(np.arange(n_panels), n_times)
+time_id = np.tile(np.arange(n_times), n_panels)
+x = rng.standard_normal(n)
+
+# AR(1) errors with rho = 0.7
+eps = np.zeros(n)
+for p in range(n_panels):
+    s = p * n_times
+    eps[s] = rng.standard_normal()
+    for t in range(1, n_times):
+        eps[s + t] = 0.7 * eps[s + t - 1] + rng.standard_normal()
+
+y = pd.DataFrame({"y": 1.5 * x + eps})
+X = pd.DataFrame({"x": x})
+
+results = randomization_test_regression(
+    X, y,
+    method="score",
+    panel_id=panel_id,
+    time_id=time_id,
+    ar_order=1,
+    n_randomizations=1_000,
+    random_state=42,
+)
+```
+
+The `ar_order=1` correction estimates a pooled within-panel AR(1)
+coefficient and Cholesky-whitens X and residuals before projection,
+ensuring permuted residuals are approximately exchangeable.  Diagnostics include before/after Durbin–Watson
+and Ljung–Box statistics in
+`results.extended_diagnostics["panel_diagnostics"]`.
 
 ## Backend configuration
 

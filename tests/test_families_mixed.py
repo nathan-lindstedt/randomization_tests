@@ -585,7 +585,9 @@ class TestMultiFactor:
         assert len(f.re_covariances) == 2
 
     def test_two_factor_exchangeability(self, rng):
-        """exchangeability_cells returns labels from the first factor."""
+        """exchangeability_cells returns ExchangeabilityTree for multi-factor."""
+        from randomization_tests.exchangeability import ExchangeabilityTree
+
         n = 60
         school = np.repeat(np.arange(3), 20)
         classroom = np.tile(np.repeat(np.arange(4), 5), 3)
@@ -595,8 +597,12 @@ class TestMultiFactor:
 
         groups = {"school": school, "classroom": classroom}
         f = LinearMixedFamily().calibrate(X, y, fit_intercept=True, groups=groups)
-        cells = f.exchangeability_cells(X, y)
-        assert len(np.unique(cells)) == 3  # first factor has 3 groups
+        tree = f.exchangeability_cells(X, y)
+        assert isinstance(tree, ExchangeabilityTree)
+        assert tree.level_labels == ("school", "classroom")
+        assert tree.strategies == ("between", "within")
+        # 3 schools at outer level
+        assert len(tree.root.children) == 3
 
 
 # ------------------------------------------------------------------ #
@@ -788,7 +794,7 @@ class TestIntegration:
             y,
             family=LinearMixedFamily(),
             fit_intercept=True,
-            n_permutations=50,
+            n_randomizations=50,
             random_state=42,
             groups=groups,
         )
@@ -810,7 +816,7 @@ class TestIntegration:
             y,
             family="linear_mixed",
             fit_intercept=True,
-            n_permutations=50,
+            n_randomizations=50,
             random_state=42,
             groups=groups,
         )
@@ -1722,7 +1728,7 @@ class TestGLMMIntegration:
             y,
             family=LogisticMixedFamily(),
             fit_intercept=True,
-            n_permutations=50,
+            n_randomizations=50,
             random_state=42,
             groups=groups,
             method="score",
@@ -1745,7 +1751,7 @@ class TestGLMMIntegration:
             y,
             family=PoissonMixedFamily(),
             fit_intercept=True,
-            n_permutations=50,
+            n_randomizations=50,
             random_state=42,
             groups=groups,
             method="score",
@@ -1768,7 +1774,7 @@ class TestGLMMIntegration:
             y,
             family="logistic_mixed",
             fit_intercept=True,
-            n_permutations=50,
+            n_randomizations=50,
             random_state=42,
             groups=groups,
             method="score",
@@ -1790,7 +1796,7 @@ class TestGLMMIntegration:
             y,
             family="poisson_mixed",
             fit_intercept=True,
-            n_permutations=50,
+            n_randomizations=50,
             random_state=42,
             groups=groups,
             method="score",
@@ -1799,25 +1805,26 @@ class TestGLMMIntegration:
         assert isinstance(engine.family, PoissonMixedFamily)
 
     def test_glmm_rejects_ter_braak(self, logistic_mixed_data):
-        """GLMM with method='ter_braak' should fail (batch_fit not supported)."""
+        """GLMM with method='ter_braak' raises a clean ValueError immediately."""
         import pandas as pd
+        import pytest
 
         from randomization_tests.engine import PermutationEngine
 
         X, y, groups = logistic_mixed_data
         X_df = pd.DataFrame(X, columns=["x1", "x2"])
 
-        # ter_braak calls batch_fit which raises NotImplementedError,
-        # but the engine should still construct — the error happens at run time.
-        # However, the Manly warning path may also kick in.
-        engine = PermutationEngine(
-            X_df,
-            y,
-            family=LogisticMixedFamily(),
-            fit_intercept=True,
-            n_permutations=50,
-            random_state=42,
-            groups=groups,
-            method="ter_braak",
-        )
-        assert engine.family.name == "logistic_mixed"
+        # The engine guard now raises a ValueError during construction —
+        # faster and clearer than the prior deep NotImplementedError from
+        # _GLMMBatchStubMixin inside the strategy execution.
+        with pytest.raises(ValueError, match="GLMM"):
+            PermutationEngine(
+                X_df,
+                y,
+                family=LogisticMixedFamily(),
+                fit_intercept=True,
+                n_randomizations=50,
+                random_state=42,
+                groups=groups,
+                method="ter_braak",
+            )

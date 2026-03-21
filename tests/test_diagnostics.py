@@ -135,19 +135,19 @@ class TestVIF:
 class TestMonteCarloSE:
     def test_shape_matches_input(self):
         raw_p = np.array([0.05, 0.5, 0.95])
-        result = compute_monte_carlo_se(raw_p, n_permutations=1000)
+        result = compute_monte_carlo_se(raw_p, n_randomizations=1000)
         assert result.shape == (3,)
 
     def test_formula_correct(self):
         raw_p = np.array([0.05, 0.5])
         B = 999
-        result = compute_monte_carlo_se(raw_p, n_permutations=B)
+        result = compute_monte_carlo_se(raw_p, n_randomizations=B)
         expected = np.sqrt(raw_p * (1.0 - raw_p) / (B + 1))
         np.testing.assert_allclose(result, expected)
 
     def test_extreme_p_values_low_se(self):
         raw_p = np.array([0.001, 0.999])
-        result = compute_monte_carlo_se(raw_p, n_permutations=1000)
+        result = compute_monte_carlo_se(raw_p, n_randomizations=1000)
         # Very extreme p-values should have low SE
         for se in result:
             assert se < 0.01
@@ -248,13 +248,13 @@ class TestCooksDistance:
 
 class TestPermutationCoverage:
     def test_small_n(self):
-        result = compute_permutation_coverage(n_samples=8, n_permutations=5000)
+        result = compute_permutation_coverage(n_samples=8, n_randomizations=5000)
         assert result["n_factorial"] == math.factorial(8)
         assert result["coverage"] == pytest.approx(5000 / math.factorial(8))
         assert "%" in result["coverage_str"] or "<" in result["coverage_str"]
 
     def test_large_n_does_not_overflow(self):
-        result = compute_permutation_coverage(n_samples=200, n_permutations=10000)
+        result = compute_permutation_coverage(n_samples=200, n_randomizations=10000)
         assert result["coverage_str"]  # should produce a non-empty string
         assert result["coverage"] >= 0
 
@@ -294,7 +294,7 @@ class TestComputeAllDiagnostics:
             family=LinearFamily(),
             raw_empirical_p=raw_emp,
             raw_classic_p=raw_cls,
-            n_permutations=1000,
+            n_randomizations=1000,
         )
         assert "standardized_coefs" in result
         assert "vif" in result
@@ -318,7 +318,7 @@ class TestComputeAllDiagnostics:
             family=LogisticFamily(),
             raw_empirical_p=raw_emp,
             raw_classic_p=raw_cls,
-            n_permutations=1000,
+            n_randomizations=1000,
         )
         assert "standardized_coefs" in result
         assert "vif" in result
@@ -339,7 +339,7 @@ class TestComputeAllDiagnostics:
             family=LinearFamily(),
             raw_empirical_p=raw_emp,
             raw_classic_p=raw_cls,
-            n_permutations=1000,
+            n_randomizations=1000,
         )
         n_features = X.shape[1]
         assert len(result["standardized_coefs"]) == n_features
@@ -551,7 +551,7 @@ class TestExposureRSquared:
             family=LinearFamily(),
             raw_empirical_p=raw_p,
             raw_classic_p=raw_p,
-            n_permutations=100,
+            n_randomizations=100,
             method="kennedy",
             confounders=["x3"],
         )
@@ -576,7 +576,7 @@ class TestExposureRSquared:
             family=LinearFamily(),
             raw_empirical_p=raw_p,
             raw_classic_p=raw_p,
-            n_permutations=100,
+            n_randomizations=100,
             method="ter_braak",
         )
         assert "exposure_r_squared" not in result
@@ -599,7 +599,7 @@ class TestExposureRSquared:
             family=LinearFamily(),
             raw_empirical_p=raw_p,
             raw_classic_p=raw_p,
-            n_permutations=100,
+            n_randomizations=100,
             method="kennedy",
             confounders=[],
         )

@@ -19,7 +19,7 @@ Adding a new strategy
 1. Create a module under ``strategies/`` with a class that satisfies
    the :class:`PermutationStrategy` protocol.
 2. Register it in the :data:`_STRATEGY_REGISTRY` mapping below.
-3. The engine and ``core.permutation_test_regression`` will pick it
+3. The engine and ``core.randomization_test_regression`` will pick it
    up automatically.
 """
 
@@ -66,6 +66,7 @@ class PermutationStrategy(Protocol):
         model_coefs: np.ndarray | None = None,
         fit_intercept: bool = True,
         n_jobs: int = 1,
+        randomization: str = "permute",
     ) -> np.ndarray | tuple[float, np.ndarray, str, list[str]]:
         """Run the permutation algorithm.
 
@@ -74,11 +75,18 @@ class PermutationStrategy(Protocol):
             y_values: Response vector of shape ``(n,)``.
             family: Resolved ``ModelFamily`` instance.
             perm_indices: Pre-generated permutation indices ``(B, n)``.
+                When ``randomization="permute"``, contains integer
+                indices in ``[0, n)`` (dtype int64).  When
+                ``randomization="sign_flip"``, contains ±1 values
+                (dtype int8).
             confounders: Confounder column names (Kennedy / FL only).
             model_coefs: Observed coefficients ``(p,)`` — used by
                 Kennedy / FL individual to fill confounder slots.
             fit_intercept: Whether to include an intercept.
             n_jobs: Parallelism level for the batch-fit step.
+            randomization: Randomization mode — ``"permute"`` for index-
+                based permutation (default) or ``"sign_flip"`` for
+                Rademacher sign-flip multiplication.
 
         Returns:
             Strategy-specific result (see class docstring).
@@ -104,6 +112,7 @@ def _ensure_registry() -> None:
 
     from .freedman_lane import FreedmanLaneIndividualStrategy, FreedmanLaneJointStrategy
     from .kennedy import KennedyIndividualStrategy, KennedyJointStrategy
+    from .manly import ManlyJointStrategy, ManlyStrategy
     from .score import ScoreExactStrategy, ScoreIndividualStrategy, ScoreJointStrategy
     from .ter_braak import TerBraakStrategy
 
@@ -114,6 +123,8 @@ def _ensure_registry() -> None:
             "kennedy_joint": KennedyJointStrategy,
             "freedman_lane": FreedmanLaneIndividualStrategy,
             "freedman_lane_joint": FreedmanLaneJointStrategy,
+            "manly": ManlyStrategy,
+            "manly_joint": ManlyJointStrategy,
             "score": ScoreIndividualStrategy,
             "score_joint": ScoreJointStrategy,
             "score_exact": ScoreExactStrategy,
@@ -127,7 +138,8 @@ def resolve_strategy(method: str) -> PermutationStrategy:
     Args:
         method: One of ``"ter_braak"``, ``"kennedy"``,
             ``"kennedy_joint"``, ``"freedman_lane"``,
-            ``"freedman_lane_joint"``, ``"score"``,
+            ``"freedman_lane_joint"``, ``"manly"``,
+            ``"manly_joint"``, ``"score"``,
             ``"score_joint"``, ``"score_exact"``.
 
     Raises:
@@ -141,7 +153,42 @@ def resolve_strategy(method: str) -> PermutationStrategy:
     return cls()
 
 
+def _apply_randomization(
+    residuals: np.ndarray,
+    randomization_matrix: np.ndarray,
+    randomization: str,
+) -> np.ndarray:
+    """Apply randomization to a residual vector (or matrix).
+
+    Centralises the permutation-vs-sign-flip dispatch so that
+    every strategy and ``score_project()`` implementation shares
+    the same two-line branch.
+
+    Args:
+        residuals: Residual array — 1-D ``(n,)`` for per-feature
+            strategies or 2-D ``(n, q)`` for row-wise Kennedy joint.
+        randomization_matrix: Index array ``(B, n)``.  When
+            ``randomization="permute"``, contains integer indices in
+            ``[0, n)`` (dtype int64).  When ``randomization="sign_flip"``,
+            contains ±1 values (dtype int8).
+        randomization: ``"permute"`` or ``"sign_flip"``.
+
+    Returns:
+        Randomized residuals — ``(B, n)`` when *residuals* is 1-D,
+        ``(B, n, q)`` when *residuals* is 2-D.
+    """
+    if randomization == "sign_flip":
+        if residuals.ndim == 1:
+            # (B, n) * (1, n) → (B, n)
+            return randomization_matrix * residuals[np.newaxis, :]  # type: ignore[no-any-return]
+        # 2-D: (B, n, 1) * (1, n, q) → (B, n, q)
+        return randomization_matrix[:, :, np.newaxis] * residuals[np.newaxis, :, :]  # type: ignore[no-any-return]
+    # Default: integer-index permutation.
+    return residuals[randomization_matrix]  # type: ignore[no-any-return]
+
+
 __all__ = [
     "PermutationStrategy",
+    "_apply_randomization",
     "resolve_strategy",
 ]

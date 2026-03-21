@@ -35,6 +35,18 @@ def _truncate(name: str, max_len: int) -> str:
     return name[: max_len - 3] + "..."
 
 
+def _fmt_coef(value: float, width: int) -> str:
+    """Format a coefficient for display.
+
+    Uses fixed notation (4 dp) for values with absolute magnitude
+    below 1 000, and scientific notation (2 dp) for larger values
+    so that columns never overflow.
+    """
+    if abs(value) >= 1000:
+        return f"{value:>{width}.2e}"
+    return f"{value:>{width}.4f}"
+
+
 def _fmt_diag_val(val: object) -> str:
     """Format a diagnostic value for display.
 
@@ -89,7 +101,7 @@ def _significance_marker(
     return ""
 
 
-def _recommend_n_permutations(
+def _recommend_n_randomizations(
     p_hat: float,
     threshold: float,
     alpha: float = 0.05,
@@ -148,7 +160,7 @@ def print_results_table(
 
     Args:
         results: Typed result object returned by
-            :func:`~randomization_tests.permutation_test_regression`.
+            :func:`~randomization_tests.randomization_test_regression`.
         title: Title for the output table.
     """
     family: ModelFamily = results.family
@@ -218,7 +230,7 @@ def print_results_table(
 
     for i, feat in enumerate(feature_names):
         trunc_feat = _truncate(feat, fc)
-        coef_str = f"{coefs[i]:>9.4f}"
+        coef_str = _fmt_coef(coefs[i], 9)
         print(f"{trunc_feat:<{fc}}{coef_str}  {emp_p[i]:>23} {asy_p[i]:>23}")
 
         # Sub-row: ± margin from the Clopper-Pearson CI, aligned
@@ -274,18 +286,18 @@ def print_results_table(
             "for unconditional tests."
         )
 
-    # Recommend larger n_permutations for borderline cases (Step 25)
+    # Recommend larger n_randomizations for borderline cases (Step 25)
     if borderline_features:
         ci_alpha = ci.get("confidence_level", 0.95)
         alpha = 1 - ci_alpha if ci_alpha > 0.5 else ci_alpha
         b_recs = [
-            (feat, _recommend_n_permutations(p_hat, t, alpha))
+            (feat, _recommend_n_randomizations(p_hat, t, alpha))
             for feat, p_hat, t in borderline_features
         ]
         max_b = max(b for _, b in b_recs)
         feat_list = ", ".join(feat for feat, _ in b_recs)
         notes.append(
-            f"Consider n_permutations \u2265 {max_b:,} to resolve "
+            f"Consider n_randomizations \u2265 {max_b:,} to resolve "
             f"borderline p-values for: {feat_list}."
         )
 
@@ -318,7 +330,7 @@ def print_joint_results_table(
 
     Args:
         results: Typed result object returned by
-            :func:`~randomization_tests.permutation_test_regression` with
+            :func:`~randomization_tests.randomization_test_regression` with
             ``method='kennedy_joint'`` or ``method='freedman_lane_joint'``.
         title: Title for the output table.
     """
@@ -425,7 +437,7 @@ def print_diagnostics_table(
 
     Args:
         results: Typed result object returned by
-            :func:`~randomization_tests.permutation_test_regression`.
+            :func:`~randomization_tests.randomization_test_regression`.
             Must contain ``extended_diagnostics``.
         title: Title for the output table.
     """
@@ -518,19 +530,19 @@ def print_diagnostics_table(
 
         # Standardized coefficient
         if show_exp_r2:
-            std_c = f"{std_coefs[i]:>10.4f}" if i < len(std_coefs) else f"{'':>10}"
+            std_c = _fmt_coef(std_coefs[i], 10) if i < len(std_coefs) else f"{'':>10}"
         elif show_pval_ci:
-            std_c = f"{std_coefs[i]:>9.4f}" if i < len(std_coefs) else f"{'':>9}"
+            std_c = _fmt_coef(std_coefs[i], 9) if i < len(std_coefs) else f"{'':>9}"
         else:
-            std_c = f"{std_coefs[i]:>10.4f}" if i < len(std_coefs) else f"{'':>10}"
+            std_c = _fmt_coef(std_coefs[i], 10) if i < len(std_coefs) else f"{'':>10}"
 
         # VIF — flag problematic values for Notes
         if i < len(vifs):
             v = vifs[i]
             if show_exp_r2 or show_pval_ci:
-                vif_str = f"{v:>8.2f}" if v < 1000 else f"{'> 1000':>8}"
+                vif_str = _fmt_coef(v, 8)
             else:
-                vif_str = f"{v:>10.2f}" if v < 1000 else f"{'> 1000':>10}"
+                vif_str = _fmt_coef(v, 10)
             if v > 10:
                 vif_problems.append((feat, v, "severe"))
             elif v > 5:
@@ -688,7 +700,7 @@ def print_diagnostics_table(
     if pc:
         cov_pct = pc.get("coverage_pct", "")
         n_fact_str = pc.get("n_factorial_str", "")
-        n_perm = getattr(results, "n_permutations", None)
+        n_perm = getattr(results, "n_randomizations", None)
         b_str = f"{n_perm:,}" if n_perm is not None else "?"
 
         # Compute sufficiency verdict from Clopper-Pearson CIs
@@ -726,6 +738,232 @@ def print_diagnostics_table(
         print("-" * W)
         for note in notes:
             print(_wrap(f"  [!] {note}", width=W, indent=6))
+
+    print("=" * W)
+    print()
+
+
+def print_ar_comparison_table(
+    results: list[tuple[str, IndividualTestResult]],
+    *,
+    title: str = "P-Value Comparison Across AR Orders",
+) -> None:
+    """Print a side-by-side p-value comparison across multiple AR orders.
+
+    Accepts a list of ``(label, result)`` pairs — one per model
+    variant (e.g. no correction, AR(1), AR(2), …).  The table has
+    one row per feature and one column per variant, with an
+    interpretation column classifying each feature's behaviour.
+
+    This function is fully generalized: columns are determined by
+    the labels provided, so it works for any number of AR orders
+    or indeed any set of model variants worth comparing.
+
+    Args:
+        results: Sequence of ``(label, result)`` pairs.  *label* is a
+            short column header (e.g. ``"No AR"``, ``"AR(1)"``).
+            *result* is an :class:`IndividualTestResult`.
+        title: Title for the output table.
+    """
+    if not results:
+        return
+
+    W = 80
+
+    # Feature names from the first result.
+    feature_names: list[str] = results[0][1].feature_names
+    n_features = len(feature_names)
+
+    # ── Title ──────────────────────────────────────────────────── #
+    print("=" * W)
+    for line in textwrap.wrap(title, width=W - 2):
+        print(f"{line:^{W}}")
+    print("=" * W)
+
+    # ── Column widths ──────────────────────────────────────────── #
+    fc = 18  # feature column
+    cw = 12  # each p-value column
+    n_models = len(results)
+    interp_w = W - fc - (n_models * cw) - 2  # interpretation column
+    if interp_w < 10:
+        interp_w = 10
+
+    # Header
+    hdr = f"{'Feature':<{fc}}"
+    for label, _ in results:
+        hdr += f"{label:>{cw}}"
+    hdr += f"  {'Interpretation'}"
+    print(hdr)
+    print("-" * W)
+
+    # ── Rows ───────────────────────────────────────────────────── #
+    # Collect raw empirical p-values per model.
+    all_p: list[list[float]] = []
+    for _, res in results:
+        raw = res.raw_empirical_p
+        all_p.append([float(v) for v in raw[:n_features]])
+
+    for i, feat in enumerate(feature_names):
+        trunc = feat[:fc].ljust(fc)
+        row = trunc
+        for m in range(n_models):
+            p = all_p[m][i]
+            row += f"{p:>{cw}.4f}"
+
+        # Classify behaviour using first and last model p-values.
+        p_first = all_p[0][i]
+        p_last = all_p[-1][i]
+        if p_last < 0.05:
+            note = "Genuinely significant"
+        elif p_first < 0.05 and p_last >= 0.05:
+            note = "Autocorrelation artifact"
+        elif p_first >= 0.05:
+            note = "Not significant"
+        else:
+            note = "Marginal"
+        row += f"  {note}"
+        print(row)
+
+    print("=" * W)
+    print()
+
+
+def print_symmetry_table(
+    symmetry: dict[str, Any],
+    *,
+    title: str = "Symmetry Diagnostic (Wilcoxon Signed-Rank Test)",
+) -> None:
+    """Print residual symmetry diagnostic in a formatted ASCII table.
+
+    Displays the output of :func:`~randomization_tests.validate_symmetry`
+    in a bordered 80-character table matching the visual style of other
+    ``print_*`` display functions.
+
+    The sign-flip test assumes residuals are symmetric about zero under
+    the null.  This table shows whether the Wilcoxon signed-rank test
+    detects significant asymmetry at α = 0.05.
+
+    Args:
+        symmetry: Dict returned by ``validate_symmetry()`` with keys
+            ``is_symmetric``, ``test_statistic``, and ``p_value``.
+        title: Title for the output table.
+    """
+    W = 80
+    lw = 28
+    sw = 14
+
+    print("=" * W)
+    for line in textwrap.wrap(title, width=W - 2):
+        print(f"{line:^{W}}")
+    print("=" * W)
+
+    stat = symmetry.get("test_statistic", float("nan"))
+    p = symmetry.get("p_value", float("nan"))
+    is_sym = symmetry.get("is_symmetric", False)
+
+    print(f"  {'Test statistic:':<{lw}}{stat:<{sw}.2f}")
+    print(f"  {'p-value:':<{lw}}{p:<{sw}.4f}")
+    print(f"  {'Symmetric (α = 0.05):':<{lw}}{'Yes' if is_sym else 'No':<{sw}}")
+
+    print("-" * W)
+    if is_sym:
+        print(
+            _wrap(
+                "  Residuals are symmetric — sign-flip test is appropriate.",
+                width=W,
+                indent=2,
+            )
+        )
+    else:
+        print(
+            _wrap(
+                "  Residuals may be asymmetric — interpret sign-flip results "
+                "with caution. Consider permutation test as primary.",
+                width=W,
+                indent=2,
+            )
+        )
+    print("=" * W)
+    print()
+
+
+def print_comparison_table(
+    results: list[tuple[str, IndividualTestResult]],
+    *,
+    title: str = "P-Value Comparison",
+    alpha: float = 0.05,
+) -> None:
+    """Print a side-by-side p-value comparison across model variants.
+
+    A general-purpose comparison table that accepts any set of
+    ``(label, result)`` pairs and shows empirical p-values with a
+    significance-agreement column.  Suitable for comparing different
+    methods (sign-flip vs. permutation), different families, or any
+    other model variants.
+
+    For AR-specific comparisons with autocorrelation-artifact
+    interpretation, use :func:`print_ar_comparison_table` instead.
+
+    Args:
+        results: Sequence of ``(label, result)`` pairs.  *label* is a
+            short column header.  *result* is an
+            :class:`IndividualTestResult`.
+        title: Title for the output table.
+        alpha: Significance threshold for the agreement column.
+    """
+    if not results:
+        return
+
+    W = 80
+
+    feature_names: list[str] = results[0][1].feature_names
+    n_features = len(feature_names)
+
+    # ── Title ──────────────────────────────────────────────────── #
+    print("=" * W)
+    for line in textwrap.wrap(title, width=W - 2):
+        print(f"{line:^{W}}")
+    print("=" * W)
+
+    # ── Column widths ──────────────────────────────────────────── #
+    fc = 18  # feature column
+    cw = 12  # each p-value column
+    n_models = len(results)
+    agree_w = W - fc - (n_models * cw) - 2
+    if agree_w < 10:
+        agree_w = 10
+
+    # Header
+    hdr = f"{'Feature':<{fc}}"
+    for label, _ in results:
+        hdr += f"{label:>{cw}}"
+    hdr += f"  {'Agreement'}"
+    print(hdr)
+    print("-" * W)
+
+    # ── Rows ───────────────────────────────────────────────────── #
+    all_p: list[list[float]] = []
+    for _, res in results:
+        raw = res.raw_empirical_p
+        all_p.append([float(v) for v in raw[:n_features]])
+
+    for i, feat in enumerate(feature_names):
+        trunc = feat[:fc].ljust(fc)
+        row = trunc
+        for m in range(n_models):
+            p = all_p[m][i]
+            row += f"{p:>{cw}.4f}"
+
+        # Agreement: check whether all models agree on significance.
+        sigs = [all_p[m][i] < alpha for m in range(n_models)]
+        if all(sigs):
+            agree = "All sig."
+        elif not any(sigs):
+            agree = "All n.s."
+        else:
+            agree = "Disagree"
+        row += f"  {agree}"
+        print(row)
 
     print("=" * W)
     print()
@@ -1175,7 +1413,7 @@ def print_protocol_usage_table(
     if ctx is None:
         raise ValueError(
             "Result has no attached FitContext.  Ensure the result was "
-            "produced by permutation_test_regression()."
+            "produced by randomization_test_regression()."
         )
 
     W = 80
@@ -1281,7 +1519,9 @@ def print_protocol_usage_table(
 
     print(f"    {'Method:':<{lw}}{ctx.method or result.method}")
     print(f"    {'Backend:':<{lw}}{ctx.backend or 'N/A'}")
-    print(f"    {'N Permutations:':<{lw}}{ctx.n_permutations or result.n_permutations}")
+    print(
+        f"    {'N Randomizations:':<{lw}}{ctx.n_randomizations or result.n_randomizations}"
+    )
     if ctx.permutation_strategy:
         print(f"    {'Strategy:':<{lw}}{ctx.permutation_strategy}")
     if ctx.confounders:

@@ -19,7 +19,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from randomization_tests.core import permutation_test_regression
+from randomization_tests.core import randomization_test_regression
 
 # ------------------------------------------------------------------ #
 # Helpers
@@ -64,8 +64,8 @@ class TestLinearSmoke:
     def test_completes_within_bound(self) -> None:
         X, y = _make_large_linear()
         t0 = time.monotonic()
-        result = permutation_test_regression(
-            X, y, n_permutations=100, method="ter_braak", random_state=SEED
+        result = randomization_test_regression(
+            X, y, n_randomizations=100, method="ter_braak", random_state=SEED
         )
         elapsed = time.monotonic() - t0
         assert elapsed < 30, f"Linear smoke test took {elapsed:.1f}s (limit 30s)"
@@ -74,8 +74,8 @@ class TestLinearSmoke:
 
     def test_result_structure(self) -> None:
         X, y = _make_large_linear()
-        result = permutation_test_regression(
-            X, y, n_permutations=100, method="ter_braak", random_state=SEED
+        result = randomization_test_regression(
+            X, y, n_randomizations=100, method="ter_braak", random_state=SEED
         )
         assert len(result["permuted_p_values"]) == P
         assert len(result["classic_p_values"]) == P
@@ -90,8 +90,8 @@ class TestLogisticSmoke:
     def test_completes_within_bound(self) -> None:
         X, y = _make_large_binary()
         t0 = time.monotonic()
-        result = permutation_test_regression(
-            X, y, n_permutations=50, method="ter_braak", random_state=SEED
+        result = randomization_test_regression(
+            X, y, n_randomizations=50, method="ter_braak", random_state=SEED
         )
         elapsed = time.monotonic() - t0
         assert elapsed < 120, f"Logistic smoke test took {elapsed:.1f}s (limit 120s)"
@@ -106,10 +106,10 @@ class TestKennedyIndividualSmoke:
     def test_completes_within_bound(self) -> None:
         X, y = _make_large_linear()
         t0 = time.monotonic()
-        result = permutation_test_regression(
+        result = randomization_test_regression(
             X,
             y,
-            n_permutations=100,
+            n_randomizations=100,
             method="kennedy",
             confounders=["x4", "x5"],
             random_state=SEED,
@@ -131,10 +131,10 @@ class TestKennedyJointSmoke:
     def test_completes_within_bound(self) -> None:
         X, y = _make_large_linear()
         t0 = time.monotonic()
-        result = permutation_test_regression(
+        result = randomization_test_regression(
             X,
             y,
-            n_permutations=100,
+            n_randomizations=100,
             method="kennedy_joint",
             confounders=["x4", "x5"],
             random_state=SEED,

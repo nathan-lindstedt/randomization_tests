@@ -29,9 +29,11 @@ import numpy as np
 import pandas as pd
 
 from ._context import FitContext
+from .exchangeability import ExchangeabilityTree
 from .families import ModelFamily, resolve_family
 from .permutations import (
     generate_between_cell_permutations,
+    generate_nested_permutations,
     generate_two_stage_permutations,
     generate_unique_permutations,
     generate_within_cell_permutations,
@@ -62,16 +64,17 @@ class PermutationEngine:
         *,
         family: str | ModelFamily = "auto",
         fit_intercept: bool = True,
-        n_permutations: int = 5_000,
+        n_randomizations: int = 5_000,
         random_state: int | None = None,
         n_jobs: int = 1,
         method: str = "ter_braak",
         backend: str | None = None,
-        groups: np.ndarray | None = None,
+        groups: np.ndarray | ExchangeabilityTree | None = None,
         permutation_strategy: str | None = None,
         permutation_constraints: Callable[[np.ndarray], np.ndarray] | None = None,
         random_slopes: list[int] | dict[str, list[int]] | None = None,
         ctx: FitContext | None = None,
+        ar_kwargs: dict[str, Any] | None = None,
     ) -> None:
         # ---- Context accumulator ----------------------------------
         self.ctx: FitContext = ctx if ctx is not None else FitContext()
@@ -86,12 +89,24 @@ class PermutationEngine:
         self.family: ModelFamily = resolve_family(family, y_values)
 
         # Calibrate nuisance parameters (protocol method, no-op default).
+        calibrate_kw: dict[str, Any] = {}
+        if groups is not None:
+            # Mixed-model calibration expects a flat 1-D array or dict,
+            # not a tree.  Flatten if necessary.
+            calibrate_kw["groups"] = (
+                groups.to_flat_cells()
+                if isinstance(groups, ExchangeabilityTree)
+                else groups
+            )
+        if random_slopes is not None:
+            calibrate_kw["random_slopes"] = random_slopes
+        if ar_kwargs:
+            calibrate_kw.update(ar_kwargs)
         self.family = self.family.calibrate(
             X.to_numpy().astype(float),
             y_values,
             fit_intercept,
-            groups=groups,
-            random_slopes=random_slopes,
+            **calibrate_kw,
         )
 
         # Populate family properties on context.
@@ -119,21 +134,86 @@ class PermutationEngine:
         if family != "auto":
             self.family.validate_y(y_values)
 
-        # Reject Freedman-Lane for direct-permutation families.
-        if self.family.direct_permutation and method in (
-            "freedman_lane",
-            "freedman_lane_joint",
-        ):
-            msg = (
-                f"Freedman-Lane method is not supported for "
-                f"family='{self.family.name}' because residuals are not "
-                f"well-defined for this model type.  The ter Braak method "
-                f"uses direct Y permutation (equivalent to Manly 1997), "
-                f"and the Kennedy methods permute exposure-model residuals "
-                f"(always linear OLS).  Supported methods: 'ter_braak', "
-                f"'kennedy', 'kennedy_joint'."
+        # Reject residual-based methods for direct-permutation families.
+        # score / score_joint / score_exact are excluded here because Guard 3
+        # (the score_project() probe below) independently checks their
+        # compatibility: once score_project() is implemented for a family,
+        # those methods become valid even for direct-permutation families.
+        _RESIDUAL_ONLY_METHODS = frozenset(
+            {
+                "ter_braak",
+                "freedman_lane",
+                "freedman_lane_joint",
+            }
+        )
+        if self.family.direct_permutation and method in _RESIDUAL_ONLY_METHODS:
+            raise ValueError(
+                f"method='{method}' requires well-defined residuals but "
+                f"family='{self.family.name}' uses direct Y permutation.  "
+                f"Supported methods for this family: 'manly', "
+                f"'manly_joint', 'kennedy', 'kennedy_joint', "
+                f"'score', 'score_joint'."
             )
-            raise ValueError(msg)
+
+        # Reject non-score methods for GLMM families (logistic_mixed,
+        # poisson_mixed).  Re-estimating variance components per permutation
+        # is computationally prohibitive AND statistically incorrect — the
+        # null hypothesis holds the random-effects structure fixed exactly
+        # as calibrated.  Only score-based methods (which hold θ̂ fixed) are
+        # valid.  score_joint is also blocked: it uses batch_fit_and_score
+        # which hits the GLMMBatchStubMixin NotImplementedError.
+        #
+        # This guard comes before the Manly UserWarning so that GLMM
+        # families get a clean ValueError rather than a warning-then-error.
+        _GLMM_BLOCKED_METHODS = frozenset(
+            {
+                "ter_braak",
+                "kennedy",
+                "kennedy_joint",
+                "freedman_lane",
+                "freedman_lane_joint",
+                "manly",
+                "manly_joint",
+                "score_joint",
+            }
+        )
+        _is_glmm = self.family.name in ("logistic_mixed", "poisson_mixed")
+        if _is_glmm and method in _GLMM_BLOCKED_METHODS:
+            raise ValueError(
+                f"method={method!r} requires per-permutation model refitting "
+                f"which is not supported for GLMM family {self.family.name!r}. "
+                "Re-estimating variance components per permutation is "
+                "computationally prohibitive and statistically incorrect — "
+                "the null hypothesis holds the random-effects structure fixed. "
+                "Use method='score' or method='score_exact' instead."
+            )
+
+        # Warn when Manly is used on a family that supports residuals.
+        if method in ("manly", "manly_joint") and not self.family.direct_permutation:
+            warnings.warn(
+                f"method='{method}' uses direct Y permutation (Manly "
+                f"1997), which tests marginal rather than partial "
+                f"association.  For family='{self.family.name}' (which "
+                f"supports residuals), residual-based methods like "
+                f"'ter_braak', 'freedman_lane', or 'score' are more "
+                f"powerful.",
+                UserWarning,
+                stacklevel=3,
+            )
+
+        # Warn when score_exact is used on a non-mixed family.
+        # score_exact holds variance components fixed and runs full IRLS
+        # per permutation via JAX vmap — designed for GLMM; wasteful for
+        # standard GLMs where method='score' is exact and much faster.
+        if method == "score_exact" and not self.family.name.endswith("_mixed"):
+            warnings.warn(
+                f"method='score_exact' is designed for GLMM families but "
+                f"family={self.family.name!r} is not a mixed-effects model. "
+                "score_exact refits the full model per permutation (expensive). "
+                "Consider method='score' for non-mixed families.",
+                UserWarning,
+                stacklevel=3,
+            )
 
         # Reject score methods for families without score_project().
         #
@@ -250,18 +330,18 @@ class PermutationEngine:
         #
         # Store groups/strategy/constraints before calling
         # permute_indices() because _permute_hook reads them.
-        self.groups: np.ndarray | None = groups
+        self.groups: np.ndarray | ExchangeabilityTree | None = groups
         self.permutation_strategy: str | None = permutation_strategy
         self._permutation_constraints = permutation_constraints
 
         # Populate permutation metadata on context.
         self.ctx.backend = self.backend_name
-        self.ctx.groups = groups
+        self.ctx.groups = groups  # type: ignore[assignment]
         self.ctx.permutation_strategy = permutation_strategy
 
         self.perm_indices: np.ndarray = self.permute_indices(
             n_samples=len(y_values),
-            n_permutations=n_permutations,
+            n_randomizations=n_randomizations,
             random_state=random_state,
         )
 
@@ -270,7 +350,7 @@ class PermutationEngine:
     def permute_indices(
         self,
         n_samples: int,
-        n_permutations: int,
+        n_randomizations: int,
         random_state: int | None = None,
     ) -> np.ndarray:
         """Generate unique permutation indices.
@@ -282,18 +362,18 @@ class PermutationEngine:
 
         Args:
             n_samples: Number of observations.
-            n_permutations: Number of unique permutations to generate.
+            n_randomizations: Number of unique permutations to generate.
             random_state: Seed for reproducibility.
 
         Returns:
             Array of shape ``(B, n_samples)`` with permutation indices.
         """
-        return self._permute_hook(n_samples, n_permutations, random_state)
+        return self._permute_hook(n_samples, n_randomizations, random_state)
 
     def _permute_hook(
         self,
         n_samples: int,
-        n_permutations: int,
+        n_randomizations: int,
         random_state: int | None = None,
     ) -> np.ndarray:
         """Extension point for exchangeability-constrained permutations.
@@ -314,12 +394,12 @@ class PermutationEngine:
         If a ``permutation_constraints`` callback is set, it is
         applied as a post-filter.  The engine back-fills gaps by
         generating more permutations and re-filtering until
-        *n_permutations* are collected (with a max-iterations safety
+        *n_randomizations* are collected (with a max-iterations safety
         cap).
 
         Args:
             n_samples: Number of observations.
-            n_permutations: Number of unique permutations to generate.
+            n_randomizations: Number of unique permutations to generate.
             random_state: Seed for reproducibility.
 
         Returns:
@@ -329,37 +409,49 @@ class PermutationEngine:
         cells = self.groups
         strategy = self.permutation_strategy
 
-        # If no explicit groups, use the exchangeability cells that
-        # were already computed from real data during the observed-
-        # fit phase (stored on the context).  This avoids the
-        # previous approach of calling exchangeability_cells() with
-        # placeholder zeros — which only worked by accident for
-        # families that ignore X and y in that method.
-        if cells is None:
-            family_cells = self.ctx.exchangeability_cells
-            if family_cells is not None:
-                cells = family_cells
-                strategy = "within"
+        # Tree-based dispatch: ExchangeabilityTree encodes per-level
+        # strategies, so we go straight to the nested generator.
+        if isinstance(cells, ExchangeabilityTree):
+            indices = generate_nested_permutations(
+                n_samples,
+                n_randomizations,
+                cells,
+                random_state,
+                exclude_identity=True,
+            )
+        else:
+            # If no explicit groups, use the exchangeability cells that
+            # were already computed from real data during the observed-
+            # fit phase (stored on the context).  This avoids the
+            # previous approach of calling exchangeability_cells() with
+            # placeholder zeros — which only worked by accident for
+            # families that ignore X and y in that method.
+            if cells is None:
+                family_cells = self.ctx.exchangeability_cells
+                if family_cells is not None:
+                    cells = family_cells
+                    if not isinstance(cells, ExchangeabilityTree):
+                        strategy = "within"
 
-        # ---- Generate indices ------------------------------------
-        indices = self._generate_for_strategy(
-            cells, strategy, n_samples, n_permutations, random_state
-        )
+            # ---- Generate indices --------------------------------
+            indices = self._generate_for_strategy(
+                cells, strategy, n_samples, n_randomizations, random_state
+            )
 
         # ---- Apply callback post-filter --------------------------
         if self._permutation_constraints is not None:
             indices = self._apply_constraints(
-                indices, cells, strategy, n_samples, n_permutations, random_state
+                indices, cells, strategy, n_samples, n_randomizations, random_state
             )
 
         return indices
 
     def _generate_for_strategy(
         self,
-        cells: np.ndarray | None,
+        cells: np.ndarray | ExchangeabilityTree | None,
         strategy: str | None,
         n_samples: int,
-        n_permutations: int,
+        n_randomizations: int,
         random_state: int | None,
     ) -> np.ndarray:
         """Route to the correct permutation generator.
@@ -379,10 +471,20 @@ class PermutationEngine:
         ``generate_unique_permutations()`` in ``permutations.py``
         for the bound derivation).
         """
+        # Tree-based dispatch (e.g. from family-suggested cells).
+        if isinstance(cells, ExchangeabilityTree):
+            return generate_nested_permutations(
+                n_samples,
+                n_randomizations,
+                cells,
+                random_state,
+                exclude_identity=True,
+            )
+
         if cells is None or strategy is None:
             return generate_unique_permutations(
                 n_samples=n_samples,
-                n_permutations=n_permutations,
+                n_randomizations=n_randomizations,
                 random_state=random_state,
                 exclude_identity=True,
             )
@@ -390,7 +492,7 @@ class PermutationEngine:
         if strategy == "within":
             return generate_within_cell_permutations(
                 n_samples=n_samples,
-                n_permutations=n_permutations,
+                n_randomizations=n_randomizations,
                 cells=cells,
                 random_state=random_state,
                 exclude_identity=True,
@@ -399,7 +501,7 @@ class PermutationEngine:
         if strategy == "between":
             return generate_between_cell_permutations(
                 n_samples=n_samples,
-                n_permutations=n_permutations,
+                n_randomizations=n_randomizations,
                 cells=cells,
                 random_state=random_state,
                 exclude_identity=True,
@@ -408,7 +510,7 @@ class PermutationEngine:
         if strategy == "two-stage":
             return generate_two_stage_permutations(
                 n_samples=n_samples,
-                n_permutations=n_permutations,
+                n_randomizations=n_randomizations,
                 cells=cells,
                 random_state=random_state,
                 exclude_identity=True,
@@ -417,7 +519,7 @@ class PermutationEngine:
         # Unreachable — strategy is validated upstream.
         return generate_unique_permutations(  # pragma: no cover
             n_samples=n_samples,
-            n_permutations=n_permutations,
+            n_randomizations=n_randomizations,
             random_state=random_state,
             exclude_identity=True,
         )
@@ -425,10 +527,10 @@ class PermutationEngine:
     def _apply_constraints(
         self,
         indices: np.ndarray,
-        cells: np.ndarray | None,
+        cells: np.ndarray | ExchangeabilityTree | None,
         strategy: str | None,
         n_samples: int,
-        n_permutations: int,
+        n_randomizations: int,
         random_state: int | None,
     ) -> np.ndarray:
         """Apply callback post-filter and back-fill gaps.
@@ -444,8 +546,8 @@ class PermutationEngine:
 
         filtered = self._permutation_constraints(indices)
 
-        while filtered.shape[0] < n_permutations and round_count < max_rounds:
-            deficit = n_permutations - filtered.shape[0]
+        while filtered.shape[0] < n_randomizations and round_count < max_rounds:
+            deficit = n_randomizations - filtered.shape[0]
             # Over-generate by 2× to amortise the callback cost:
             # if the filter keeps ≥ 50 % of candidates, one round
             # suffices; otherwise we iterate with offset seeds.
@@ -460,7 +562,7 @@ class PermutationEngine:
             filtered = np.concatenate([filtered, extras_filtered], axis=0)
             round_count += 1
 
-        return filtered[:n_permutations]
+        return filtered[:n_randomizations]
 
 
 __all__ = ["PermutationEngine"]

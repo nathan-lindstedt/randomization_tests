@@ -17,7 +17,7 @@ import pytest
 jax = pytest.importorskip("jax")
 
 from randomization_tests import set_backend  # noqa: E402
-from randomization_tests.core import permutation_test_regression  # noqa: E402
+from randomization_tests.core import randomization_test_regression  # noqa: E402
 
 # ------------------------------------------------------------------ #
 # Fixture: force the JAX backend, restore afterward
@@ -56,7 +56,7 @@ def _run_with_backend(
 ) -> dict:
     """Run a single permutation test under a specific backend."""
     set_backend(backend)
-    result = permutation_test_regression(X, y, **kwargs)
+    result = randomization_test_regression(X, y, **kwargs)
     return result
 
 
@@ -72,7 +72,7 @@ class TestJAXStatisticalConsistency:
     """JAX and sklearn should reach the same statistical conclusions."""
 
     _shared_kwargs: dict = dict(
-        n_permutations=200,
+        n_randomizations=200,
         method="ter_braak",
         random_state=42,
     )
@@ -109,7 +109,7 @@ class TestJAXStatisticalConsistency:
         """Strong predictor should be significant under both backends."""
         X, y = _make_logistic_data(n=300)
         kwargs: dict = dict(
-            n_permutations=200,
+            n_randomizations=200,
             method="kennedy",
             confounders=["x2"],
             random_state=42,
@@ -140,10 +140,10 @@ class TestJAXStatisticalConsistency:
 class TestJAXInterceptHandling:
     def test_fit_intercept_true(self) -> None:
         X, y = _make_logistic_data()
-        result = permutation_test_regression(
+        result = randomization_test_regression(
             X,
             y,
-            n_permutations=50,
+            n_randomizations=50,
             method="ter_braak",
             random_state=0,
             fit_intercept=True,
@@ -154,10 +154,10 @@ class TestJAXInterceptHandling:
 
     def test_fit_intercept_false(self) -> None:
         X, y = _make_logistic_data()
-        result = permutation_test_regression(
+        result = randomization_test_regression(
             X,
             y,
-            n_permutations=50,
+            n_randomizations=50,
             method="ter_braak",
             random_state=0,
             fit_intercept=False,
@@ -182,10 +182,10 @@ class TestIllConditionedHessian:
         logits = 1.5 * x1
         probs = 1 / (1 + np.exp(-logits))
         y = pd.DataFrame({"y": rng.binomial(1, probs)})
-        result = permutation_test_regression(
+        result = randomization_test_regression(
             X,
             y,
-            n_permutations=50,
+            n_randomizations=50,
             method="ter_braak",
             random_state=0,
         )
@@ -212,10 +212,10 @@ class TestRankDeficient:
         # Accept either a finite result or an informative error — but
         # NOT silent NaN/Inf.
         try:
-            result = permutation_test_regression(
+            result = randomization_test_regression(
                 X,
                 y,
-                n_permutations=20,
+                n_randomizations=20,
                 method="ter_braak",
                 random_state=0,
             )
@@ -242,10 +242,10 @@ class TestSeparationJAXPath:
         noise = rng.standard_normal(n) * 0.01
         X = pd.DataFrame({"x1": x + noise, "x2": rng.standard_normal(n)})
         y = pd.DataFrame({"y": np.concatenate([np.zeros(n // 2), np.ones(n // 2)])})
-        result = permutation_test_regression(
+        result = randomization_test_regression(
             X,
             y,
-            n_permutations=50,
+            n_randomizations=50,
             method="ter_braak",
             random_state=0,
         )
@@ -275,10 +275,10 @@ class TestFloat32Precision:
         logits = 0.5 * x1 + 1.5 * x2
         probs = np.clip(1 / (1 + np.exp(-logits)), 0.01, 0.99)
         y = pd.DataFrame({"y": rng.binomial(1, probs)})
-        result = permutation_test_regression(
+        result = randomization_test_regression(
             X,
             y,
-            n_permutations=50,
+            n_randomizations=50,
             method="ter_braak",
             random_state=0,
         )
@@ -301,10 +301,10 @@ class TestNJobsJAXWarning:
     def test_warns_on_n_jobs_with_jax(self):
         X, y = _make_logistic_data(n=60, seed=99)
         with pytest.warns(UserWarning, match="n_jobs is ignored"):
-            permutation_test_regression(
+            randomization_test_regression(
                 X,
                 y,
-                n_permutations=20,
+                n_randomizations=20,
                 method="ter_braak",
                 random_state=0,
                 n_jobs=2,
@@ -317,10 +317,10 @@ class TestNJobsJAXWarning:
 
         with _w.catch_warnings():
             _w.simplefilter("error", UserWarning)
-            permutation_test_regression(
+            randomization_test_regression(
                 X,
                 y,
-                n_permutations=20,
+                n_randomizations=20,
                 method="ter_braak",
                 random_state=0,
                 n_jobs=1,
@@ -479,3 +479,112 @@ class TestPoissonEtaOverflow:
         beta = jnp.full(n, 1000.0)
         nll = float(_poisson_nll(beta, X, y))
         assert np.isfinite(nll)
+
+
+# ------------------------------------------------------------------ #
+# Numerical accuracy vs NumPy backend
+# ------------------------------------------------------------------ #
+
+
+def _make_linear_data(
+    n: int = 100, p: int = 3, seed: int = 0
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    rng = np.random.default_rng(seed)
+    X = pd.DataFrame({f"x{i + 1}": rng.standard_normal(n) for i in range(p)})
+    true_coefs = np.array([2.0, -1.0, 0.0])[:p]
+    y_vals = X.values @ true_coefs + rng.standard_normal(n) * 0.5
+    y = pd.DataFrame({"y": y_vals})
+    return X, y
+
+
+def _make_count_data(n: int = 150, seed: int = 1) -> tuple[pd.DataFrame, pd.DataFrame]:
+    rng = np.random.default_rng(seed)
+    X = pd.DataFrame({"x1": rng.standard_normal(n), "x2": rng.standard_normal(n)})
+    mu = np.exp(0.5 * X["x1"].values)
+    y = pd.DataFrame({"y": rng.poisson(mu).astype(float)})
+    return X, y
+
+
+class TestJAXNumericalAccuracy:
+    """JAX and NumPy backends should agree closely on well-conditioned problems."""
+
+    def test_linear_model_coefs_match_numpy(self) -> None:
+        """Linear OLS: both backends solve the same normal equations."""
+        X, y = _make_linear_data()
+        res_jax = _run_with_backend(
+            "jax", X, y, n_randomizations=50, method="ter_braak", random_state=0
+        )
+        res_np = _run_with_backend(
+            "numpy", X, y, n_randomizations=50, method="ter_braak", random_state=0
+        )
+        np.testing.assert_allclose(
+            res_jax["model_coefs"],
+            res_np["model_coefs"],
+            atol=1e-8,
+            err_msg="Linear model_coefs differ between JAX and NumPy backends",
+        )
+
+    def test_logistic_model_coefs_tight_tolerance(self) -> None:
+        """Well-conditioned logistic: JAX Newton-Raphson and sklearn should agree closely."""
+        X, y = _make_logistic_data(n=300, seed=0)
+        res_jax = _run_with_backend(
+            "jax", X, y, n_randomizations=50, method="ter_braak", random_state=0
+        )
+        res_np = _run_with_backend(
+            "numpy", X, y, n_randomizations=50, method="ter_braak", random_state=0
+        )
+        # Both converge to the same MLE; allow generous tolerance for
+        # solver differences, but check they agree on sign and order of magnitude.
+        np.testing.assert_allclose(
+            res_jax["model_coefs"],
+            res_np["model_coefs"],
+            atol=0.05,
+            rtol=0.1,
+            err_msg="Logistic model_coefs differ more than expected between backends",
+        )
+
+    def test_poisson_model_coefs_match(self) -> None:
+        """Poisson GLM: JAX and NumPy backends should reach close to the same MLE."""
+        X, y = _make_count_data()
+        res_jax = _run_with_backend(
+            "jax",
+            X,
+            y,
+            n_randomizations=50,
+            method="ter_braak",
+            family="poisson",
+            random_state=0,
+        )
+        res_np = _run_with_backend(
+            "numpy",
+            X,
+            y,
+            n_randomizations=50,
+            method="ter_braak",
+            family="poisson",
+            random_state=0,
+        )
+        np.testing.assert_allclose(
+            res_jax["model_coefs"],
+            res_np["model_coefs"],
+            atol=0.05,
+            rtol=0.1,
+            err_msg="Poisson model_coefs differ more than expected between backends",
+        )
+
+    def test_linear_empirical_pvalues_close_under_same_seed(self) -> None:
+        """Same seed → same permutation matrix → same empirical p-values for linear."""
+        X, y = _make_linear_data()
+        res_jax = _run_with_backend(
+            "jax", X, y, n_randomizations=200, method="ter_braak", random_state=99
+        )
+        res_np = _run_with_backend(
+            "numpy", X, y, n_randomizations=200, method="ter_braak", random_state=99
+        )
+        # With identical permutation matrices and near-identical β, p-values should match.
+        np.testing.assert_allclose(
+            res_jax["raw_empirical_p"],
+            res_np["raw_empirical_p"],
+            atol=0.02,
+            err_msg="Linear empirical p-values differ too much between backends",
+        )

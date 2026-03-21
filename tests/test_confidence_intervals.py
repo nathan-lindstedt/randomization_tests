@@ -15,10 +15,9 @@ import math
 
 import numpy as np
 import pandas as pd
-import pytest
 from scipy import stats as sp_stats
 
-from randomization_tests import permutation_test_regression
+from randomization_tests import randomization_test_regression
 from randomization_tests.diagnostics import (
     _bca_percentile,
     compute_jackknife_coefs,
@@ -569,10 +568,10 @@ class TestCIIntegrationLinear:
 
     def test_ci_dict_structure(self) -> None:
         X, y = _linear_data()
-        result = permutation_test_regression(
+        result = randomization_test_regression(
             X,
             y,
-            n_permutations=_N_PERMS,
+            n_randomizations=_N_PERMS,
             random_state=_SEED,
             method="ter_braak",
             confidence_level=0.95,
@@ -584,10 +583,10 @@ class TestCIIntegrationLinear:
 
     def test_ci_shapes(self) -> None:
         X, y = _linear_data()
-        result = permutation_test_regression(
+        result = randomization_test_regression(
             X,
             y,
-            n_permutations=_N_PERMS,
+            n_randomizations=_N_PERMS,
             random_state=_SEED,
             method="ter_braak",
         )
@@ -604,10 +603,10 @@ class TestCIIntegrationLogistic:
 
     def test_ci_dict_structure(self) -> None:
         X, y = _binary_data()
-        result = permutation_test_regression(
+        result = randomization_test_regression(
             X,
             y,
-            n_permutations=_N_PERMS,
+            n_randomizations=_N_PERMS,
             random_state=_SEED,
             method="ter_braak",
             family="logistic",
@@ -621,10 +620,10 @@ class TestCIIntegrationPoisson:
 
     def test_ci_dict_structure(self) -> None:
         X, y = _count_data()
-        result = permutation_test_regression(
+        result = randomization_test_regression(
             X,
             y,
-            n_permutations=_N_PERMS,
+            n_randomizations=_N_PERMS,
             random_state=_SEED,
             method="ter_braak",
             family="poisson",
@@ -638,10 +637,10 @@ class TestCIIntegrationNegativeBinomial:
 
     def test_ci_dict_structure(self) -> None:
         X, y = _count_data()
-        result = permutation_test_regression(
+        result = randomization_test_regression(
             X,
             y,
-            n_permutations=_N_PERMS,
+            n_randomizations=_N_PERMS,
             random_state=_SEED,
             method="ter_braak",
             family="negative_binomial",
@@ -655,15 +654,14 @@ class TestCIIntegrationOrdinal:
 
     def test_ci_dict_structure(self) -> None:
         X, y = _ordinal_data()
-        with pytest.warns(UserWarning, match="ordinal"):
-            result = permutation_test_regression(
-                X,
-                y,
-                n_permutations=_N_PERMS,
-                random_state=_SEED,
-                method="ter_braak",
-                family="ordinal",
-            )
+        result = randomization_test_regression(
+            X,
+            y,
+            n_randomizations=_N_PERMS,
+            random_state=_SEED,
+            method="manly",
+            family="ordinal",
+        )
         ci = result.confidence_intervals
         assert set(ci.keys()) >= _CI_KEYS
 
@@ -673,29 +671,27 @@ class TestCIIntegrationMultinomial:
 
     def test_ci_dict_structure(self) -> None:
         X, y = _multinomial_data()
-        with pytest.warns(UserWarning, match="multinomial"):
-            result = permutation_test_regression(
-                X,
-                y,
-                n_permutations=_N_PERMS,
-                random_state=_SEED,
-                method="ter_braak",
-                family="multinomial",
-            )
+        result = randomization_test_regression(
+            X,
+            y,
+            n_randomizations=_N_PERMS,
+            random_state=_SEED,
+            method="manly",
+            family="multinomial",
+        )
         ci = result.confidence_intervals
         assert set(ci.keys()) >= _CI_KEYS
 
     def test_category_wald_ci_present(self) -> None:
         X, y = _multinomial_data()
-        with pytest.warns(UserWarning, match="multinomial"):
-            result = permutation_test_regression(
-                X,
-                y,
-                n_permutations=_N_PERMS,
-                random_state=_SEED,
-                method="ter_braak",
-                family="multinomial",
-            )
+        result = randomization_test_regression(
+            X,
+            y,
+            n_randomizations=_N_PERMS,
+            random_state=_SEED,
+            method="manly",
+            family="multinomial",
+        )
         ci = result.confidence_intervals
         assert "category_wald_ci" in ci
         cat_ci = np.array(ci["category_wald_ci"])
@@ -710,10 +706,10 @@ class TestCIIntegrationKennedy:
         X, y = _linear_data()
         X_with_conf = X.copy()
         X_with_conf["x3"] = np.random.default_rng(_SEED).standard_normal(len(y))
-        result = permutation_test_regression(
+        result = randomization_test_regression(
             X_with_conf,
             y,
-            n_permutations=_N_PERMS,
+            n_randomizations=_N_PERMS,
             random_state=_SEED,
             method="kennedy",
             confounders=["x3"],
@@ -729,10 +725,10 @@ class TestCIIntegrationFreedmanLane:
         X, y = _linear_data()
         X_with_conf = X.copy()
         X_with_conf["x3"] = np.random.default_rng(_SEED).standard_normal(len(y))
-        result = permutation_test_regression(
+        result = randomization_test_regression(
             X_with_conf,
             y,
-            n_permutations=_N_PERMS,
+            n_randomizations=_N_PERMS,
             random_state=_SEED,
             method="freedman_lane",
             confounders=["x3"],

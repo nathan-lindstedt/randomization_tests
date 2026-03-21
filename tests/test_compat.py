@@ -61,14 +61,14 @@ class TestPolarsEndToEnd:
         y_pl = pl.DataFrame({"y": y_vals})
         return X_pl, y_pl
 
-    def test_permutation_test_regression(self):
-        from randomization_tests.core import permutation_test_regression
+    def test_randomization_test_regression(self):
+        from randomization_tests.core import randomization_test_regression
 
         X_pl, y_pl = self._make_polars_data()
-        result = permutation_test_regression(
+        result = randomization_test_regression(
             X_pl,
             y_pl,
-            n_permutations=50,
+            n_randomizations=50,
             method="ter_braak",
             random_state=42,
         )
@@ -106,25 +106,64 @@ class TestPolarsEndToEnd:
 
     def test_results_match_pandas(self):
         """Polars and pandas inputs should produce identical results."""
-        from randomization_tests.core import permutation_test_regression
+        from randomization_tests.core import randomization_test_regression
 
         X_pl, y_pl = self._make_polars_data()
         X_pd = X_pl.to_pandas()
         y_pd = y_pl.to_pandas()
 
-        result_pl = permutation_test_regression(
+        result_pl = randomization_test_regression(
             X_pl,
             y_pl,
-            n_permutations=50,
+            n_randomizations=50,
             method="ter_braak",
             random_state=42,
         )
-        result_pd = permutation_test_regression(
+        result_pd = randomization_test_regression(
             X_pd,
             y_pd,
-            n_permutations=50,
+            n_randomizations=50,
             method="ter_braak",
             random_state=42,
         )
         np.testing.assert_allclose(result_pl["model_coefs"], result_pd["model_coefs"])
         assert result_pl["permuted_p_values"] == result_pd["permuted_p_values"]
+
+    def test_sign_flip_with_polars(self):
+        """randomization='sign_flip' works with Polars DataFrames."""
+        from randomization_tests.core import randomization_test_regression
+
+        X_pl, y_pl = self._make_polars_data()
+        result = randomization_test_regression(
+            X_pl,
+            y_pl,
+            n_randomizations=50,
+            random_state=42,
+            randomization="sign_flip",
+        )
+        assert "model_coefs" in result
+        assert all(0 < p <= 1 for p in result["raw_empirical_p"])
+
+    def test_logistic_family_with_polars(self):
+        """GLM family works with Polars DataFrame inputs."""
+        from randomization_tests.core import randomization_test_regression
+
+        rng = np.random.default_rng(7)
+        n = 150
+        x1 = rng.standard_normal(n)
+        x2 = rng.standard_normal(n)
+        probs = 1.0 / (1.0 + np.exp(-(2.0 * x1)))
+        y_bin = rng.binomial(1, probs).astype(float)
+
+        X_pl = pl.DataFrame({"x1": x1, "x2": x2})
+        y_pl = pl.DataFrame({"y": y_bin})
+
+        result = randomization_test_regression(
+            X_pl,
+            y_pl,
+            n_randomizations=50,
+            random_state=42,
+            family="logistic",
+        )
+        assert result["family"].name == "logistic"
+        assert all(0 < p <= 1 for p in result["raw_empirical_p"])

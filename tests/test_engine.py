@@ -8,10 +8,13 @@ should fail if the corresponding engine attribute or guard is broken.
 
 from __future__ import annotations
 
+import warnings
+
 import numpy as np
 import pandas as pd
 import pytest
 
+from randomization_tests.core import randomization_test_regression
 from randomization_tests.engine import PermutationEngine
 from randomization_tests.families import (
     LinearFamily,
@@ -123,8 +126,15 @@ class TestEngineConstruction:
         self, family_str, expected_family_name, data_fixture, request
     ):
         X, y = request.getfixturevalue(data_fixture)
+        # Ordinal/multinomial families require method='manly' (no residuals).
+        method = "manly" if family_str in ("ordinal", "multinomial") else "ter_braak"
         engine = PermutationEngine(
-            X, y, family=family_str, n_permutations=_N_PERMS, random_state=_SEED
+            X,
+            y,
+            family=family_str,
+            method=method,
+            n_randomizations=_N_PERMS,
+            random_state=_SEED,
         )
         assert engine.family.name == expected_family_name
         assert isinstance(engine.family, ModelFamily)
@@ -132,40 +142,40 @@ class TestEngineConstruction:
     def test_auto_resolves_linear_for_continuous(self, linear_data):
         X, y = linear_data
         engine = PermutationEngine(
-            X, y, family="auto", n_permutations=_N_PERMS, random_state=_SEED
+            X, y, family="auto", n_randomizations=_N_PERMS, random_state=_SEED
         )
         assert engine.family.name == "linear"
 
     def test_auto_resolves_logistic_for_binary(self, binary_data):
         X, y = binary_data
         engine = PermutationEngine(
-            X, y, family="auto", n_permutations=_N_PERMS, random_state=_SEED
+            X, y, family="auto", n_randomizations=_N_PERMS, random_state=_SEED
         )
         assert engine.family.name == "logistic"
 
     def test_backend_name_is_string(self, linear_data):
         X, y = linear_data
-        engine = PermutationEngine(X, y, n_permutations=_N_PERMS, random_state=_SEED)
+        engine = PermutationEngine(X, y, n_randomizations=_N_PERMS, random_state=_SEED)
         assert isinstance(engine.backend_name, str)
         assert engine.backend_name in ("numpy", "jax")
 
     def test_model_coefs_shape(self, linear_data):
         X, y = linear_data
-        engine = PermutationEngine(X, y, n_permutations=_N_PERMS, random_state=_SEED)
+        engine = PermutationEngine(X, y, n_randomizations=_N_PERMS, random_state=_SEED)
         # Linear family: one coefficient per column in X
         assert engine.model_coefs.shape == (X.shape[1],)
 
     def test_perm_indices_shape(self, linear_data):
         X, y = linear_data
-        engine = PermutationEngine(X, y, n_permutations=_N_PERMS, random_state=_SEED)
+        engine = PermutationEngine(X, y, n_randomizations=_N_PERMS, random_state=_SEED)
         assert engine.perm_indices.shape == (_N_PERMS, len(y))
 
     def test_permute_indices_is_instance_method(self, linear_data):
         """permute_indices is an instance method, not a staticmethod."""
         X, y = linear_data
-        engine = PermutationEngine(X, y, n_permutations=_N_PERMS, random_state=_SEED)
+        engine = PermutationEngine(X, y, n_randomizations=_N_PERMS, random_state=_SEED)
         result = engine.permute_indices(
-            n_samples=len(y), n_permutations=5, random_state=0
+            n_samples=len(y), n_randomizations=5, random_state=0
         )
         assert result.shape == (5, len(y))
 
@@ -174,10 +184,10 @@ class TestEngineConstruction:
         X, y = linear_data
 
         class IdentityEngine(PermutationEngine):
-            def _permute_hook(self, n_samples, n_permutations, random_state=None):
-                return np.tile(np.arange(n_samples), (n_permutations, 1))
+            def _permute_hook(self, n_samples, n_randomizations, random_state=None):
+                return np.tile(np.arange(n_samples), (n_randomizations, 1))
 
-        engine = IdentityEngine(X, y, n_permutations=_N_PERMS, random_state=_SEED)
+        engine = IdentityEngine(X, y, n_randomizations=_N_PERMS, random_state=_SEED)
         # The constructor already called permute_indices → _permute_hook,
         # so perm_indices should be all-identity rows.
         expected_row = np.arange(len(y))
@@ -186,13 +196,13 @@ class TestEngineConstruction:
 
     def test_diagnostics_is_dict(self, linear_data):
         X, y = linear_data
-        engine = PermutationEngine(X, y, n_permutations=_N_PERMS, random_state=_SEED)
+        engine = PermutationEngine(X, y, n_randomizations=_N_PERMS, random_state=_SEED)
         assert isinstance(engine.diagnostics, dict)
 
     def test_unknown_family_raises(self, linear_data):
         X, y = linear_data
         with pytest.raises(ValueError, match="Unknown family"):
-            PermutationEngine(X, y, family="nonexistent", n_permutations=_N_PERMS)
+            PermutationEngine(X, y, family="nonexistent", n_randomizations=_N_PERMS)
 
 
 # ------------------------------------------------------------------ #
@@ -209,7 +219,7 @@ class TestEngineCalibration:
             X,
             y,
             family="negative_binomial",
-            n_permutations=_N_PERMS,
+            n_randomizations=_N_PERMS,
             random_state=_SEED,
         )
         assert hasattr(engine.family, "alpha")
@@ -223,7 +233,7 @@ class TestEngineCalibration:
             X,
             y,
             family="linear",
-            n_permutations=_N_PERMS,
+            n_randomizations=_N_PERMS,
             random_state=_SEED,
         )
         # calibrate() was called (unconditionally) but linear has no alpha
@@ -265,7 +275,7 @@ class TestEngineCalibration:
             X,
             y,
             family=family,
-            n_permutations=_N_PERMS,
+            n_randomizations=_N_PERMS,
             random_state=_SEED,
         )
         assert engine.family.calibrate_called
@@ -281,37 +291,37 @@ class TestEngineFreedmanLaneGuard:
 
     def test_ordinal_rejects_freedman_lane(self, ordinal_data):
         X, y = ordinal_data
-        with pytest.raises(ValueError, match="Freedman-Lane.*not supported"):
+        with pytest.raises(ValueError, match="requires well-defined residuals"):
             PermutationEngine(
                 X,
                 y,
                 family="ordinal",
                 method="freedman_lane",
-                n_permutations=_N_PERMS,
+                n_randomizations=_N_PERMS,
                 random_state=_SEED,
             )
 
     def test_multinomial_rejects_freedman_lane(self, multinomial_data):
         X, y = multinomial_data
-        with pytest.raises(ValueError, match="Freedman-Lane.*not supported"):
+        with pytest.raises(ValueError, match="requires well-defined residuals"):
             PermutationEngine(
                 X,
                 y,
                 family="multinomial",
                 method="freedman_lane",
-                n_permutations=_N_PERMS,
+                n_randomizations=_N_PERMS,
                 random_state=_SEED,
             )
 
     def test_ordinal_rejects_freedman_lane_joint(self, ordinal_data):
         X, y = ordinal_data
-        with pytest.raises(ValueError, match="Freedman-Lane.*not supported"):
+        with pytest.raises(ValueError, match="requires well-defined residuals"):
             PermutationEngine(
                 X,
                 y,
                 family="ordinal",
                 method="freedman_lane_joint",
-                n_permutations=_N_PERMS,
+                n_randomizations=_N_PERMS,
                 random_state=_SEED,
             )
 
@@ -323,7 +333,7 @@ class TestEngineFreedmanLaneGuard:
             y,
             family="linear",
             method="freedman_lane",
-            n_permutations=_N_PERMS,
+            n_randomizations=_N_PERMS,
             random_state=_SEED,
         )
         assert engine.family.name == "linear"
@@ -349,7 +359,7 @@ class TestEngineBackendWarnings:
                 PermutationEngine(
                     X,
                     y,
-                    n_permutations=_N_PERMS,
+                    n_randomizations=_N_PERMS,
                     random_state=_SEED,
                     n_jobs=2,
                 )
@@ -372,7 +382,7 @@ class TestEngineBackendWarnings:
                     y,
                     family="linear",
                     method="ter_braak",
-                    n_permutations=_N_PERMS,
+                    n_randomizations=_N_PERMS,
                     random_state=_SEED,
                     n_jobs=2,
                 )
@@ -390,7 +400,7 @@ class TestPermuteIndices:
 
     def _make_engine(self, linear_data):
         X, y = linear_data
-        return PermutationEngine(X, y, n_permutations=_N_PERMS, random_state=_SEED)
+        return PermutationEngine(X, y, n_randomizations=_N_PERMS, random_state=_SEED)
 
     def test_shape(self, linear_data):
         X, y = linear_data
@@ -462,7 +472,7 @@ class TestEngineDiagnosticsFallback:
             X,
             y,
             family="auto",
-            n_permutations=_N_PERMS,
+            n_randomizations=_N_PERMS,
             random_state=_SEED,
         )
         # Engine should construct regardless of diagnostics outcome
@@ -474,7 +484,7 @@ class TestEngineDiagnosticsFallback:
         engine = PermutationEngine(
             X,
             y,
-            n_permutations=_N_PERMS,
+            n_randomizations=_N_PERMS,
             random_state=_SEED,
         )
         assert isinstance(engine.diagnostics, dict)
@@ -496,7 +506,7 @@ class TestEngineObservedCoefs:
             X,
             y,
             family="linear",
-            n_permutations=_N_PERMS,
+            n_randomizations=_N_PERMS,
             random_state=_SEED,
         )
         assert np.all(np.isfinite(engine.model_coefs))
@@ -507,7 +517,7 @@ class TestEngineObservedCoefs:
             X,
             y,
             family="linear",
-            n_permutations=_N_PERMS,
+            n_randomizations=_N_PERMS,
             random_state=_SEED,
         )
         assert engine.model_coefs.shape == (X.shape[1],)
@@ -518,7 +528,7 @@ class TestEngineObservedCoefs:
             X,
             y,
             family="logistic",
-            n_permutations=_N_PERMS,
+            n_randomizations=_N_PERMS,
             random_state=_SEED,
         )
         assert np.all(np.isfinite(engine.model_coefs))
@@ -530,7 +540,7 @@ class TestEngineObservedCoefs:
             X,
             y,
             family="linear",
-            n_permutations=_N_PERMS,
+            n_randomizations=_N_PERMS,
             random_state=_SEED,
         )
         # Not asserting exact values — just that they're not degenerate
@@ -551,7 +561,7 @@ class TestEngineImmutability:
         engine = PermutationEngine(
             X,
             y,
-            n_permutations=_N_PERMS,
+            n_randomizations=_N_PERMS,
             random_state=_SEED,
         )
         # These are the documented public attributes
@@ -566,7 +576,7 @@ class TestEngineImmutability:
         engine = PermutationEngine(
             X,
             y,
-            n_permutations=_N_PERMS,
+            n_randomizations=_N_PERMS,
             random_state=_SEED,
         )
         assert isinstance(engine.family, ModelFamily)
@@ -580,7 +590,7 @@ class TestEngineImmutability:
         engine = PermutationEngine(
             X,
             y,
-            n_permutations=_N_PERMS,
+            n_randomizations=_N_PERMS,
             random_state=_SEED,
         )
         assert np.issubdtype(engine.perm_indices.dtype, np.integer)
@@ -601,7 +611,7 @@ class TestFamilyInstancePassthrough:
             X,
             y,
             family=LinearFamily(),
-            n_permutations=_N_PERMS,
+            n_randomizations=_N_PERMS,
             random_state=_SEED,
         )
         assert engine.family.name == "linear"
@@ -614,7 +624,7 @@ class TestFamilyInstancePassthrough:
             X,
             y,
             family=LogisticFamily(),
-            n_permutations=_N_PERMS,
+            n_randomizations=_N_PERMS,
             random_state=_SEED,
         )
         assert engine.family.name == "logistic"
@@ -627,7 +637,7 @@ class TestFamilyInstancePassthrough:
             X,
             y,
             family=NegativeBinomialFamily(alpha=2.0),
-            n_permutations=_N_PERMS,
+            n_randomizations=_N_PERMS,
             random_state=_SEED,
         )
         assert engine.family.alpha == 2.0
@@ -639,7 +649,7 @@ class TestFamilyInstancePassthrough:
             X,
             y,
             family=NegativeBinomialFamily(),
-            n_permutations=_N_PERMS,
+            n_randomizations=_N_PERMS,
             random_state=_SEED,
         )
         assert engine.family.alpha is not None
@@ -653,7 +663,7 @@ class TestFamilyInstancePassthrough:
                 X,
                 y,
                 family=LogisticFamily(),
-                n_permutations=_N_PERMS,
+                n_randomizations=_N_PERMS,
                 random_state=_SEED,
             )
 
@@ -665,7 +675,7 @@ class TestFamilyInstancePassthrough:
                 X,
                 y,
                 family="logistic",
-                n_permutations=_N_PERMS,
+                n_randomizations=_N_PERMS,
                 random_state=_SEED,
             )
 
@@ -679,7 +689,7 @@ class TestFamilyInstancePassthrough:
                 X,
                 y,
                 family="auto",
-                n_permutations=_N_PERMS,
+                n_randomizations=_N_PERMS,
                 random_state=_SEED,
             )
         mock_vy.assert_not_called()
@@ -696,14 +706,14 @@ class TestBackendInjection:
     def test_explicit_numpy_backend(self, linear_data):
         X, y = linear_data
         engine = PermutationEngine(
-            X, y, n_permutations=_N_PERMS, random_state=_SEED, backend="numpy"
+            X, y, n_randomizations=_N_PERMS, random_state=_SEED, backend="numpy"
         )
         assert engine.backend_name == "numpy"
 
     def test_none_backend_uses_default(self, linear_data):
         X, y = linear_data
         engine = PermutationEngine(
-            X, y, n_permutations=_N_PERMS, random_state=_SEED, backend=None
+            X, y, n_randomizations=_N_PERMS, random_state=_SEED, backend=None
         )
         assert engine.backend_name in ("numpy", "jax")
 
@@ -711,7 +721,7 @@ class TestBackendInjection:
         X, y = linear_data
         with pytest.raises(ValueError, match="Unknown backend"):
             PermutationEngine(
-                X, y, n_permutations=_N_PERMS, random_state=_SEED, backend="torch"
+                X, y, n_randomizations=_N_PERMS, random_state=_SEED, backend="torch"
             )
 
 
@@ -726,7 +736,7 @@ class TestGroupsDispatch:
     def test_no_groups_global_permutation(self, linear_data):
         """Without groups, engine generates global permutations."""
         X, y = linear_data
-        engine = PermutationEngine(X, y, n_permutations=_N_PERMS, random_state=_SEED)
+        engine = PermutationEngine(X, y, n_randomizations=_N_PERMS, random_state=_SEED)
         assert engine.groups is None
         assert engine.permutation_strategy is None
         assert engine.perm_indices.shape == (_N_PERMS, len(y))
@@ -739,7 +749,7 @@ class TestGroupsDispatch:
         engine = PermutationEngine(
             X,
             y,
-            n_permutations=_N_PERMS,
+            n_randomizations=_N_PERMS,
             random_state=_SEED,
             groups=groups,
             permutation_strategy="within",
@@ -762,7 +772,7 @@ class TestGroupsDispatch:
         engine = PermutationEngine(
             X,
             y,
-            n_permutations=_N_PERMS,
+            n_randomizations=_N_PERMS,
             random_state=_SEED,
             groups=groups,
             permutation_strategy="between",
@@ -778,10 +788,113 @@ class TestGroupsDispatch:
         engine = PermutationEngine(
             X,
             y,
-            n_permutations=_N_PERMS,
+            n_randomizations=_N_PERMS,
             random_state=_SEED,
             groups=groups,
             permutation_strategy="within",
         )
         np.testing.assert_array_equal(engine.groups, groups)
         assert engine.permutation_strategy == "within"
+
+
+# ------------------------------------------------------------------ #
+# Memory guard
+# ------------------------------------------------------------------ #
+
+
+class TestMemoryGuard:
+    """ResourceWarning is emitted when the permutation matrix would be large."""
+
+    def test_memory_warning_triggered(self, monkeypatch):
+        """Lower the threshold so a small matrix triggers the warning."""
+        import randomization_tests.permutations as pmod
+
+        monkeypatch.setattr(pmod, "_MEMORY_WARN_BYTES", 100)  # 100 bytes
+        with pytest.warns(ResourceWarning, match="permutation matrix"):
+            pmod.generate_unique_permutations(n_samples=50, n_randomizations=50)
+
+    def test_no_warning_below_threshold(self, monkeypatch):
+        """No warning when estimated bytes are below the threshold."""
+        import randomization_tests.permutations as pmod
+
+        # Set threshold so that 50×50×8 = 20,000 bytes is below it.
+        monkeypatch.setattr(pmod, "_MEMORY_WARN_BYTES", 1024**3)
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", ResourceWarning)
+            pmod.generate_unique_permutations(n_samples=50, n_randomizations=50)
+
+
+# ------------------------------------------------------------------ #
+# GLMM compatibility guards
+# ------------------------------------------------------------------ #
+
+_RNG_GLMM = np.random.default_rng(42)
+_N_GLMM = 30
+_GLMM_X = pd.DataFrame(_RNG_GLMM.standard_normal((_N_GLMM, 2)), columns=["x1", "x2"])
+_GLMM_Y_LOGISTIC = pd.DataFrame({"y": _RNG_GLMM.binomial(1, 0.5, _N_GLMM).astype(int)})
+_GLMM_Y_POISSON = pd.DataFrame({"y": _RNG_GLMM.poisson(1.0, _N_GLMM)})
+_GLMM_GROUPS = np.repeat(np.arange(6), 5)
+
+_GLMM_BLOCKED = [
+    "ter_braak",
+    "kennedy",
+    "kennedy_joint",
+    "freedman_lane",
+    "freedman_lane_joint",
+    "manly",
+    "manly_joint",
+    "score_joint",
+]
+
+
+class TestGLMMCompatGuards:
+    """Blocked method × GLMM family combinations raise a clean ValueError.
+
+    Re-estimating variance components per permutation is statistically
+    incorrect and computationally prohibitive.  The engine must convert
+    the deep NotImplementedError from _GLMMBatchStubMixin into a clean
+    early ValueError with a helpful message.
+    """
+
+    @pytest.mark.parametrize("method", _GLMM_BLOCKED)
+    def test_logistic_mixed_blocked(self, method):
+        with pytest.raises(ValueError, match="GLMM"):
+            randomization_test_regression(
+                _GLMM_X,
+                _GLMM_Y_LOGISTIC,
+                n_randomizations=5,
+                method=method,
+                family="logistic_mixed",
+                groups=_GLMM_GROUPS,
+            )
+
+    @pytest.mark.parametrize("method", _GLMM_BLOCKED)
+    def test_poisson_mixed_blocked(self, method):
+        with pytest.raises(ValueError, match="GLMM"):
+            randomization_test_regression(
+                _GLMM_X,
+                _GLMM_Y_POISSON,
+                n_randomizations=5,
+                method=method,
+                family="poisson_mixed",
+                groups=_GLMM_GROUPS,
+            )
+
+    def test_score_exact_linear_warns(self):
+        """score_exact on a non-mixed family emits a UserWarning.
+
+        The warning fires from the engine constructor, followed by a ValueError
+        from ScoreExactStrategy which only supports GLMM families.
+        """
+        rng = np.random.default_rng(0)
+        n = 30
+        X = pd.DataFrame(rng.standard_normal((n, 2)), columns=["x1", "x2"])
+        y = pd.DataFrame({"y": X["x1"].to_numpy() + rng.standard_normal(n) * 0.5})
+        with pytest.warns(UserWarning, match="score_exact"), pytest.raises(ValueError):
+            randomization_test_regression(
+                X,
+                y,
+                n_randomizations=10,
+                method="score_exact",
+                family="linear",
+            )

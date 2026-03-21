@@ -34,7 +34,6 @@ from ucimlrepo import fetch_ucirepo
 from randomization_tests import (
     OrdinalFamily,
     identify_confounders,
-    permutation_test_regression,
     print_confounder_table,
     print_dataset_info_table,
     print_diagnostics_table,
@@ -42,6 +41,7 @@ from randomization_tests import (
     print_joint_results_table,
     print_protocol_usage_table,
     print_results_table,
+    randomization_test_regression,
     resolve_family,
 )
 
@@ -111,8 +111,8 @@ print_family_info_table(
 
 with warnings.catch_warnings():
     warnings.filterwarnings("ignore", message="Inverting hessian")
-    results_ter_braak = permutation_test_regression(
-        X, y, method="ter_braak", family="ordinal", n_permutations=999
+    results_ter_braak = randomization_test_regression(
+        X, y, method="ter_braak", family="ordinal", n_randomizations=999
     )
 print_results_table(
     results_ter_braak,
@@ -130,13 +130,13 @@ print_diagnostics_table(
 with warnings.catch_warnings():
     warnings.filterwarnings("ignore", message=".*without confounders.*")
     warnings.filterwarnings("ignore", message="Inverting hessian")
-    results_kennedy = permutation_test_regression(
+    results_kennedy = randomization_test_regression(
         X,
         y,
         method="kennedy",
         confounders=[],
         family="ordinal",
-        n_permutations=999,
+        n_randomizations=999,
     )
 print_results_table(
     results_kennedy,
@@ -154,13 +154,13 @@ print_diagnostics_table(
 with warnings.catch_warnings():
     warnings.filterwarnings("ignore", message=".*without confounders.*")
     warnings.filterwarnings("ignore", message="Inverting hessian")
-    results_kennedy_joint = permutation_test_regression(
+    results_kennedy_joint = randomization_test_regression(
         X,
         y,
         method="kennedy_joint",
         confounders=[],
         family="ordinal",
-        n_permutations=999,
+        n_randomizations=999,
     )
 print_joint_results_table(
     results_kennedy_joint,
@@ -177,13 +177,13 @@ print("=" * 80)
 
 for fl_method in ("freedman_lane", "freedman_lane_joint"):
     try:
-        permutation_test_regression(
+        randomization_test_regression(
             X,
             y,
             method=fl_method,
             family="ordinal",
             confounders=[],
-            n_permutations=999,
+            n_randomizations=999,
         )
         print(f"ERROR: {fl_method} should have raised ValueError!")
     except ValueError as e:
@@ -220,13 +220,13 @@ if predictors_with_confounders:
 
     with warnings.catch_warnings():
         warnings.filterwarnings("ignore", message="Inverting hessian")
-        results_kc = permutation_test_regression(
+        results_kc = randomization_test_regression(
             X,
             y,
             method="kennedy",
             family="ordinal",
             confounders=example_confounders,
-            n_permutations=999,
+            n_randomizations=999,
         )
     print_results_table(
         results_kc,

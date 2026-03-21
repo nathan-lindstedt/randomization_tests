@@ -13,7 +13,7 @@ NumPy arrays and opaque model objects that should not be JSON'd.
 Lifecycle::
 
     ┌─────────────────────────────────────────────┐
-    │  permutation_test_regression()              │
+    │  randomization_test_regression()              │
     │  ├─ ctx = FitContext()                      │
     │  ├─ PermutationEngine(…, ctx=ctx)           │
     │  │   ├─ ctx.family = resolved_family        │
@@ -134,18 +134,25 @@ class FitContext:
     classical_p_values: np.ndarray | None = None
     """Classical (asymptotic) p-values ``(p,)``."""
 
-    exchangeability_cells: np.ndarray | None = None
-    """Cell labels from ``family.exchangeability_cells()``, or ``None``."""
+    exchangeability_cells: Any = None
+    """Cell labels from ``family.exchangeability_cells()``.
+
+    May be ``np.ndarray`` (flat cells), ``ExchangeabilityTree``
+    (nested), or ``None`` (global exchangeability).
+    """
 
     # ---- Permutation metadata ------------------------------------
     method: str | None = None
     """Permutation method (e.g. ``"ter_braak"``)."""
 
+    randomization: str | None = None
+    """Randomization scheme: ``"permute"`` or ``"sign_flip"``."""
+
     backend: str | None = None
     """Compute backend (``"numpy"`` or ``"jax"``)."""
 
-    n_permutations: int | None = None
-    """Number of permutations actually used."""
+    n_randomizations: int | None = None
+    """Number of randomizations (permutations or sign-flips) actually used."""
 
     groups: np.ndarray | None = None
     """User-supplied group labels, or ``None``."""
@@ -161,6 +168,16 @@ class FitContext:
 
     confidence_level: float | None = None
     """Requested confidence level for CIs (e.g. 0.95)."""
+
+    # ---- AR correction -------------------------------------------
+    ar_order: int | None = None
+    """Autoregressive order for score-based AR correction, or ``None``."""
+
+    ar_coefficients: np.ndarray | None = None
+    """Estimated AR coefficients from calibration, or ``None``."""
+
+    ar_corrected: bool = False
+    """Whether AR correction was applied during calibration."""
 
     # ---- Batch-fit stats -----------------------------------------
     batch_shape: tuple[int, ...] | None = None

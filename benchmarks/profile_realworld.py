@@ -362,14 +362,14 @@ def _run_single(
     if generator == "global":
         result = generate_unique_permutations(
             n_samples=n,
-            n_permutations=B,
+            n_randomizations=B,
             random_state=seed,
             exclude_identity=True,
         )
     elif generator == "within":
         result = generate_within_cell_permutations(
             n_samples=n,
-            n_permutations=B,
+            n_randomizations=B,
             cells=cells,
             random_state=seed,
             exclude_identity=True,
@@ -377,7 +377,7 @@ def _run_single(
     elif generator == "between":
         result = generate_between_cell_permutations(
             n_samples=n,
-            n_permutations=B,
+            n_randomizations=B,
             cells=cells,
             random_state=seed,
             exclude_identity=True,
@@ -385,7 +385,7 @@ def _run_single(
     elif generator == "two-stage":
         result = generate_two_stage_permutations(
             n_samples=n,
-            n_permutations=B,
+            n_randomizations=B,
             cells=cells,
             random_state=seed,
             exclude_identity=True,

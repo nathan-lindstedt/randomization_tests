@@ -59,6 +59,7 @@ import numpy as np
 import statsmodels.api as sm
 from typing_extensions import Self
 
+from .exchangeability import ExchangeabilityTree
 from .families import _augment_intercept
 
 # ------------------------------------------------------------------ #
@@ -210,6 +211,49 @@ def _build_random_effects_design(
 
     Z = np.hstack(Z_list) if len(Z_list) > 1 else Z_list[0]
     return Z, re_struct
+
+
+# ------------------------------------------------------------------ #
+# Exchangeability helper (shared by Linear/Logistic/Poisson mixed)
+# ------------------------------------------------------------------ #
+
+
+def _mixed_exchangeability_cells(
+    groups_arr: np.ndarray | None,
+    raw_groups: Any,
+    Z: np.ndarray | None,
+    re_struct: tuple[tuple[int, int], ...] | None,
+) -> np.ndarray | ExchangeabilityTree | None:
+    """Return exchangeability cells or tree for a mixed-effects family.
+
+    * **Single factor:** flat integer array ``(n,)``.
+    * **Multiple factors:** :class:`ExchangeabilityTree` encoding the
+      nesting with ``"between"`` at outer levels and ``"within"`` at
+      the innermost level (Winkler et al. 2015 PALM defaults).
+    * **Uncalibrated:** ``None``.
+    """
+    # ---- Multi-factor path (dict-style raw_groups) ----------------
+    if isinstance(raw_groups, dict) and len(raw_groups) > 1:
+        label_arrays = [
+            np.asarray(v[0]) if isinstance(v, tuple) else np.asarray(v)
+            for v in raw_groups.values()
+        ]
+        level_labels = list(raw_groups.keys())
+        return ExchangeabilityTree.from_labels(
+            label_arrays,
+            level_labels=level_labels,
+        )
+
+    # ---- Single-factor fast path ----------------------------------
+    if groups_arr is not None:
+        return groups_arr.copy()
+
+    # ---- Fallback: derive from Z (should not happen post-calibrate)
+    if Z is None or re_struct is None:
+        return None
+    G_first, d_first = re_struct[0]
+    intercept_cols = Z[:, : G_first * d_first].reshape(-1, G_first, d_first)[:, :, 0]
+    return np.asarray(np.argmax(intercept_cols, axis=1))
 
 
 # ------------------------------------------------------------------ #
@@ -438,6 +482,10 @@ class LinearMixedFamily:
     Preserved from the user's input so downstream consumers
     (display, diagnostics) can show named factors.
     """
+
+    ar_coefs: np.ndarray | None = None
+    _panel_indices: np.ndarray | None = None
+    _panel_lengths: np.ndarray | None = None
 
     # ---- Protocol constants ----------------------------------------
 
@@ -698,6 +746,7 @@ class LinearMixedFamily:
         *,
         fit_intercept: bool = True,
         y: np.ndarray | None = None,  # noqa: ARG002
+        randomization: str = "permute",
     ) -> np.ndarray:
         """Score projection via GLS projection matrix A.
 
@@ -709,11 +758,13 @@ class LinearMixedFamily:
         already incorporates the variance structure V̂⁻¹ from REML
         calibration.
         """
+        from ._strategies import _apply_randomization
+
         self._require_calibrated("score_project")
         assert self.projection_A is not None  # for mypy
         j = feature_idx + 1 if fit_intercept else feature_idx
         projection_row = self.projection_A[j]  # (n,)
-        E_pi = residuals[perm_indices]  # (B, n)
+        E_pi = _apply_randomization(residuals, perm_indices, randomization)  # (B, n)
         return np.asarray(E_pi @ projection_row)  # (B,)
 
     # ---- Permutation helpers ---------------------------------------
@@ -897,15 +948,16 @@ class LinearMixedFamily:
         fit_intercept: bool = True,
         *,
         robust_se: bool = False,
+        groups: np.ndarray | None = None,
     ) -> np.ndarray:
         """Approximate Wald t-test p-values via statsmodels MixedLM.
 
         Falls back to OLS p-values if statsmodels MixedLM fails.
         Returns one p-value per slope coefficient (intercept excluded).
 
-        ``robust_se`` is accepted for protocol compatibility but
-        ignored — mixed-model SEs already account for the
-        random-effects covariance structure.
+        ``robust_se`` and ``groups`` are accepted for protocol
+        compatibility but ignored — mixed-model SEs already account
+        for the random-effects covariance structure.
         """
         self._require_calibrated("classical_p_values")
         assert self.Z is not None
@@ -973,27 +1025,26 @@ class LinearMixedFamily:
         self,
         X: np.ndarray,
         y: np.ndarray,
-    ) -> np.ndarray | None:
-        """Return group labels defining exchangeability cells.
+    ) -> np.ndarray | ExchangeabilityTree | None:
+        """Return exchangeability structure for permutation constraints.
 
         For LMMs, observations within the same cluster are
         exchangeable under H₀ — but observations across clusters
         are not (they have different random intercepts).
 
-        Returns the group labels from the first (outermost) grouping
-        factor, which defines the exchangeability structure.  For
-        nested designs, this is the top-level grouping factor.
+        * **Single factor:** returns the group labels as a flat
+          integer array ``(n,)``.
+        * **Multiple factors:** returns an
+          :class:`ExchangeabilityTree` encoding the nesting
+          hierarchy, with ``"between"`` at outer levels and
+          ``"within"`` at the innermost level.
         """
-        if self._groups_arr is not None:
-            return self._groups_arr.copy()
-        if self.Z is None or self.re_struct is None:
-            return None
-        # Fallback: derive from Z (should not happen after calibrate())
-        G_first, d_first = self.re_struct[0]
-        intercept_cols = self.Z[:, : G_first * d_first].reshape(-1, G_first, d_first)[
-            :, :, 0
-        ]
-        return np.asarray(np.argmax(intercept_cols, axis=1))
+        return _mixed_exchangeability_cells(
+            self._groups_arr,
+            self._raw_groups,
+            self.Z,
+            self.re_struct,
+        )
 
     # ---- Calibration -----------------------------------------------
     #
@@ -1062,14 +1113,26 @@ class LinearMixedFamily:
         # Try JAX REML solver first (fastest, autodiff-based)
         try:
             return self._calibrate_jax(
-                X, y, Z, re_struct, fit_intercept, raw_groups=groups
+                X,
+                y,
+                Z,
+                re_struct,
+                fit_intercept,
+                raw_groups=groups,
+                **kwargs,
             )
         except (ImportError, ModuleNotFoundError):
             pass
 
         # Fallback: statsmodels MixedLM + manual projection
         return self._calibrate_statsmodels(
-            X, y, Z, re_struct, fit_intercept, raw_groups=groups
+            X,
+            y,
+            Z,
+            re_struct,
+            fit_intercept,
+            raw_groups=groups,
+            **kwargs,
         )
 
     def _calibrate_jax(
@@ -1080,11 +1143,40 @@ class LinearMixedFamily:
         re_struct: list[tuple[int, int]],
         fit_intercept: bool,
         raw_groups: Any = None,
+        **kwargs: Any,
     ) -> LinearMixedFamily:
         """REML calibration via the JAX Henderson solver."""
         from ._backends._jax import _reml_solve
 
-        result = _reml_solve(X, Z, y, re_struct, fit_intercept=fit_intercept)
+        ar_order = kwargs.get("ar_order")
+        ar_coefs_hat = None
+        panel_indices = kwargs.get("panel_indices")
+        panel_lengths = kwargs.get("panel_lengths")
+
+        if ar_order is not None and panel_indices is not None:
+            from ._ar import estimate_ar_coefficients
+
+            # Estimate AR from intercept-only residuals.
+            y_mean = np.mean(y)
+            resid_null = y - y_mean
+            residuals_by_panel: list[np.ndarray] = []
+            start = 0
+            for length in panel_lengths:  # type: ignore[union-attr]
+                T = int(length)
+                residuals_by_panel.append(resid_null[start : start + T])
+                start += T
+            ar_coefs_hat = estimate_ar_coefficients(residuals_by_panel, ar_order)
+
+        result = _reml_solve(
+            X,
+            Z,
+            y,
+            re_struct,
+            fit_intercept=fit_intercept,
+            ar_coefs=ar_coefs_hat,
+            panel_indices=panel_indices,
+            panel_lengths=panel_lengths,
+        )
 
         # Derive integer group labels from Z (same logic as statsmodels path)
         G_first, d_first = re_struct[0]
@@ -1107,6 +1199,9 @@ class LinearMixedFamily:
             _exog_re_kw=None,
             _sm_model=None,
             _raw_groups=raw_groups,
+            ar_coefs=ar_coefs_hat,
+            _panel_indices=panel_indices,
+            _panel_lengths=panel_lengths,
         )
 
     def _calibrate_statsmodels(
@@ -1117,6 +1212,7 @@ class LinearMixedFamily:
         re_struct: list[tuple[int, int]],
         fit_intercept: bool,
         raw_groups: Any = None,
+        **kwargs: Any,
     ) -> LinearMixedFamily:
         """REML calibration fallback via statsmodels MixedLM.
 
@@ -1205,7 +1301,25 @@ class LinearMixedFamily:
             log_chol_parts.extend(theta_parts)
         log_chol = np.array(log_chol_parts)
 
-        C22 = Z.T @ Z + Gamma_inv
+        # ---- AR correction (optional) --------------------------------
+        ar_order = kwargs.get("ar_order")
+        ar_coefs_hat = None
+        panel_indices = kwargs.get("panel_indices")
+        panel_lengths = kwargs.get("panel_lengths")
+
+        if ar_order is not None and panel_indices is not None:
+            from ._ar import apply_ar_precision, estimate_ar_coefficients
+
+            # Estimate AR from intercept-only residuals.
+            y_mean = np.mean(y)
+            resid_null = y - y_mean
+            residuals_by_panel: list[np.ndarray] = []
+            start = 0
+            for length in panel_lengths:  # type: ignore[union-attr]
+                T = int(length)
+                residuals_by_panel.append(resid_null[start : start + T])
+                start += T
+            ar_coefs_hat = estimate_ar_coefficients(residuals_by_panel, ar_order)
 
         # Build projection A = S⁻¹ X'Ṽ⁻¹ via the Woodbury identity.
         #
@@ -1214,11 +1328,36 @@ class LinearMixedFamily:
         # the dense n×n matrix:
         #   Ṽ⁻¹ = I − Z (Z'Z + Γ⁻¹)⁻¹ Z' = I − Z C₂₂⁻¹ Z'
         # where C₂₂ = Z'Z + Γ⁻¹ is only q×q (much smaller than n×n).
-        XtZ = X_aug.T @ Z  # (p, q)
-        C22_inv_ZtX = np.linalg.solve(C22, XtZ.T)  # (q, p)
-        S = X_aug.T @ X_aug - XtZ @ C22_inv_ZtX  # (p, p)  GLS info matrix
-        C22_inv_Zt = np.linalg.solve(C22, Z.T)  # (q, n)
-        Xt_Vtilde_inv = X_aug.T - XtZ @ C22_inv_Zt  # (p, n)  X'Ṽ⁻¹
+        #
+        # When AR correction is active, Ṽ = Ω + Z Γ Z' so:
+        #   Ṽ⁻¹ ≈ Ω⁻¹ − Ω⁻¹ Z (Z'Ω⁻¹Z + Γ⁻¹)⁻¹ Z'Ω⁻¹
+        if ar_coefs_hat is not None:
+            Omega_inv_X = apply_ar_precision(
+                X_aug,
+                panel_indices,  # type: ignore[arg-type]
+                panel_lengths,  # type: ignore[arg-type]
+                ar_coefs_hat,
+            )
+            Omega_inv_Z = apply_ar_precision(
+                Z,
+                panel_indices,  # type: ignore[arg-type]
+                panel_lengths,  # type: ignore[arg-type]
+                ar_coefs_hat,
+            )
+            C22 = Omega_inv_Z.T @ Z + Gamma_inv
+            XtOiZ = Omega_inv_X.T @ Z  # (p, q)
+            C22_inv_ZtOiX = np.linalg.solve(C22, XtOiZ.T)  # (q, p)
+            S = Omega_inv_X.T @ X_aug - XtOiZ @ C22_inv_ZtOiX
+            C22_inv_ZtOi = np.linalg.solve(C22, Omega_inv_Z.T)  # (q, n)
+            Xt_Vtilde_inv = Omega_inv_X.T - XtOiZ @ C22_inv_ZtOi
+        else:
+            C22 = Z.T @ Z + Gamma_inv
+            XtZ = X_aug.T @ Z  # (p, q)
+            C22_inv_ZtX = np.linalg.solve(C22, XtZ.T)  # (q, p)
+            S = X_aug.T @ X_aug - XtZ @ C22_inv_ZtX  # (p, p)
+            C22_inv_Zt = np.linalg.solve(C22, Z.T)  # (q, n)
+            Xt_Vtilde_inv = X_aug.T - XtZ @ C22_inv_Zt  # (p, n)
+
         A = np.linalg.solve(S, Xt_Vtilde_inv)  # (p, n)  projection
 
         return LinearMixedFamily(
@@ -1235,6 +1374,9 @@ class LinearMixedFamily:
             _exog_re_kw=exog_re_kw,
             _sm_model=sm_model,
             _raw_groups=raw_groups,
+            ar_coefs=ar_coefs_hat,
+            _panel_indices=panel_indices,
+            _panel_lengths=panel_lengths,
         )
 
     # ---- Batch fitting (hot loop) ----------------------------------
@@ -1496,7 +1638,7 @@ class _GLMMBatchStubMixin:
         """Not supported — use ``method='score'``."""
         raise NotImplementedError(
             "GLMM families require method='score'. "
-            "Use permutation_test_regression(..., method='score')."
+            "Use randomization_test_regression(..., method='score')."
         )
 
     def batch_fit_varying_X(
@@ -1509,7 +1651,7 @@ class _GLMMBatchStubMixin:
         """Not supported — use ``method='score'``."""
         raise NotImplementedError(
             "GLMM families require method='score'. "
-            "Use permutation_test_regression(..., method='score')."
+            "Use randomization_test_regression(..., method='score')."
         )
 
     def batch_fit_and_score(
@@ -1522,7 +1664,7 @@ class _GLMMBatchStubMixin:
         """Not supported — use ``method='score'``."""
         raise NotImplementedError(
             "GLMM families require method='score'. "
-            "Use permutation_test_regression(..., method='score')."
+            "Use randomization_test_regression(..., method='score')."
         )
 
     def batch_fit_and_score_varying_X(
@@ -1535,7 +1677,7 @@ class _GLMMBatchStubMixin:
         """Not supported — use ``method='score'``."""
         raise NotImplementedError(
             "GLMM families require method='score'. "
-            "Use permutation_test_regression(..., method='score')."
+            "Use randomization_test_regression(..., method='score')."
         )
 
     def batch_fit_paired(
@@ -1548,7 +1690,7 @@ class _GLMMBatchStubMixin:
         """Not supported — use ``method='score'``."""
         raise NotImplementedError(
             "GLMM families require method='score'. "
-            "Use permutation_test_regression(..., method='score')."
+            "Use randomization_test_regression(..., method='score')."
         )
 
 
@@ -1922,6 +2064,7 @@ class LogisticMixedFamily(_GLMMBatchStubMixin):
         *,
         fit_intercept: bool = True,
         y: np.ndarray | None = None,  # noqa: ARG002
+        randomization: str = "permute",
     ) -> np.ndarray:
         """One-step corrector via score projection.
 
@@ -1934,6 +2077,8 @@ class LogisticMixedFamily(_GLMMBatchStubMixin):
             = \\frac{(x_j \\odot V^{-1}_{\\mathrm{diag}})' e_\\pi}
                    {\\mathcal{I}_{jj}}
         """
+        from ._strategies import _apply_randomization
+
         self._require_calibrated("score_project")
         assert self.V_inv_diag is not None
         assert self.fisher_info is not None
@@ -1942,7 +2087,7 @@ class LogisticMixedFamily(_GLMMBatchStubMixin):
         X_full = _augment_intercept(X, fit_intercept)
 
         score_weights = X_full[:, j] * self.V_inv_diag  # (n,)
-        E_pi = residuals[perm_indices]  # (B, n)
+        E_pi = _apply_randomization(residuals, perm_indices, randomization)  # (B, n)
         U_j = E_pi @ score_weights  # (B,)
         # Full Fisher inverse [I⁻¹]_{jj} accounts for cross-correlations.
         try:
@@ -2063,15 +2208,16 @@ class LogisticMixedFamily(_GLMMBatchStubMixin):
         fit_intercept: bool = True,
         *,
         robust_se: bool = False,
+        groups: np.ndarray | None = None,
     ) -> np.ndarray:
         """Wald z-test p-values from the Fisher information.
 
         Computes the Wald statistic z_j = β̂_j / se(β̂_j) where
         se is derived from the inverse Fisher information matrix.
 
-        ``robust_se`` is accepted for protocol compatibility but
-        ignored — GLMM SEs already account for the random-effects
-        covariance structure.
+        ``robust_se`` and ``groups`` are accepted for protocol
+        compatibility but ignored — GLMM SEs already account for
+        the random-effects covariance structure.
         """
         self._require_calibrated("classical_p_values")
         assert self.beta is not None
@@ -2097,17 +2243,14 @@ class LogisticMixedFamily(_GLMMBatchStubMixin):
         self,
         X: np.ndarray,
         y: np.ndarray,
-    ) -> np.ndarray | None:
-        """Return group labels for within-cluster exchangeability."""
-        if self._groups_arr is not None:
-            return self._groups_arr.copy()
-        if self.Z is None or self.re_struct is None:
-            return None
-        G_first, d_first = self.re_struct[0]
-        intercept_cols = self.Z[:, : G_first * d_first].reshape(-1, G_first, d_first)[
-            :, :, 0
-        ]
-        return np.asarray(np.argmax(intercept_cols, axis=1))
+    ) -> np.ndarray | ExchangeabilityTree | None:
+        """Return exchangeability structure for permutation constraints."""
+        return _mixed_exchangeability_cells(
+            self._groups_arr,
+            self._raw_groups,
+            self.Z,
+            self.re_struct,
+        )
 
     # ---- Calibration -----------------------------------------------
 
@@ -2407,6 +2550,7 @@ class PoissonMixedFamily(_GLMMBatchStubMixin):
         *,
         fit_intercept: bool = True,
         y: np.ndarray | None = None,  # noqa: ARG002
+        randomization: str = "permute",
     ) -> np.ndarray:
         """One-step corrector via score projection.
 
@@ -2414,6 +2558,8 @@ class PoissonMixedFamily(_GLMMBatchStubMixin):
         specific information is already encoded in ``V_inv_diag``
         and ``fisher_info`` from calibration.
         """
+        from ._strategies import _apply_randomization
+
         self._require_calibrated("score_project")
         assert self.V_inv_diag is not None
         assert self.fisher_info is not None
@@ -2422,7 +2568,7 @@ class PoissonMixedFamily(_GLMMBatchStubMixin):
         X_full = _augment_intercept(X, fit_intercept)
 
         score_weights = X_full[:, j] * self.V_inv_diag  # (n,)
-        E_pi = residuals[perm_indices]  # (B, n)
+        E_pi = _apply_randomization(residuals, perm_indices, randomization)  # (B, n)
         U_j = E_pi @ score_weights  # (B,)
         # Full Fisher inverse [I⁻¹]_{jj} accounts for cross-correlations.
         try:
@@ -2555,12 +2701,13 @@ class PoissonMixedFamily(_GLMMBatchStubMixin):
         fit_intercept: bool = True,
         *,
         robust_se: bool = False,
+        groups: np.ndarray | None = None,
     ) -> np.ndarray:
         """Wald z-test p-values from the Fisher information.
 
-        ``robust_se`` is accepted for protocol compatibility but
-        ignored — GLMM SEs already account for the random-effects
-        covariance structure.
+        ``robust_se`` and ``groups`` are accepted for protocol
+        compatibility but ignored — GLMM SEs already account for
+        the random-effects covariance structure.
         """
         self._require_calibrated("classical_p_values")
         assert self.beta is not None
@@ -2585,17 +2732,14 @@ class PoissonMixedFamily(_GLMMBatchStubMixin):
         self,
         X: np.ndarray,
         y: np.ndarray,
-    ) -> np.ndarray | None:
-        """Return group labels for within-cluster exchangeability."""
-        if self._groups_arr is not None:
-            return self._groups_arr.copy()
-        if self.Z is None or self.re_struct is None:
-            return None
-        G_first, d_first = self.re_struct[0]
-        intercept_cols = self.Z[:, : G_first * d_first].reshape(-1, G_first, d_first)[
-            :, :, 0
-        ]
-        return np.asarray(np.argmax(intercept_cols, axis=1))
+    ) -> np.ndarray | ExchangeabilityTree | None:
+        """Return exchangeability structure for permutation constraints."""
+        return _mixed_exchangeability_cells(
+            self._groups_arr,
+            self._raw_groups,
+            self.Z,
+            self.re_struct,
+        )
 
     # ---- Calibration -----------------------------------------------
 

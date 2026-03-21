@@ -39,7 +39,6 @@ from ucimlrepo import fetch_ucirepo
 from randomization_tests import (
     LinearMixedFamily,
     identify_confounders,
-    permutation_test_regression,
     print_confounder_table,
     print_dataset_info_table,
     print_diagnostics_table,
@@ -47,6 +46,7 @@ from randomization_tests import (
     print_joint_results_table,
     print_protocol_usage_table,
     print_results_table,
+    randomization_test_regression,
     resolve_family,
 )
 
@@ -128,13 +128,13 @@ print_family_info_table(
 # ter Braak (1992) — family="linear_mixed"
 # ============================================================================
 
-results_ter_braak = permutation_test_regression(
+results_ter_braak = randomization_test_regression(
     X,
     y_df,
     method="ter_braak",
     family="linear_mixed",
     groups=subjects,
-    n_permutations=999,
+    n_randomizations=999,
     random_state=42,
 )
 print_results_table(
@@ -152,14 +152,14 @@ print_diagnostics_table(
 
 with warnings.catch_warnings():
     warnings.filterwarnings("ignore", message=".*without confounders.*")
-    results_kennedy = permutation_test_regression(
+    results_kennedy = randomization_test_regression(
         X,
         y_df,
         method="kennedy",
         family="linear_mixed",
         groups=subjects,
         confounders=[],
-        n_permutations=999,
+        n_randomizations=999,
         random_state=42,
     )
 print_results_table(
@@ -177,14 +177,14 @@ print_diagnostics_table(
 
 with warnings.catch_warnings():
     warnings.filterwarnings("ignore", message=".*without confounders.*")
-    results_kennedy_joint = permutation_test_regression(
+    results_kennedy_joint = randomization_test_regression(
         X,
         y_df,
         method="kennedy_joint",
         family="linear_mixed",
         groups=subjects,
         confounders=[],
-        n_permutations=999,
+        n_randomizations=999,
         random_state=42,
     )
 print_joint_results_table(
@@ -198,14 +198,14 @@ print_joint_results_table(
 
 with warnings.catch_warnings():
     warnings.filterwarnings("ignore", message=".*without confounders.*")
-    results_fl = permutation_test_regression(
+    results_fl = randomization_test_regression(
         X,
         y_df,
         method="freedman_lane",
         family="linear_mixed",
         groups=subjects,
         confounders=[],
-        n_permutations=999,
+        n_randomizations=999,
         random_state=42,
     )
 print_results_table(
@@ -223,14 +223,14 @@ print_diagnostics_table(
 
 with warnings.catch_warnings():
     warnings.filterwarnings("ignore", message=".*without confounders.*")
-    results_fl_joint = permutation_test_regression(
+    results_fl_joint = randomization_test_regression(
         X,
         y_df,
         method="freedman_lane_joint",
         family="linear_mixed",
         groups=subjects,
         confounders=[],
-        n_permutations=999,
+        n_randomizations=999,
         random_state=42,
     )
 print_joint_results_table(
@@ -275,14 +275,14 @@ if predictors_with_confounders:
     example_predictor = list(predictors_with_confounders.keys())[0]
     example_confounders = predictors_with_confounders[example_predictor]
 
-    results_kc = permutation_test_regression(
+    results_kc = randomization_test_regression(
         X,
         y_df,
         method="kennedy",
         confounders=example_confounders,
         family="linear_mixed",
         groups=subjects,
-        n_permutations=999,
+        n_randomizations=999,
         random_state=42,
     )
     print_results_table(
@@ -352,14 +352,14 @@ print_protocol_usage_table(
 # Random slopes: test_time as random slope (disease progression over time)
 # ============================================================================
 
-results_slopes = permutation_test_regression(
+results_slopes = randomization_test_regression(
     X,
     y_df,
     method="ter_braak",
     family="linear_mixed",
     groups=subjects,
     random_slopes=[0],  # test_time is column index 0
-    n_permutations=999,
+    n_randomizations=999,
     random_state=42,
 )
 print_results_table(

@@ -64,6 +64,7 @@ def calculate_p_values(
     fit_intercept: bool = True,
     *,
     family: ModelFamily,
+    groups: np.ndarray | None = None,
 ) -> tuple[list[str], list[str], np.ndarray, np.ndarray, np.ndarray]:
     """Calculate empirical (permutation) and classical (asymptotic) p-values.
 
@@ -79,7 +80,7 @@ def calculate_p_values(
         X: Feature matrix of shape ``(n_samples, n_features)``.
         y: Target values of shape ``(n_samples,)``.
         permuted_coefs: Coefficients from each permutation, shape
-            ``(n_permutations, n_features)``.
+            ``(n_randomizations, n_features)``.
         model_coefs: Observed (unpermuted) coefficients, shape
             ``(n_features,)``.
         precision: Decimal places for rounding.
@@ -116,7 +117,12 @@ def calculate_p_values(
     # --- Classical asymptotic p-values ---
     # Delegate to the family's classical_p_values() method, which
     # encapsulates the correct statsmodels model and warning suppression.
-    raw_classic_p = family.classical_p_values(np.asarray(X), y_values, fit_intercept)
+    # When groups are provided, pass them through so the family can
+    # compute cluster-robust SEs matching the permutation test's
+    # within-group structure.
+    raw_classic_p = family.classical_p_values(
+        np.asarray(X), y_values, fit_intercept, groups=groups
+    )
 
     # --- Vectorised empirical p-values (Phipson & Smyth correction) ---
     # For each feature j, count how many of the B permuted |β*_j| values
@@ -128,7 +134,7 @@ def calculate_p_values(
     #   np.abs(model_coefs)[np.newaxis,:] shape: (1, p)
     # yielding a boolean matrix of shape (B, p) whose column sums give
     # the count b_j for each feature.
-    n_permutations = permuted_coefs.shape[0]
+    n_randomizations = permuted_coefs.shape[0]
     counts = np.sum(
         np.abs(permuted_coefs) >= np.abs(model_coefs)[np.newaxis, :], axis=0
     )
@@ -137,7 +143,7 @@ def calculate_p_values(
     #   p_j = (b_j + 1) / (B + 1)
     # The "+1" in both numerator and denominator accounts for the
     # observed statistic itself being one of B+1 equally-likely outcomes.
-    raw_p = (counts + 1) / (n_permutations + 1)
+    raw_p = (counts + 1) / (n_randomizations + 1)
 
     # --- Format p-value strings with significance markers ---
     def _fmt(p: float) -> str:

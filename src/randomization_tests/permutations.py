@@ -68,6 +68,10 @@ from functools import reduce
 
 import numpy as np
 
+# Soft memory threshold for the permutation matrix (int64).
+# Emit a ResourceWarning when B × n × 8 bytes exceeds this value.
+_MEMORY_WARN_BYTES: int = 16 * 1024**3  # 16 GiB
+
 # ------------------------------------------------------------------ #
 # Lehmer code (factorial number system)
 # ------------------------------------------------------------------ #
@@ -151,7 +155,7 @@ def _unrank_within_cell(
 
 def generate_unique_permutations(
     n_samples: int,
-    n_permutations: int,
+    n_randomizations: int,
     random_state: int | None = None,
     exclude_identity: bool = True,
     max_exhaustive: int = 10,
@@ -167,7 +171,7 @@ def generate_unique_permutations(
 
     Args:
         n_samples: Length of the array to permute.
-        n_permutations: Number of unique permutations requested.
+        n_randomizations: Number of unique permutations requested.
         random_state: Seed for reproducibility.
         exclude_identity: If ``True``, the identity permutation
             ``[0, 1, ..., n-1]`` is excluded so the observed data is
@@ -176,13 +180,25 @@ def generate_unique_permutations(
             Lehmer-code sampling instead of random generation.
 
     Returns:
-        Array of shape ``(n_permutations, n_samples)`` where each row is
+        Array of shape ``(n_randomizations, n_samples)`` where each row is
         a unique permutation of ``range(n_samples)``.
 
     Raises:
-        ValueError: If *n_permutations* exceeds the number of available
+        ValueError: If *n_randomizations* exceeds the number of available
             unique permutations (after optionally excluding the identity).
     """
+    # Soft memory guard: warn before allocating a very large int64 matrix.
+    _estimated_bytes = n_randomizations * n_samples * 8  # int64 = 8 bytes
+    if _estimated_bytes > _MEMORY_WARN_BYTES:
+        _gb = _estimated_bytes / 1024**3
+        warnings.warn(
+            f"Generating {n_randomizations:,} × {n_samples:,} permutation "
+            f"matrix will require approximately {_gb:.1f} GiB of memory.  "
+            "Consider reducing n_randomizations.",
+            ResourceWarning,
+            stacklevel=2,
+        )
+
     rng = np.random.default_rng(random_state)
     identity = tuple(range(n_samples))
 
@@ -207,9 +223,9 @@ def generate_unique_permutations(
         total_perms = math.factorial(n_samples)
         available = total_perms - 1 if exclude_identity else total_perms
 
-        if n_permutations > available:
+        if n_randomizations > available:
             raise ValueError(
-                f"Requested {n_permutations} unique permutations but only "
+                f"Requested {n_randomizations} unique permutations but only "
                 f"{available} are available for n_samples={n_samples} "
                 f"(exclude_identity={exclude_identity})."
             )
@@ -219,7 +235,7 @@ def generate_unique_permutations(
             ranks = (
                 rng.choice(
                     total_perms - 1,
-                    size=n_permutations,
+                    size=n_randomizations,
                     replace=False,
                 )
                 + 1
@@ -227,7 +243,7 @@ def generate_unique_permutations(
         else:
             ranks = rng.choice(
                 total_perms,
-                size=n_permutations,
+                size=n_randomizations,
                 replace=False,
             )
 
@@ -260,12 +276,12 @@ def generate_unique_permutations(
     # because the bulk generation is vectorised.
 
     collision_prob = (
-        n_permutations * (n_permutations - 1) / (2 * math.factorial(n_samples))
+        n_randomizations * (n_randomizations - 1) / (2 * math.factorial(n_samples))
     )
     need_dedup = collision_prob >= 1e-9
 
     # Generate all B permutations at once.
-    batch = np.tile(np.arange(n_samples), (n_permutations, 1))
+    batch = np.tile(np.arange(n_samples), (n_randomizations, 1))
     rng.permuted(batch, axis=1, out=batch)
 
     # Fast path: no dedup needed and identity not excluded.
@@ -279,7 +295,7 @@ def generate_unique_permutations(
     if exclude_identity:
         seen.add(identity)
 
-    result = np.empty((n_permutations, n_samples), dtype=np.intp)
+    result = np.empty((n_randomizations, n_samples), dtype=np.intp)
     count = 0
 
     for i in range(len(batch)):
@@ -288,16 +304,16 @@ def generate_unique_permutations(
             seen.add(key)
             result[count] = batch[i]
             count += 1
-            if count == n_permutations:
+            if count == n_randomizations:
                 return result
 
     # Fill gaps left by identity hits or (rare) duplicate collisions.
     # Safety cap prevents an unbounded loop in the astronomically
     # unlikely event of sustained collisions for medium-n samples
     # where dedup is enabled.
-    max_attempts = n_permutations * 20 + 1000
+    max_attempts = n_randomizations * 20 + 1000
     attempts = 0
-    while count < n_permutations and attempts < max_attempts:
+    while count < n_randomizations and attempts < max_attempts:
         perm = rng.permutation(n_samples)
         key = tuple(perm.tolist())
         if key not in seen:
@@ -333,7 +349,7 @@ def generate_unique_permutations(
 
 def generate_within_cell_permutations(
     n_samples: int,
-    n_permutations: int,
+    n_randomizations: int,
     cells: np.ndarray,
     random_state: int | None = None,
     exclude_identity: bool = True,
@@ -348,7 +364,7 @@ def generate_within_cell_permutations(
 
     Args:
         n_samples: Total number of observations.
-        n_permutations: Number of unique permutations requested.
+        n_randomizations: Number of unique permutations requested.
         cells: Integer array of shape ``(n_samples,)`` mapping each
             observation to a cell label (0-indexed).
         random_state: Seed for reproducibility.
@@ -357,12 +373,12 @@ def generate_within_cell_permutations(
 
     Returns:
         Array of shape ``(B, n_samples)`` with permutation indices,
-        where B ≤ *n_permutations* (may be smaller if the total
+        where B ≤ *n_randomizations* (may be smaller if the total
         number of unique within-cell permutations is limited).
 
     Warns:
         UserWarning: If the total number of unique within-cell
-            permutations (∏ n_c!) is smaller than *n_permutations*.
+            permutations (∏ n_c!) is smaller than *n_randomizations*.
     """
     rng = np.random.default_rng(random_state)
     cells = np.asarray(cells)
@@ -382,27 +398,27 @@ def generate_within_cell_permutations(
     # product of per-cell factorials.  If any cell has n_c = 1, its
     # factor is 1! = 1 (identity only — the observation is pinned).
     # We compute the product carefully using reduce to avoid overflow
-    # for moderate cell sizes, and cap at n_permutations + 2 to avoid
+    # for moderate cell sizes, and cap at n_randomizations + 2 to avoid
     # computing astronomically large factorials needlessly.
     cell_sizes = [len(idx) for idx in cell_indices.values()]
     cell_factorials = [math.factorial(s) for s in cell_sizes]
 
     # Product of factorials — use functools.reduce; cap early to
     # avoid unbounded big-int arithmetic.
-    _CAP = n_permutations + 2
+    _CAP = n_randomizations + 2
     total_unique = reduce(lambda a, b: min(a * b, _CAP), cell_factorials, 1)
 
     available = total_unique - 1 if exclude_identity else total_unique
 
-    if available < n_permutations:
+    if available < n_randomizations:
         warnings.warn(
             f"Only {available} unique within-cell permutations are "
             f"available (product of per-cell factorials minus identity), "
-            f"but {n_permutations} were requested.  Capping at {available}.",
+            f"but {n_randomizations} were requested.  Capping at {available}.",
             UserWarning,
             stacklevel=2,
         )
-        n_permutations = available
+        n_randomizations = available
 
     # ---- Small cells: Lehmer-code sampling ---------------------------
     #
@@ -428,13 +444,13 @@ def generate_within_cell_permutations(
         ranks = (
             rng.choice(
                 total_exact - pool_start,
-                size=n_permutations,
+                size=n_randomizations,
                 replace=False,
             )
             + pool_start
         )
         cell_idx_list = list(cell_indices.values())
-        result = np.empty((n_permutations, n_samples), dtype=np.intp)
+        result = np.empty((n_randomizations, n_samples), dtype=np.intp)
         for i, rank in enumerate(ranks):
             result[i] = _unrank_within_cell(
                 int(rank), cell_idx_list, cell_factorials, n_samples
@@ -452,11 +468,11 @@ def generate_within_cell_permutations(
     if exclude_identity:
         seen.add(identity)
 
-    result = np.empty((n_permutations, n_samples), dtype=np.intp)
+    result = np.empty((n_randomizations, n_samples), dtype=np.intp)
     count = 0
 
     # Vectorised batch: generate all B candidates at once.
-    batch = np.tile(np.arange(n_samples, dtype=np.intp), (n_permutations, 1))
+    batch = np.tile(np.arange(n_samples, dtype=np.intp), (n_randomizations, 1))
     for cidx in cell_indices.values():
         if len(cidx) > 1:
             cell_block = batch[:, cidx].copy()
@@ -470,14 +486,14 @@ def generate_within_cell_permutations(
             seen.add(key)
             result[count] = batch[j]
             count += 1
-            if count == n_permutations:
+            if count == n_randomizations:
                 return result
 
     # Gap-fill: one-at-a-time for remaining slots (rare for large
     # cells where collision probability is negligible).
-    max_attempts = n_permutations * 20 + 1000
+    max_attempts = n_randomizations * 20 + 1000
     attempts = 0
-    while count < n_permutations and attempts < max_attempts:
+    while count < n_randomizations and attempts < max_attempts:
         perm = np.arange(n_samples, dtype=np.intp)
         for cidx in cell_indices.values():
             if len(cidx) > 1:
@@ -616,7 +632,7 @@ def _unrank_restricted_label_perm(
 
 def generate_between_cell_permutations(
     n_samples: int,
-    n_permutations: int,
+    n_randomizations: int,
     cells: np.ndarray,
     random_state: int | None = None,
     exclude_identity: bool = True,
@@ -636,7 +652,7 @@ def generate_between_cell_permutations(
 
     Args:
         n_samples: Total number of observations.
-        n_permutations: Number of unique permutations requested.
+        n_randomizations: Number of unique permutations requested.
         cells: Integer array of shape ``(n_samples,)`` mapping each
             observation to a cell label (0-indexed).
         random_state: Seed for reproducibility.
@@ -645,11 +661,11 @@ def generate_between_cell_permutations(
 
     Returns:
         Array of shape ``(B, n_samples)`` with permutation indices,
-        where B ≤ *n_permutations*.
+        where B ≤ *n_randomizations*.
 
     Warns:
         UserWarning: If the number of distinct between-cell
-            permutations is less than *n_permutations*.
+            permutations is less than *n_randomizations*.
     """
     rng = np.random.default_rng(random_state)
     cells = np.asarray(cells)
@@ -673,17 +689,17 @@ def generate_between_cell_permutations(
     total_unique = _between_cell_total(cell_sizes)
     available = total_unique - 1 if exclude_identity else total_unique
 
-    if available < n_permutations:
+    if available < n_randomizations:
         warnings.warn(
             f"Only {available} unique between-cell permutations are "
             f"available (∏ count_s!={total_unique} with G={G} cells), "
-            f"but {n_permutations} were requested.  Capping at {available}.",
+            f"but {n_randomizations} were requested.  Capping at {available}.",
             UserWarning,
             stacklevel=2,
         )
-        n_permutations = available
+        n_randomizations = available
 
-    if n_permutations == 0:
+    if n_randomizations == 0:
         return np.empty((0, n_samples), dtype=np.intp)
 
     # ---- Generate via restricted label permutation + remap -------
@@ -695,7 +711,7 @@ def generate_between_cell_permutations(
     if exclude_identity:
         seen.add(identity)
 
-    result = np.empty((n_permutations, n_samples), dtype=np.intp)
+    result = np.empty((n_randomizations, n_samples), dtype=np.intp)
     count = 0
 
     # For small total (≤ threshold), use Lehmer-code enumeration.
@@ -704,8 +720,8 @@ def generate_between_cell_permutations(
         pool_start = 1 if exclude_identity else 0
         pool_size = total_unique - pool_start
 
-        if n_permutations <= pool_size:
-            ranks = rng.choice(pool_size, size=n_permutations, replace=False)
+        if n_randomizations <= pool_size:
+            ranks = rng.choice(pool_size, size=n_randomizations, replace=False)
             ranks += pool_start
         else:
             ranks = np.arange(pool_start, total_unique)
@@ -728,7 +744,7 @@ def generate_between_cell_permutations(
                 seen.add(key)
                 result[count] = batch[j]
                 count += 1
-                if count == n_permutations:
+                if count == n_randomizations:
                     break
 
         return result[:count]
@@ -738,7 +754,10 @@ def generate_between_cell_permutations(
 
     # Generate all B candidate label permutations at once.
     label_perms = np.array(
-        [_random_restricted_label_perm(cell_sizes, rng) for _ in range(n_permutations)],
+        [
+            _random_restricted_label_perm(cell_sizes, rng)
+            for _ in range(n_randomizations)
+        ],
         dtype=np.intp,
     )
 
@@ -752,14 +771,14 @@ def generate_between_cell_permutations(
             seen.add(key)
             result[count] = batch[j]
             count += 1
-            if count == n_permutations:
+            if count == n_randomizations:
                 break
 
-    if count < n_permutations:
+    if count < n_randomizations:
         # Gap-fill: one-at-a-time for remaining slots.
-        max_attempts = n_permutations * 20 + 1000
+        max_attempts = n_randomizations * 20 + 1000
         attempts = 0
-        while count < n_permutations and attempts < max_attempts:
+        while count < n_randomizations and attempts < max_attempts:
             label_perm = _random_restricted_label_perm(cell_sizes, rng)
             perm = _remap_between(cell_indices, label_perm)
             key = tuple(perm.tolist())
@@ -869,7 +888,7 @@ def _remap_between_batch(
 
 def generate_two_stage_permutations(
     n_samples: int,
-    n_permutations: int,
+    n_randomizations: int,
     cells: np.ndarray,
     random_state: int | None = None,
     exclude_identity: bool = True,
@@ -882,7 +901,7 @@ def generate_two_stage_permutations(
 
     Args:
         n_samples: Total number of observations.
-        n_permutations: Number of unique permutations requested.
+        n_randomizations: Number of unique permutations requested.
         cells: Integer array of shape ``(n_samples,)`` mapping each
             observation to a cell label (0-indexed).
         random_state: Seed for reproducibility.
@@ -891,10 +910,10 @@ def generate_two_stage_permutations(
 
     Returns:
         Array of shape ``(B, n_samples)`` with permutation indices,
-        where B ≤ *n_permutations*.
+        where B ≤ *n_randomizations*.
 
     Warns:
-        UserWarning: If (∏_s count_s!) × (∏_c n_c!) < *n_permutations*.
+        UserWarning: If (∏_s count_s!) × (∏_c n_c!) < *n_randomizations*.
     """
     rng = np.random.default_rng(random_state)
     cells = np.asarray(cells)
@@ -911,23 +930,23 @@ def generate_two_stage_permutations(
     cell_factorials = [math.factorial(s) for s in cell_sizes]
     between_total = _between_cell_total(cell_sizes)
 
-    _CAP = n_permutations + 2
+    _CAP = n_randomizations + 2
     within_product = reduce(lambda a, b: min(a * b, _CAP), cell_factorials, 1)
     total_unique = min(between_total * within_product, _CAP)
 
     available = total_unique - 1 if exclude_identity else total_unique
 
-    if available < n_permutations:
+    if available < n_randomizations:
         warnings.warn(
             f"Only {available} unique two-stage permutations are "
             f"available ((∏ count_s!)×(∏ n_c!) with G={G} cells), but "
-            f"{n_permutations} were requested.  Capping at {available}.",
+            f"{n_randomizations} were requested.  Capping at {available}.",
             UserWarning,
             stacklevel=2,
         )
-        n_permutations = available
+        n_randomizations = available
 
-    if n_permutations == 0:
+    if n_randomizations == 0:
         return np.empty((0, n_samples), dtype=np.intp)
 
     # ---- Small balanced: Lehmer-code sampling ---------------------
@@ -953,13 +972,13 @@ def generate_two_stage_permutations(
         ranks = (
             rng.choice(
                 total_exact - pool_start,
-                size=n_permutations,
+                size=n_randomizations,
                 replace=False,
             )
             + pool_start
         )
 
-        result = np.empty((n_permutations, n_samples), dtype=np.intp)
+        result = np.empty((n_randomizations, n_samples), dtype=np.intp)
         for i, rank in enumerate(ranks):
             k_between = int(rank) // within_exact
             k_within = int(rank) % within_exact
@@ -991,7 +1010,7 @@ def generate_two_stage_permutations(
     if exclude_identity:
         seen.add(identity)
 
-    result = np.empty((n_permutations, n_samples), dtype=np.intp)
+    result = np.empty((n_randomizations, n_samples), dtype=np.intp)
     count = 0
 
     # ---- Batch generation: between remap + within shuffle --------
@@ -1000,7 +1019,10 @@ def generate_two_stage_permutations(
     # (restricted to same-size swaps), batch-remap to data-level
     # indices, then apply within-cell shuffles.
     label_perms = np.array(
-        [_random_restricted_label_perm(cell_sizes, rng) for _ in range(n_permutations)],
+        [
+            _random_restricted_label_perm(cell_sizes, rng)
+            for _ in range(n_randomizations)
+        ],
         dtype=np.intp,
     )
 
@@ -1028,14 +1050,14 @@ def generate_two_stage_permutations(
             seen.add(key)
             result[count] = batch[j]
             count += 1
-            if count == n_permutations:
+            if count == n_randomizations:
                 break
 
-    if count < n_permutations:
+    if count < n_randomizations:
         # Gap-fill: one-at-a-time for remaining slots.
-        max_attempts = n_permutations * 20 + 1000
+        max_attempts = n_randomizations * 20 + 1000
         attempts = 0
-        while count < n_permutations and attempts < max_attempts:
+        while count < n_randomizations and attempts < max_attempts:
             label_perm = _random_restricted_label_perm(cell_sizes, rng)
             perm = np.empty(n_samples, dtype=np.intp)
             for c in range(G):
@@ -1051,3 +1073,204 @@ def generate_two_stage_permutations(
             attempts += 1
 
     return result[:count]
+
+
+# ------------------------------------------------------------------ #
+# Nested (multi-level) permutation generator
+# ------------------------------------------------------------------ #
+#
+# When exchangeability structure is hierarchical — e.g. students
+# within classrooms within schools — different levels may require
+# different strategies.  This generator walks an ExchangeabilityTree
+# recursively, composing per-level permutations according to the
+# Winkler et al. (2015) PALM algorithm.
+#
+# For single-level trees it delegates to the existing flat generators
+# (within / between / two-stage) which have optimised vectorised
+# batch paths.
+
+from .exchangeability import ExchangeabilityNode, ExchangeabilityTree  # noqa: E402
+
+
+def generate_nested_permutations(
+    n_samples: int,
+    n_randomizations: int,
+    tree: ExchangeabilityTree,
+    random_state: int | None = None,
+    exclude_identity: bool = True,
+) -> np.ndarray:
+    """Generate permutation indices respecting nested exchangeability.
+
+    Each output row is a permutation of ``[0, 1, …, n−1]`` that
+    respects the per-level strategies encoded in *tree*.  The
+    algorithm recursively composes per-level permutations from root
+    to leaves (Winkler et al. 2015, PALM).
+
+    For single-level trees the function delegates to the existing
+    flat generators for their vectorised performance.
+
+    Args:
+        n_samples: Total number of observations.
+        n_randomizations: Number of unique permutations requested.
+        tree: An :class:`ExchangeabilityTree` encoding the nesting
+            and per-level strategies.
+        random_state: Seed for reproducibility.
+        exclude_identity: If ``True``, the identity permutation is
+            excluded from the output.
+
+    Returns:
+        Array of shape ``(B, n_samples)`` with permutation indices,
+        where B ≤ *n_randomizations*.
+
+    Warns:
+        UserWarning: If the reference set is smaller than
+            *n_randomizations*.
+    """
+    rng = np.random.default_rng(random_state)
+
+    # ---- Single-level shortcut -----------------------------------
+    if tree.n_levels == 1:
+        cells = tree.to_flat_cells()
+        strategy = tree.strategies[0]
+        if strategy == "within":
+            return generate_within_cell_permutations(
+                n_samples, n_randomizations, cells, random_state, exclude_identity
+            )
+        if strategy == "between":
+            return generate_between_cell_permutations(
+                n_samples, n_randomizations, cells, random_state, exclude_identity
+            )
+        if strategy == "two-stage":
+            return generate_two_stage_permutations(
+                n_samples, n_randomizations, cells, random_state, exclude_identity
+            )
+        # "whole" → global permutation
+        return generate_unique_permutations(
+            n_samples,
+            n_randomizations,
+            random_state=random_state,
+            exclude_identity=exclude_identity,
+        )
+
+    # ---- Budget check --------------------------------------------
+    ref_size = tree.reference_set_size("permute", cap=n_randomizations + 2)
+    available = ref_size - 1 if exclude_identity else ref_size
+
+    if available < n_randomizations:
+        warnings.warn(
+            f"Only {available} unique nested permutations are "
+            f"available but {n_randomizations} were requested.  "
+            f"Capping at {available}.",
+            UserWarning,
+            stacklevel=2,
+        )
+        n_randomizations = available
+
+    if n_randomizations == 0:
+        return np.empty((0, n_samples), dtype=np.intp)
+
+    # ---- Generate with hash-based dedup --------------------------
+    identity = tuple(range(n_samples))
+    seen: set[tuple[int, ...]] = set()
+    if exclude_identity:
+        seen.add(identity)
+
+    result = np.empty((n_randomizations, n_samples), dtype=np.intp)
+    count = 0
+
+    max_attempts = n_randomizations * 20 + 1000
+    attempts = 0
+
+    while count < n_randomizations and attempts < max_attempts:
+        perm = _nested_perm_once(tree.root, 0, tree.strategies, rng)
+        key = tuple(perm.tolist())
+        if key not in seen:
+            seen.add(key)
+            result[count] = perm
+            count += 1
+        attempts += 1
+
+    if count < n_randomizations:
+        warnings.warn(
+            f"Could only generate {count} unique nested "
+            f"permutations after {max_attempts} attempts "
+            f"(requested {n_randomizations}).",
+            UserWarning,
+            stacklevel=2,
+        )
+
+    return result[:count]
+
+
+def _nested_perm_once(
+    node: ExchangeabilityNode,
+    level: int,
+    strategies: tuple[str, ...],
+    rng: np.random.Generator,
+) -> np.ndarray:
+    """Generate a single nested permutation for a subtree.
+
+    Returns an array of length ``node.size`` that is a permutation
+    of ``node.indices``.  The caller is responsible for placing
+    these values into the correct positions of the parent
+    permutation.
+    """
+    # Leaf node: return own indices (identity — parent handles
+    # the actual shuffling when using "within" or "two-stage").
+    if node.is_leaf or level >= len(strategies):
+        return node.indices.copy()
+
+    strategy = strategies[level]
+
+    if strategy == "whole":
+        return rng.permutation(node.indices)
+
+    children = node.children
+    n_children = len(children)
+    child_sizes = [c.size for c in children]
+
+    # Build position map: for each child, which positions within
+    # the parent's sorted indices does it occupy?
+    # node.indices is sorted, child.indices is sorted.
+    child_positions: list[np.ndarray] = []
+    for child in children:
+        positions = np.searchsorted(node.indices, child.indices)
+        child_positions.append(positions)
+
+    out = np.empty(node.size, dtype=np.intp)
+
+    if strategy == "within":
+        # Don't rearrange children.  Recurse into each child
+        # independently.  Leaf children get free permutation
+        # (the "within" semantics: freely permute observations
+        # within each block).
+        for i, child in enumerate(children):
+            if child.is_leaf:
+                sub_perm = rng.permutation(child.indices)
+            else:
+                sub_perm = _nested_perm_once(child, level + 1, strategies, rng)
+            out[child_positions[i]] = sub_perm
+        return out
+
+    if strategy == "between":
+        # Swap children as whole units (same-size constraint), then
+        # recurse into each target child for deeper permutation.
+        label_perm = _random_restricted_label_perm(child_sizes, rng)
+
+        for i in range(n_children):
+            target = children[label_perm[i]]
+            sub_perm = _nested_perm_once(target, level + 1, strategies, rng)
+            out[child_positions[i]] = sub_perm
+        return out
+
+    # strategy == "two-stage"
+    # Between swap + free permutation of each target child's
+    # indices (no recursion into sub-structure — the within
+    # component is a flat shuffle of the target block).
+    label_perm = _random_restricted_label_perm(child_sizes, rng)
+
+    for i in range(n_children):
+        target = children[label_perm[i]]
+        shuffled = rng.permutation(target.indices)
+        out[child_positions[i]] = shuffled
+    return out

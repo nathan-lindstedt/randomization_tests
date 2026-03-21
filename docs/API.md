@@ -14,13 +14,13 @@
 
 ## Core
 
-### `permutation_test_regression`
+### `randomization_test_regression`
 
 ```python
-permutation_test_regression(
+randomization_test_regression(
     X: DataFrameLike,
     y: DataFrameLike,
-    n_permutations: int = 5_000,
+    n_randomizations: int = 5_000,
     precision: int = 3,
     p_value_threshold_one: float = 0.05,
     p_value_threshold_two: float = 0.01,
@@ -39,10 +39,12 @@ permutation_test_regression(
     confidence_level: float = 0.95,
     panel_id: np.ndarray | list[int] | pd.Series | str | None = None,
     time_id: np.ndarray | list[int] | pd.Series | str | None = None,
+    ar_order: int | None = None,
+    randomization: str = "permute",
 ) -> IndividualTestResult | JointTestResult
 ```
 
-Run a permutation test for regression coefficients.
+Run a randomization test for regression coefficients.
 
 By default (`family="auto"`), detects binary vs. continuous outcomes and
 uses logistic or linear regression accordingly.  Pass an explicit family
@@ -54,12 +56,12 @@ to override auto‑detection.
 |---|---|
 | `X` | Feature matrix, shape `(n_samples, n_features)`. Accepts pandas or Polars DataFrames. |
 | `y` | Target values, shape `(n_samples,)`. When `family="auto"`, binary targets (`{0, 1}`) trigger logistic regression; otherwise linear regression is used. |
-| `n_permutations` | Number of unique permutations to generate. |
+| `n_randomizations` | Number of unique permutations to generate. |
 | `precision` | Decimal places for reported p‑values. |
 | `p_value_threshold_one` | First significance level (marked `*`). |
 | `p_value_threshold_two` | Second significance level (marked `**`). |
 | `p_value_threshold_three` | Third significance level (marked `***`). |
-| `method` | `"ter_braak"`, `"kennedy"`, `"kennedy_joint"`, `"freedman_lane"`, `"freedman_lane_joint"`, `"score"`, `"score_joint"`, or `"score_exact"`. |
+| `method` | `"ter_braak"`, `"kennedy"`, `"kennedy_joint"`, `"freedman_lane"`, `"freedman_lane_joint"`, `"manly"`, `"manly_joint"`, `"score"`, `"score_joint"`, or `"score_exact"`. |
 | `confounders` | Column names of confounders (required for Kennedy and Freedman–Lane methods). |
 | `random_state` | Seed for reproducibility. |
 | `fit_intercept` | Whether to include an intercept in the regression model. Set to `False` for through‑origin regression. |
@@ -73,6 +75,8 @@ to override auto‑detection.
 | `confidence_level` | Confidence level for all CI types (permutation, Wald, Clopper–Pearson, standardised). Defaults to `0.95`. |
 | `panel_id` | Panel (subject/unit) identifier for longitudinal data. When provided, automatically sets `groups=panel_id` and `permutation_strategy="within"`. Accepts a 1‑D array‑like of labels or a column name (string) in `X`. Cannot be used together with an explicit `groups=` argument. |
 | `time_id` | Time‑period identifier for longitudinal data. Only meaningful when `panel_id` is also provided. Used for validation checks: warns if data is not sorted by `(panel_id, time_id)` or if panels are unbalanced. |
+| `ar_order` | Order of the autoregressive working‑correlation correction for longitudinal panel data. When set (e.g. `ar_order=1`), the design matrix and residuals are Cholesky‑whitened under an FGLS framework that accounts for AR(p) serial correlation within panels, ensuring permuted residuals are approximately exchangeable. Requires `panel_id`, `time_id`, and a score‑based method (`"score"`, `"score_joint"`, or `"score_exact"`). Not supported for `"ordinal"` or `"multinomial"` families. |
+| `randomization` | `"permute"` (default) or `"sign_flip"`. With `"sign_flip"`, residuals are randomised by random sign reversal (±1) rather than permutation, requiring only that errors are symmetrically distributed — a weaker assumption than exchangeability. Not valid for `"ordinal"` or `"multinomial"` families (no well‑defined residuals) or for `"manly"`, `"manly_joint"`, and `"score_exact"` methods (which permute Y directly). |
 
 **Returns:** A dictionary containing model coefficients, empirical
 (permutation) and classical (asymptotic) p‑values, extended diagnostics,
@@ -81,7 +85,32 @@ instead contains the observed improvement statistic and a single joint
 p‑value.
 
 **Raises:** `ValueError` if *method* is not one of the recognised
-options.
+options, or if the method × family combination is not supported (see
+the compatibility table below).
+
+**Method × family compatibility:**
+
+✓ = Supported · V = Guarded (`ValueError` with explanation) · ⚠ = Works with `UserWarning`
+
+| Method | `linear` / `logistic` / `poisson` / `negative_binomial` | `ordinal` / `multinomial` | `linear_mixed` | `logistic_mixed` / `poisson_mixed` |
+|---|---|---|---|---|
+| `ter_braak` | ✓ | V | ✓ | V |
+| `kennedy` | ✓ | ✓ | ✓ | V |
+| `kennedy_joint` | ✓ | ✓ | ✓ | V |
+| `freedman_lane` | ✓ | V | ✓ | V |
+| `freedman_lane_joint` | ✓ | V | ✓ | V |
+| `manly` | ⚠ | ✓ | ⚠ | V |
+| `manly_joint` | ⚠ | ✓ | ⚠ | V |
+| `score` | ✓ | ✓ | ✓ | ✓ |
+| `score_joint` | ✓ | ✓ | ✓ | V |
+| `score_exact` | ⚠† | V‡ | ✓ | ✓ |
+
+† `score_exact` on non‑mixed families: emits `UserWarning` then raises
+`ValueError` (requires calibrated GLMM variance components).
+
+‡ `score_exact` on ordinal/multinomial: raises `ValueError` — score‑exact
+uses vmap'd IRLS refitting designed for GLMM null distributions, not
+direct‑permutation categorical families.
 
 **References:**
 
@@ -120,7 +149,7 @@ Runtime‑checkable protocol that every family class must satisfy.
 | `reconstruct_y(predictions, permuted_residuals, rng)` | Build permuted response vectors. |
 | `fit_metric(y_true, y_pred)` | Scalar goodness‑of‑fit metric (e.g. RSS, deviance). |
 | `diagnostics(X, y, fit_intercept)` | Dict of model‑level diagnostics. |
-| `classical_p_values(X, y, fit_intercept, *, robust_se)` | Asymptotic p‑values (t‑ or z‑test). `robust_se=True` uses sandwich SEs. |
+| `classical_p_values(X, y, fit_intercept, *, robust_se, groups)` | Asymptotic p‑values (t‑ or z‑test). `robust_se=True` uses sandwich SEs. `groups=` uses cluster‑robust SEs. When AR(p) calibration is active, applies FGLS Cholesky whitening for apples‑to‑apples comparison with the permutation test. |
 | `score_project(X, y, feature_idx, confounders, *, y)` | Score‑test projection row for `method="score"`. |
 | `exchangeability_cells(X, y)` | Exchangeability cell labels (or `None` for global). |
 | `batch_fit(X, Y_matrix, fit_intercept, **kw)` | Fit B models with varying Y; shape `(B, p)`. |
@@ -131,7 +160,7 @@ Runtime‑checkable protocol that every family class must satisfy.
 OLS regression for continuous outcomes.
 
 - `residual_type = "raw"` — raw residuals `y − ŷ`.
-- `direct_permutation = True` — ter Braak shortcut via pseudoinverse.
+- `direct_permutation = False` — OLS residuals; does not use direct Y‑permutation.
 - `metric_label = "RSS Reduction"`.
 - `batch_fit` uses NumPy pseudoinverse (single matrix multiply).
 
@@ -188,9 +217,9 @@ Estimate the NB dispersion parameter α from the data via MLE
 instance** with `alpha` set.  Idempotent: calling on an
 already‑calibrated instance returns `self`.
 
-This method is **not** part of the `ModelFamily` protocol — it is
-duck‑typed and called via `hasattr` guard in the permutation engine.
-Only families with nuisance parameters need implement it.
+This method is part of the `ModelFamily` protocol.  All families
+implement `calibrate()`; families without nuisance parameters return
+`self` unchanged.
 
 | Parameter | Description |
 |---|---|
@@ -217,10 +246,11 @@ with ≥ 3 levels (integer‑coded 0, 1, …, K−1).
 - `residuals`, `reconstruct_y`, `fit_metric` raise `NotImplementedError`.
 - `batch_fit` uses a joblib‑parallelised OrderedModel loop.
 
-**Supported methods:** `ter_braak`, `kennedy`, `kennedy_joint`.
+**Supported methods:** `manly`, `manly_joint`, `kennedy`, `kennedy_joint`,
+`score`, `score_joint`.
 
-**Rejected methods:** `freedman_lane`, `freedman_lane_joint` raise
-`ValueError` because ordinal residuals are not well‑defined.
+**Rejected methods:** `ter_braak`, `freedman_lane`, `freedman_lane_joint`
+raise `ValueError` because ordinal residuals are not well‑defined.
 
 #### `score`
 
@@ -241,6 +271,21 @@ Returns the thresholds‑only (no predictors) deviance, computed
 analytically from empirical category proportions:
 `−2 ∑ n_k log(n_k / n)`.
 
+#### `score_project`
+
+```python
+OrdinalFamily.score_project(
+    X, feature_idx, residuals, perm_indices, *,
+    fit_intercept=True, y=None, randomization="permute",
+) -> np.ndarray
+```
+
+Exact score‑test projection for `method="score"`.  Uses the R‑matrix
+approach: `R[i, k] = [f(α_{k-1}−η_i) − f(α_k−η_i)] / P(Y=k|η_i)`,
+where f = σ(1−σ) is the logistic density.  Fisher information weights
+`W[i] = Σ_k R[i,k]² P(Y=k|η_i)` are exact; no approximation.
+Thresholds serve as implicit intercepts — X is **not** augmented.
+
 ### `MultinomialFamily`
 
 Multinomial logistic regression (softmax link) for unordered categorical
@@ -250,16 +295,17 @@ outcomes with ≥ 3 classes (integer‑coded 0, 1, …, K−1).
 - `direct_permutation = True` — permutes class labels directly.
 - `metric_label = "χ²"`.
 - `fit` uses `statsmodels.discrete.discrete_model.MNLogit`.
-- `coefs` returns a scalar LRT chi‑squared per predictor (shape `(p,)`)
+- `coefs` returns a scalar Wald χ² per predictor (shape `(p,)`)
   — the standard reduction for testing whether a predictor affects a
   multi‑class outcome.
 - `residuals`, `reconstruct_y`, `fit_metric` raise `NotImplementedError`.
 - `batch_fit` uses a joblib‑parallelised MNLogit loop.
 
-**Supported methods:** `ter_braak`, `kennedy`, `kennedy_joint`.
+**Supported methods:** `manly`, `manly_joint`, `kennedy`, `kennedy_joint`,
+`score`, `score_joint`.
 
-**Rejected methods:** `freedman_lane`, `freedman_lane_joint` raise
-`ValueError` because multinomial residuals are not well‑defined.
+**Rejected methods:** `ter_braak`, `freedman_lane`, `freedman_lane_joint`
+raise `ValueError` because multinomial residuals are not well‑defined.
 
 #### `category_coefs` (convenience)
 
@@ -286,6 +332,24 @@ MultinomialFamily.null_score(y: np.ndarray, fit_intercept: bool = True) -> float
 ```
 
 Returns the intercept‑only deviance from a fitted `MNLogit` null model.
+
+#### `score_project`
+
+```python
+MultinomialFamily.score_project(
+    X, feature_idx, residuals, perm_indices, *,
+    fit_intercept=True, y=None, randomization="permute",
+) -> np.ndarray
+```
+
+Exact score‑test projection for `method="score"`.  Uses the score
+chi‑square statistic: `S_j(b) = U_j(b)' I_jj⁻¹ U_j(b)`, where
+`U_j(b)[k] = Σ_i x_ij × (1{y_perm[b,i]=k} − P(Y=k|x_i))` is the
+score vector for non‑reference category k, and `I_jj` is the exact
+Fisher information submatrix (computed once from the null fit, fixed
+across permutations).  Statistic is chi‑square with K−1 degrees of
+freedom; comparison against the observed statistic is equivalent to a
+Wald χ² test asymptotically.
 
 ### `LinearMixedFamily`
 
@@ -329,8 +393,12 @@ approximation.
 
 **Supported methods:** `score`, `score_exact`.
 
-**Rejected methods:** `ter_braak`, `freedman_lane`, `kennedy` raise
-`ValueError` — GLMM families require score‑based permutation.
+**Rejected methods:** `ter_braak`, `kennedy`, `kennedy_joint`,
+`freedman_lane`, `freedman_lane_joint`, `manly`, `manly_joint`,
+`score_joint` raise `ValueError` — GLMM families require score‑based
+permutation.  Re‑estimating variance components per permutation is
+computationally prohibitive and statistically incorrect (the null
+hypothesis holds the random‑effects structure fixed).
 
 Requires `groups=` keyword.
 
@@ -352,8 +420,10 @@ Laplace approximation.
 
 **Supported methods:** `score`, `score_exact`.
 
-**Rejected methods:** `ter_braak`, `freedman_lane`, `kennedy` raise
-`ValueError`.
+**Rejected methods:** `ter_braak`, `kennedy`, `kennedy_joint`,
+`freedman_lane`, `freedman_lane_joint`, `manly`, `manly_joint`,
+`score_joint` raise `ValueError` — same rationale as
+`LogisticMixedFamily`.
 
 Requires `groups=` keyword.
 
@@ -380,8 +450,8 @@ triggering fresh resolution or construction.
 | `"logistic"` | `LogisticFamily()`. |
 | `"poisson"` | `PoissonFamily()`. |
 | `"negative_binomial"` | `NegativeBinomialFamily()` (uncalibrated; α estimated during calibration). |
-| `"ordinal"` | `OrdinalFamily()`. Requires ≥ 3 categories; supports ter Braak, Kennedy only. |
-| `"multinomial"` | `MultinomialFamily()`. Requires ≥ 3 unordered categories; supports ter Braak, Kennedy only. |
+| `"ordinal"` | `OrdinalFamily()`. Requires ≥ 3 categories; supports Kennedy, Manly, and score methods. |
+| `"multinomial"` | `MultinomialFamily()`. Requires ≥ 3 unordered categories; supports Kennedy, Manly, and score methods. |
 | `"linear_mixed"` | `LinearMixedFamily()`. Requires `groups=`. |
 | `"logistic_mixed"` | `LogisticMixedFamily()`. Requires `groups=`; supports score methods only. |
 | `"poisson_mixed"` | `PoissonMixedFamily()`. Requires `groups=`; supports score methods only. |
@@ -408,7 +478,7 @@ The class must satisfy the `ModelFamily` protocol.
 ```python
 generate_unique_permutations(
     n_samples: int,
-    n_permutations: int,
+    n_randomizations: int,
     random_state: int | None = None,
     exclude_identity: bool = True,
     max_exhaustive: int = 10,
@@ -426,15 +496,73 @@ deduplication when the birthday‑paradox collision bound warrants it.
 | Parameter | Description |
 |---|---|
 | `n_samples` | Length of the array to permute. |
-| `n_permutations` | Number of unique permutations requested. |
+| `n_randomizations` | Number of unique permutations requested. |
 | `random_state` | Seed for reproducibility. |
 | `exclude_identity` | Exclude `[0, 1, …, n−1]` so the observed data is never counted as a null sample. |
 | `max_exhaustive` | Threshold below which exhaustive enumeration is used. |
 
-**Returns:** `np.ndarray` of shape `(n_permutations, n_samples)`.
+**Returns:** `np.ndarray` of shape `(n_randomizations, n_samples)`.
 
-**Raises:** `ValueError` if `n_permutations` exceeds the number of
+**Raises:** `ValueError` if `n_randomizations` exceeds the number of
 available unique permutations.
+
+---
+
+## Sign Flips
+
+### `generate_sign_flips`
+
+```python
+generate_sign_flips(
+    n_samples: int,
+    n_flips: int = 5_000,
+    random_state: int | None = None,
+    exclude_identity: bool = True,
+    max_exhaustive: int = 20,
+) -> np.ndarray
+```
+
+Pre‑generate a matrix of unique sign‑flip vectors.
+
+Parallel to `generate_unique_permutations` but generates ±1 Rademacher
+vectors instead of index permutations.  For small `n_samples`
+(≤ `max_exhaustive`), all 2ⁿ vectors are enumerated via binary
+decomposition; for larger inputs, random sampling with hash‑based
+deduplication is used.
+
+| Parameter | Description |
+|---|---|
+| `n_samples` | Length of each sign‑flip vector. |
+| `n_flips` | Number of unique sign‑flip vectors requested. |
+| `random_state` | Seed for reproducibility. |
+| `exclude_identity` | Exclude the all‑+1 vector so the observed data is never reproduced. |
+| `max_exhaustive` | Threshold below which exhaustive enumeration is used. |
+
+**Returns:** `np.ndarray` of shape `(n_flips, n_samples)` with entries
+in {−1, +1}.
+
+---
+
+### `validate_symmetry`
+
+```python
+validate_symmetry(
+    residuals: np.ndarray,
+    alpha: float = 0.05,
+) -> dict[str, object]
+```
+
+Check whether residuals are approximately symmetric about zero via
+the Wilcoxon signed‑rank test.  This is a **diagnostic**, not a hard
+gate — the user decides whether to trust the sign‑flip assumption.
+
+| Parameter | Description |
+|---|---|
+| `residuals` | Residual vector of shape `(n,)`. |
+| `alpha` | Significance level for the symmetry verdict. |
+
+**Returns:** Dict with keys `"is_symmetric"` (bool), `"test_statistic"`
+(float), `"p_value"` (float).
 
 ---
 
@@ -464,7 +592,7 @@ ensure p‑values are never exactly zero.
 |---|---|
 | `X` | Feature matrix, shape `(n_samples, n_features)`. Accepts pandas or Polars DataFrames. |
 | `y` | Target values. |
-| `permuted_coefs` | Coefficients from each permutation, shape `(n_permutations, n_features)`. |
+| `permuted_coefs` | Coefficients from each permutation, shape `(n_randomizations, n_features)`. |
 | `model_coefs` | Observed (unpermuted) coefficients, shape `(n_features,)`. |
 | `precision` | Decimal places for rounding. |
 | `p_value_threshold_one` | First significance threshold. |
@@ -690,7 +818,7 @@ the result object.
 
 | Parameter | Description |
 |---|---|
-| `results` | `IndividualTestResult` from `permutation_test_regression`. |
+| `results` | `IndividualTestResult` from `randomization_test_regression`. |
 | `title` | Title for the output table. |
 
 ---
@@ -712,7 +840,7 @@ Target name and model family are read directly from the result object.
 
 | Parameter | Description |
 |---|---|
-| `results` | `JointTestResult` from `permutation_test_regression` (joint methods). |
+| `results` | `JointTestResult` from `randomization_test_regression` (joint methods). |
 | `title` | Title for the output table. |
 
 ---
@@ -744,7 +872,7 @@ directly from the result object.  The table has four sections:
 
 | Parameter | Description |
 |---|---|
-| `results` | `IndividualTestResult` from `permutation_test_regression`. Must contain `extended_diagnostics`. |
+| `results` | `IndividualTestResult` from `randomization_test_regression`. Must contain `extended_diagnostics`. |
 | `title` | Title for the output table. |
 
 ---

@@ -312,7 +312,7 @@ def _bench_global(n: int, B: int, seed: int) -> tuple[float, int]:
     t0 = time.perf_counter()
     generate_unique_permutations(
         n_samples=n,
-        n_permutations=B,
+        n_randomizations=B,
         random_state=seed,
         exclude_identity=True,
     )
@@ -333,7 +333,7 @@ def _bench_within(
     t0 = time.perf_counter()
     generate_within_cell_permutations(
         n_samples=len(cells),
-        n_permutations=B,
+        n_randomizations=B,
         cells=cells,
         random_state=seed,
         exclude_identity=True,
@@ -355,7 +355,7 @@ def _bench_between(
     t0 = time.perf_counter()
     generate_between_cell_permutations(
         n_samples=len(cells),
-        n_permutations=B,
+        n_randomizations=B,
         cells=cells,
         random_state=seed,
         exclude_identity=True,
@@ -377,7 +377,7 @@ def _bench_two_stage(
     t0 = time.perf_counter()
     generate_two_stage_permutations(
         n_samples=len(cells),
-        n_permutations=B,
+        n_randomizations=B,
         cells=cells,
         random_state=seed,
         exclude_identity=True,
@@ -616,7 +616,7 @@ def _make_heatmap(df: pd.DataFrame, image_dir: Path) -> None:
     ax.set_xticklabels([f"{b:,}" for b in pivot.columns])
     ax.set_yticks(range(len(pivot.index)))
     ax.set_yticklabels(pivot.index)
-    ax.set_xlabel("B (n_permutations)")
+    ax.set_xlabel("B (n_randomizations)")
     ax.set_ylabel("n (n_samples)")
     ax.set_title("Global Generator — Time (seconds, log scale)")
 
@@ -655,7 +655,7 @@ def _make_time_vs_B(df: pd.DataFrame, image_dir: Path) -> None:
         marker = "o" if n <= 10 else ("s" if n <= 20 else "^")
         ax.plot(subset["B"], subset["median_time_s"], marker=marker, label=f"n={n}")
 
-    ax.set_xlabel("B (n_permutations)")
+    ax.set_xlabel("B (n_randomizations)")
     ax.set_ylabel("Median time (s)")
     ax.set_title("Time vs. B by Sample Size")
     ax.set_xscale("log")

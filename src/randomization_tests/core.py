@@ -39,9 +39,11 @@ from .diagnostics import (
     compute_wald_ci,
 )
 from .engine import PermutationEngine
+from .exchangeability import ExchangeabilityTree
 from .families import ModelFamily
 from .permutations import _between_cell_total
 from .pvalues import calculate_p_values
+from .sign_flips import generate_sign_flips
 
 # Valid permutation strategy strings.
 _VALID_STRATEGIES = {"within", "between", "two-stage"}
@@ -51,10 +53,10 @@ _VALID_STRATEGIES = {"within", "between", "two-stage"}
 # ------------------------------------------------------------------ #
 
 
-def permutation_test_regression(
+def randomization_test_regression(
     X: DataFrameLike,
     y: DataFrameLike,
-    n_permutations: int = 5_000,
+    n_randomizations: int = 5_000,
     precision: int = 3,
     p_value_threshold_one: float = 0.05,
     p_value_threshold_two: float = 0.01,
@@ -66,13 +68,23 @@ def permutation_test_regression(
     family: str | ModelFamily = "auto",
     n_jobs: int = 1,
     backend: str | None = None,
-    groups: np.ndarray | list[int] | pd.Series | pd.DataFrame | None = None,
-    permutation_strategy: str | None = None,
+    groups: (
+        np.ndarray
+        | list[int]
+        | list[np.ndarray]
+        | pd.Series
+        | pd.DataFrame
+        | ExchangeabilityTree
+        | None
+    ) = None,
+    permutation_strategy: str | list[str] | None = None,
     permutation_constraints: Callable[[np.ndarray], np.ndarray] | None = None,
     random_slopes: list[int] | dict[str, list[int]] | None = None,
     confidence_level: float = 0.95,
     panel_id: np.ndarray | list[int] | pd.Series | str | None = None,
     time_id: np.ndarray | list[int] | pd.Series | str | None = None,
+    ar_order: int | None = None,
+    randomization: str = "permute",
 ) -> IndividualTestResult | JointTestResult:
     """Run a permutation test for regression coefficients.
 
@@ -88,14 +100,15 @@ def permutation_test_regression(
             ``family="auto"``, binary targets (values in ``{0, 1}``)
             trigger logistic regression; otherwise linear regression
             is used.  Accepts pandas or Polars DataFrames.
-        n_permutations: Number of unique permutations.
+        n_randomizations: Number of unique randomizations.
         precision: Decimal places for reported p-values.
         p_value_threshold_one: First significance level.
         p_value_threshold_two: Second significance level.
         p_value_threshold_three: Third significance level.
         method: One of ``'ter_braak'``, ``'kennedy'``,
             ``'kennedy_joint'``, ``'freedman_lane'``,
-            ``'freedman_lane_joint'``, ``'score'``,
+            ``'freedman_lane_joint'``, ``'manly'``,
+            ``'manly_joint'``, ``'score'``,
             ``'score_joint'``, or ``'score_exact'``.
         confounders: Column names of confounders (required for Kennedy
             and Freedman–Lane methods).
@@ -135,9 +148,12 @@ def permutation_test_regression(
         groups: Exchangeability group labels.  When provided,
             permutations are constrained to respect group structure
             rather than shuffling globally.  Accepts a 1-D array-like
-            of integer labels ``(n_samples,)`` or a ``DataFrame``
+            of integer labels ``(n_samples,)``, a ``DataFrame``
             with one or more blocking columns (multi-column DataFrames
-            are cross-classified into integer cell labels).
+            are cross-classified into integer cell labels), a
+            ``list[np.ndarray]`` of per-level label arrays for nested
+            exchangeability (outermost first), or a pre-built
+            :class:`ExchangeabilityTree`.
         permutation_strategy: Which cell-level permutation strategy
             to use.  ``"within"`` shuffles only within cells,
             ``"between"`` permutes entire cells as units, and
@@ -174,6 +190,16 @@ def permutation_test_regression(
             panels are unbalanced (different numbers of time
             periods).  Accepts a 1-D array-like of labels or a
             column name (string) referencing a column in *X*.
+        ar_order: Order of the autoregressive residual model for
+            longitudinal data.  Requires ``panel_id`` to be set.
+        randomization: Type of randomization to apply.
+            ``"permute"`` (default) permutes residuals or responses.
+            ``"sign_flip"`` multiplies residuals by Rademacher ±1
+            vectors, which tests the same null hypothesis but relies
+            on the **symmetry** assumption rather than
+            **exchangeability**.  Sign-flipping is not supported for
+            families that use direct Y permutation (ordinal,
+            multinomial) or for Manly / score-exact methods.
 
     Returns:
         Typed result object containing coefficients, p-values,
@@ -202,18 +228,61 @@ def permutation_test_regression(
         confounders = []
 
     # ---- Input validation ----------------------------------------
-    _validate_inputs(X, y, confounders, n_permutations)
+    _validate_inputs(X, y, confounders, n_randomizations)
 
     y_values = np.ravel(y)
 
     # ---- Panel convenience layer ---------------------------------
-    groups, permutation_strategy = _validate_panel(
-        X, panel_id, time_id, groups, permutation_strategy
+    groups, permutation_strategy, panel_arr, time_arr = _validate_panel(
+        X,
+        panel_id,
+        time_id,
+        groups,
+        permutation_strategy,  # type: ignore[arg-type]
     )
+
+    # ---- AR validation -------------------------------------------
+    if ar_order is not None:
+        if not isinstance(ar_order, int) or ar_order <= 0:
+            raise ValueError("ar_order must be a positive integer.")
+        if panel_id is None:
+            raise ValueError("ar_order= requires panel_id= to identify panels.")
+        if time_id is None:
+            raise ValueError("ar_order= requires time_id= for temporal ordering.")
+        family_name = family if isinstance(family, str) else family.name
+        if family_name in ("ordinal", "multinomial"):
+            raise ValueError(
+                f"ar_order= is not supported for family={family_name!r}. "
+                "Categorical responses cannot have meaningful AR "
+                "residual structure."
+            )
+        _SCORE_METHODS = {"score", "score_joint", "score_exact"}
+        if method not in _SCORE_METHODS:
+            raise ValueError(
+                f"ar_order= requires method='score' (or 'score_joint', "
+                f"'score_exact'). Got method={method!r}."
+            )
+
+    # ---- Panel-only score guard ----------------------------------
+    # When panel_id is provided without ar_order, the within-panel
+    # residuals are NOT exchangeable (serial correlation is
+    # unmodeled).  Within-panel permutation is invalid: between-
+    # panel features (constant within a day) cannot be broken by
+    # within-panel shuffles, producing spuriously small p-values.
+    # Reset the permutation strategy to global so the null
+    # distribution is valid.  Keep the panel_arr available so
+    # ctx.groups can still be populated for cluster-robust
+    # asymptotic comparisons.
+    _SCORE_METHODS_SET = {"score", "score_joint", "score_exact"}
+    _panel_groups_for_cluster: np.ndarray | None = None
+    if panel_id is not None and ar_order is None and method in _SCORE_METHODS_SET:
+        _panel_groups_for_cluster = np.asarray(groups) if groups is not None else None
+        groups = None
+        permutation_strategy = None
 
     # ---- Groups validation ---------------------------------------
     cells, resolved_strategy = _validate_groups(
-        X, groups, permutation_strategy, n_permutations
+        X, groups, permutation_strategy, n_randomizations
     )
 
     # ---- Callback validation -------------------------------------
@@ -224,7 +293,8 @@ def permutation_test_regression(
     ctx = FitContext()
     ctx.target_name = str(y.columns[0])
     ctx.method = method
-    ctx.n_permutations = n_permutations
+    ctx.randomization = randomization
+    ctx.n_randomizations = n_randomizations
     ctx.confounders = confounders or []
     ctx.confidence_level = confidence_level
 
@@ -237,13 +307,44 @@ def permutation_test_regression(
         else:
             ctx.panel_id = np.asarray(panel_id)
 
+    # Store resolved groups for cluster-robust asymptotic p-values.
+    # `cells` holds the validated groups array, ExchangeabilityTree,
+    # or None (from explicit groups= or panel_id= via _validate_panel).
+    # When the score guard fires, cells is None but we still need
+    # cluster-robust asymptotic SEs.
+    if cells is not None:
+        ctx.groups = (
+            cells.to_flat_cells()
+            if isinstance(cells, ExchangeabilityTree)
+            else np.asarray(cells)
+        )
+    elif _panel_groups_for_cluster is not None:
+        ctx.groups = np.asarray(_to_integer_labels(_panel_groups_for_cluster))
+
+    # ---- AR panel arrays -----------------------------------------
+    # Build panel_indices / panel_lengths for AR estimation when
+    # ar_order is requested.  These describe contiguous panel slices
+    # in the already-sorted data.
+    ar_kwargs: dict[str, Any] = {}
+    if ar_order is not None and panel_arr is not None:
+        panel_int = _to_integer_labels(panel_arr)
+        unique_panels, panel_counts = np.unique(panel_int, return_counts=True)
+        # panel_indices: start index of each panel (cumsum trick)
+        panel_starts = np.zeros(len(unique_panels), dtype=np.intp)
+        panel_starts[1:] = np.cumsum(panel_counts[:-1])
+        ar_kwargs["ar_order"] = ar_order
+        ar_kwargs["panel_indices"] = panel_starts
+        ar_kwargs["panel_lengths"] = panel_counts
+
+        ctx.ar_order = ar_order
+
     # ---- Engine (family + backend + observed model + perm indices) -
     engine = PermutationEngine(
         X,
         y_values,
         family=family,
         fit_intercept=fit_intercept,
-        n_permutations=n_permutations,
+        n_randomizations=n_randomizations,
         random_state=random_state,
         n_jobs=n_jobs,
         method=method,
@@ -253,7 +354,13 @@ def permutation_test_regression(
         permutation_constraints=permutation_constraints,
         random_slopes=random_slopes,
         ctx=ctx,
+        ar_kwargs=ar_kwargs,
     )
+
+    # Populate AR diagnostics on context after calibration.
+    if ar_order is not None and hasattr(engine.family, "ar_coefs"):
+        ctx.ar_coefficients = engine.family.ar_coefs
+        ctx.ar_corrected = engine.family.ar_coefs is not None
 
     # ---- Strategy resolution -------------------------------------
     # Validate method string and special-case guards.
@@ -291,16 +398,62 @@ def permutation_test_regression(
 
     strategy = resolve_strategy(method)
 
+    # ---- Sign-flip guards ----------------------------------------
+    if randomization == "sign_flip":
+        if method in ("manly", "manly_joint"):
+            raise ValueError(
+                f"Sign-flip is incompatible with method={method!r}.  "
+                f"Manly uses direct Y randomization — there are no "
+                f"residuals to sign-flip."
+            )
+        if method == "score_exact":
+            raise ValueError(
+                "Sign-flip is incompatible with method='score_exact'.  "
+                "PQL-fixed permutation permutes Y directly."
+            )
+        if engine.family.direct_permutation:
+            raise ValueError(
+                f"Sign-flip test requires well-defined residuals but "
+                f"family='{engine.family.name}' uses direct Y permutation.  "
+                f"Sign-flipping is not meaningful for ordinal or "
+                f"multinomial responses."
+            )
+    elif randomization != "permute":
+        raise ValueError(
+            f"randomization must be 'permute' or 'sign_flip', got {randomization!r}."
+        )
+
+    # ---- Randomization matrix ------------------------------------
+    if randomization == "sign_flip":
+        randomization_matrix = generate_sign_flips(
+            n_samples=len(y_values),
+            n_flips=n_randomizations,
+            random_state=random_state,
+            exclude_identity=True,
+            cells=(
+                cells.to_flat_cells()
+                if isinstance(cells, ExchangeabilityTree)
+                else cells
+            ),
+            strategy=resolved_strategy,
+            tree=cells if isinstance(cells, ExchangeabilityTree) else None,
+        )
+        actual_n = randomization_matrix.shape[0]
+    else:
+        randomization_matrix = engine.perm_indices
+        actual_n = randomization_matrix.shape[0]
+
     # ---- Execute strategy ----------------------------------------
     result = strategy.execute(
         X,
         y_values,
         engine.family,
-        engine.perm_indices,
+        randomization_matrix,
         confounders=confounders,
         model_coefs=engine.model_coefs,
         fit_intercept=fit_intercept,
         n_jobs=engine._n_jobs,
+        randomization=randomization,
     )
 
     # ---- Package results -----------------------------------------
@@ -316,7 +469,7 @@ def permutation_test_regression(
             p_value_threshold_one=p_value_threshold_one,
             p_value_threshold_two=p_value_threshold_two,
             p_value_threshold_three=p_value_threshold_three,
-            n_permutations=n_permutations,
+            n_randomizations=actual_n,
         )
 
     return _package_individual_result(
@@ -331,7 +484,7 @@ def permutation_test_regression(
         p_value_threshold_one=p_value_threshold_one,
         p_value_threshold_two=p_value_threshold_two,
         p_value_threshold_three=p_value_threshold_three,
-        n_permutations=n_permutations,
+        n_randomizations=actual_n,
         fit_intercept=fit_intercept,
         confidence_level=confidence_level,
     )
@@ -346,7 +499,7 @@ def _validate_inputs(
     X: pd.DataFrame,
     y: pd.DataFrame,
     confounders: list[str],
-    n_permutations: int,
+    n_randomizations: int,
 ) -> None:
     """Raise ``ValueError`` for invalid inputs."""
     if X.shape[0] == 0:
@@ -393,8 +546,8 @@ def _validate_inputs(
             "Remove constant columns before testing."
         )
 
-    if n_permutations < 1:
-        raise ValueError(f"n_permutations must be >= 1, got {n_permutations}.")
+    if n_randomizations < 1:
+        raise ValueError(f"n_randomizations must be >= 1, got {n_randomizations}.")
 
     if confounders:
         missing = [c for c in confounders if c not in X.columns]
@@ -416,6 +569,8 @@ def _validate_panel(
 ) -> tuple[
     np.ndarray | list[int] | pd.Series | pd.DataFrame | None,
     str | None,
+    np.ndarray | None,
+    np.ndarray | None,
 ]:
     """Resolve ``panel_id`` / ``time_id`` into ``groups`` / strategy.
 
@@ -436,8 +591,10 @@ def _validate_panel(
             for conflicts with ``panel_id``).
 
     Returns:
-        ``(resolved_groups, resolved_strategy)`` ready to pass into
-        ``_validate_groups()``.
+        ``(resolved_groups, resolved_strategy, panel_arr, time_arr)``
+        ready to pass into ``_validate_groups()``.  ``panel_arr`` and
+        ``time_arr`` are ``None`` when ``panel_id`` / ``time_id`` are
+        not provided.
 
     Raises:
         ValueError: If ``panel_id`` conflicts with explicit
@@ -448,7 +605,7 @@ def _validate_panel(
     if panel_id is None:
         if time_id is not None:
             raise ValueError("time_id= requires panel_id= to be specified.")
-        return groups, permutation_strategy
+        return groups, permutation_strategy, None, None
 
     # ---- Conflict detection --------------------------------------
     if groups is not None:
@@ -526,7 +683,10 @@ def _validate_panel(
             )
 
     # Map panel_id → groups with within-panel strategy.
-    return panel_arr, "within"
+    time_arr_out: np.ndarray | None = None
+    if time_id is not None:
+        time_arr_out = time_arr  # noqa: F841 — resolved above
+    return panel_arr, "within", panel_arr, time_arr_out
 
 
 # ------------------------------------------------------------------ #
@@ -536,28 +696,48 @@ def _validate_panel(
 
 def _validate_groups(
     X: pd.DataFrame,
-    groups: np.ndarray | list[int] | pd.Series | pd.DataFrame | None,
-    permutation_strategy: str | None,
-    n_permutations: int,
-) -> tuple[np.ndarray | None, str | None]:
+    groups: (
+        np.ndarray
+        | list[int]
+        | list[np.ndarray]
+        | pd.Series
+        | pd.DataFrame
+        | ExchangeabilityTree
+        | None
+    ),
+    permutation_strategy: str | list[str] | None,
+    n_randomizations: int,
+) -> tuple[np.ndarray | ExchangeabilityTree | None, str | None]:
     """Validate and resolve ``groups`` / ``permutation_strategy``.
 
     Converts heterogeneous group inputs into an integer cell-label
-    array and resolves the strategy string (defaulting to ``"within"``
-    when groups are provided without an explicit strategy).
+    array (flat case) or an :class:`ExchangeabilityTree` (nested
+    case) and resolves the strategy string.
+
+    Accepted *groups* types:
+
+    * ``None`` — no constraints.
+    * 1-D array-like / ``pd.Series`` — single blocking factor.
+    * ``pd.DataFrame`` — one column = single factor; multi-column =
+      cross-classified integer cells.
+    * ``list[np.ndarray]`` — per-level label arrays for nested
+      exchangeability (outermost first).  Builds an
+      :class:`ExchangeabilityTree` via ``from_labels()``.
+    * :class:`ExchangeabilityTree` — passed through directly.
 
     Args:
         X: Feature matrix — used only for its row count.
-        groups: Raw user-supplied group labels (array-like, DataFrame,
-            or ``None``).
+        groups: Raw user-supplied group labels.
         permutation_strategy: ``"within"``, ``"between"``,
-            ``"two-stage"``, or ``None``.
-        n_permutations: Requested number of permutations (used for
+            ``"two-stage"``, ``None``, or a ``list[str]`` of
+            per-level strategies (only with nested groups).
+        n_randomizations: Requested number of randomizations (used for
             minimum-group-count checks).
 
     Returns:
         Tuple ``(cells, resolved_strategy)`` where *cells* is an
-        integer array of shape ``(n,)`` or ``None``, and
+        integer array of shape ``(n,)``, an
+        :class:`ExchangeabilityTree`, or ``None``; and
         *resolved_strategy* is a string or ``None``.
 
     Raises:
@@ -579,8 +759,45 @@ def _validate_groups(
     if groups is None:
         return None, None
 
+    # ---- ExchangeabilityTree: pass through -----------------------
+    if isinstance(groups, ExchangeabilityTree):
+        groups.validate()
+        if groups.n_samples != n:
+            raise ValueError(
+                f"ExchangeabilityTree has {groups.n_samples} observations "
+                f"but X has {n} rows."
+            )
+        return groups, None  # tree encodes its own strategies
+
+    # ---- list[np.ndarray]: nested labels → build tree ------------
+    if (
+        isinstance(groups, list)
+        and len(groups) > 0
+        and isinstance(groups[0], np.ndarray)
+    ):
+        strategies_arg: list[str] | None = None
+        if isinstance(permutation_strategy, list):
+            strategies_arg = permutation_strategy
+        tree = ExchangeabilityTree.from_labels(
+            groups,  # type: ignore[arg-type]
+            strategies=strategies_arg,
+        )
+        if tree.n_samples != n:
+            raise ValueError(
+                f"Nested label arrays cover {tree.n_samples} "
+                f"observations but X has {n} rows."
+            )
+        return tree, None  # tree encodes its own strategies
+
     # ---- Strategy string validation ------------------------------
     if permutation_strategy is not None:
+        if isinstance(permutation_strategy, list):
+            raise ValueError(
+                "permutation_strategy as a list is only supported "
+                "with nested groups (list[np.ndarray] or "
+                "ExchangeabilityTree).  For flat groups, pass a "
+                "single strategy string."
+            )
         if permutation_strategy not in _VALID_STRATEGIES:
             raise ValueError(
                 f"permutation_strategy must be one of "
@@ -811,7 +1028,7 @@ def _package_joint_result(
     p_value_threshold_one: float,
     p_value_threshold_two: float,
     p_value_threshold_three: float,
-    n_permutations: int,
+    n_randomizations: int,
 ) -> JointTestResult:
     """Build a :class:`JointTestResult` from a joint strategy's output."""
     obs_improvement, perm_improvements, metric_type, features_tested = raw
@@ -821,7 +1038,7 @@ def _package_joint_result(
     # and denominator guarantees p ∈ (0, 1] and accounts for the
     # observed statistic as one of the possible permutations.
     p_value = float(
-        (np.sum(perm_improvements >= obs_improvement) + 1) / (n_permutations + 1)
+        (np.sum(perm_improvements >= obs_improvement) + 1) / (n_randomizations + 1)
     )
     rounded = np.round(p_value, precision)  # round to display precision
     val = f"{rounded:.{precision}f}"  # fixed-width string representation
@@ -849,8 +1066,8 @@ def _package_joint_result(
         confounders=confounders or [],
         feature_names=list(X.columns),
         target_name=str(y.columns[0]),
-        n_permutations=n_permutations,
-        groups=engine.groups,
+        n_randomizations=n_randomizations,
+        groups=engine.groups,  # type: ignore[arg-type]
         permutation_strategy=engine.permutation_strategy,
         p_value_threshold_one=p_value_threshold_one,
         p_value_threshold_two=p_value_threshold_two,
@@ -875,7 +1092,7 @@ def _package_individual_result(
     p_value_threshold_one: float,
     p_value_threshold_two: float,
     p_value_threshold_three: float,
-    n_permutations: int,
+    n_randomizations: int,
     fit_intercept: bool,
     confidence_level: float = 0.95,
 ) -> IndividualTestResult:
@@ -892,11 +1109,12 @@ def _package_individual_result(
             p_value_threshold_three,
             fit_intercept=fit_intercept,
             family=engine.family,
+            groups=engine.ctx.groups,
         )
     )
 
-    # Mask confounder p-values for Kennedy / Freedman–Lane / score individual.
-    if method in ("kennedy", "freedman_lane", "score") and confounders:
+    # Mask confounder p-values for Kennedy / Freedman–Lane / score / sign-flip.
+    if method in ("kennedy", "freedman_lane", "score", "sign_flip") and confounders:
         for i, col in enumerate(X.columns):
             if col in confounders:
                 permuted_p_values[i] = "(confounder)"
@@ -911,12 +1129,13 @@ def _package_individual_result(
         family=engine.family,
         raw_empirical_p=raw_empirical_p,
         raw_classic_p=raw_classic_p,
-        n_permutations=n_permutations,
+        n_randomizations=n_randomizations,
         p_value_threshold=p_value_threshold_one,
         method=method,
         confounders=confounders,
         fit_intercept=fit_intercept,
         panel_id=engine.ctx.panel_id,
+        ctx=engine.ctx,
     )
 
     # Populate context with remaining pipeline artifacts.
@@ -948,7 +1167,7 @@ def _package_individual_result(
         feature_names_list,
     )
 
-    pval_ci = compute_pvalue_ci(counts, n_permutations, alpha)
+    pval_ci = compute_pvalue_ci(counts, n_randomizations, alpha)
 
     # Mask pval_ci for confounders — their counts are pipeline
     # artefacts, not tested hypotheses.
@@ -1007,8 +1226,8 @@ def _package_individual_result(
         backend=engine.backend_name,
         feature_names=feature_names_list,
         target_name=str(y.columns[0]),
-        n_permutations=n_permutations,
-        groups=engine.groups,
+        n_randomizations=n_randomizations,
+        groups=engine.groups,  # type: ignore[arg-type]
         permutation_strategy=engine.permutation_strategy,
         diagnostics=engine.diagnostics,
         extended_diagnostics=extended_diagnostics,

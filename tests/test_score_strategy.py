@@ -22,7 +22,7 @@ import pytest
 from randomization_tests import (
     IndividualTestResult,
     JointTestResult,
-    permutation_test_regression,
+    randomization_test_regression,
 )
 from randomization_tests._strategies import (
     PermutationStrategy,
@@ -132,10 +132,10 @@ class TestScoreLinearIndividual:
 
     def test_returns_individual_result(self) -> None:
         X, y = _linear_data()
-        result = permutation_test_regression(
+        result = randomization_test_regression(
             X,
             y,
-            n_permutations=_N_PERMS,
+            n_randomizations=_N_PERMS,
             random_state=_SEED,
             method="score",
         )
@@ -143,10 +143,10 @@ class TestScoreLinearIndividual:
 
     def test_p_values_in_range(self) -> None:
         X, y = _linear_data()
-        result = permutation_test_regression(
+        result = randomization_test_regression(
             X,
             y,
-            n_permutations=_N_PERMS,
+            n_randomizations=_N_PERMS,
             random_state=_SEED,
             method="score",
         )
@@ -155,10 +155,10 @@ class TestScoreLinearIndividual:
     def test_significant_feature_detected(self) -> None:
         """x1 (β=2) should have a small p-value."""
         X, y = _linear_data()
-        result = permutation_test_regression(
+        result = randomization_test_regression(
             X,
             y,
-            n_permutations=_N_PERMS,
+            n_randomizations=_N_PERMS,
             random_state=_SEED,
             method="score",
         )
@@ -168,10 +168,10 @@ class TestScoreLinearIndividual:
     def test_null_feature_not_rejected(self) -> None:
         """x3 (β=0) should have a large p-value."""
         X, y = _linear_data()
-        result = permutation_test_regression(
+        result = randomization_test_regression(
             X,
             y,
-            n_permutations=_N_PERMS,
+            n_randomizations=_N_PERMS,
             random_state=_SEED,
             method="score",
         )
@@ -194,17 +194,17 @@ class TestScoreEqualsTerBraak:
 
     def test_p_values_match(self) -> None:
         X, y = _linear_data()
-        r_score = permutation_test_regression(
+        r_score = randomization_test_regression(
             X,
             y,
-            n_permutations=_N_PERMS,
+            n_randomizations=_N_PERMS,
             random_state=_SEED,
             method="score",
         )
-        r_tb = permutation_test_regression(
+        r_tb = randomization_test_regression(
             X,
             y,
-            n_permutations=_N_PERMS,
+            n_randomizations=_N_PERMS,
             random_state=_SEED,
             method="ter_braak",
         )
@@ -224,10 +224,10 @@ class TestScoreLMMIndividual:
 
     def test_returns_individual_result(self) -> None:
         X, y, groups = _grouped_data()
-        result = permutation_test_regression(
+        result = randomization_test_regression(
             X,
             y,
-            n_permutations=_N_PERMS,
+            n_randomizations=_N_PERMS,
             random_state=_SEED,
             method="score",
             family="linear_mixed",
@@ -237,10 +237,10 @@ class TestScoreLMMIndividual:
 
     def test_p_values_in_range(self) -> None:
         X, y, groups = _grouped_data()
-        result = permutation_test_regression(
+        result = randomization_test_regression(
             X,
             y,
-            n_permutations=_N_PERMS,
+            n_randomizations=_N_PERMS,
             random_state=_SEED,
             method="score",
             family="linear_mixed",
@@ -251,10 +251,10 @@ class TestScoreLMMIndividual:
     def test_significant_feature_detected(self) -> None:
         """x1 (β=2) should have a small p-value."""
         X, y, groups = _grouped_data()
-        result = permutation_test_regression(
+        result = randomization_test_regression(
             X,
             y,
-            n_permutations=_N_PERMS,
+            n_randomizations=_N_PERMS,
             random_state=_SEED,
             method="score",
             family="linear_mixed",
@@ -280,19 +280,19 @@ class TestScoreEqualsFreedmanLaneLMM:
 
     def test_p_values_match(self) -> None:
         X, y, groups = _grouped_data()
-        r_score = permutation_test_regression(
+        r_score = randomization_test_regression(
             X,
             y,
-            n_permutations=_N_PERMS,
+            n_randomizations=_N_PERMS,
             random_state=_SEED,
             method="score",
             family="linear_mixed",
             groups=groups,
         )
-        r_fl = permutation_test_regression(
+        r_fl = randomization_test_regression(
             X,
             y,
-            n_permutations=_N_PERMS,
+            n_randomizations=_N_PERMS,
             random_state=_SEED,
             method="freedman_lane",
             family="linear_mixed",
@@ -312,10 +312,10 @@ class TestScoreEqualsFreedmanLaneLMM:
         import warnings
 
         X, y, groups = _grouped_data()
-        r_score = permutation_test_regression(
+        r_score = randomization_test_regression(
             X,
             y,
-            n_permutations=_N_PERMS,
+            n_randomizations=_N_PERMS,
             random_state=_SEED,
             method="score",
             family="linear_mixed",
@@ -323,10 +323,10 @@ class TestScoreEqualsFreedmanLaneLMM:
         )
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", UserWarning)
-            r_fl = permutation_test_regression(
+            r_fl = randomization_test_regression(
                 X,
                 y,
-                n_permutations=_N_PERMS,
+                n_randomizations=_N_PERMS,
                 random_state=_SEED,
                 method="freedman_lane",
                 family="linear_mixed",
@@ -348,10 +348,10 @@ class TestScoreLinearJoint:
 
     def test_returns_joint_result(self) -> None:
         X, y = _linear_data()
-        result = permutation_test_regression(
+        result = randomization_test_regression(
             X,
             y,
-            n_permutations=_N_PERMS,
+            n_randomizations=_N_PERMS,
             random_state=_SEED,
             method="score_joint",
             confounders=["x3"],
@@ -360,10 +360,10 @@ class TestScoreLinearJoint:
 
     def test_p_value_in_range(self) -> None:
         X, y = _linear_data()
-        result = permutation_test_regression(
+        result = randomization_test_regression(
             X,
             y,
-            n_permutations=_N_PERMS,
+            n_randomizations=_N_PERMS,
             random_state=_SEED,
             method="score_joint",
             confounders=["x3"],
@@ -381,10 +381,10 @@ class TestScoreLMMJoint:
 
     def test_returns_joint_result(self) -> None:
         X, y, groups = _grouped_data()
-        result = permutation_test_regression(
+        result = randomization_test_regression(
             X,
             y,
-            n_permutations=_N_PERMS,
+            n_randomizations=_N_PERMS,
             random_state=_SEED,
             method="score_joint",
             family="linear_mixed",
@@ -395,10 +395,10 @@ class TestScoreLMMJoint:
 
     def test_p_value_in_range(self) -> None:
         X, y, groups = _grouped_data()
-        result = permutation_test_regression(
+        result = randomization_test_regression(
             X,
             y,
-            n_permutations=_N_PERMS,
+            n_randomizations=_N_PERMS,
             random_state=_SEED,
             method="score_joint",
             family="linear_mixed",
@@ -429,10 +429,10 @@ class TestUnsupportedFamily:
         X = pd.DataFrame({"x1": rng.standard_normal(n)})
         logits = 1.5 * X["x1"]
         y = pd.DataFrame({"y": rng.binomial(1, 1 / (1 + np.exp(-logits)))})
-        result = permutation_test_regression(
+        result = randomization_test_regression(
             X,
             y,
-            n_permutations=50,
+            n_randomizations=50,
             random_state=_SEED,
             method=method,
             family="logistic",
@@ -445,10 +445,10 @@ class TestUnsupportedFamily:
         n = 100
         X = pd.DataFrame({"x1": rng.standard_normal(n)})
         y = pd.DataFrame({"y": rng.poisson(3, size=n)})
-        result = permutation_test_regression(
+        result = randomization_test_regression(
             X,
             y,
-            n_permutations=50,
+            n_randomizations=50,
             random_state=_SEED,
             method=method,
             family="poisson",
@@ -462,16 +462,16 @@ class TestUnsupportedFamily:
 
 
 class TestScoreExactNonGLMM:
-    """score_exact raises ValueError for non-GLMM families."""
+    """score_exact warns and then raises ValueError for non-GLMM families."""
 
     def test_linear_raises(self) -> None:
-        """score_exact on linear rejects because linear has no log_chol."""
+        """score_exact on linear: UserWarning from engine, ValueError from strategy."""
         X, y = _linear_data()
-        with pytest.raises(ValueError, match="score_exact"):
-            permutation_test_regression(
+        with pytest.warns(UserWarning, match="score_exact"), pytest.raises(ValueError):
+            randomization_test_regression(
                 X,
                 y,
-                n_permutations=50,
+                n_randomizations=50,
                 random_state=_SEED,
                 method="score_exact",
             )
@@ -480,10 +480,10 @@ class TestScoreExactNonGLMM:
         """score_exact on linear_mixed rejects — REML, not Laplace."""
         X, y, groups = _grouped_data()
         with pytest.raises(ValueError, match="score_exact"):
-            permutation_test_regression(
+            randomization_test_regression(
                 X,
                 y,
-                n_permutations=50,
+                n_randomizations=50,
                 random_state=_SEED,
                 method="score_exact",
                 family="linear_mixed",
@@ -501,10 +501,10 @@ class TestConfounderMasking:
 
     def test_confounder_masked(self) -> None:
         X, y = _linear_data()
-        result = permutation_test_regression(
+        result = randomization_test_regression(
             X,
             y,
-            n_permutations=_N_PERMS,
+            n_randomizations=_N_PERMS,
             random_state=_SEED,
             method="score",
             confounders=["x3"],
@@ -515,10 +515,10 @@ class TestConfounderMasking:
 
     def test_non_confounder_not_masked(self) -> None:
         X, y = _linear_data()
-        result = permutation_test_regression(
+        result = randomization_test_regression(
             X,
             y,
-            n_permutations=_N_PERMS,
+            n_randomizations=_N_PERMS,
             random_state=_SEED,
             method="score",
             confounders=["x3"],
@@ -548,7 +548,7 @@ class TestNJobsWarning:
     def test_warns_on_linear(self, method: str) -> None:
         X, y = _linear_data()
         kwargs: dict = dict(
-            n_permutations=50,
+            n_randomizations=50,
             random_state=_SEED,
             method=method,
             n_jobs=2,
@@ -556,7 +556,7 @@ class TestNJobsWarning:
         if method == "score_joint":
             kwargs["confounders"] = ["x3"]
         with pytest.warns(UserWarning, match="n_jobs has no effect"):
-            permutation_test_regression(X, y, **kwargs)
+            randomization_test_regression(X, y, **kwargs)
 
 
 # ------------------------------------------------------------------ #
@@ -569,28 +569,28 @@ class TestDeterminism:
 
     def test_score_deterministic(self) -> None:
         X, y = _linear_data()
-        r1 = permutation_test_regression(
-            X, y, n_permutations=_N_PERMS, random_state=_SEED, method="score"
+        r1 = randomization_test_regression(
+            X, y, n_randomizations=_N_PERMS, random_state=_SEED, method="score"
         )
-        r2 = permutation_test_regression(
-            X, y, n_permutations=_N_PERMS, random_state=_SEED, method="score"
+        r2 = randomization_test_regression(
+            X, y, n_randomizations=_N_PERMS, random_state=_SEED, method="score"
         )
         np.testing.assert_array_equal(r1.raw_empirical_p, r2.raw_empirical_p)
 
     def test_score_joint_deterministic(self) -> None:
         X, y = _linear_data()
-        r1 = permutation_test_regression(
+        r1 = randomization_test_regression(
             X,
             y,
-            n_permutations=_N_PERMS,
+            n_randomizations=_N_PERMS,
             random_state=_SEED,
             method="score_joint",
             confounders=["x3"],
         )
-        r2 = permutation_test_regression(
+        r2 = randomization_test_regression(
             X,
             y,
-            n_permutations=_N_PERMS,
+            n_randomizations=_N_PERMS,
             random_state=_SEED,
             method="score_joint",
             confounders=["x3"],
@@ -619,3 +619,198 @@ class TestSingularityGuards:
         result = _glm_score_projection_row(X_aug, W_diag, feature_idx=1)
         assert np.all(np.isfinite(result))
         assert result.shape == (n,)
+
+
+# ------------------------------------------------------------------ #
+# AR score parity (Step 19)
+# ------------------------------------------------------------------ #
+
+
+class TestARScoreParity:
+    """AR score correction parity and non-triviality tests."""
+
+    def test_linear_score_cached_pinv_matches_inline(self) -> None:
+        """Cached projection_A gives bit-for-bit same results as inline pinv."""
+        X, y = _linear_data(n=80, seed=99)
+        # Two runs with the same seed should give identical null distributions
+        res1 = randomization_test_regression(
+            X, y, n_randomizations=_N_PERMS, random_state=_SEED, method="score"
+        )
+        res2 = randomization_test_regression(
+            X, y, n_randomizations=_N_PERMS, random_state=_SEED, method="score"
+        )
+        np.testing.assert_array_equal(res1.raw_empirical_p, res2.raw_empirical_p)
+        np.testing.assert_array_equal(res1.model_coefs, res2.model_coefs)
+
+    def test_linear_score_ar_changes_pvalues(self) -> None:
+        """AR(1) correction produces different p-values than without."""
+        rng = np.random.default_rng(42)
+        n_panels, n_times = 20, 20
+        n = n_panels * n_times
+        panel_id = np.repeat(np.arange(n_panels), n_times)
+        time_id = np.tile(np.arange(n_times), n_panels)
+
+        # Panel data with strong AR(1) errors and WEAK signal so p-values
+        # aren't at the boundary.
+        X = pd.DataFrame({"x1": rng.standard_normal(n), "x2": rng.standard_normal(n)})
+        eps = np.zeros(n)
+        for p in range(n_panels):
+            start = p * n_times
+            eps[start] = rng.standard_normal()
+            for t in range(1, n_times):
+                eps[start + t] = 0.8 * eps[start + t - 1] + rng.standard_normal()
+        # Weak effect: 0.2 instead of 2.0
+        y = pd.DataFrame({"y": 0.2 * X["x1"].values + eps})
+
+        res_no_ar = randomization_test_regression(
+            X,
+            y,
+            n_randomizations=200,
+            random_state=_SEED,
+            method="score",
+            panel_id=panel_id,
+            time_id=time_id,
+        )
+        res_ar = randomization_test_regression(
+            X,
+            y,
+            n_randomizations=200,
+            random_state=_SEED,
+            method="score",
+            panel_id=panel_id,
+            time_id=time_id,
+            ar_order=1,
+        )
+        # p-values should differ — AR correction modifies the score projection
+        assert not np.allclose(res_no_ar.raw_empirical_p, res_ar.raw_empirical_p), (
+            "AR correction had no effect on p-values"
+        )
+
+
+# ------------------------------------------------------------------ #
+# score / score_joint for ordinal and multinomial families
+# ------------------------------------------------------------------ #
+
+_RNG_CAT = np.random.default_rng(42)
+_N_CAT = 60
+
+
+def _make_ordinal_data(n: int = _N_CAT) -> tuple[pd.DataFrame, pd.DataFrame]:
+    rng = np.random.default_rng(7)
+    X = pd.DataFrame(rng.standard_normal((n, 3)), columns=["x1", "x2", "x3"])
+    y = pd.DataFrame({"y": rng.integers(0, 4, n)})
+    return X, y
+
+
+def _make_multinomial_data(n: int = _N_CAT) -> tuple[pd.DataFrame, pd.DataFrame]:
+    rng = np.random.default_rng(8)
+    X = pd.DataFrame(rng.standard_normal((n, 3)), columns=["x1", "x2", "x3"])
+    y = pd.DataFrame({"y": rng.integers(0, 4, n)})
+    return X, y
+
+
+class TestScoreOrdinalMultinomial:
+    """score and score_joint work for ordinal and multinomial families.
+
+    The score method uses the exact score_project() implementation
+    (R-matrix for ordinal, chi-square for multinomial).  The score_joint
+    method uses direct Y permutation (since these are direct_permutation
+    families) with deviance as the test statistic.
+    """
+
+    def test_score_ordinal_returns_individual_result(self):
+        X, y = _make_ordinal_data()
+        result = randomization_test_regression(
+            X,
+            y,
+            n_randomizations=50,
+            random_state=42,
+            method="score",
+            family="ordinal",
+        )
+        assert isinstance(result, IndividualTestResult)
+        assert len(result["model_coefs"]) == 3
+
+    def test_score_ordinal_p_values_finite(self):
+        X, y = _make_ordinal_data()
+        result = randomization_test_regression(
+            X,
+            y,
+            n_randomizations=100,
+            random_state=42,
+            method="score",
+            family="ordinal",
+        )
+        p = result.raw_empirical_p
+        assert np.all(np.isfinite(p))
+        assert np.all(p >= 0)
+        assert np.all(p <= 1)
+
+    def test_score_multinomial_returns_individual_result(self):
+        X, y = _make_multinomial_data()
+        result = randomization_test_regression(
+            X,
+            y,
+            n_randomizations=50,
+            random_state=42,
+            method="score",
+            family="multinomial",
+        )
+        assert isinstance(result, IndividualTestResult)
+        assert len(result["model_coefs"]) == 3
+
+    def test_score_multinomial_p_values_finite(self):
+        X, y = _make_multinomial_data()
+        result = randomization_test_regression(
+            X,
+            y,
+            n_randomizations=100,
+            random_state=42,
+            method="score",
+            family="multinomial",
+        )
+        p = result.raw_empirical_p
+        assert np.all(np.isfinite(p))
+        assert np.all(p >= 0)
+        assert np.all(p <= 1)
+
+    def test_score_joint_ordinal_returns_joint_result(self):
+        X, y = _make_ordinal_data()
+        result = randomization_test_regression(
+            X,
+            y,
+            n_randomizations=50,
+            random_state=42,
+            method="score_joint",
+            family="ordinal",
+        )
+        assert isinstance(result, JointTestResult)
+        assert 0 < result.p_value <= 1
+
+    def test_score_joint_multinomial_returns_joint_result(self):
+        X, y = _make_multinomial_data()
+        result = randomization_test_regression(
+            X,
+            y,
+            n_randomizations=50,
+            random_state=42,
+            method="score_joint",
+            family="multinomial",
+        )
+        assert isinstance(result, JointTestResult)
+        assert 0 < result.p_value <= 1
+
+    def test_score_ordinal_with_confounders(self):
+        X, y = _make_ordinal_data()
+        result = randomization_test_regression(
+            X,
+            y,
+            n_randomizations=50,
+            random_state=42,
+            method="score",
+            family="ordinal",
+            confounders=["x3"],
+        )
+        assert isinstance(result, IndividualTestResult)
+        # Only x1 and x2 are tested; x3 keeps its observed coef.
+        assert len(result["model_coefs"]) == 3

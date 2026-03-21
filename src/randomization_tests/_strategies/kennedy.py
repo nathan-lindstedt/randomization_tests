@@ -45,6 +45,7 @@ import pandas as pd
 from sklearn.linear_model import LinearRegression
 
 from ..families import _augment_intercept, fit_reduced
+from . import _apply_randomization
 
 if TYPE_CHECKING:
     from ..families import ModelFamily
@@ -71,6 +72,7 @@ class KennedyIndividualStrategy:
         model_coefs: np.ndarray | None = None,
         fit_intercept: bool = True,
         n_jobs: int = 1,
+        randomization: str = "permute",
     ) -> np.ndarray:
         """Run the Kennedy individual permutation algorithm.
 
@@ -169,10 +171,13 @@ class KennedyIndividualStrategy:
             # Flatten from (n, 1) → (n,) for permutation indexing.
             x_resids = (x_target - x_hat).ravel()  # e_{X_j}, shape (n,)
 
-            # Step 2: Permute exposure residuals.
-            # Fancy-indexing with (B, n) index array broadcasts the
-            # 1-D residual vector into B shuffled copies in one shot.
-            shuffled = x_resids[perm_indices]  # (B, n)
+            # Step 2: Resample exposure residuals.
+            # For permutation: fancy-indexing broadcasts the 1-D
+            # residual vector into B shuffled copies.
+            # For sign-flip: element-wise ±1 multiplication.
+            shuffled = _apply_randomization(
+                x_resids, perm_indices, randomization
+            )  # (B, n)
 
             # Step 3: Reconstruct X*_j and build batch design matrices.
             # Start from a (B, n, p) copy of the original design.
@@ -229,6 +234,7 @@ class KennedyJointStrategy:
         model_coefs: np.ndarray | None = None,
         fit_intercept: bool = True,
         n_jobs: int = 1,
+        randomization: str = "permute",
     ) -> tuple[float, np.ndarray, str, list[str]]:
         """Run the Kennedy joint permutation algorithm.
 
@@ -306,7 +312,9 @@ class KennedyJointStrategy:
         # and perm_improvements = base_metric - scores.
 
         # Vectorised reconstruction: (B, n, q) = (1,n,q) + (B,n,q)
-        x_star_batch = x_hat[np.newaxis, :, :] + x_resids[perm_indices]
+        x_star_batch = x_hat[np.newaxis, :, :] + _apply_randomization(
+            x_resids, perm_indices, randomization
+        )  # (B, n, q)
 
         # Append confounders to each permuted design matrix.
         if Z.shape[1] > 0:

@@ -23,7 +23,7 @@ from randomization_tests import (
     IndividualTestResult,
     JointTestResult,
     identify_confounders,
-    permutation_test_regression,
+    randomization_test_regression,
 )
 from randomization_tests.display import (
     print_diagnostics_table,
@@ -81,22 +81,22 @@ class TestResultTypes:
     def test_individual_methods_return_individual_result(self, method: str) -> None:
         X, y = _linear_data()
         kwargs: dict = dict(
-            n_permutations=_N_PERMS,
+            n_randomizations=_N_PERMS,
             random_state=_SEED,
             method=method,
         )
         if method in ("kennedy", "freedman_lane"):
             kwargs["confounders"] = ["x3"]
-        result = permutation_test_regression(X, y, **kwargs)
+        result = randomization_test_regression(X, y, **kwargs)
         assert isinstance(result, IndividualTestResult)
 
     @pytest.mark.parametrize("method", ["kennedy_joint", "freedman_lane_joint"])
     def test_joint_methods_return_joint_result(self, method: str) -> None:
         X, y = _linear_data()
-        result = permutation_test_regression(
+        result = randomization_test_regression(
             X,
             y,
-            n_permutations=_N_PERMS,
+            n_randomizations=_N_PERMS,
             random_state=_SEED,
             method=method,
             confounders=["x3"],
@@ -105,10 +105,10 @@ class TestResultTypes:
 
     def test_logistic_returns_individual_result(self) -> None:
         X, y = _binary_data()
-        result = permutation_test_regression(
+        result = randomization_test_regression(
             X,
             y,
-            n_permutations=_N_PERMS,
+            n_randomizations=_N_PERMS,
             random_state=_SEED,
             method="ter_braak",
         )
@@ -127,17 +127,17 @@ class TestDictAccess:
     @pytest.fixture()
     def individual_result(self) -> IndividualTestResult:
         X, y = _linear_data()
-        return permutation_test_regression(
-            X, y, n_permutations=_N_PERMS, random_state=_SEED, method="ter_braak"
+        return randomization_test_regression(
+            X, y, n_randomizations=_N_PERMS, random_state=_SEED, method="ter_braak"
         )
 
     @pytest.fixture()
     def joint_result(self) -> JointTestResult:
         X, y = _linear_data()
-        return permutation_test_regression(
+        return randomization_test_regression(
             X,
             y,
-            n_permutations=_N_PERMS,
+            n_randomizations=_N_PERMS,
             random_state=_SEED,
             method="kennedy_joint",
             confounders=["x3"],
@@ -183,8 +183,8 @@ class TestToDict:
 
     def test_individual_to_dict_is_plain_dict(self) -> None:
         X, y = _linear_data()
-        result = permutation_test_regression(
-            X, y, n_permutations=_N_PERMS, random_state=_SEED, method="ter_braak"
+        result = randomization_test_regression(
+            X, y, n_randomizations=_N_PERMS, random_state=_SEED, method="ter_braak"
         )
         d = result.to_dict()
         assert isinstance(d, dict)
@@ -195,10 +195,10 @@ class TestToDict:
 
     def test_joint_to_dict_is_plain_dict(self) -> None:
         X, y = _linear_data()
-        result = permutation_test_regression(
+        result = randomization_test_regression(
             X,
             y,
-            n_permutations=_N_PERMS,
+            n_randomizations=_N_PERMS,
             random_state=_SEED,
             method="kennedy_joint",
             confounders=["x3"],
@@ -209,8 +209,8 @@ class TestToDict:
 
     def test_roundtrip_field_preservation(self) -> None:
         X, y = _linear_data()
-        result = permutation_test_regression(
-            X, y, n_permutations=_N_PERMS, random_state=_SEED, method="ter_braak"
+        result = randomization_test_regression(
+            X, y, n_randomizations=_N_PERMS, random_state=_SEED, method="ter_braak"
         )
         d = result.to_dict()
         assert d["method"] == result.method
@@ -265,7 +265,7 @@ _INDIVIDUAL_FIELDS = {
     "backend",
     "feature_names",
     "target_name",
-    "n_permutations",
+    "n_randomizations",
     "groups",
     "permutation_strategy",
     "diagnostics",
@@ -285,7 +285,7 @@ _JOINT_FIELDS = {
     "confounders",
     "feature_names",
     "target_name",
-    "n_permutations",
+    "n_randomizations",
     "groups",
     "permutation_strategy",
     "p_value_threshold_one",
@@ -302,18 +302,18 @@ class TestSchemaValidation:
 
     def test_individual_has_all_fields(self) -> None:
         X, y = _linear_data()
-        result = permutation_test_regression(
-            X, y, n_permutations=_N_PERMS, random_state=_SEED, method="ter_braak"
+        result = randomization_test_regression(
+            X, y, n_randomizations=_N_PERMS, random_state=_SEED, method="ter_braak"
         )
         d = result.to_dict()
         assert set(d.keys()) == _INDIVIDUAL_FIELDS
 
     def test_joint_has_all_fields(self) -> None:
         X, y = _linear_data()
-        result = permutation_test_regression(
+        result = randomization_test_regression(
             X,
             y,
-            n_permutations=_N_PERMS,
+            n_randomizations=_N_PERMS,
             random_state=_SEED,
             method="kennedy_joint",
             confounders=["x3"],
@@ -332,8 +332,8 @@ class TestDisplayIntegration:
 
     def test_print_results_table(self, capsys: pytest.CaptureFixture[str]) -> None:
         X, y = _linear_data()
-        result = permutation_test_regression(
-            X, y, n_permutations=_N_PERMS, random_state=_SEED, method="ter_braak"
+        result = randomization_test_regression(
+            X, y, n_randomizations=_N_PERMS, random_state=_SEED, method="ter_braak"
         )
         print_results_table(result)
         captured = capsys.readouterr()
@@ -345,10 +345,10 @@ class TestDisplayIntegration:
         self, capsys: pytest.CaptureFixture[str]
     ) -> None:
         X, y = _linear_data()
-        result = permutation_test_regression(
+        result = randomization_test_regression(
             X,
             y,
-            n_permutations=_N_PERMS,
+            n_randomizations=_N_PERMS,
             random_state=_SEED,
             method="kennedy_joint",
             confounders=["x3"],
@@ -361,8 +361,8 @@ class TestDisplayIntegration:
 
     def test_print_diagnostics_table(self, capsys: pytest.CaptureFixture[str]) -> None:
         X, y = _linear_data()
-        result = permutation_test_regression(
-            X, y, n_permutations=_N_PERMS, random_state=_SEED, method="ter_braak"
+        result = randomization_test_regression(
+            X, y, n_randomizations=_N_PERMS, random_state=_SEED, method="ter_braak"
         )
         print_diagnostics_table(result)
         captured = capsys.readouterr()
@@ -385,11 +385,11 @@ class TestPinnedSeedRegression:
     def test_ter_braak_linear_determinism(self) -> None:
         """ter Braak linear: same seed → same coefficients."""
         X, y = _linear_data()
-        r1 = permutation_test_regression(
-            X, y, n_permutations=_N_PERMS, random_state=_SEED, method="ter_braak"
+        r1 = randomization_test_regression(
+            X, y, n_randomizations=_N_PERMS, random_state=_SEED, method="ter_braak"
         )
-        r2 = permutation_test_regression(
-            X, y, n_permutations=_N_PERMS, random_state=_SEED, method="ter_braak"
+        r2 = randomization_test_regression(
+            X, y, n_randomizations=_N_PERMS, random_state=_SEED, method="ter_braak"
         )
         np.testing.assert_array_equal(r1.model_coefs, r2.model_coefs)
         np.testing.assert_array_equal(r1.raw_empirical_p, r2.raw_empirical_p)
@@ -398,13 +398,13 @@ class TestPinnedSeedRegression:
         """Kennedy joint: same seed → same improvement + p-value."""
         X, y = _linear_data()
         kwargs: dict = dict(
-            n_permutations=_N_PERMS,
+            n_randomizations=_N_PERMS,
             random_state=_SEED,
             method="kennedy_joint",
             confounders=["x3"],
         )
-        r1 = permutation_test_regression(X, y, **kwargs)
-        r2 = permutation_test_regression(X, y, **kwargs)
+        r1 = randomization_test_regression(X, y, **kwargs)
+        r2 = randomization_test_regression(X, y, **kwargs)
         assert r1.observed_improvement == r2.observed_improvement
         assert r1.p_value == r2.p_value
         np.testing.assert_array_equal(
@@ -415,24 +415,24 @@ class TestPinnedSeedRegression:
         """Freedman–Lane individual: same seed → same results."""
         X, y = _linear_data()
         kwargs: dict = dict(
-            n_permutations=_N_PERMS,
+            n_randomizations=_N_PERMS,
             random_state=_SEED,
             method="freedman_lane",
             confounders=["x3"],
         )
-        r1 = permutation_test_regression(X, y, **kwargs)
-        r2 = permutation_test_regression(X, y, **kwargs)
+        r1 = randomization_test_regression(X, y, **kwargs)
+        r2 = randomization_test_regression(X, y, **kwargs)
         np.testing.assert_array_equal(r1.model_coefs, r2.model_coefs)
         np.testing.assert_array_equal(r1.raw_empirical_p, r2.raw_empirical_p)
 
     def test_logistic_ter_braak_determinism(self) -> None:
         """Logistic ter Braak: same seed → same results."""
         X, y = _binary_data()
-        r1 = permutation_test_regression(
-            X, y, n_permutations=_N_PERMS, random_state=_SEED, method="ter_braak"
+        r1 = randomization_test_regression(
+            X, y, n_randomizations=_N_PERMS, random_state=_SEED, method="ter_braak"
         )
-        r2 = permutation_test_regression(
-            X, y, n_permutations=_N_PERMS, random_state=_SEED, method="ter_braak"
+        r2 = randomization_test_regression(
+            X, y, n_randomizations=_N_PERMS, random_state=_SEED, method="ter_braak"
         )
         np.testing.assert_array_equal(r1.model_coefs, r2.model_coefs)
         np.testing.assert_array_equal(r1.raw_empirical_p, r2.raw_empirical_p)
@@ -440,8 +440,8 @@ class TestPinnedSeedRegression:
     def test_confounders_list_not_none(self) -> None:
         """When no confounders passed, result.confounders is [] not None."""
         X, y = _linear_data()
-        result = permutation_test_regression(
-            X, y, n_permutations=_N_PERMS, random_state=_SEED, method="ter_braak"
+        result = randomization_test_regression(
+            X, y, n_randomizations=_N_PERMS, random_state=_SEED, method="ter_braak"
         )
         assert result.confounders == []
         assert isinstance(result.confounders, list)
@@ -457,18 +457,18 @@ class TestCrossMethodConsistency:
 
     def test_same_diagnostics_shape(self) -> None:
         X, y = _linear_data()
-        r_ind = permutation_test_regression(
+        r_ind = randomization_test_regression(
             X,
             y,
-            n_permutations=_N_PERMS,
+            n_randomizations=_N_PERMS,
             random_state=_SEED,
             method="kennedy",
             confounders=["x3"],
         )
-        r_joint = permutation_test_regression(
+        r_joint = randomization_test_regression(
             X,
             y,
-            n_permutations=_N_PERMS,
+            n_randomizations=_N_PERMS,
             random_state=_SEED,
             method="kennedy_joint",
             confounders=["x3"],
@@ -503,7 +503,7 @@ class TestNJobsWarnings:
         """n_jobs > 1 on linear ter_braak/freedman_lane should warn."""
         X, y = _linear_data()
         kwargs: dict = dict(
-            n_permutations=50,
+            n_randomizations=50,
             random_state=_SEED,
             method=method,
             n_jobs=2,
@@ -511,7 +511,7 @@ class TestNJobsWarnings:
         if method == "freedman_lane":
             kwargs["confounders"] = ["x3"]
         with pytest.warns(UserWarning, match="n_jobs has no effect"):
-            permutation_test_regression(X, y, **kwargs)
+            randomization_test_regression(X, y, **kwargs)
 
     @pytest.mark.parametrize(
         "method", ["kennedy", "kennedy_joint", "freedman_lane_joint"]
@@ -523,10 +523,10 @@ class TestNJobsWarnings:
 
         with _w.catch_warnings():
             _w.simplefilter("error", UserWarning)
-            permutation_test_regression(
+            randomization_test_regression(
                 X,
                 y,
-                n_permutations=50,
+                n_randomizations=50,
                 random_state=_SEED,
                 method=method,
                 confounders=["x3"],
@@ -540,10 +540,10 @@ class TestNJobsWarnings:
 
         with _w.catch_warnings():
             _w.simplefilter("error", UserWarning)
-            permutation_test_regression(
+            randomization_test_regression(
                 X,
                 y,
-                n_permutations=50,
+                n_randomizations=50,
                 random_state=_SEED,
                 method="ter_braak",
                 n_jobs=2,
@@ -552,19 +552,19 @@ class TestNJobsWarnings:
     def test_parallel_results_match_serial(self) -> None:
         """n_jobs=2 should produce identical results to n_jobs=1."""
         X, y = _linear_data()
-        r_serial = permutation_test_regression(
+        r_serial = randomization_test_regression(
             X,
             y,
-            n_permutations=50,
+            n_randomizations=50,
             random_state=_SEED,
             method="kennedy",
             confounders=["x3"],
             n_jobs=1,
         )
-        r_parallel = permutation_test_regression(
+        r_parallel = randomization_test_regression(
             X,
             y,
-            n_permutations=50,
+            n_randomizations=50,
             random_state=_SEED,
             method="kennedy",
             confounders=["x3"],
@@ -652,14 +652,14 @@ class TestPoissonIntegration:
     def test_individual_methods(self, method: str) -> None:
         X, y = _poisson_data()
         kwargs: dict = dict(
-            n_permutations=50,
+            n_randomizations=50,
             random_state=_SEED,
             method=method,
             family="poisson",
         )
         if method in ("kennedy", "freedman_lane"):
             kwargs["confounders"] = ["x2"]
-        result = permutation_test_regression(X, y, **kwargs)
+        result = randomization_test_regression(X, y, **kwargs)
         assert isinstance(result, IndividualTestResult)
         assert result.family.name == "poisson"
         assert len(result.model_coefs) == 2
@@ -667,10 +667,10 @@ class TestPoissonIntegration:
     @pytest.mark.parametrize("method", ["kennedy_joint", "freedman_lane_joint"])
     def test_joint_methods(self, method: str) -> None:
         X, y = _poisson_data()
-        result = permutation_test_regression(
+        result = randomization_test_regression(
             X,
             y,
-            n_permutations=50,
+            n_randomizations=50,
             random_state=_SEED,
             method=method,
             family="poisson",
@@ -682,27 +682,27 @@ class TestPoissonIntegration:
     def test_deterministic_seed(self) -> None:
         X, y = _poisson_data()
         kw: dict = dict(
-            n_permutations=50,
+            n_randomizations=50,
             random_state=_SEED,
             method="ter_braak",
             family="poisson",
         )
-        r1 = permutation_test_regression(X, y, **kw)
-        r2 = permutation_test_regression(X, y, **kw)
+        r1 = randomization_test_regression(X, y, **kw)
+        r2 = randomization_test_regression(X, y, **kw)
         np.testing.assert_array_equal(r1.model_coefs, r2.model_coefs)
         np.testing.assert_array_equal(r1.raw_empirical_p, r2.raw_empirical_p)
 
     def test_diagnostics_present(self) -> None:
         X, y = _poisson_data()
-        result = permutation_test_regression(
-            X, y, n_permutations=50, random_state=_SEED, family="poisson"
+        result = randomization_test_regression(
+            X, y, n_randomizations=50, random_state=_SEED, family="poisson"
         )
         assert "n_observations" in result.diagnostics
 
     def test_display_runs(self, capsys: pytest.CaptureFixture[str]) -> None:
         X, y = _poisson_data()
-        result = permutation_test_regression(
-            X, y, n_permutations=50, random_state=_SEED, family="poisson"
+        result = randomization_test_regression(
+            X, y, n_randomizations=50, random_state=_SEED, family="poisson"
         )
         print_results_table(result)
         print_diagnostics_table(result)
@@ -720,24 +720,24 @@ class TestNegBinIntegration:
     def test_individual_methods(self, method: str) -> None:
         X, y = _negbin_data()
         kwargs: dict = dict(
-            n_permutations=50,
+            n_randomizations=50,
             random_state=_SEED,
             method=method,
             family="negative_binomial",
         )
         if method in ("kennedy", "freedman_lane"):
             kwargs["confounders"] = ["x2"]
-        result = permutation_test_regression(X, y, **kwargs)
+        result = randomization_test_regression(X, y, **kwargs)
         assert isinstance(result, IndividualTestResult)
         assert result.family.name == "negative_binomial"
 
     @pytest.mark.parametrize("method", ["kennedy_joint", "freedman_lane_joint"])
     def test_joint_methods(self, method: str) -> None:
         X, y = _negbin_data()
-        result = permutation_test_regression(
+        result = randomization_test_regression(
             X,
             y,
-            n_permutations=50,
+            n_randomizations=50,
             random_state=_SEED,
             method=method,
             family="negative_binomial",
@@ -749,27 +749,27 @@ class TestNegBinIntegration:
     def test_deterministic_seed(self) -> None:
         X, y = _negbin_data()
         kw: dict = dict(
-            n_permutations=50,
+            n_randomizations=50,
             random_state=_SEED,
             method="ter_braak",
             family="negative_binomial",
         )
-        r1 = permutation_test_regression(X, y, **kw)
-        r2 = permutation_test_regression(X, y, **kw)
+        r1 = randomization_test_regression(X, y, **kw)
+        r2 = randomization_test_regression(X, y, **kw)
         np.testing.assert_array_equal(r1.model_coefs, r2.model_coefs)
         np.testing.assert_array_equal(r1.raw_empirical_p, r2.raw_empirical_p)
 
     def test_diagnostics_present(self) -> None:
         X, y = _negbin_data()
-        result = permutation_test_regression(
-            X, y, n_permutations=50, random_state=_SEED, family="negative_binomial"
+        result = randomization_test_regression(
+            X, y, n_randomizations=50, random_state=_SEED, family="negative_binomial"
         )
         assert "n_observations" in result.diagnostics
 
     def test_display_runs(self, capsys: pytest.CaptureFixture[str]) -> None:
         X, y = _negbin_data()
-        result = permutation_test_regression(
-            X, y, n_permutations=50, random_state=_SEED, family="negative_binomial"
+        result = randomization_test_regression(
+            X, y, n_randomizations=50, random_state=_SEED, family="negative_binomial"
         )
         print_results_table(result)
         print_diagnostics_table(result)
@@ -780,35 +780,35 @@ class TestNegBinIntegration:
 # ---- Ordinal integration ----
 
 
-@pytest.mark.filterwarnings("ignore:family='ordinal'.*direct Y permutation:UserWarning")
+@pytest.mark.filterwarnings("ignore:method='manly'.*direct Y permutation:UserWarning")
 class TestOrdinalIntegration:
     """Integration tests for ordinal family across supported methods.
 
-    Ordinal supports ter_braak, kennedy, kennedy_joint.
-    Freedman-Lane raises NotImplementedError (ill-defined residuals).
+    Ordinal supports manly, kennedy, kennedy_joint.
+    Residual-based methods (ter_braak, freedman_lane, score) raise ValueError.
     """
 
-    @pytest.mark.parametrize("method", ["ter_braak", "kennedy"])
+    @pytest.mark.parametrize("method", ["manly", "kennedy"])
     def test_individual_methods(self, method: str) -> None:
         X, y = _ordinal_data()
         kwargs: dict = dict(
-            n_permutations=50,
+            n_randomizations=50,
             random_state=_SEED,
             method=method,
             family="ordinal",
         )
         if method == "kennedy":
             kwargs["confounders"] = ["x3"]
-        result = permutation_test_regression(X, y, **kwargs)
+        result = randomization_test_regression(X, y, **kwargs)
         assert isinstance(result, IndividualTestResult)
         assert result.family.name == "ordinal"
 
     def test_kennedy_joint(self) -> None:
         X, y = _ordinal_data()
-        result = permutation_test_regression(
+        result = randomization_test_regression(
             X,
             y,
-            n_permutations=50,
+            n_randomizations=50,
             random_state=_SEED,
             method="kennedy_joint",
             family="ordinal",
@@ -820,11 +820,11 @@ class TestOrdinalIntegration:
     @pytest.mark.parametrize("method", ["freedman_lane", "freedman_lane_joint"])
     def test_freedman_lane_rejected(self, method: str) -> None:
         X, y = _ordinal_data()
-        with pytest.raises(ValueError, match="not supported for family='ordinal'"):
-            permutation_test_regression(
+        with pytest.raises(ValueError, match="requires well-defined residuals"):
+            randomization_test_regression(
                 X,
                 y,
-                n_permutations=50,
+                n_randomizations=50,
                 random_state=_SEED,
                 method=method,
                 family="ordinal",
@@ -834,27 +834,37 @@ class TestOrdinalIntegration:
     def test_deterministic_seed(self) -> None:
         X, y = _ordinal_data()
         kw: dict = dict(
-            n_permutations=50,
+            n_randomizations=50,
             random_state=_SEED,
-            method="ter_braak",
+            method="manly",
             family="ordinal",
         )
-        r1 = permutation_test_regression(X, y, **kw)
-        r2 = permutation_test_regression(X, y, **kw)
+        r1 = randomization_test_regression(X, y, **kw)
+        r2 = randomization_test_regression(X, y, **kw)
         np.testing.assert_array_equal(r1.model_coefs, r2.model_coefs)
         np.testing.assert_array_equal(r1.raw_empirical_p, r2.raw_empirical_p)
 
     def test_diagnostics_present(self) -> None:
         X, y = _ordinal_data()
-        result = permutation_test_regression(
-            X, y, n_permutations=50, random_state=_SEED, family="ordinal"
+        result = randomization_test_regression(
+            X,
+            y,
+            n_randomizations=50,
+            random_state=_SEED,
+            family="ordinal",
+            method="manly",
         )
         assert "n_observations" in result.diagnostics
 
     def test_display_runs(self, capsys: pytest.CaptureFixture[str]) -> None:
         X, y = _ordinal_data()
-        result = permutation_test_regression(
-            X, y, n_permutations=50, random_state=_SEED, family="ordinal"
+        result = randomization_test_regression(
+            X,
+            y,
+            n_randomizations=50,
+            random_state=_SEED,
+            family="ordinal",
+            method="manly",
         )
         print_results_table(result)
         print_diagnostics_table(result)
@@ -865,37 +875,35 @@ class TestOrdinalIntegration:
 # ---- Multinomial integration ----
 
 
-@pytest.mark.filterwarnings(
-    "ignore:family='multinomial'.*direct Y permutation:UserWarning"
-)
+@pytest.mark.filterwarnings("ignore:method='manly'.*direct Y permutation:UserWarning")
 class TestMultinomialIntegration:
     """Integration tests for multinomial family across supported methods.
 
-    Multinomial supports ter_braak, kennedy, kennedy_joint.
-    Freedman-Lane raises NotImplementedError (ill-defined residuals).
+    Multinomial supports manly, kennedy, kennedy_joint.
+    Residual-based methods (ter_braak, freedman_lane, score) raise ValueError.
     """
 
-    @pytest.mark.parametrize("method", ["ter_braak", "kennedy"])
+    @pytest.mark.parametrize("method", ["manly", "kennedy"])
     def test_individual_methods(self, method: str) -> None:
         X, y = _multinomial_data()
         kwargs: dict = dict(
-            n_permutations=50,
+            n_randomizations=50,
             random_state=_SEED,
             method=method,
             family="multinomial",
         )
         if method == "kennedy":
             kwargs["confounders"] = ["x3"]
-        result = permutation_test_regression(X, y, **kwargs)
+        result = randomization_test_regression(X, y, **kwargs)
         assert isinstance(result, IndividualTestResult)
         assert result.family.name == "multinomial"
 
     def test_kennedy_joint(self) -> None:
         X, y = _multinomial_data()
-        result = permutation_test_regression(
+        result = randomization_test_regression(
             X,
             y,
-            n_permutations=50,
+            n_randomizations=50,
             random_state=_SEED,
             method="kennedy_joint",
             family="multinomial",
@@ -907,11 +915,11 @@ class TestMultinomialIntegration:
     @pytest.mark.parametrize("method", ["freedman_lane", "freedman_lane_joint"])
     def test_freedman_lane_rejected(self, method: str) -> None:
         X, y = _multinomial_data()
-        with pytest.raises(ValueError, match="not supported for family='multinomial'"):
-            permutation_test_regression(
+        with pytest.raises(ValueError, match="requires well-defined residuals"):
+            randomization_test_regression(
                 X,
                 y,
-                n_permutations=50,
+                n_randomizations=50,
                 random_state=_SEED,
                 method=method,
                 family="multinomial",
@@ -921,27 +929,37 @@ class TestMultinomialIntegration:
     def test_deterministic_seed(self) -> None:
         X, y = _multinomial_data()
         kw: dict = dict(
-            n_permutations=50,
+            n_randomizations=50,
             random_state=_SEED,
-            method="ter_braak",
+            method="manly",
             family="multinomial",
         )
-        r1 = permutation_test_regression(X, y, **kw)
-        r2 = permutation_test_regression(X, y, **kw)
+        r1 = randomization_test_regression(X, y, **kw)
+        r2 = randomization_test_regression(X, y, **kw)
         np.testing.assert_array_equal(r1.model_coefs, r2.model_coefs)
         np.testing.assert_array_equal(r1.raw_empirical_p, r2.raw_empirical_p)
 
     def test_diagnostics_present(self) -> None:
         X, y = _multinomial_data()
-        result = permutation_test_regression(
-            X, y, n_permutations=50, random_state=_SEED, family="multinomial"
+        result = randomization_test_regression(
+            X,
+            y,
+            n_randomizations=50,
+            random_state=_SEED,
+            family="multinomial",
+            method="manly",
         )
         assert "n_observations" in result.diagnostics
 
     def test_display_runs(self, capsys: pytest.CaptureFixture[str]) -> None:
         X, y = _multinomial_data()
-        result = permutation_test_regression(
-            X, y, n_permutations=50, random_state=_SEED, family="multinomial"
+        result = randomization_test_regression(
+            X,
+            y,
+            n_randomizations=50,
+            random_state=_SEED,
+            family="multinomial",
+            method="manly",
         )
         print_results_table(result)
         print_diagnostics_table(result)
@@ -1006,7 +1024,7 @@ class TestConfounderFamilyIntegration:
 # ---- Cross-family field consistency ----
 
 
-@pytest.mark.filterwarnings("ignore:family=.*direct Y permutation:UserWarning")
+@pytest.mark.filterwarnings("ignore:method='manly'.*direct Y permutation:UserWarning")
 class TestCrossFamilyConsistency:
     """Verify result schema consistency across all families."""
 
@@ -1023,12 +1041,14 @@ class TestCrossFamilyConsistency:
     )
     def test_individual_schema(self, family_str: str, data_fn: object) -> None:
         X, y = data_fn()  # type: ignore[operator]
-        result = permutation_test_regression(
+        # Ordinal/multinomial require method='manly' (no residuals).
+        method = "manly" if family_str in ("ordinal", "multinomial") else "ter_braak"
+        result = randomization_test_regression(
             X,
             y,
-            n_permutations=50,
+            n_randomizations=50,
             random_state=_SEED,
-            method="ter_braak",
+            method=method,
             family=family_str,
         )
         d = result.to_dict()
@@ -1052,10 +1072,10 @@ class TestCrossFamilyConsistency:
         X, y = data_fn()  # type: ignore[operator]
         # Use x2 or x3 as confounder (whichever exists)
         conf = ["x2"] if "x2" in X.columns else ["x3"]
-        result = permutation_test_regression(
+        result = randomization_test_regression(
             X,
             y,
-            n_permutations=50,
+            n_randomizations=50,
             random_state=_SEED,
             method="kennedy_joint",
             family=family_str,

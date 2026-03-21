@@ -137,7 +137,7 @@ class _DictAccessMixin:
 class IndividualTestResult(_DictAccessMixin):
     """Result from a per-coefficient permutation test.
 
-    Returned by ``permutation_test_regression`` for methods
+    Returned by ``randomization_test_regression`` for methods
     ``"ter_braak"``, ``"kennedy"``, and ``"freedman_lane"``.
 
     All fields are accessible both as attributes (``result.family``)
@@ -193,8 +193,8 @@ class IndividualTestResult(_DictAccessMixin):
     target_name: str
     """Target column name."""
 
-    n_permutations: int
-    """Actual number of permutations used."""
+    n_randomizations: int
+    """Actual number of randomizations used."""
 
     groups: np.ndarray | None
     """Exchangeability group labels (``None`` until v0.4.1)."""
@@ -229,7 +229,7 @@ class IndividualTestResult(_DictAccessMixin):
 class JointTestResult(_DictAccessMixin):
     """Result from a joint (group-level) permutation test.
 
-    Returned by ``permutation_test_regression`` for methods
+    Returned by ``randomization_test_regression`` for methods
     ``"kennedy_joint"`` and ``"freedman_lane_joint"``.
 
     All fields are accessible both as attributes and via dict syntax.
@@ -272,8 +272,8 @@ class JointTestResult(_DictAccessMixin):
     target_name: str
     """Target column name."""
 
-    n_permutations: int
-    """Actual number of permutations used."""
+    n_randomizations: int
+    """Actual number of randomizations used."""
 
     groups: np.ndarray | None
     """Exchangeability group labels (``None`` until v0.4.1)."""

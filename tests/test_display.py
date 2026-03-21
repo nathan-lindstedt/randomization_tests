@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import numpy as np
 
 from randomization_tests.display import (
-    _recommend_n_permutations,
+    _recommend_n_randomizations,
     _significance_marker,
     _truncate,
     print_confounder_table,
@@ -162,31 +162,31 @@ class TestSignificanceMarker:
 
 
 class TestRecommendNPermutations:
-    """Tests for _recommend_n_permutations helper (Step 25)."""
+    """Tests for _recommend_n_randomizations helper (Step 25)."""
 
     def test_returns_positive_int(self):
-        b = _recommend_n_permutations(0.048, 0.05, alpha=0.05)
+        b = _recommend_n_randomizations(0.048, 0.05, alpha=0.05)
         assert isinstance(b, int)
         assert b >= 100
 
     def test_small_gap_gives_large_b(self):
         """When p_hat is close to threshold, need many permutations."""
-        b = _recommend_n_permutations(0.0499, 0.05, alpha=0.05)
+        b = _recommend_n_randomizations(0.0499, 0.05, alpha=0.05)
         assert b > 10_000
 
     def test_large_gap_gives_small_b(self):
         """When p_hat is far from threshold, fewer permutations needed."""
-        b = _recommend_n_permutations(0.001, 0.05, alpha=0.05)
+        b = _recommend_n_randomizations(0.001, 0.05, alpha=0.05)
         assert b < 1000
 
     def test_zero_gap_returns_max(self):
         """When p_hat equals threshold, B is clamped to max."""
-        b = _recommend_n_permutations(0.05, 0.05, alpha=0.05)
+        b = _recommend_n_randomizations(0.05, 0.05, alpha=0.05)
         assert b == 10_000_000
 
     def test_clamp_min(self):
         """Result never goes below 100."""
-        b = _recommend_n_permutations(0.5, 0.05, alpha=0.05)
+        b = _recommend_n_randomizations(0.5, 0.05, alpha=0.05)
         assert b >= 100
 
 
@@ -235,7 +235,7 @@ class TestPValueCIInResultsTable:
         assert "\u00b1" not in out
 
     def test_borderline_warning_and_recommendation(self, capsys):
-        """Borderline CI triggers [!] marker and n_permutations note."""
+        """Borderline CI triggers [!] marker and n_randomizations note."""
         # CI [0.04, 0.06] straddles 0.05
         results = self._make_results(
             pval_ci=[[0.04, 0.06], [0.40, 0.60]],
@@ -244,7 +244,7 @@ class TestPValueCIInResultsTable:
         print_results_table(results)
         out = capsys.readouterr().out
         assert "[!]" in out
-        assert "n_permutations" in out
+        assert "n_randomizations" in out
         assert "x1" in out  # borderline feature named
 
     def test_no_borderline_no_warning(self, capsys):
@@ -256,7 +256,7 @@ class TestPValueCIInResultsTable:
         print_results_table(results)
         out = capsys.readouterr().out
         assert "[!]" not in out
-        assert "n_permutations" not in out
+        assert "n_randomizations" not in out
 
     def test_margin_decimal_aligned_with_pvalue(self, capsys):
         """The decimal in ± X.XXX aligns with the p-value decimal above."""
@@ -436,14 +436,14 @@ class TestConfounderDisplay:
             raise AssertionError("Could not find confounder row for x2")
 
     def test_results_table_confounder_no_borderline(self, capsys):
-        """Confounder never triggers [!] marker or n_permutations note."""
+        """Confounder never triggers [!] marker or n_randomizations note."""
         results = self._make_results_table_result()
         print_results_table(results)
         out = capsys.readouterr().out
         # x2 should not appear in any borderline recommendation
         assert (
-            "x2" not in out.split("n_permutations")[0]
-            if "n_permutations" in out
+            "x2" not in out.split("n_randomizations")[0]
+            if "n_randomizations" in out
             else True
         )
 
@@ -679,7 +679,7 @@ class TestModelLevelDiagnosticsRendering:
         perm_cov=None,
         pval_ci=None,
         emp_p=None,
-        n_permutations=5000,
+        n_randomizations=5000,
     ):
         ci_dict = {}
         if pval_ci is not None:
@@ -707,7 +707,7 @@ class TestModelLevelDiagnosticsRendering:
             p_value_threshold_one=0.05,
             p_value_threshold_two=0.01,
             p_value_threshold_three=0.001,
-            n_permutations=n_permutations,
+            n_randomizations=n_randomizations,
         )
 
     def test_breusch_pagan_3_column(self, capsys):
@@ -747,7 +747,7 @@ class TestModelLevelDiagnosticsRendering:
                 "coverage_str": "12.4% of 40,320 possible",
             },
             pval_ci=[[0.024, 0.042], [0.40, 0.60]],
-            n_permutations=5000,
+            n_randomizations=5000,
         )
         print_diagnostics_table(results)
         out = capsys.readouterr().out
@@ -765,7 +765,7 @@ class TestModelLevelDiagnosticsRendering:
                 "coverage_str": "12.4% of 40,320 possible",
             },
             pval_ci=[[0.04, 0.06], [0.40, 0.60]],
-            n_permutations=5000,
+            n_randomizations=5000,
         )
         print_diagnostics_table(results)
         out = capsys.readouterr().out
@@ -806,7 +806,7 @@ class TestModelLevelDiagnosticsRendering:
                 break
 
     def test_coverage_b_and_denominator(self, capsys):
-        """Coverage detail includes B = n_permutations / denominator."""
+        """Coverage detail includes B = n_randomizations / denominator."""
         results = self._make_results(
             perm_cov={
                 "coverage_pct": "12.4%",
@@ -814,7 +814,7 @@ class TestModelLevelDiagnosticsRendering:
                 "coverage_str": "12.4% of 40,320 possible",
             },
             pval_ci=[[0.024, 0.042], [0.40, 0.60]],
-            n_permutations=5000,
+            n_randomizations=5000,
         )
         print_diagnostics_table(results)
         out = capsys.readouterr().out
@@ -830,7 +830,7 @@ class TestModelLevelDiagnosticsRendering:
                 "coverage_str": "5,000 of 414! possible",
             },
             pval_ci=[[0.024, 0.042], [0.40, 0.60]],
-            n_permutations=5000,
+            n_randomizations=5000,
         )
         print_diagnostics_table(results)
         out = capsys.readouterr().out

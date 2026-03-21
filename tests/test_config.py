@@ -99,7 +99,7 @@ class TestBackendIntegration:
         import numpy as np
         import pandas as pd
 
-        from randomization_tests.core import permutation_test_regression
+        from randomization_tests.core import randomization_test_regression
 
         set_backend("numpy")
 
@@ -111,10 +111,10 @@ class TestBackendIntegration:
         probs = 1 / (1 + np.exp(-logits))
         y = pd.DataFrame({"y": rng.binomial(1, probs)})
 
-        result = permutation_test_regression(
+        result = randomization_test_regression(
             X,
             y,
-            n_permutations=20,
+            n_randomizations=20,
             method="ter_braak",
             random_state=42,
         )

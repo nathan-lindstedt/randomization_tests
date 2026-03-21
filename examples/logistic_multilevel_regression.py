@@ -44,13 +44,13 @@ from ucimlrepo import fetch_ucirepo
 from randomization_tests import (
     LogisticMixedFamily,
     identify_confounders,
-    permutation_test_regression,
     print_confounder_table,
     print_dataset_info_table,
     print_diagnostics_table,
     print_family_info_table,
     print_protocol_usage_table,
     print_results_table,
+    randomization_test_regression,
     resolve_family,
 )
 
@@ -142,13 +142,13 @@ print_family_info_table(
 # matrix-vector product — orders of magnitude faster than full IRLS
 # refitting for each permutation.
 
-results_score = permutation_test_regression(
+results_score = randomization_test_regression(
     X,
     y,
     method="score",
     family="logistic_mixed",
     groups=groups,
-    n_permutations=999,
+    n_randomizations=999,
     random_state=42,
 )
 print_results_table(
@@ -197,14 +197,14 @@ if predictors_with_confounders:
     example_predictor = list(predictors_with_confounders.keys())[0]
     example_confounders = predictors_with_confounders[example_predictor]
 
-    results_sc = permutation_test_regression(
+    results_sc = randomization_test_regression(
         X,
         y,
         method="score",
         confounders=example_confounders,
         family="logistic_mixed",
         groups=groups,
-        n_permutations=999,
+        n_randomizations=999,
         random_state=42,
     )
     print_results_table(
