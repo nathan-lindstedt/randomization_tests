@@ -23,14 +23,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   from the UCI Machine Learning Repository) alongside the previously
   cited Breast Cancer Wisconsin and Real Estate Valuation datasets.
 
-### Fixed
-
-- **`sign_flips.py` mypy errors**: `ranks = ranks[1:]` (line 192)
-  and `ranks = rng.choice(...) + pool_start` (line 421) each
-  returned `ndarray[tuple[int, ...], ...]` instead of the declared
-  `ndarray[tuple[int], ...]` — a numpy typing limitation.  Suppressed
-  with targeted `# type: ignore[assignment]` comments.
-
 ### Changed
 
 - **`pyproject.toml` mypy overrides**: added
@@ -43,7 +35,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   not project source) and `.git-commit-msg.txt` (scratch commit
   message file) to prevent accidental commits.
 
-
   whitening), corrected MultinomialFamily.coefs() from "LRT chi-squared"
   to "Wald χ²", updated NB `calibrate()` from duck-typed to protocol method.
 - **QUICKSTART.md**: added missing methods (Manly, score, score_exact) to
@@ -54,6 +45,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   dead code (`K` assignments, unreachable `_validate_node` call, unused
   `n_perm`), unquoted forward-reference type annotations, used `enumerate()`
   for cell-id loop.
+
+### Fixed
+
+- **`sign_flips.py` mypy errors**: `ranks = ranks[1:]` (line 192)
+  and `ranks = rng.choice(...) + pool_start` (line 421) each
+  returned `ndarray[tuple[int, ...], ...]` instead of the declared
+  `ndarray[tuple[int], ...]` — a numpy typing limitation.  Suppressed
+  with targeted `# type: ignore[assignment]` comments.
 
 ## [0.4.3] - 2026-03-21
 
@@ -166,61 +165,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.4.2] - 2026-03-01
 
-### Fixed
-
-- **Logistic null-score prediction** (`LogisticFamily.null_score`):
-  intercept-free null now predicts σ(0)=0.5 instead of 0, matching
-  the logistic link at η=0.
-- **Poisson/NB null-score prediction** (`PoissonFamily.null_score`,
-  `NegativeBinomialFamily.null_score`): intercept-free null now
-  predicts exp(0)=1 instead of 0, matching the log-link at η=0.
-- **Logistic clipping harmonisation**: `LogisticFamily.fit_metric`
-  clipping changed from `[0.001, 0.999]` to `[1e-15, 1−1e-15]`,
-  consistent with the numerically stable softplus NLL path.
-- **Engine error message**: removed hardcoded family list from
-  score-project error message; now dynamically names the family
-  that lacks `score_project()`.
-- **Clopper-Pearson dead branch**: removed unreachable
-  `np.maximum(successes, 1)` guard and `np.where(successes == 0)`
-  branch in `_clopper_pearson_ci`, since `successes` is always ≥ 1.
-- **Confounder p-value label**: changed `"N/A (confounder)"` to
-  `"(confounder)"` — the `"N/A"` prefix was redundant clutter.
-- **Confounder `pval_ci` masking**: Clopper-Pearson CIs are now
-  set to NaN for confounder features at the data layer (`core.py`),
-  preventing misleading CI display in both results and diagnostics
-  tables.
-- **Confounder `± margin` sub-row**: confounders now render a blank
-  sub-row instead of a `± margin` line, preventing spurious `[!]`
-  markers and `n_randomizations` recommendations.
-- **Confounder P-Val CI in diagnostics**: NaN CIs now render as em
-  dash `—` in the diagnostics table P-Val CI column.
-
-### Changed
-
-- **Fisher SE singularity guard** (`_fisher_information_se` in
-  `_jax.py`): replaced bare `jnp.linalg.inv` with
-  `jnp.linalg.solve` + finiteness check → `jnp.linalg.pinv`
-  fallback.  JAX does not raise on singular matrices, so the guard
-  checks for NaN/Inf explicitly instead of using try/except.
-- **Score projection singularity guard**
-  (`_glm_score_projection_row` in `_jax.py`): replaced
-  `np.linalg.inv(fisher)` with `np.linalg.solve(fisher, e_j)` +
-  `try/except LinAlgError` → `np.linalg.pinv` fallback.
-- **Poisson eta overflow guard** (`_poisson_nll`, `_poisson_grad`,
-  `_poisson_hessian` in `_jax.py`): clipped η to `[-20, 20]`
-  before `jnp.exp(η)` to prevent overflow.
-- **Score strategy regularisation** (`score.py`): added
-  `Σ_k += 1e-10·I` before `np.linalg.solve(Σ_k, …)` to stabilise
-  near-singular cluster scatter matrices.
-- **GLMM Fisher upgrade** (`LogisticMixedFamily.score_project`,
-  `PoissonMixedFamily.score_project`): upgraded from diagonal
-  `U_j / I_{jj}` to full inverse `[I⁻¹]_{jj}` with `try/except
-  LinAlgError` → `pinv` fallback.
-- **Distance correlation denominator** (`confounders.py`): changed
-  `dvar_x * dvar_y - dcov² + 1e-300` to
-  `max(dvar_x * dvar_y - dcov², 1e-300)` to prevent negative
-  argument to `np.sqrt`.
-
 ### Added
 
 - **GLMM deviance note** (`LogisticMixedFamily.diagnostics`,
@@ -263,6 +207,60 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **7 new tests**: `TestModelLevelDiagnosticsRendering` (7) covering
   3-column alignment, Cook's D, coverage sufficient/borderline,
   line width ≤ 80, B/denominator, and factorial overflow notation.
+
+### Changed
+
+- **Fisher SE singularity guard** (`_fisher_information_se` in
+  `_jax.py`): replaced bare `jnp.linalg.inv` with
+  `jnp.linalg.solve` + finiteness check → `jnp.linalg.pinv`
+  fallback.  JAX does not raise on singular matrices, so the guard
+  checks for NaN/Inf explicitly instead of using try/except.
+- **Score projection singularity guard**
+  (`_glm_score_projection_row` in `_jax.py`): replaced
+  `np.linalg.inv(fisher)` with `np.linalg.solve(fisher, e_j)` +
+  `try/except LinAlgError` → `np.linalg.pinv` fallback.
+- **Poisson eta overflow guard** (`_poisson_nll`, `_poisson_grad`,
+  `_poisson_hessian` in `_jax.py`): clipped η to `[-20, 20]`
+  before `jnp.exp(η)` to prevent overflow.
+- **Score strategy regularisation** (`score.py`): added
+  `Σ_k += 1e-10·I` before `np.linalg.solve(Σ_k, …)` to stabilise
+  near-singular cluster scatter matrices.
+- **GLMM Fisher upgrade** (`LogisticMixedFamily.score_project`,
+  `PoissonMixedFamily.score_project`): upgraded from diagonal
+  `U_j / I_{jj}` to full inverse `[I⁻¹]_{jj}` with `try/except LinAlgError` → `pinv` fallback.
+- **Distance correlation denominator** (`confounders.py`): changed
+  `dvar_x * dvar_y - dcov² + 1e-300` to
+  `max(dvar_x * dvar_y - dcov², 1e-300)` to prevent negative
+  argument to `np.sqrt`.
+
+### Fixed
+
+- **Logistic null-score prediction** (`LogisticFamily.null_score`):
+  intercept-free null now predicts σ(0)=0.5 instead of 0, matching
+  the logistic link at η=0.
+- **Poisson/NB null-score prediction** (`PoissonFamily.null_score`,
+  `NegativeBinomialFamily.null_score`): intercept-free null now
+  predicts exp(0)=1 instead of 0, matching the log-link at η=0.
+- **Logistic clipping harmonisation**: `LogisticFamily.fit_metric`
+  clipping changed from `[0.001, 0.999]` to `[1e-15, 1−1e-15]`,
+  consistent with the numerically stable softplus NLL path.
+- **Engine error message**: removed hardcoded family list from
+  score-project error message; now dynamically names the family
+  that lacks `score_project()`.
+- **Clopper-Pearson dead branch**: removed unreachable
+  `np.maximum(successes, 1)` guard and `np.where(successes == 0)`
+  branch in `_clopper_pearson_ci`, since `successes` is always ≥ 1.
+- **Confounder p-value label**: changed `"N/A (confounder)"` to
+  `"(confounder)"` — the `"N/A"` prefix was redundant clutter.
+- **Confounder `pval_ci` masking**: Clopper-Pearson CIs are now
+  set to NaN for confounder features at the data layer (`core.py`),
+  preventing misleading CI display in both results and diagnostics
+  tables.
+- **Confounder `± margin` sub-row**: confounders now render a blank
+  sub-row instead of a `± margin` line, preventing spurious `[!]`
+  markers and `n_randomizations` recommendations.
+- **Confounder P-Val CI in diagnostics**: NaN CIs now render as em
+  dash `—` in the diagnostics table P-Val CI column.
 
 ## [0.4.1] - 2026-02-25
 
@@ -566,9 +564,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **60 confounder tests** covering partial/distance correlation,
   multiple-testing correction, collider detection (linear + logistic
   + multinomial + permutation guard), moderation, mixed-family
-  fallback, cluster bootstrap, collinearity guard, multinomial
-  exclusion, full sieve orchestrator, E-value (10 tests), and
-  Rosenbaum bounds (5 tests).
+    fallback, cluster bootstrap, collinearity guard, multinomial
+    exclusion, full sieve orchestrator, E-value (10 tests), and
+    Rosenbaum bounds (5 tests).
 - **`panel_id=` and `time_id=` convenience parameters** on
   `randomization_test_regression()`: syntactic sugar for
   `groups=panel_id, permutation_strategy="within"`.  When
@@ -651,7 +649,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`ScoreExactStrategy`** upgraded from Plan C placeholder
   (`NotImplementedError`) to full PQL-fixed implementation.
   Non-GLMM families now raise `ValueError` (not `NotImplementedError`).
-
 - `PermutationEngine.__init__()` accepts three new keyword arguments
   (`groups`, `permutation_strategy`, `permutation_constraints`) and
   stores them as instance attributes before permutation generation.
@@ -824,7 +821,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `str | None` to `ModelFamily | None`.
 - All 6 example scripts updated to use self-contained display calls.
 - `API.md` and `QUICKSTART.md` updated for new display signatures.
-
 - **`compute_extended_diagnostics()` protocol method:** each
   `ModelFamily` now owns its family-specific model-level diagnostic
   computation (`breusch_pagan`, `deviance_residuals`, `poisson_gof`,
@@ -843,7 +839,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Tests updated: `test_diagnostics.py` passes `family=` instances
   instead of `model_type=` strings; `test_families.py` gains 6 new
   `compute_extended_diagnostics` assertions.
-
 - **`ModelFamily` protocol:** strategy pattern decoupling model fitting
   from the permutation engine.  Each family implements `validate_y`,
   `fit`, `predict`, `coefs`, `residuals`, `reconstruct_y`, `fit_metric`,
@@ -968,12 +963,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `fit_intercept` parameter threaded through all methods, diagnostics,
   and p-value calculations for consistent model specification.
 - New tests for diagnostics, display, and core intercept handling
-  (125 total, up from 100).
+  (125 total, up from 100).s
+
+### Changed
+
+- `calculate_p_values` return type expanded from 2-tuple to 4-tuple
+  `(permuted_str, classic_str, raw_empirical, raw_classic)`.
+- Examples refactored to use the new `print_diagnostics_table` API.
+- Docs (API.md, QUICKSTART.md, ROADMAP.md) updated for v0.1.5.
 
 ### Fixed
 
 - **Intercept mismatch in permutation refits (all methods).** The old
-  code fitted permutation models without an intercept while the observed
+  cosde fitted permutation models without an intercept while the observed
   model used `fit_intercept=True`. This caused permuted slope coefficients
   to absorb the response mean, producing spurious p-values (e.g. p = 1.0
   for X6 longitude in the linear example, p = 0.0 for strong predictors).
@@ -985,13 +987,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   strings, eliminating redundant statsmodels refits in diagnostics.
 - Exposure R² column suppressed when no confounders are specified
   (was displaying a wall of `0.0000` values).
-
-### Changed
-
-- `calculate_p_values` return type expanded from 2-tuple to 4-tuple
-  `(permuted_str, classic_str, raw_empirical, raw_classic)`.
-- Examples refactored to use the new `print_diagnostics_table` API.
-- Docs (API.md, QUICKSTART.md, ROADMAP.md) updated for v0.1.5.
 
 ## [0.1.1] - 2026-02-21
 
