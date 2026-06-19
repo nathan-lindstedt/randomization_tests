@@ -240,9 +240,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `TestPoissonEtaOverflow` (1),
   `test_small_n_near_constant_returns_finite` (1),
   `TestConfounderDisplay` (5).
-
-### Changed (Model Diagnostics Polish)
-
 - **3-column model-level diagnostics grid**: restructured the
   Model-level Diagnostics section of `print_diagnostics_table` into
   a consistent Label (28ch) | Stat (14ch) | Detail layout, matching
@@ -835,9 +832,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `model_type` branch block in `diagnostics.py` is deleted; replaced
   by a single `result.update(family.compute_extended_diagnostics(...))`
   dispatch.
-
-### Changed
-
 - `compute_all_diagnostics()` parameter `model_type: str` replaced
   by `family: ModelFamily`.  `core.py` call site updated from
   `model_type=engine.family.name` to `family=engine.family`.
@@ -896,9 +890,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Example scripts:** `poisson_regression.py`,
   `negative_binomial_regression.py`, `ordinal_regression.py`,
   `multinomial_regression.py`.
-
-### Changed
-
 - `core.py` refactored from `is_binary` branching to family-dispatched
   method calls via `_strategies/` package.
 - `compute_all_diagnostics` accepts `model_type: str` instead of
