@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.4.4] - Unreleased
+## [0.4.4] - 2026-06-19
 
 ### Added
 
@@ -55,7 +55,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `n_perm`), unquoted forward-reference type annotations, used `enumerate()`
   for cell-id loop.
 
-## [0.4.3] - Unreleased
+## [0.4.3] - 2026-03-21
 
 ### Added
 
@@ -164,7 +164,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   removed — all AR-capable families now whiten X before calling
   this function, making the Ω⁻¹ path obsolete.
 
-## [0.4.2] - Unreleased
+## [0.4.2] - 2026-03-01
 
 ### Fixed
 
@@ -267,7 +267,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   3-column alignment, Cook's D, coverage sufficient/borderline,
   line width ≤ 80, B/denominator, and factorial overflow notation.
 
-## [0.4.1] - Unreleased
+## [0.4.1] - 2026-02-25
 
 ### Added
 
@@ -706,7 +706,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `scope="module"`, avoiding redundant Laplace REML calibration
   per test (~10× speedup: 21 min → <2 min).
 
-## [0.4.0] - Unreleased
+## [0.4.0] - 2026-02-24
 
 ### Added
 
