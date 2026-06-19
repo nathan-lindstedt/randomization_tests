@@ -189,7 +189,7 @@ def _exhaustive_sign_flips(
 
     if exclude_identity:
         # The all-+1 vector corresponds to rank 0 (all bits zero).
-        ranks = ranks[1:]
+        ranks = ranks[1:]  # type: ignore[assignment]
 
     return _ranks_to_signs(ranks, n_samples)
 
@@ -418,7 +418,7 @@ def generate_between_cell_sign_flips(
     # ---- Lehmer-style sampling (small G, subset requested) -------
     if G <= 20:
         pool_start = 1 if exclude_identity else 0
-        ranks = rng.choice(total - pool_start, size=n_flips, replace=False) + pool_start
+        ranks = rng.choice(total - pool_start, size=n_flips, replace=False) + pool_start  # type: ignore[assignment]
         bits = np.arange(G, dtype=np.int64)
         binary = (ranks[:, np.newaxis] >> bits[np.newaxis, :]) & 1
         cell_signs = 1 - 2 * binary.astype(np.int8)

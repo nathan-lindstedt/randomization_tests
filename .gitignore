@@ -4,6 +4,7 @@
 # IDE / editor
 *.code-workspace
 .vscode/
+.claude/
 
 # Python bytecode
 __pycache__/
