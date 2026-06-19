@@ -5,6 +5,7 @@
 *.code-workspace
 .vscode/
 .claude/
+.git-commit-msg.txt
 
 # Python bytecode
 __pycache__/
