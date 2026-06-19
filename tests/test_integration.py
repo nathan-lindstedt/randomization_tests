@@ -2,13 +2,14 @@
 
 Tests cover:
 - Result type verification (IndividualTestResult / JointTestResult)
-- Dict-access backward compatibility (_DictAccessMixin)
 - .to_dict() roundtrip serialisation
 - exchangeability_cells() protocol stub
 - Pinned-seed regression tests for numerical determinism
 - Schema validation (all expected fields present)
 - New GLM families: Poisson, NegBin, ordinal, multinomial (Step 34)
 - Confounder module with each family
+
+Note: _DictAccessMixin unit tests live in tests/test_results.py.
 """
 
 from __future__ import annotations
@@ -117,64 +118,7 @@ class TestResultTypes:
 
 
 # ------------------------------------------------------------------ #
-# 2. Dict-access backward compatibility
-# ------------------------------------------------------------------ #
-
-
-class TestDictAccess:
-    """Verify _DictAccessMixin provides drop-in dict replacement."""
-
-    @pytest.fixture()
-    def individual_result(self) -> IndividualTestResult:
-        X, y = _linear_data()
-        return randomization_test_regression(
-            X, y, n_randomizations=_N_PERMS, random_state=_SEED, method="ter_braak"
-        )
-
-    @pytest.fixture()
-    def joint_result(self) -> JointTestResult:
-        X, y = _linear_data()
-        return randomization_test_regression(
-            X,
-            y,
-            n_randomizations=_N_PERMS,
-            random_state=_SEED,
-            method="kennedy_joint",
-            confounders=["x3"],
-        )
-
-    def test_bracket_access(self, individual_result: IndividualTestResult) -> None:
-        assert individual_result["method"] == "ter_braak"
-        assert isinstance(individual_result["model_coefs"], list)
-
-    def test_get_with_default(self, individual_result: IndividualTestResult) -> None:
-        assert individual_result.get("method") == "ter_braak"
-        assert individual_result.get("nonexistent", "fallback") == "fallback"
-
-    def test_contains(self, individual_result: IndividualTestResult) -> None:
-        assert "model_coefs" in individual_result
-        assert "p_value_threshold_one" in individual_result
-        assert "nonexistent_key" not in individual_result
-
-    def test_keyerror_on_missing(self, individual_result: IndividualTestResult) -> None:
-        with pytest.raises(KeyError, match="nonexistent"):
-            individual_result["nonexistent"]
-
-    def test_joint_bracket_access(self, joint_result: JointTestResult) -> None:
-        assert joint_result["method"] == "kennedy_joint"
-        assert isinstance(joint_result["p_value"], float)
-        assert "observed_improvement" in joint_result
-
-    def test_frozen_immutability(self, individual_result: IndividualTestResult) -> None:
-        """Dataclass is frozen — attribute assignment should raise."""
-        from dataclasses import FrozenInstanceError
-
-        with pytest.raises(FrozenInstanceError):
-            individual_result.method = "modified"  # type: ignore[misc]
-
-
-# ------------------------------------------------------------------ #
-# 3. to_dict() roundtrip serialisation
+# 2. to_dict() roundtrip serialisation
 # ------------------------------------------------------------------ #
 
 
@@ -219,7 +163,7 @@ class TestToDict:
 
 
 # ------------------------------------------------------------------ #
-# 4. exchangeability_cells() protocol stub
+# 3. exchangeability_cells() protocol stub
 # ------------------------------------------------------------------ #
 
 
@@ -246,7 +190,7 @@ class TestExchangeabilityCells:
 
 
 # ------------------------------------------------------------------ #
-# 5. Schema validation
+# 4. Schema validation
 # ------------------------------------------------------------------ #
 
 _INDIVIDUAL_FIELDS = {
@@ -323,7 +267,7 @@ class TestSchemaValidation:
 
 
 # ------------------------------------------------------------------ #
-# 6. Display functions consume typed results
+# 5. Display functions consume typed results
 # ------------------------------------------------------------------ #
 
 
@@ -370,7 +314,7 @@ class TestDisplayIntegration:
 
 
 # ------------------------------------------------------------------ #
-# 7. Pinned-seed regression tests
+# 6. Pinned-seed regression tests
 # ------------------------------------------------------------------ #
 
 
@@ -448,7 +392,7 @@ class TestPinnedSeedRegression:
 
 
 # ------------------------------------------------------------------ #
-# 8. Cross-method consistency
+# 7. Cross-method consistency
 # ------------------------------------------------------------------ #
 
 
@@ -478,7 +422,7 @@ class TestCrossMethodConsistency:
 
 
 # ------------------------------------------------------------------ #
-# 9. n_jobs parallelisation warnings
+# 8. n_jobs parallelisation warnings
 # ------------------------------------------------------------------ #
 
 
@@ -577,7 +521,7 @@ class TestNJobsWarnings:
 
 
 # ------------------------------------------------------------------ #
-# 10. New GLM family integration tests  (Step 34)
+# 9. New GLM family integration tests  (Step 34)
 # ------------------------------------------------------------------ #
 
 # ---- Synthetic data generators ----

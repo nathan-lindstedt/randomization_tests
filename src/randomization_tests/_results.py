@@ -82,9 +82,11 @@ class _DictAccessMixin:
     types are still converted.
     """
 
-    _SERIALIZERS: ClassVar[dict[str, Any]] = {
-        "family": lambda f: f.name,
-    }
+    _SERIALIZERS: ClassVar[dict[str, Any]] = {}
+    """Per-field serializer callables.  Subclasses override this to register
+    custom conversion functions for non-primitive fields.  The base default
+    is empty — domain-specific knowledge (e.g. ``ModelFamily`` → ``str``)
+    belongs on the concrete subclass, not the generic mixin."""
 
     # Fields to exclude from to_dict() serialisation.
     _EXCLUDE_FROM_DICT: ClassVar[frozenset[str]] = frozenset({"context"})
@@ -101,14 +103,16 @@ class _DictAccessMixin:
         return getattr(self, key, default)
 
     def __contains__(self, key: object) -> bool:
-        """Membership test: ``"key" in result``."""
+        """Membership test: ``"key" in result``.
+
+        Returns ``True`` only for declared dataclass *data fields*,
+        not for methods, ``ClassVar`` entries, or other class
+        attributes.  This ensures semantically correct container
+        behaviour — ``"to_dict" in result`` is ``False``.
+        """
         if not isinstance(key, str):
             return False
-        # Only report fields that are actual dataclass fields (or
-        # inherited attributes), not arbitrary object attributes like
-        # __class__.  Using hasattr is intentional — it catches both
-        # dataclass fields and any future @property additions.
-        return hasattr(self, key)
+        return key in {f.name for f in fields(self)}  # type: ignore[arg-type]
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to a plain dictionary.
@@ -143,6 +147,10 @@ class IndividualTestResult(_DictAccessMixin):
     All fields are accessible both as attributes (``result.family``)
     and via dict syntax (``result["family"]``).
     """
+
+    _SERIALIZERS: ClassVar[dict[str, Any]] = {
+        "family": lambda f: f.name,
+    }
 
     # ---- Coefficients & null distribution --------------------------
     model_coefs: list[float]
@@ -234,6 +242,10 @@ class JointTestResult(_DictAccessMixin):
 
     All fields are accessible both as attributes and via dict syntax.
     """
+
+    _SERIALIZERS: ClassVar[dict[str, Any]] = {
+        "family": lambda f: f.name,
+    }
 
     # ---- Test statistic & null distribution -------------------------
     observed_improvement: float
@@ -357,3 +369,154 @@ class ConfounderAnalysisResult(_DictAccessMixin):
 
     collider_results: dict[str, Any] = field(default_factory=dict)
     """Per-candidate collider test results."""
+
+
+# ------------------------------------------------------------------ #
+# KernelTestResult  (L3 — Kernel / Distribution Testing)
+# ------------------------------------------------------------------ #
+
+
+@dataclass(frozen=True)
+class KernelTestResult(_DictAccessMixin):
+    """Result from a kernel-based two-sample or independence test.
+
+    Returned by :func:`mmd_test`, :func:`hsic_test`, and
+    :func:`kernel_regression_test`.
+
+    All fields are accessible both as attributes and via dict syntax.
+    """
+
+    _SERIALIZERS: ClassVar[dict[str, Any]] = {}
+    _EXCLUDE_FROM_DICT: ClassVar[frozenset[str]] = frozenset()
+
+    statistic: float
+    """Observed test statistic (MMD², HSIC, or kernel regression score)."""
+
+    p_value: float
+    """Phipson & Smyth corrected permutation p-value."""
+
+    null_distribution: np.ndarray
+    """Permuted statistic values under H₀, shape ``(n_permutations,)``."""
+
+    kernel_name: str
+    """Name of the kernel used (e.g. ``"gaussian"``, ``"cosine"``)."""
+
+    n_permutations: int
+    """Number of permutations used."""
+
+    method: str
+    """Test method: ``"mmd"``, ``"hsic"``, or ``"kernel_regression"``."""
+
+
+# ------------------------------------------------------------------ #
+# ConformalResult  (L2 — Inference / Conformal Prediction)
+# ------------------------------------------------------------------ #
+
+
+@dataclass(frozen=True)
+class ConformalResult(_DictAccessMixin):
+    """Result from a conformal prediction procedure.
+
+    Returned by :func:`conformal_prediction`.
+
+    For regression families, ``prediction_interval`` is populated and
+    ``prediction_set`` is ``None``.  For classification families
+    (logistic, ordinal, multinomial), ``prediction_set`` is populated
+    and ``prediction_interval`` is ``None``.
+    """
+
+    _SERIALIZERS: ClassVar[dict[str, Any]] = {
+        # Tuple is not JSON-serialisable as a tuple; emit list instead.
+        "prediction_interval": lambda t: list(t) if t is not None else None,
+    }
+    _EXCLUDE_FROM_DICT: ClassVar[frozenset[str]] = frozenset()
+
+    prediction_interval: tuple[float, float] | None
+    """``(lower, upper)`` prediction interval for regression; ``None`` for
+    classification."""
+
+    prediction_set: np.ndarray | None
+    """Array of class labels included in the prediction set for
+    classification; ``None`` for regression."""
+
+    nonconformity_scores: np.ndarray
+    """Nonconformity scores from the calibration set, shape
+    ``(n_calibration,)``."""
+
+    confidence_level: float
+    """Nominal coverage level (e.g. ``0.95``)."""
+
+    method: str
+    """Conformal method: ``"split"`` or ``"full"``."""
+
+
+# ------------------------------------------------------------------ #
+# InvarianceResult  (L2 — Inference / Invariance Testing)
+# ------------------------------------------------------------------ #
+
+
+@dataclass(frozen=True)
+class InvarianceResult(_DictAccessMixin):
+    """Result from a multi-environment invariance test.
+
+    Returned by :func:`invariance_test`.
+
+    Tests H₀: the coefficient of the predictor of interest is identical
+    across all environments (Peters, Bühlmann & Meinshausen, 2016).
+    """
+
+    _SERIALIZERS: ClassVar[dict[str, Any]] = {}
+    _EXCLUDE_FROM_DICT: ClassVar[frozenset[str]] = frozenset()
+
+    is_invariant: bool
+    """``True`` when the test fails to reject H₀ (invariant effect)."""
+
+    p_value: float
+    """Permutation p-value for the max-deviation test statistic."""
+
+    environment_coefficients: dict[str, float]
+    """Per-environment coefficient estimates, keyed by environment label."""
+
+    pooled_coefficient: float
+    """Coefficient estimate from the pooled (full-data) model."""
+
+    max_deviation: float
+    """Observed max|β̂_e − β̂_pool| across environments."""
+
+    null_distribution: np.ndarray
+    """Permuted max-deviation values under H₀, shape ``(n_permutations,)``."""
+
+
+# ------------------------------------------------------------------ #
+# KnockoffResult  (L2/L3 — Model-X Knockoffs)
+# ------------------------------------------------------------------ #
+
+
+@dataclass(frozen=True)
+class KnockoffResult(_DictAccessMixin):
+    """Result from a Model-X knockoff variable-selection procedure.
+
+    Returned by :func:`knockoff_test`.
+
+    Provides FDR-controlled feature selection via the knockoff+
+    threshold (Barber & Candès, 2015).
+    """
+
+    _SERIALIZERS: ClassVar[dict[str, Any]] = {}
+    _EXCLUDE_FROM_DICT: ClassVar[frozenset[str]] = frozenset()
+
+    selected_features: list[str]
+    """Feature names that pass the knockoff+ selection threshold."""
+
+    knockoff_statistics: np.ndarray
+    """W-statistics ``W_j = |β_j| − |β̃_j|`` for each feature,
+    shape ``(n_features,)``."""
+
+    fdr_level: float
+    """Target FDR level (e.g. ``0.1``)."""
+
+    threshold: float
+    """Knockoff+ threshold τ such that estimated FDP ≤ ``fdr_level``."""
+
+    feature_names: list[str]
+    """All feature names in the order matching ``knockoff_statistics``."""
