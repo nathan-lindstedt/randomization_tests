@@ -5,7 +5,49 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.4.4] - Unreleased
+## [0.5.0] - Unreleased
+
+### Added
+
+- **`_validation.py` — structured validation layer**: five
+  validator functions (`validate_compatibility`,
+  `validate_confounders`, `validate_family_compatibility`,
+  `validate_groups`, `validate_panel_structure`) return typed
+  `ValidationIssue` dataclasses instead of raising directly,
+  enabling callers to collect and report multiple issues in a single
+  pass.  75 tests in `test_validation.py`.
+
+- **`_results.py` — extended result dataclasses**: four new
+  L2/L3 result types (`KernelTestResult`, `ConformalResult`,
+  `InvarianceResult`, `KnockoffResult`) added alongside the
+  existing `IndividualTestResult` and `JointTestResult`.  All share
+  the `_DictAccessMixin` protocol.  61 tests in `test_results.py`.
+
+- **`_kernels.py` — kernel protocol and implementations**:
+  `Kernel` protocol (`KernelEval` callable type), five concrete
+  kernels (`GaussianKernel`, `CosineKernel`, `LinearKernel`,
+  `LaplacianKernel`, `PrecomputedKernel`), and five Gram-matrix
+  utilities (`gram_row_sums`, `gram_centering`, `gram_permute`,
+  `gram_trace_product`, `_nystrom_evaluate`).  39 tests in
+  `test_kernels.py`.
+
+- **`_kernel_tests.py` — MMD, HSIC, and kernel regression tests**:
+  `mmd_test()` (two-sample Maximum Mean Discrepancy),
+  `hsic_test()` (Hilbert-Schmidt Independence Criterion), and
+  `kernel_regression_test()` (permutation F-test in the RKHS).
+  Coverage in `test_kernel_tests.py`.
+
+- **`_text.py` — text preprocessing pipeline**: tokenisation,
+  TF-IDF, and bag-of-words helpers for applying permutation tests
+  to textual data.  Coverage in `test_text.py`.
+
+- **Complete dataset citations in `README.md`**: added citations for
+  Abalone, Adult, Bike Sharing, Energy Efficiency, Parkinsons
+  Telemonitoring, SUPPORT2, Wine, and Wine Quality (all with DOIs
+  from the UCI Machine Learning Repository) alongside the previously
+  cited Breast Cancer Wisconsin and Real Estate Valuation datasets.
+
+
 
 ### Changed
 

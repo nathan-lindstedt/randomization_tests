@@ -92,6 +92,22 @@ Winkler, A. M., Webster, M. A., Vidaurre, D., Nichols, T. E., and S. M. Smith. 2
 
 Dataset Citations:
 
+Aeberhard, S. and M. Forina. "Wine," UCI Machine Learning Repository, 1992. [Online]. Available: https://doi.org/10.24432/C5PC7J.
+
+Becker, B. and R. Kohavi. "Adult," UCI Machine Learning Repository, 1996. [Online]. Available: https://doi.org/10.24432/C5XW20.
+
+Cortez, P., A. Cerdeira, F. Almeida, T. Matos, and J. Reis. "Wine Quality," UCI Machine Learning Repository, 2009. [Online]. Available: https://doi.org/10.24432/C56S3T.
+
+Fanaee-T, H. "Bike Sharing," UCI Machine Learning Repository, 2013. [Online]. Available: https://doi.org/10.24432/C5W894.
+
+Harrel, F. "SUPPORT2," UCI Machine Learning Repository, 1995. [Online]. Available: https://doi.org/10.3886/ICPSR02957.v2.
+
+Nash, W., T. Sellers, S. Talbot, A. Cawthorn, and W. Ford. "Abalone," UCI Machine Learning Repository, 1994. [Online]. Available: https://doi.org/10.24432/C55C7W.
+
+Tsanas, A. and M. Little. "Parkinsons Telemonitoring," UCI Machine Learning Repository, 2009. [Online]. Available: https://doi.org/10.24432/C5ZS3N.
+
+Tsanas, A. and A. Xifara. "Energy Efficiency," UCI Machine Learning Repository, 2012. [Online]. Available: https://doi.org/10.24432/C51307.
+
 Wolberg, W. "Breast Cancer Wisconsin (Diagnostic)," UCI Machine Learning Repository, 1995. [Online]. Available: https://doi.org/10.24432/C5DW2B.
 
 Yeh, I. "Real Estate Valuation," UCI Machine Learning Repository, 2018. [Online]. Available: https://doi.org/10.24432/C5J30W.
