@@ -7,9 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.4.4] - Unreleased
 
+### Added
+
+- **`pytest.importorskip("jax")` guards**: all test classes and
+  modules that require JAX (`test_families_mixed.py`,
+  `TestAR1Logistic`, `TestAR1Poisson`, `TestARWhiteningCorrectness`,
+  `TestGLMMCompatGuards`, `TestUnsupportedFamily`,
+  `TestScoreOrdinalMultinomial`, and individual tests in
+  `test_config.py`, `test_core.py`, `test_engine.py`,
+  `test_score_strategy.py`) now skip gracefully when JAX is not
+  installed, fixing all CI test failures in non-JAX environments.
+- **Complete dataset citations in `README.md`**: added citations for
+  Abalone, Adult, Bike Sharing, Energy Efficiency, Parkinsons
+  Telemonitoring, SUPPORT2, Wine, and Wine Quality (all with DOIs
+  from the UCI Machine Learning Repository) alongside the previously
+  cited Breast Cancer Wisconsin and Real Estate Valuation datasets.
+
+### Fixed
+
+- **`sign_flips.py` mypy errors**: `ranks = ranks[1:]` (line 192)
+  and `ranks = rng.choice(...) + pool_start` (line 421) each
+  returned `ndarray[tuple[int, ...], ...]` instead of the declared
+  `ndarray[tuple[int], ...]` — a numpy typing limitation.  Suppressed
+  with targeted `# type: ignore[assignment]` comments.
+
 ### Changed
 
-- **API.md**: fixed stale `ar_order` description (GLS→FGLS with Cholesky
+- **`pyproject.toml` mypy overrides**: added
+  `[[tool.mypy.overrides]]` for
+  `randomization_tests._backends._jax` to suppress
+  `warn_return_any` — JAX-decorated callables resolve to `Any` when
+  JAX stubs are absent, producing false positive `no-any-return`
+  errors in the type-check CI job.
+- **`.gitignore`**: added `.claude/` (Claude agent instructions,
+  not project source) and `.git-commit-msg.txt` (scratch commit
+  message file) to prevent accidental commits.
+
+
   whitening), corrected MultinomialFamily.coefs() from "LRT chi-squared"
   to "Wald χ²", updated NB `calibrate()` from duck-typed to protocol method.
 - **QUICKSTART.md**: added missing methods (Manly, score, score_exact) to
