@@ -269,6 +269,10 @@ class TestAR2Linear:
 class TestAR1Logistic:
     """AR(1) correction with logistic regression."""
 
+    @pytest.fixture(autouse=True)
+    def _require_jax(self):
+        pytest.importorskip("jax")
+
     def test_runs_and_returns_valid_result(self):
         X, y, panel, time = _make_ar1_panel_data(binary=True, n_panels=25, T=10, seed=5)
         result = randomization_test_regression(
@@ -289,6 +293,10 @@ class TestAR1Logistic:
 
 class TestAR1Poisson:
     """AR(1) correction with Poisson regression."""
+
+    @pytest.fixture(autouse=True)
+    def _require_jax(self):
+        pytest.importorskip("jax")
 
     def test_runs_and_returns_valid_result(self):
         X, y, panel, time = _make_ar1_panel_data(count=True, n_panels=25, T=10, seed=6)
@@ -569,6 +577,10 @@ class TestAREdgeCases:
 
 class TestARWhiteningCorrectness:
     """Verify the FGLS whitening approach produces correct inference."""
+
+    @pytest.fixture(autouse=True)
+    def _require_jax(self):
+        pytest.importorskip("jax")
 
     def test_logistic_ar_changes_scores(self):
         """LogisticFamily AR correction must change permuted stats.

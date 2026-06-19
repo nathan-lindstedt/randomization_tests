@@ -1862,6 +1862,7 @@ class TestARScoreCorrection:
 
     def test_ar1_score_logistic_runs(self):
         """AR(1) correction with logistic family produces valid results."""
+        pytest.importorskip("jax")
         rng = np.random.default_rng(42)
         n_panels, n_times = 15, 10
         n = n_panels * n_times
@@ -1885,6 +1886,7 @@ class TestARScoreCorrection:
 
     def test_ar1_score_poisson_runs(self):
         """AR(1) correction with Poisson family produces valid results."""
+        pytest.importorskip("jax")
         rng = np.random.default_rng(42)
         n_panels, n_times = 15, 10
         n = n_panels * n_times

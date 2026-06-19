@@ -349,6 +349,7 @@ class TestEngineBackendWarnings:
 
     def test_jax_njobs_warning(self, linear_data):
         """n_jobs ignored under JAX backend."""
+        pytest.importorskip("jax")
         from randomization_tests._config import get_backend, set_backend
 
         original = get_backend()
@@ -855,6 +856,10 @@ class TestGLMMCompatGuards:
     the deep NotImplementedError from _GLMMBatchStubMixin into a clean
     early ValueError with a helpful message.
     """
+
+    @pytest.fixture(autouse=True)
+    def _require_jax(self):
+        pytest.importorskip("jax")
 
     @pytest.mark.parametrize("method", _GLMM_BLOCKED)
     def test_logistic_mixed_blocked(self, method):

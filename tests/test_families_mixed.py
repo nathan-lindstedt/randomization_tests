@@ -10,8 +10,10 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from randomization_tests.families import ModelFamily, resolve_family
-from randomization_tests.families_mixed import (
+jax = pytest.importorskip("jax")
+
+from randomization_tests.families import ModelFamily, resolve_family  # noqa: E402
+from randomization_tests.families_mixed import (  # noqa: E402
     LinearMixedFamily,
     LogisticMixedFamily,
     PoissonMixedFamily,

@@ -26,7 +26,7 @@ class TestGetBackend:
         os.environ.pop("RANDOMIZATION_TESTS_BACKEND", None)
 
     def test_auto_detects_jax_when_installed(self):
-        # JAX is installed in our test env, so auto-detect should find it
+        pytest.importorskip("jax")
         result = get_backend()
         assert result == "jax"
 
@@ -48,6 +48,7 @@ class TestGetBackend:
         assert get_backend() == "jax"
 
     def test_auto_restores_default(self):
+        pytest.importorskip("jax")
         set_backend("numpy")
         assert get_backend() == "numpy"
         set_backend("auto")

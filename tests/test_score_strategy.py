@@ -422,6 +422,10 @@ class TestUnsupportedFamily:
     only and is tested in ``TestScoreExactNonGLMM`` below.
     """
 
+    @pytest.fixture(autouse=True)
+    def _require_jax(self):
+        pytest.importorskip("jax")
+
     @pytest.mark.parametrize("method", ["score", "score_joint"])
     def test_logistic_accepted(self, method: str) -> None:
         rng = np.random.default_rng(_SEED)
@@ -608,6 +612,7 @@ class TestSingularityGuards:
 
     def test_collinear_fisher_returns_finite(self) -> None:
         """_glm_score_projection_row with collinear design -> finite result."""
+        pytest.importorskip("jax")
         from randomization_tests._backends._jax import _glm_score_projection_row
 
         n, p = 50, 3
@@ -717,6 +722,10 @@ class TestScoreOrdinalMultinomial:
     method uses direct Y permutation (since these are direct_permutation
     families) with deviance as the test statistic.
     """
+
+    @pytest.fixture(autouse=True)
+    def _require_jax(self):
+        pytest.importorskip("jax")
 
     def test_score_ordinal_returns_individual_result(self):
         X, y = _make_ordinal_data()
