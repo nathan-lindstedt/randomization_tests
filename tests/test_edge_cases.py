@@ -88,15 +88,27 @@ class TestSingleFeature:
         assert "p_value" in result
         assert 0 <= result["p_value"] <= 1
 
-    def test_ter_braak_logistic_single_feature_rejected(self) -> None:
-        """ter Braak + logistic + 1 feature is degenerate (0-predictor reduced model)."""
+    def test_freedman_lane_logistic_single_feature_rejected(self) -> None:
+        """FL + logistic + 1 feature is degenerate (0-predictor reduced model)."""
         X, y = _binary_data()
-        with pytest.raises(
-            ValueError, match="ter Braak.*logistic.*at least 2 features"
+        with (
+            pytest.raises(
+                ValueError, match="Freedman-Lane.*logistic.*at least 2 features"
+            ),
+            pytest.warns(UserWarning, match="without confounders"),
         ):
             randomization_test_regression(
-                X, y, n_randomizations=50, method="ter_braak", random_state=0
+                X, y, n_randomizations=50, method="freedman_lane", random_state=0
             )
+
+    def test_ter_braak_logistic_single_feature_ok(self) -> None:
+        """Canonical ter Braak permutes full-model residuals — no reduced
+        model exists, so a single-feature logistic design is valid."""
+        X, y = _binary_data()
+        result = randomization_test_regression(
+            X, y, n_randomizations=50, method="ter_braak", random_state=0
+        )
+        assert len(result["model_coefs"]) == 1
 
     def test_kennedy_logistic(self) -> None:
         X, y = _binary_data()

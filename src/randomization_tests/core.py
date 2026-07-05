@@ -31,7 +31,6 @@ from ._results import IndividualTestResult, JointTestResult
 from ._strategies import resolve_strategy
 from .diagnostics import (
     compute_all_diagnostics,
-    compute_jackknife_coefs,
     compute_permutation_ci,
     compute_profile_ci,
     compute_pvalue_ci,
@@ -380,20 +379,24 @@ def randomization_test_regression(
 
     if method in ("freedman_lane", "freedman_lane_joint") and not confounders:
         warnings.warn(
-            f"{method!r} method called without confounders — the reduced "
-            "model is intercept-only, which yields less power than "
-            "conditioning on other predictors. Consider 'ter_braak' for "
-            "unconditional tests.",
+            f"{method!r} method called without confounders — all features "
+            "will be tested, each against the reduced model containing the "
+            "remaining predictors. Consider 'ter_braak' for a single "
+            "full-model-residual test of all coefficients.",
             UserWarning,
             stacklevel=2,
         )
 
-    if method == "ter_braak" and engine.family.name == "logistic" and X.shape[1] == 1:
+    if (
+        method == "freedman_lane"
+        and engine.family.name == "logistic"
+        and X.shape[1] == 1
+    ):
         raise ValueError(
-            "ter Braak method with logistic regression requires at least "
+            "Freedman-Lane method with logistic regression requires at least "
             "2 features because the reduced model (dropping the single "
-            "feature) has 0 predictors.  Use method='kennedy' with "
-            "confounders, or add additional features."
+            "feature) has 0 predictors.  Use method='ter_braak', or "
+            "method='kennedy' with confounders, or add additional features."
         )
 
     strategy = resolve_strategy(method)
@@ -1150,19 +1153,10 @@ def _package_individual_result(
     feature_names_list = list(X.columns)
     confounder_list = confounders or []
 
-    jackknife_coefs = compute_jackknife_coefs(
-        engine.family,
-        X.values.astype(float),
-        y_values,
-        fit_intercept,
-    )
-
     perm_ci = compute_permutation_ci(
         permuted_coefs,
         engine.model_coefs,
-        method,
         alpha,
-        jackknife_coefs,
         confounder_list,
         feature_names_list,
     )
@@ -1205,7 +1199,7 @@ def _package_individual_result(
         "standardized_ci": std_ci.tolist(),
         "profile_ci": profile_ci.tolist(),
         "confidence_level": confidence_level,
-        "ci_method": "bca" if jackknife_coefs is not None else "percentile",
+        "ci_method": "shift_inversion_percentile",
     }
     if cat_ci is not None:
         ci_dict["category_wald_ci"] = cat_ci.tolist()

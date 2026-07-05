@@ -13,7 +13,13 @@ Three test functions are provided:
 
     Permutation validity: relabelling the pooled sample Z = [X; Y] and
     extracting the first n_x points as the permuted "X" group is an
-    exchangeable operation under H₀, so the permutation test is exact.
+    exchangeable operation under H₀, so the permutation test is
+    **finite-sample exact** — given two hypotheses: (i) observations
+    are exchangeable under H₀ (e.g. iid sampling), and (ii) all
+    data-dependent kernel tuning (median-heuristic bandwidth, Nyström
+    landmarks) is computed ONCE from label-free pooled data, never
+    per-group or per-permutation.  This module satisfies (ii) by
+    construction — preserve that invariant when modifying it.
 
 :func:`hsic_test`
     Hilbert-Schmidt Independence Criterion independence test.  Tests
@@ -26,13 +32,20 @@ Three test functions are provided:
     matrices (H = I - 11ᵀ/n).
 
     Permutation validity: permuting the rows of Y (breaking the
-    pairing) is exchangeable under H₀.
+    pairing) is exchangeable under H₀, so the test is **finite-sample
+    exact** under the same two hypotheses as :func:`mmd_test`
+    (pair-exchangeability under H₀; label-free one-time kernel tuning
+    per variable).
 
 :func:`kernel_regression_test`
     Partial independence test after residualising out confounders Z.
     Computes OLS residuals e_X = X - Z(ZᵀZ)⁻¹ZᵀX and
     e_Y = Y - Z(ZᵀZ)⁻¹ZᵀY, then runs :func:`hsic_test` on
     (e_X, e_Y) with a linear kernel on e_X.
+
+    Unlike the two tests above, this one is residual-based: it is
+    **asymptotically exact** only, and OLS removes only the LINEAR
+    component of confounding (see the function docstring).
 
 All three functions:
 
@@ -378,6 +391,21 @@ def kernel_regression_test(
         ``method="kernel_regression"``.  ``kernel_name`` reflects the
         kernel used for the Y residuals only (X always uses the linear
         kernel).
+
+    Notes
+    -----
+    Guarantee: this is a residual-based test.  OLS
+    residuals are correlated through the hat matrix and only
+    approximately exchangeable, so Type I control is **asymptotically
+    exact**, not finite-sample exact.  Moreover, OLS residualisation
+    removes only the LINEAR component of confounding: nonlinear
+    confounding leaks into the residuals and can produce false
+    positives — residual independence e_X ⊥ e_Y is a proxy for
+    X ⊥ Y | Z that is exact only under additive linear confounding.
+    For nonlinear confounders, use a flexible cross-fitted reduced
+    model (``reduced_model=`` arrives with the DML integration) or a
+    fully kernelised conditional test (``conditional_hsic_test``,
+    v0.5.2).
     """
     X_arr = np.asarray(X, dtype=float)
     Y_arr = np.asarray(Y, dtype=float)

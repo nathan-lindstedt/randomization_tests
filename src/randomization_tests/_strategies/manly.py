@@ -19,6 +19,16 @@ Manly is **less powerful** than residual-based methods when confounders
 are present, because permuting Y destroys all predictor–response
 structure (not just the tested feature's contribution).
 
+**Guarantee**: direct Y permutation
+is **finite-sample exact** for the COMPLETE null — Y is independent of
+the entire design — when observations are exchangeable under H₀ (no
+residuals, no estimation, no asymptotics).  This is the strongest
+guarantee any strategy in the package offers, but for the weakest null:
+when some other predictor truly affects Y, the complete null is false
+and rejection may reflect that predictor rather than the one under
+test.  Per-coefficient p-values from Manly are marginal-association
+tests, not partial tests.
+
 Sign-flipping is **not supported** — there are no residuals to flip.
 
 Two strategies:

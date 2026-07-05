@@ -15,6 +15,18 @@ residuals e_X breaks any association between X and Y while preserving
 the confounders’ relationship to Y intact.  This is valid under the
 null hypothesis that X has no effect on Y after controlling for Z.
 
+**Guarantee**: the exposure
+residuals are ESTIMATED (X̂ from a finite-sample OLS fit of X on Z),
+so they are only approximately exchangeable — correlated through the
+exposure-model hat matrix.  Type I control is therefore
+**asymptotically exact**, not finite-sample exact (Anderson &
+Robinson 2001).  Anderson & Legendre (1999) found Kennedy-type
+schemes can inflate Type I error at very small n; prefer
+``method="freedman_lane"`` (reduced-model residual permutation) when
+n is small and the linear confounder model is trusted.  The
+permutation null of the coefficient is centred at zero — the same
+property that makes the ``|β*| ≥ |β̂|`` p-value count valid.
+
 Two strategies:
 
 * **KennedyIndividualStrategy** — per-coefficient test.  For each

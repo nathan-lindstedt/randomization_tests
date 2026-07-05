@@ -374,22 +374,29 @@ class TestValidateCompatibility:
         codes = [i.code for i in issues]
         assert "SCORE_EXACT_NON_MIXED" not in codes
 
-    # ---- ter Braak + logistic + single feature ----
+    # ---- Freedman-Lane + logistic + single feature ----
 
-    def test_ter_braak_logistic_one_feature_error(self):
+    def test_freedman_lane_logistic_one_feature_error(self):
+        issues = validate_compatibility("freedman_lane", "logistic", n_features=1)
+        assert any(i.code == "FREEDMAN_LANE_LOGISTIC_SINGLE_FEATURE" for i in issues)
+
+    def test_freedman_lane_logistic_two_features_valid(self):
+        issues = validate_compatibility("freedman_lane", "logistic", n_features=2)
+        codes = [i.code for i in issues]
+        assert "FREEDMAN_LANE_LOGISTIC_SINGLE_FEATURE" not in codes
+
+    def test_ter_braak_logistic_one_feature_valid(self):
+        # Canonical ter Braak has no reduced model — single-feature
+        # logistic is valid.
         issues = validate_compatibility("ter_braak", "logistic", n_features=1)
-        assert any(i.code == "TER_BRAAK_LOGISTIC_SINGLE_FEATURE" for i in issues)
-
-    def test_ter_braak_logistic_two_features_valid(self):
-        issues = validate_compatibility("ter_braak", "logistic", n_features=2)
         codes = [i.code for i in issues]
-        assert "TER_BRAAK_LOGISTIC_SINGLE_FEATURE" not in codes
+        assert "FREEDMAN_LANE_LOGISTIC_SINGLE_FEATURE" not in codes
 
-    def test_ter_braak_logistic_no_n_features_valid(self):
+    def test_freedman_lane_logistic_no_n_features_valid(self):
         # Without n_features, the check is skipped
-        issues = validate_compatibility("ter_braak", "logistic")
+        issues = validate_compatibility("freedman_lane", "logistic")
         codes = [i.code for i in issues]
-        assert "TER_BRAAK_LOGISTIC_SINGLE_FEATURE" not in codes
+        assert "FREEDMAN_LANE_LOGISTIC_SINGLE_FEATURE" not in codes
 
     # ---- AR order checks ----
 

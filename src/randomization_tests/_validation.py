@@ -542,13 +542,13 @@ def validate_compatibility(
                 level="warning",
                 code="FREEDMAN_LANE_NO_CONFOUNDERS",
                 message=(
-                    f"{method!r} called without confounders — the reduced "
-                    "model is intercept-only, which yields less power than "
-                    "conditioning on other predictors."
+                    f"{method!r} called without confounders — all features "
+                    "will be tested, each against the reduced model "
+                    "containing the remaining predictors."
                 ),
                 suggestion=(
-                    "Consider 'ter_braak' for unconditional tests, or "
-                    "supply confounder names."
+                    "Consider 'ter_braak' for a single full-model-residual "
+                    "test, or supply confounder names."
                 ),
             )
         )
@@ -587,9 +587,9 @@ def validate_compatibility(
             )
         )
 
-    # ---- ter Braak + logistic + single feature -------------------
+    # ---- Freedman-Lane + logistic + single feature ----------------
     if (
-        method == "ter_braak"
+        method == "freedman_lane"
         and family_name == "logistic"
         and n_features is not None
         and n_features == 1
@@ -597,14 +597,15 @@ def validate_compatibility(
         issues.append(
             ValidationIssue(
                 level="error",
-                code="TER_BRAAK_LOGISTIC_SINGLE_FEATURE",
+                code="FREEDMAN_LANE_LOGISTIC_SINGLE_FEATURE",
                 message=(
-                    "ter Braak with logistic regression requires at least "
+                    "Freedman-Lane with logistic regression requires at least "
                     "2 features because the reduced model (dropping the "
                     "single feature) has 0 predictors."
                 ),
                 suggestion=(
-                    "Use method='kennedy' with confounders, or add additional features."
+                    "Use method='ter_braak', or method='kennedy' with "
+                    "confounders, or add additional features."
                 ),
             )
         )

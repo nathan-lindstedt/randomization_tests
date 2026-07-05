@@ -126,9 +126,14 @@ def _bca_percentile(
     adjusted percentiles — are generic; the caller is responsible
     for computing the observed statistic and jackknife replicates.
 
+    .. warning:: ``boot_dist`` must be a BOOTSTRAP distribution of the
+       estimator (case-resampling replicates).  Never pass a permutation
+       null distribution: under any true effect z₀ = Φ⁻¹(P(null < θ̂))
+       saturates and the interval degenerates.  Permutation nulls answer
+       hypothesis-test questions, not interval-estimation questions.
+
     Args:
-        boot_dist: Bootstrap (or permutation) replicates of the
-            statistic, shape ``(B,)``.
+        boot_dist: Bootstrap replicates of the statistic, shape ``(B,)``.
         observed_stat: Point estimate of the statistic.
         jackknife_stats: Leave-one-out estimates, shape ``(n,)``.
         alpha: ``1 - confidence_level`` (e.g. 0.05 for 95% CI).
@@ -194,6 +199,11 @@ def compute_jackknife_coefs(
     vectorised LOO when the family supports it, falling back to a
     sequential loop otherwise.
 
+    .. note:: The jackknife serves BOOTSTRAP-based BCa intervals only
+       (e.g. mediation/moderation in ``confounders.py``).  It has no
+       role in ``compute_permutation_ci`` — BCa on a permutation null
+       is invalid (see the warning on ``_bca_percentile``).
+
     Args:
         family: Model family instance.
         X: Design matrix, shape ``(n, p)``.
@@ -258,103 +268,61 @@ def compute_jackknife_coefs(
 def compute_permutation_ci(
     permuted_coefs: np.ndarray,
     model_coefs: np.ndarray,
-    method: str,
     alpha: float,
-    jackknife_coefs: np.ndarray | None,
     confounders: list[str],
     feature_names: list[str],
 ) -> np.ndarray:
-    """Confidence intervals for regression coefficients from the permutation distribution.
+    """Shift-model confidence intervals from the permutation null distribution.
 
-    Applies strategy-aware centering: ter Braak and Freedman–Lane null
-    distributions are centred on zero and must be shifted by ``+β̂``
-    before CI computation.  Score and Kennedy distributions are already
-    centred on the observed coefficient.
+    All permutation strategies produce NULL distributions of the
+    coefficient that are centred at zero — the same property that makes
+    the ``|β*| ≥ |β̂|`` p-value count valid.  A permutation null answers
+    "is δ = 0 rejectable", not "where is δ": it must never be treated as
+    a sampling distribution of the estimator (e.g. fed to a BCa
+    adjustment — z₀ = Φ⁻¹(P(null < β̂)) saturates under any true effect
+    and the interval degenerates).  BCa belongs exclusively to bootstrap
+    distributions of the ESTIMATOR (see ``_bca_percentile`` and its
+    mediation/moderation consumers).
 
-    When jackknife coefficients are available, BCa intervals are
-    computed via :func:`_bca_percentile`; otherwise simple shifted-
-    percentile intervals are returned.
+    Construction — one-shot inversion of the permutation test under a
+    translation (shift) model::
+
+        CI_j = [β̂_j − q_{1−α/2}(null_j),  β̂_j − q_{α/2}(null_j)]
+
+    where ``q`` are quantiles of the zero-centred permutation null of
+    β*_j.  The reflected form is the correct test-inversion interval;
+    "β̂ + quantiles" agrees with it only for symmetric nulls.
+
+    Guarantee: the construction assumes the null law of β̂* − δ does
+    not depend on δ (pivotality / translation invariance — a first-order
+    approximation in general), and inherits the guarantee tier of the
+    underlying test: **asymptotically exact** for residual-based
+    strategies.  Validity is design-based — inherited from the
+    permutation scheme, with no iid-sampling assumption — unlike a
+    bootstrap CI.  Fully rigorous intervals that invert the test at
+    every δ (Rosenbaum 2002; Garthwaite 1996) are planned as
+    ``ci_method="invert"``.
 
     Args:
-        permuted_coefs: Permuted coefficient matrix ``(B, p)``.
+        permuted_coefs: Permuted coefficient matrix ``(B, p)`` — the
+            zero-centred permutation null draws.
         model_coefs: Observed coefficients ``(p,)``.
-        method: Strategy name (``"ter_braak"``, ``"freedman_lane"``,
-            ``"kennedy"``, ``"score"``).
         alpha: ``1 - confidence_level``.
-        jackknife_coefs: Leave-one-out coefficients ``(n, p)`` or
-            ``None``.
         confounders: Confounder column names.
         feature_names: Feature column names.
 
     Returns:
         CI array of shape ``(p, 2)``.
     """
-    p = len(model_coefs)
-
-    # Strategy-aware centering (vectorised).
-    needs_shift = method in ("ter_braak", "freedman_lane")
-    shifted = (
-        permuted_coefs + model_coefs[np.newaxis, :] if needs_shift else permuted_coefs
-    )
-
     # Confounder mask — these columns get NaN CIs.
     confounder_set = set(confounders)
     is_confounder = np.array([fn in confounder_set for fn in feature_names])
 
-    if jackknife_coefs is not None:
-        # ---- BCa: vectorise z₀ and â across all p columns ----
-        # Bias correction z₀ = Φ⁻¹(mean(boot < θ̂))
-        prop_less = np.mean(shifted < model_coefs[np.newaxis, :], axis=0)  # (p,)
-        prop_less = np.clip(prop_less, 1e-10, 1 - 1e-10)
-        z0 = _sp_stats.norm.ppf(prop_less)  # (p,)
-
-        # Acceleration â via jackknife
-        theta_bar = np.mean(jackknife_coefs, axis=0)  # (p,)
-        diffs = theta_bar[np.newaxis, :] - jackknife_coefs  # (n, p)
-        sum_d3 = np.sum(diffs**3, axis=0)
-        sum_d2_pow = np.sum(diffs**2, axis=0) ** 1.5
-        a_hat = sum_d3 / (6.0 * sum_d2_pow + 1e-10)  # (p,)
-
-        # Adjusted percentiles
-        z_lo = _sp_stats.norm.ppf(alpha / 2)
-        z_hi = _sp_stats.norm.ppf(1 - alpha / 2)
-
-        denom_lo = 1.0 - a_hat * (z0 + z_lo)
-        denom_hi = 1.0 - a_hat * (z0 + z_hi)
-
-        # Degenerate columns → fall back to simple percentile
-        degenerate = (np.abs(denom_lo) < 1e-10) | (np.abs(denom_hi) < 1e-10)
-        safe_denom_lo = np.where(degenerate, 1.0, denom_lo)
-        safe_denom_hi = np.where(degenerate, 1.0, denom_hi)
-
-        p_lo = _sp_stats.norm.cdf(z0 + (z0 + z_lo) / safe_denom_lo)
-        p_hi = _sp_stats.norm.cdf(z0 + (z0 + z_hi) / safe_denom_hi)
-
-        B = shifted.shape[0]
-        p_lo = np.clip(p_lo, 0.5 / B, 1 - 0.5 / B)
-        p_hi = np.clip(p_hi, 0.5 / B, 1 - 0.5 / B)
-
-        degenerate |= np.isnan(p_lo) | np.isnan(p_hi)
-
-        # Merge BCa and fallback percentiles
-        pct_lo = np.where(degenerate, alpha / 2, p_lo) * 100
-        pct_hi = np.where(degenerate, 1 - alpha / 2, p_hi) * 100
-
-        # Per-column percentile (different percentile per column)
-        ci = np.empty((p, 2))
-        for j in range(p):
-            ci[j, 0] = np.percentile(shifted[:, j], pct_lo[j])
-            ci[j, 1] = np.percentile(shifted[:, j], pct_hi[j])
-    else:
-        # Simple shifted-percentile CI
-        lo_pct = alpha / 2 * 100
-        hi_pct = (1 - alpha / 2) * 100
-        ci = np.column_stack(
-            [
-                np.percentile(shifted, lo_pct, axis=0),
-                np.percentile(shifted, hi_pct, axis=0),
-            ]
-        )
+    # Reflected null quantiles (test inversion under a shift model).
+    # nanpercentile tolerates non-converged permutation rows.
+    q_hi = np.nanpercentile(permuted_coefs, (1 - alpha / 2) * 100, axis=0)
+    q_lo = np.nanpercentile(permuted_coefs, (alpha / 2) * 100, axis=0)
+    ci = np.column_stack([model_coefs - q_hi, model_coefs - q_lo])
 
     # Mask confounder columns
     ci[is_confounder] = np.nan

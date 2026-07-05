@@ -49,8 +49,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 
 
+### Fixed
+
+- **Degenerate permutation confidence intervals for
+  `method="kennedy"` and `method="score"`**: `compute_permutation_ci`
+  assumed Kennedy/score null distributions were centred on β̂ (they
+  are centred at zero, like all strategies — the property the
+  `|β*| ≥ |β̂|` p-value count requires) and applied a BCa adjustment
+  to the permutation null.  BCa's bias constant z₀ = Φ⁻¹(P(null < β̂))
+  saturates under any true effect, collapsing the interval to a
+  zero-width point that excludes β̂ (empirically: true β = 3 gave
+  kennedy CI [+0.985, +0.985], score CI [+0.838, +0.838]).  The CI is
+  now the reflected test-inversion interval under a shift model,
+  `[β̂ − q₁₋α/₂(null), β̂ − qα/₂(null)]`, for all strategies.  BCa
+  remains only where it is valid: genuine case-resampling bootstrap
+  distributions (mediation/moderation in `confounders.py`).
+  Regression test: all four strategies must produce positive-width
+  CIs containing β̂ under strong signal.
+
 ### Changed
 
+- **`method="ter_braak"` and `method="freedman_lane"` now implement
+  their canonical algorithms** (breaking behavioral correction).
+  Previously the names were swapped/hybridised relative to the
+  literature: `ter_braak` permuted reduced-model residuals (the
+  procedure Freedman & Lane 1983 describe and Winkler et al. 2014,
+  Table 2, attribute to Freedman–Lane), while `freedman_lane`
+  permuted full-model residuals added to confounder-only fitted
+  values — a hybrid matching no procedure in the taxonomy.  Now:
+  `freedman_lane` fits the reduced model Y ~ X₋ⱼ and permutes its
+  residuals (canonical Freedman–Lane); `ter_braak` fits the full
+  model once, permutes full-model residuals about the full fit, and
+  recentres the null draws to β* − β̂ (canonical ter Braak 1992).
+  The `FreedmanLaneJointStrategy` likewise now permutes reduced
+  (confounders-only) model residuals.  The score strategy's
+  bit-for-bit equivalence guarantee now correctly names
+  `freedman_lane`.  Numerical results for both methods differ from
+  v0.4.x.
+- **`ci_method` in `confidence_intervals` is now
+  `"shift_inversion_percentile"`** (was `"bca"`/`"percentile"`),
+  reflecting the corrected CI construction.
 - **API.md**: fixed stale `ar_order` description (GLS→FGLS with Cholesky
   whitening), corrected MultinomialFamily.coefs() from "LRT chi-squared"
   to "Wald χ²", updated NB `calibrate()` from duck-typed to protocol method.

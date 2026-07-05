@@ -5,7 +5,7 @@ Covers:
 - Linear individual & joint end-to-end
 - LMM individual & joint end-to-end
 - Score ≡ Freedman–Lane equivalence (LMM, bit-for-bit)
-- Score ≡ ter Braak equivalence (linear, no confounders)
+- Score ≡ Freedman–Lane equivalence (linear, no confounders)
 - Unsupported family rejection
 - score_exact non-GLMM rejection
 - Confounder masking
@@ -180,19 +180,22 @@ class TestScoreLinearIndividual:
 
 
 # ------------------------------------------------------------------ #
-# Score ≡ ter Braak equivalence (linear, no confounders)
+# Score ≡ Freedman–Lane equivalence (linear, no confounders)
 # ------------------------------------------------------------------ #
 
 
-class TestScoreEqualsTerBraak:
-    """For linear OLS without confounders, score ≡ ter Braak.
+class TestScoreEqualsFreedmanLane:
+    """For linear OLS, score ≡ canonical Freedman–Lane.
 
-    Both compute pinv(X)[j] @ e_π — the score strategy via matmul,
-    ter Braak via batch_fit + column extraction.  With the same
+    For each tested feature j both permute the X_{−j} reduced-model
+    residuals and evaluate A_j @ Y* — the score strategy via matmul,
+    Freedman–Lane via batch_fit + column extraction.  With the same
     permutation indices (same seed), the p-values must be identical.
     """
 
     def test_p_values_match(self) -> None:
+        import warnings
+
         X, y = _linear_data()
         r_score = randomization_test_regression(
             X,
@@ -201,16 +204,18 @@ class TestScoreEqualsTerBraak:
             random_state=_SEED,
             method="score",
         )
-        r_tb = randomization_test_regression(
-            X,
-            y,
-            n_randomizations=_N_PERMS,
-            random_state=_SEED,
-            method="ter_braak",
-        )
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            r_fl = randomization_test_regression(
+                X,
+                y,
+                n_randomizations=_N_PERMS,
+                random_state=_SEED,
+                method="freedman_lane",
+            )
         np.testing.assert_array_equal(
             r_score.raw_empirical_p,
-            r_tb.raw_empirical_p,
+            r_fl.raw_empirical_p,
         )
 
 

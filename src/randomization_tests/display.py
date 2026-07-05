@@ -282,8 +282,9 @@ def print_results_table(
         method_label = "Freedman\u2013Lane" if method == "freedman_lane" else "Kennedy"
         notes.append(
             f"{method_label} method called without confounders \u2014 all "
-            "features will be tested unconditionally. Consider 'ter_braak' "
-            "for unconditional tests."
+            "features will be tested, each conditioning on the remaining "
+            "predictors. Consider 'ter_braak' for a single "
+            "full-model-residual test."
         )
 
     # Recommend larger n_randomizations for borderline cases (Step 25)

@@ -1,48 +1,55 @@
-"""Freedman–Lane (1983) — full-model residual permutation.
+"""Freedman–Lane (1983) — reduced-model residual permutation.
 
-The Freedman–Lane procedure is arguably the most widely recommended
-residual-permutation strategy in the literature (Anderson & Robinson
-2001; Winkler et al. 2014).  It differs from ter Braak (1992) in a
-crucial way:
+Canonical algorithm (Freedman & Lane 1983; Anderson & Legendre 1999;
+Winkler et al. 2014, Table 2).  For each H₀(j): β_j = 0, the nuisance
+block is everything except the tested regressor — X_{−j} — and:
 
-* **ter Braak** fits a *reduced* model (without X_j) and permutes
-  those residuals.  This tests H₀: β_j = 0 but can be sensitive to
-  model misspecification of the reduced model.
+1. Fit the **reduced model** Y ~ X_{−j} to get fitted values ŷ₋ⱼ and
+   residuals e₋ⱼ = Y − ŷ₋ⱼ.
+2. **Permute** the reduced-model residuals: π(e₋ⱼ).
+3. **Reconstruct** Y* = ŷ₋ⱼ + π(e₋ⱼ) — the nuisance signal is
+   preserved, any real contribution of X_j is destroyed.
+4. **Refit** the full model on (X, Y*) and extract β*_j.
 
-* **Freedman–Lane** fits the *full* model (including X_j) and permutes
-  those residuals.  The permuted residuals are then added back to the
-  *reduced* (confounders-only) fitted values.  This has better finite-
-  sample properties because the full-model residuals are closer to
-  the true error distribution when the full model is correctly specified.
+The null draws β*_j are centred at zero — the property the package's
+``|β*| ≥ |β̂|`` p-value count and shift-inversion CIs require.
 
-Algorithm (individual test for H₀: β_j = 0):
-
-1. Fit the **full model** Y ~ X and compute residuals e = Y − ŷ.
-2. Fit the **reduced model** Y ~ Z (confounders only) to get ŷ_Z.
-3. For each permutation b:
-   a. π_b(e) = permuted full-model residuals.
-   b. Y*_b = ŷ_Z + π_b(e)  [reduced fitted values + permuted noise].
-   c. Refit Y*_b ~ X_full and extract β*_j(b).
-4. Compare observed β_j to the distribution {β*_j(1), …, β*_j(B)}.
+Guarantee: reduced-model residuals are only approximately
+exchangeable under H₀ (correlated through the reduced-model hat
+matrix), so the test is **asymptotically exact**, not finite-sample
+exact (Anderson & Robinson 2001).  Anderson & Legendre (1999) found
+the Freedman–Lane scheme to have among the best small-sample Type I
+and power properties of the residual-permutation methods.
 
 Two strategies:
 
-* **FreedmanLaneIndividualStrategy** — per-coefficient test.  Permutes
-  full-model residuals, adds them to reduced-model (confounders-only)
-  fitted values, and refits the full model on Y*.
+* **FreedmanLaneIndividualStrategy** — per-coefficient test.  For
+  each tested feature j, permutes the X_{−j} reduced-model residuals
+  and refits the full model on Y*.  Confounder columns are never
+  tested; their slots carry the observed coefficients.
 
-* **FreedmanLaneJointStrategy** — group-level improvement test.  Same
-  Y* construction, but both reduced and full models are refit per
-  permutation and the improvement in fit is the test statistic.
+* **FreedmanLaneJointStrategy** — group-level improvement test.  The
+  nuisance block is the confounder set Z; permutes the Y ~ Z
+  reduced-model residuals, and both reduced and full models are refit
+  per permutation with the improvement in fit as the test statistic.
 
 References:
     Freedman, D. & Lane, D. (1983). A nonstochastic interpretation of
     reported significance levels. *J. Business & Economic Statistics*,
     1(4), 292–298.
 
+    Anderson, M. J. & Legendre, P. (1999). An empirical comparison of
+    permutation methods for tests of partial regression coefficients
+    in a linear model. *J. Statistical Computation and Simulation*,
+    62(3), 271–303.
+
     Anderson, M. J. & Robinson, J. (2001). Permutation tests for
     linear models. *Australian & New Zealand J. Statistics*, 43(1),
     75–88.
+
+    Winkler, A. M., Ridgway, G. R., Webster, M. A., Smith, S. M., &
+    Nichols, T. E. (2014). Permutation inference for the general
+    linear model. *NeuroImage*, 92, 381–397.
 """
 
 from __future__ import annotations
@@ -65,7 +72,7 @@ if TYPE_CHECKING:
 
 
 class FreedmanLaneIndividualStrategy:
-    """Freedman–Lane (1983) per-coefficient full-model residual permutation."""
+    """Freedman–Lane (1983) per-coefficient reduced-model residual permutation."""
 
     is_joint: bool = False
 
@@ -89,7 +96,8 @@ class FreedmanLaneIndividualStrategy:
             y_values: Response vector of shape ``(n,)``.
             family: Resolved ``ModelFamily`` instance.
             perm_indices: Pre-generated permutation indices ``(B, n)``.
-            confounders: Confounder column names.
+            confounders: Confounder column names — never tested; their
+                columns carry the observed coefficients.
             model_coefs: Observed coefficients ``(p,)`` — used to
                 fill confounder slots.
             fit_intercept: Whether to include an intercept.
@@ -98,8 +106,8 @@ class FreedmanLaneIndividualStrategy:
 
         Returns:
             Array of shape ``(B, n_features)`` with permuted
-            coefficients.  Confounder columns are filled with the
-            observed coefficient value.
+            coefficients (zero-centred null draws).  Confounder
+            columns are filled with the observed coefficient value.
         """
         if confounders is None:
             confounders = []
@@ -108,6 +116,9 @@ class FreedmanLaneIndividualStrategy:
 
         X_np = X.values.astype(float)  # (n, p) full design matrix
         n_perm, n = perm_indices.shape  # B permutations, n observations
+        n_features = X_np.shape[1]  # p = number of predictors
+
+        result = np.zeros((n_perm, n_features))  # (B, p) permuted coefficients
 
         # Deterministic RNG seeded from the first row of perm_indices.
         # Ensures stochastic reconstruction steps (e.g. Bernoulli
@@ -118,57 +129,55 @@ class FreedmanLaneIndividualStrategy:
             (perm_indices[0].astype(np.int64) + perm_indices.shape[1]).astype(np.uint64)
         )
 
-        # Step 1: Fit the FULL model Y ~ X and get residuals.
-        # Unlike ter Braak, we use full-model residuals because they
-        # are closer to the true error distribution when the model
-        # is correctly specified (Freedman & Lane 1983, §3).
-        full_model = family.fit(X_np, y_values, fit_intercept)
-        full_resids = family.residuals(full_model, X_np, y_values)  # e = Y − ŷ, (n,)
+        # Loop over tested features j.  Each iteration tests
+        # H₀(j): β_j = 0 with nuisance block X_{−j} (all other
+        # columns, confounders included — canonical Freedman–Lane).
+        for j in range(n_features):
+            # Confounders keep their observed coefficient — not tested.
+            if X.columns[j] in confounders:
+                result[:, j] = model_coefs[j]
+                continue
 
-        # Step 2: Fit the REDUCED model Y ~ Z (confounders only).
-        # The reduced predictions ŷ_Z become the "signal" component to
-        # which permuted residuals are added.
-        if confounders:
-            conf_idx = [X.columns.get_loc(c) for c in confounders]  # column positions
-            Z = X_np[:, conf_idx]  # (n, q_z) confounder design
-        else:
-            Z = np.zeros((n, 0))  # (n, 0) — no confounders
-        _, preds_reduced = fit_reduced(family, Z, y_values, fit_intercept)
-        # preds_reduced = ŷ_Z, shape (n,)
+            # Step 1: Fit the reduced model Y ~ X_{−j}.
+            # np.delete removes column j, yielding (n, p−1) design.
+            X_red = np.delete(X_np, j, axis=1)  # (n, p−1)
+            # fit_reduced returns (model_or_None, predicted_values).
+            # model is None when X_red has zero columns (single-
+            # feature design).
+            reduced_model, preds_red = fit_reduced(
+                family, X_red, y_values, fit_intercept
+            )  # preds_red = ŷ₋ⱼ, shape (n,)
 
-        # Step 3: Resample full-model residuals.
-        # For permutation: fancy-indexing broadcasts the 1-D
-        # residual vector into B shuffled copies.
-        # For sign-flip: element-wise ±1 multiplication.
-        permuted_resids = _apply_randomization(
-            full_resids, perm_indices, randomization
-        )  # (B, n)
+            # Reduced-model residuals: e₋ⱼ = Y − ŷ₋ⱼ.
+            # For GLM families, family.residuals() computes the
+            # appropriate residual type.
+            if reduced_model is not None:
+                resids_red = family.residuals(reduced_model, X_red, y_values)
+            else:
+                # Zero-column edge case: intercept-only reduced model;
+                # raw residuals e = Y − ŷ.
+                resids_red = y_values - preds_red  # (n,)
 
-        # Step 4: Reconstruct Y* = ŷ_Z + π(e).
-        # For linear: direct addition.  For logistic: clamp to [0,1]
-        # and draw Bernoulli.  The np.newaxis broadcast lets (1, n)
-        # predictions combine with (B, n) permuted residuals.
-        Y_perm = family.reconstruct_y(
-            preds_reduced[np.newaxis, :],  # (1, n) → broadcast to (B, n)
-            permuted_resids,  # (B, n)
-            rng,
-        )  # (B, n) synthetic response vectors
+            # Step 2: Resample the reduced-model residual vector.
+            permuted_resids = _apply_randomization(
+                resids_red, perm_indices, randomization
+            )  # (B, n)
 
-        # Step 5: Batch-refit the full model on all B synthetic
-        # responses.  Returns (B, p) coefficient matrix.
-        all_coefs = np.array(
-            family.batch_fit(X_np, Y_perm, fit_intercept, n_jobs=n_jobs)
-        )  # (B, p)
+            # Step 3: Reconstruct Y* = ŷ₋ⱼ + π(e₋ⱼ).
+            # Nuisance signal preserved; X_j's contribution destroyed.
+            Y_perm = family.reconstruct_y(
+                preds_red[np.newaxis, :],  # (1, n) → broadcast to (B, n)
+                permuted_resids,  # (B, n)
+                rng,
+            )  # (B, n) synthetic response vectors
 
-        # Confounder columns keep their observed coefficients —
-        # they are not being tested and should not contribute
-        # to the permutation distribution.
-        if confounders:
-            for i, col in enumerate(X.columns):
-                if col in confounders:
-                    all_coefs[:, i] = model_coefs[i]
+            # Step 4: Batch-refit the full model; extract column j.
+            all_coefs = np.array(
+                family.batch_fit(X_np, Y_perm, fit_intercept, n_jobs=n_jobs)
+            )  # (B, p)
+            result[:, j] = all_coefs[:, j]
 
-        return all_coefs
+        return result
 
 
 # ------------------------------------------------------------------ #
@@ -251,7 +260,7 @@ class FreedmanLaneJointStrategy:
         # --- Observed reduced model (confounders only) ---
         # ŷ_Z = predictions from Y ~ Z.  fit_metric compares Y to
         # ŷ_Z to get the baseline metric with only confounders.
-        _, preds_reduced = fit_reduced(family, Z, y_values, fit_intercept)
+        reduced_model, preds_reduced = fit_reduced(family, Z, y_values, fit_intercept)
         # preds_reduced = ŷ_Z, shape (n,)
 
         # Baseline metric: M(Y, ŷ_Z) = how well confounders alone
@@ -266,10 +275,17 @@ class FreedmanLaneJointStrategy:
         # tested features improve fit.
         obs_improvement = base_metric - family.fit_metric(y_values, preds_full)
 
-        # --- Full-model residuals ---
-        # e = Y − ŷ_full (or appropriate GLM residuals).  These are
-        # the residuals that will be permuted.
-        full_resids = family.residuals(full_model, X_np, y_values)  # (n,)
+        # --- Reduced-model residuals (canonical Freedman–Lane) ---
+        # e_Z = Y − ŷ_Z: residuals of the CONFOUNDER-ONLY reduced
+        # model.  Permuting these preserves the nuisance (confounder)
+        # signal exactly while destroying any contribution of the
+        # tested features (Freedman & Lane 1983; Winkler et al. 2014).
+        if reduced_model is not None:
+            reduced_resids = family.residuals(reduced_model, Z, y_values)
+        else:
+            # Zero-column edge case (no confounders): intercept-only
+            # reduced model; raw residuals.
+            reduced_resids = y_values - preds_reduced  # (n,)
 
         # --- Permutation loop (vectorised via batch backend) ---
         # Build Y*_batch in one vectorised call, then use
@@ -277,7 +293,7 @@ class FreedmanLaneJointStrategy:
         # models across all permutations simultaneously.
         #
         # For each permutation b:
-        #   1. Permute residuals: e*_b = e[perm_b]
+        #   1. Permute reduced-model residuals: e*_b = e_Z[perm_b]
         #   2. Reconstruct: Y*_b = preds_reduced + e*_b
         #   3. batch-fit reduced (Z, Y*_batch) -> reduced_scores
         #   4. batch-fit full  (X, Y*_batch) -> full_scores
@@ -289,7 +305,7 @@ class FreedmanLaneJointStrategy:
 
         # Vectorised reconstruction: (B, n)
         perm_resids_batch = _apply_randomization(
-            full_resids, perm_indices, randomization
+            reduced_resids, perm_indices, randomization
         )  # (B, n)
         preds_reduced_tiled = np.broadcast_to(preds_reduced[np.newaxis, :], (n_perm, n))
         Y_star_batch = family.reconstruct_y(

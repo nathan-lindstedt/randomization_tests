@@ -19,13 +19,21 @@ with the existing p-value computation.
 
 **Equivalence guarantees:**
 
-* **LMM:** Score p-values = Freedman–Lane p-values (bit-for-bit
-  identical, since both compute ``A @ Y*``).
-* **Linear (no confounders):** Score p-values = ter Braak p-values
-  (A_j @ e_π ≡ pinv(X)[j] @ e_π).
+* **Linear / LMM:** Score p-values = Freedman–Lane p-values
+  (bit-for-bit identical: for each tested feature j both permute the
+  X_{−j} reduced-model residuals and evaluate A_j @ Y*, the score
+  strategy via one matmul, Freedman–Lane via the full batch refit).
 * **GLMM (Plan C):** The one-step corrector upgrades score accuracy
   to second-order (Le Cam estimator).  Handled inside
   ``family.score_project()``, transparent to this strategy.
+
+**Guarantee**: the constant offset
+``A_j @ ŷ_red`` vanishes identically for full-column-rank designs
+(``pinv(X) @ X = I`` and ŷ_red lies in the span of the non-j columns),
+so the score permutation null is centred at ZERO — exactly like the
+Freedman–Lane null it reproduces.  Like all residual-based schemes,
+Type I control is **asymptotically exact**, not finite-sample exact
+(Anderson & Robinson 2001).
 
 Two strategies:
 

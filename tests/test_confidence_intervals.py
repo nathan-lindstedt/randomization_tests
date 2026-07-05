@@ -15,6 +15,7 @@ import math
 
 import numpy as np
 import pandas as pd
+import pytest
 from scipy import stats as sp_stats
 
 from randomization_tests import randomization_test_regression
@@ -257,50 +258,49 @@ class TestJackknifeCoefs:
 
 
 class TestPermutationCI:
-    """Tests for compute_permutation_ci()."""
+    """Tests for compute_permutation_ci() (reflected shift-inversion form)."""
 
-    def test_ter_braak_shifted(self) -> None:
-        """ter Braak null distribution is shifted by +β̂."""
+    def test_reflected_interval_hand_computed(self) -> None:
+        """CI equals β̂ − reflected null quantiles (asymmetric null)."""
+        rng = np.random.default_rng(_SEED)
+        model_coefs = np.array([2.0])
+        # Asymmetric zero-mean null (shifted exponential).
+        permuted = (rng.exponential(1.0, (2_000, 1))) - 1.0
+
+        ci = compute_permutation_ci(
+            permuted,
+            model_coefs,
+            alpha=0.05,
+            confounders=[],
+            feature_names=["x1"],
+        )
+        expected_lo = 2.0 - np.percentile(permuted[:, 0], 97.5)
+        expected_hi = 2.0 - np.percentile(permuted[:, 0], 2.5)
+        np.testing.assert_allclose(ci[0], [expected_lo, expected_hi], rtol=1e-10)
+        assert ci[0, 0] < ci[0, 1]
+
+    def test_zero_centered_null_contains_beta(self) -> None:
+        """All strategies emit zero-centred nulls; CI must centre on β̂."""
         rng = np.random.default_rng(_SEED)
         model_coefs = np.array([2.0, -1.0])
-        # Null distribution centred on 0.
         permuted = rng.standard_normal((500, 2))
 
         ci = compute_permutation_ci(
             permuted,
             model_coefs,
-            "ter_braak",
             alpha=0.05,
-            jackknife_coefs=None,
             confounders=[],
             feature_names=["x1", "x2"],
         )
         assert ci.shape == (2, 2)
-        # After shift, CI should be centred near β̂.
         midpoint = ci.mean(axis=1)
         np.testing.assert_allclose(midpoint, model_coefs, atol=0.3)
+        # β̂ inside its own interval, with positive width.
+        assert np.all(ci[:, 0] < model_coefs)
+        assert np.all(model_coefs < ci[:, 1])
 
-    def test_score_unshifted(self) -> None:
-        """Score null distribution is already centred on β̂."""
-        rng = np.random.default_rng(_SEED)
-        model_coefs = np.array([2.0, -1.0])
-        # Distribution already centred on β̂.
-        permuted = rng.standard_normal((500, 2)) + model_coefs
-
-        ci = compute_permutation_ci(
-            permuted,
-            model_coefs,
-            "score",
-            alpha=0.05,
-            jackknife_coefs=None,
-            confounders=[],
-            feature_names=["x1", "x2"],
-        )
-        midpoint = ci.mean(axis=1)
-        np.testing.assert_allclose(midpoint, model_coefs, atol=0.3)
-
-    def test_percentile_fallback_when_no_jackknife(self) -> None:
-        """With jackknife=None, returns simple percentile CI."""
+    def test_standard_normal_null_gives_pm_196(self) -> None:
+        """β̂ = 0 with N(0,1) null → CI ≈ ±1.96."""
         rng = np.random.default_rng(_SEED)
         model_coefs = np.array([0.0])
         permuted = rng.standard_normal((1_000, 1))
@@ -308,9 +308,7 @@ class TestPermutationCI:
         ci = compute_permutation_ci(
             permuted,
             model_coefs,
-            "ter_braak",
             alpha=0.05,
-            jackknife_coefs=None,
             confounders=[],
             feature_names=["x1"],
         )
@@ -327,15 +325,42 @@ class TestPermutationCI:
         ci = compute_permutation_ci(
             permuted,
             model_coefs,
-            "ter_braak",
             alpha=0.05,
-            jackknife_coefs=None,
             confounders=["x2"],
             feature_names=["x1", "x2"],
         )
         assert np.isfinite(ci[0, 0])
         assert np.isnan(ci[1, 0])
         assert np.isnan(ci[1, 1])
+
+    @pytest.mark.filterwarnings("ignore::UserWarning")
+    @pytest.mark.parametrize(
+        "method", ["ter_braak", "freedman_lane", "kennedy", "score"]
+    )
+    def test_all_strategies_nondegenerate_ci(self, method: str) -> None:
+        """Regression: kennedy/score CIs were zero-width and excluded β̂.
+
+        Strong-signal linear DGP: every strategy's permutation CI must
+        contain β̂, exclude 0, and have strictly positive width.
+        """
+        rng = np.random.default_rng(_SEED)
+        n = 100
+        X = pd.DataFrame({"x1": rng.standard_normal(n)})
+        y = pd.DataFrame({"y": 3.0 * X["x1"].values + rng.standard_normal(n)})
+
+        result = randomization_test_regression(
+            X,
+            y,
+            n_randomizations=299,
+            method=method,
+            random_state=_SEED,
+        )
+        ci = np.asarray(result.confidence_intervals["permutation_ci"])
+        beta_hat = float(np.asarray(result.model_coefs).ravel()[0])
+        lo, hi = float(ci[0, 0]), float(ci[0, 1])
+        assert hi - lo > 1e-6, f"{method}: degenerate zero-width CI"
+        assert lo < beta_hat < hi, f"{method}: CI excludes β̂"
+        assert lo > 0.0, f"{method}: CI should exclude 0 under strong signal"
 
 
 # ================================================================== #
@@ -579,7 +604,7 @@ class TestCIIntegrationLinear:
         ci = result.confidence_intervals
         assert set(ci.keys()) >= _CI_KEYS
         assert ci["confidence_level"] == 0.95
-        assert ci["ci_method"] in ("bca", "percentile")
+        assert ci["ci_method"] == "shift_inversion_percentile"
 
     def test_ci_shapes(self) -> None:
         X, y = _linear_data()
