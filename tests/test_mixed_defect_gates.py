@@ -90,10 +90,11 @@ def _spread_ratio(result) -> float:
     """sd(null draws) / SE(beta_hat), SE recovered by inverting the Wald p-value.
 
     Must be ~1: the null draws should mimic the sampling distribution of beta_hat.
+    Uses norm.isf(p / 2) to avoid float64 precision loss when p is small.
     """
     beta = float(np.ravel(result.model_coefs)[0])
     p_classic = float(np.ravel(result.raw_classic_p)[0])
-    se = abs(beta) / norm.ppf(1 - p_classic / 2)
+    se = abs(beta) / norm.isf(p_classic / 2)
     sd = float(np.std(np.asarray(result.permuted_coefs)[:, 0]))
     return sd / se
 
