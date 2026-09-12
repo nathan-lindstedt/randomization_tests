@@ -63,7 +63,7 @@ import numpy as np
 import pandas as pd
 
 from ..families import _augment_intercept, fit_reduced
-from . import _apply_randomization
+from . import _residual_joint_statistic
 
 if TYPE_CHECKING:
     from ..families import ModelFamily
@@ -196,13 +196,19 @@ class ScoreIndividualStrategy:
 
 @final
 class ScoreJointStrategy:
-    """Score projection — collective improvement test.
+    """Joint (omnibus) permutation test — canonical Freedman–Lane reconstruction.
 
-    Tests whether all non-confounder features collectively improve
-    model fit beyond confounders alone.  Uses the same
-    ``family.score_project()`` mechanism as the individual strategy
-    but aggregates across features via RSS reduction (same metric
-    as Freedman–Lane joint).
+    Tests whether all non-confounder features collectively improve model fit
+    beyond confounders alone.  For direct-permutation families (ordinal,
+    multinomial), permutes Y directly — the reason this class exists
+    separately from ``FreedmanLaneJointStrategy``, which is blocked for those
+    families entirely (no well-defined residuals to permute).  For every
+    other family, delegates to the same canonical reduced-residual
+    reconstruction Freedman–Lane joint uses (``_residual_joint_statistic``),
+    so the two are identical by construction, not by name only — this class
+    does not use ``score_project()`` or any one-step/Fisher-information
+    machinery; "score" here is a naming convention (every individual
+    strategy has a joint counterpart), not the Rao score-test principle.
     """
 
     is_joint: bool = True
@@ -220,14 +226,7 @@ class ScoreJointStrategy:
         n_jobs: int = 1,
         randomization: str = "permute",
     ) -> tuple[float, np.ndarray, str, list[str]]:
-        """Run the joint score projection permutation algorithm.
-
-        The test statistic is the RSS reduction from adding the tested
-        features to the confounder-only model.  For each permutation,
-        the full-model predictions are reconstructed via score
-        projection (one matmul per feature), then the RSS is computed.
-        This matches the Freedman–Lane joint metric exactly for LMM
-        and linear families.
+        """Run the joint permutation algorithm.
 
         Args:
             X: Feature matrix as a pandas DataFrame.
@@ -235,9 +234,9 @@ class ScoreJointStrategy:
             family: Resolved ``ModelFamily`` instance.
             perm_indices: Pre-generated permutation indices ``(B, n)``.
             confounders: Confounder column names.
-            model_coefs: Observed coefficients ``(p,)``.
+            model_coefs: Unused.
             fit_intercept: Whether to include an intercept.
-            n_jobs: Unused (score is fully vectorised).
+            n_jobs: Parallelism level for the batch-fit step.
             randomization: ``"permute"`` (default) or ``"sign_flip"``.
 
         Returns:
@@ -251,7 +250,7 @@ class ScoreJointStrategy:
         metric_type = family.metric_label
 
         X_np = X.values.astype(float)  # (n, p)
-        n_perm, n = perm_indices.shape  # B, n
+        n = perm_indices.shape[1]
 
         # Confounder design matrix — same as Freedman–Lane joint.
         if confounders:
@@ -260,10 +259,24 @@ class ScoreJointStrategy:
         else:
             Z = np.zeros((n, 0))  # (n, 0)
 
-        # Reduced model (confounders only).
-        reduced_model, preds_reduced = fit_reduced(family, Z, y_values, fit_intercept)
+        if not family.direct_permutation:
+            obs_improvement, perm_improvements = _residual_joint_statistic(
+                family,
+                Z,
+                X_np,
+                y_values,
+                perm_indices,
+                fit_intercept=fit_intercept,
+                randomization=randomization,
+                n_jobs=n_jobs,
+            )
+            return (obs_improvement, perm_improvements, metric_type, features_to_test)
 
-        # Observed improvement: reduced metric - full metric.
+        # Direct-permutation families (ordinal, multinomial): no residual
+        # pipeline, so permute Y directly instead — same validity argument
+        # as Manly (full exchangeability under H0), the only branch where
+        # this class's behaviour differs from Freedman–Lane joint.
+        reduced_model, _ = fit_reduced(family, Z, y_values, fit_intercept)
         if reduced_model is not None:
             base_metric = family.score(reduced_model, Z, y_values)
         else:
@@ -271,31 +284,7 @@ class ScoreJointStrategy:
         full_model = family.fit(X_np, y_values, fit_intercept)
         obs_improvement = base_metric - family.score(full_model, X_np, y_values)
 
-        # Build permuted Y.
-        if family.direct_permutation:
-            # Direct-permutation families (ordinal, multinomial) do not support
-            # residual reconstruction — permute Y directly instead.
-            Y_perm = y_values[perm_indices]  # (B, n)
-        else:
-            # Full-model residuals — resampled to build Y*.
-            full_resids = family.residuals(full_model, X_np, y_values)  # (n,)
-
-            # Build resampled Y*: ŷ_reduced + resampled(e[full-model]).
-            perm_resids = _apply_randomization(
-                full_resids, perm_indices, randomization
-            )  # (B, n)
-            # Shift by row length so sign-flip values (±1) become positive.
-            rng = np.random.default_rng(
-                (perm_indices[0].astype(np.int64) + perm_indices.shape[1]).astype(
-                    np.uint64
-                )
-            )
-            Y_perm = family.reconstruct_y(
-                preds_reduced[np.newaxis, :], perm_resids, rng
-            )  # (B, n)
-
-        # For each permutation, compute full-model scores and RSS.
-        # Reuse batch_fit_and_score — same as Freedman–Lane joint.
+        Y_perm = y_values[perm_indices]  # (B, n)
         _, reduced_scores = family.batch_fit_and_score(
             Z, Y_perm, fit_intercept, n_jobs=n_jobs
         )

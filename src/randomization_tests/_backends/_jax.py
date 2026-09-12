@@ -1852,24 +1852,49 @@ if _CAN_IMPORT_JAX:
             \rho = \frac{f(\theta) - f(\theta - \delta)}
                         {\tfrac{1}{2}\,\delta^\top(\lambda\,\delta + g)}
 
-        * :math:`\rho > 0` → step accepted;
-          :math:`\lambda \leftarrow \lambda \cdot
+        A step is accepted iff the NLL **decreased**.  :math:`\rho` then
+        only tunes :math:`\lambda`:
+
+        * accepted → :math:`\lambda \leftarrow \lambda \cdot
           \max\!\bigl(\tfrac{1}{3},\;1 - (2\rho - 1)^3\bigr)`,
           :math:`\nu \leftarrow 2`.
-        * :math:`\rho \le 0` → step rejected (NLL did not decrease);
-          :math:`\lambda \leftarrow \lambda \cdot \nu`,
+        * rejected → :math:`\lambda \leftarrow \lambda \cdot \nu`,
           :math:`\nu \leftarrow 2\nu`.
 
         All branching uses ``jnp.where`` so the solver stays inside
         ``jax.lax.while_loop`` (XLA-traceable, no Python control
         flow).
 
-        Initial damping from the Hessian spectrum
-        ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-        Rather than hard-coding :math:`\lambda_0`, the solver
-        evaluates the Hessian at :math:`\theta_0 = 0` and derives
-        all tuning constants from the eigenvalues (Gill–Murray
-        modification):
+        Positive-definiteness invariant
+        ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        LM is only meaningful while :math:`H + \lambda I \succ 0`: that
+        is what makes :math:`\delta` a descent direction and keeps the
+        predicted reduction positive.  Under negative curvature an
+        undamped solve returns an **ascent** step of unbounded length,
+        and a negative predicted reduction silently inverts the sign of
+        :math:`\rho`.
+
+        The invariant is therefore enforced at **every** iterate via a
+        Gill–Murray eigenvalue floor:
+
+        .. math::
+            \lambda_{\text{eff}} = \max\bigl(\lambda,\;
+            \max(0, -\lambda_{\min}(H)) + \varepsilon\|H\|_2\bigr)
+
+        An exact floor is used rather than the usual Cholesky-retry
+        loop because it is branchless (preserving XLA traceability) and
+        because :math:`\theta` has only 1–3 components here, so
+        ``eigvalsh`` is cheaper than a retry loop.
+
+        Because the invariant holds, the NaN sentinel below behaves as
+        intended: a non-finite NLL maps to ``1e30``, giving a negative
+        actual reduction and hence rejection.
+
+        Initial damping and bounds
+        ~~~~~~~~~~~~~~~~~~~~~~~~~~
+        :math:`\lambda_0` and the clipping bounds are derived from the
+        Hessian spectrum at :math:`\theta_0 = 0` rather than
+        hard-coded:
 
         * :math:`\lambda_0 = |\lambda_{\min}(H_0)|
           + \varepsilon\,\|H_0\|_2` if :math:`H_0` is indefinite,
@@ -1886,9 +1911,9 @@ if _CAN_IMPORT_JAX:
         ~~~~~~~~~~~~
         If the NLL evaluates to NaN or ±Inf (e.g. from a failed
         Cholesky inside the profile REML closure), the value is
-        replaced with ``1e30``.  This produces :math:`\rho < 0`
-        (reject), so the solver increases :math:`\lambda` and
-        retries — no special-case handling needed.
+        replaced with ``1e30``.  This makes the actual reduction
+        negative, so the step is rejected, :math:`\lambda` increases,
+        and the solver retries — no special-case handling needed.
 
         Args:
             nll_fn: Pure JAX function ``f(θ) → scalar`` — profile
@@ -1952,27 +1977,41 @@ if _CAN_IMPORT_JAX:
 
             g = _grad_fn(params)
             H = _hess_fn(params)
-            H_damped = H + lambda_ * identity
+
+            # LM's defining invariant: H + λI ≻ 0 at EVERY iterate. That is what
+            # makes the step a descent direction and `predicted` positive; without
+            # it, negative curvature yields an ascent step of unbounded length.
+            # Exact eigenvalue floor rather than a Cholesky-retry loop, so the
+            # body stays branchless — affordable because θ is 1-3 dimensional.
+            eigs = jnp.linalg.eigvalsh(H)
+            spectral_now = jnp.maximum(jnp.max(jnp.abs(eigs)), 1.0)
+            lambda_floor = jnp.maximum(0.0, -jnp.min(eigs)) + eps_f64 * spectral_now
+            lambda_eff = jnp.maximum(lambda_, lambda_floor)
+
+            H_damped = H + lambda_eff * identity
             step = jnp.linalg.solve(H_damped, g)
             params_new = params - step
 
             nll_new = _nll_jit(params_new)
-            # NaN sentinel: failed Cholesky → reject step
+            # NaN sentinel: failed Cholesky → 1e30 → actual < 0 → step rejected
             nll_new = jnp.where(jnp.isfinite(nll_new), nll_new, 1e30)
 
             # ---- Gain ratio (Nielsen 1999) ----
             # predicted = 0.5·δᵀg + 0.5·λ·‖δ‖²  where δ = step
             # Derivation: model reduction m(0)−m(δ) with (H+λI)δ = g
             # gives δᵀg − 0.5·δᵀHδ = 0.5·δᵀg + 0.5·λ·‖δ‖²
-            predicted = 0.5 * step @ (lambda_ * step + g)
+            # Positive by construction given the PD invariant above.
+            predicted = 0.5 * step @ (lambda_eff * step + g)
             actual = nll_prev - nll_new
             rho = jnp.where(
-                jnp.abs(predicted) > 1e-30,
+                predicted > 1e-30,
                 actual / predicted,
-                jnp.array(0.0, dtype=jnp.float64),
+                jnp.array(-1.0, dtype=jnp.float64),
             )
 
-            accept = rho > 0.0
+            # Accept on the primitive condition — the NLL actually decreased.
+            # ρ then serves only to tune λ, which is its role.
+            accept = actual > 0.0
 
             # ---- Nielsen λ update ----
             # Accept: λ *= max(1/3, 1 − (2ρ − 1)³), ν = 2

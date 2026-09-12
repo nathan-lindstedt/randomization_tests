@@ -62,8 +62,6 @@ from typing import TYPE_CHECKING
 import numpy as np
 import pandas as pd
 
-from . import _apply_randomization
-
 if TYPE_CHECKING:
     from ..families import ModelFamily
 
@@ -128,16 +126,6 @@ class TerBraakStrategy:
             )
 
         # --- Canonical ter Braak (1992) path ------------------------
-        # Derive a deterministic RNG from the first row of perm_indices
-        # so that any stochastic reconstruction step (e.g. Bernoulli
-        # sampling for logistic residuals → binary Y) is reproducible
-        # given the same permutation/sign-flip matrix.  Shifting by
-        # perm_indices.shape[1] converts sign-flip values (±1) to
-        # positive integers while keeping permutation indices unique.
-        rng = np.random.default_rng(
-            (perm_indices[0].astype(np.int64) + perm_indices.shape[1]).astype(np.uint64)
-        )
-
         # Step 1: Fit the FULL model Y ~ X once.  ONE fit serves all
         # features — there are no per-feature reduced models.
         full_model = family.fit(X_np, y_values, fit_intercept)
@@ -145,29 +133,17 @@ class TerBraakStrategy:
         # Full-model residuals e = Y − ŷ (family-appropriate type).
         resids_full = family.residuals(full_model, X_np, y_values)  # (n,)
 
-        # Step 2: Resample the residual vector.
-        # For permutation: fancy-indexing broadcasts the 1-D residual
-        # array into B shuffled copies.  For sign-flip: element-wise
-        # ±1 multiplication.
-        permuted_resids = _apply_randomization(
-            resids_full, perm_indices, randomization
-        )  # (B, n)
-
-        # Step 3: Reconstruct Y* = ŷ + π(e) about the FULL-model fit.
-        # The observed signal (every predictor's contribution) is
-        # retained; only the error arrangement is randomized.
-        # For logistic, reconstruct_y clamps to [0,1] and draws
-        # Bernoulli(p*); for Poisson/NB it applies the link inverse.
-        Y_perm = family.reconstruct_y(
-            preds_full[np.newaxis, :],  # (1, n) → broadcast to (B, n)
-            permuted_resids,  # (B, n)
-            rng,
-        )  # (B, n) synthetic response vectors
-
-        # Step 4: Batch-refit the full model on all B synthetic
-        # responses — a single vectorised call for ALL features.
-        all_coefs = np.array(
-            family.batch_fit(X_np, Y_perm, fit_intercept, n_jobs=n_jobs)
+        # Steps 2-4: whiten (if applicable), permute, reconstruct, refit —
+        # owned by the family so it cannot diverge from method="score",
+        # which computes the same estimator through the same seam.
+        all_coefs, _ = family.residual_permutation_refit(
+            X_np,
+            preds_full,
+            resids_full,
+            perm_indices,
+            fit_intercept=fit_intercept,
+            randomization=randomization,
+            n_jobs=n_jobs,
         )  # (B, p)
 
         # Step 5: Recentre.  Under the ter Braak construction β*_j
@@ -180,4 +156,4 @@ class TerBraakStrategy:
         else:
             beta_hat = np.asarray(family.coefs(full_model), dtype=float)
 
-        return np.asarray(all_coefs - beta_hat[np.newaxis, :])
+        return np.asarray(np.asarray(all_coefs) - beta_hat[np.newaxis, :])

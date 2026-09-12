@@ -342,6 +342,96 @@ class TestScoreEqualsFreedmanLaneLMM:
             r_fl.raw_empirical_p,
         )
 
+    def test_null_distributions_match(self) -> None:
+        """Compare the NULL DRAWS, not just the p-values.
+
+        A permutation p-value is a count over B draws, so a null that has shifted
+        or changed width can still produce an identical count and slip past an
+        ``assert_array_equal`` on p-values alone.  That is not hypothetical: when
+        whitening was applied to ``score_project`` and not to the Freedman-Lane
+        path, the two nulls diverged on 5 of 6 configurations (score
+        ``sd(draws)/SE`` 0.98 against FL 0.41 under random slopes) while the
+        p-value assertions above still passed on this fixture.
+
+        Since the two strategies compute the same estimator, their null draws must
+        agree elementwise, not merely in the tail count they imply.
+        """
+        import warnings
+
+        X, y, groups = _grouped_data()
+        kwargs = dict(
+            n_randomizations=_N_PERMS,
+            random_state=_SEED,
+            family="linear_mixed",
+            groups=groups,
+        )
+        r_score = randomization_test_regression(X, y, method="score", **kwargs)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            r_fl = randomization_test_regression(X, y, method="freedman_lane", **kwargs)
+
+        draws_score = np.asarray(r_score.permuted_coefs)
+        draws_fl = np.asarray(r_fl.permuted_coefs)
+        assert draws_score.shape == draws_fl.shape
+        np.testing.assert_allclose(
+            draws_score,
+            draws_fl,
+            rtol=1e-9,
+            atol=1e-9,
+            err_msg=(
+                "score and freedman_lane null draws diverged; they compute the "
+                "same estimator, so one path has been changed without the other"
+            ),
+        )
+
+    def test_null_distributions_match_under_random_slopes(self) -> None:
+        """The same invariant where the fixture above is insensitive.
+
+        ``_grouped_data()`` is a random-intercept design, the one configuration
+        where a whitening change is close to neutral.  Random slopes are where the
+        two paths visibly separate, so the coupling must be pinned there too.
+        """
+        import warnings
+
+        rng = np.random.default_rng(4242)
+        n_groups, per_group = 12, 8
+        n = n_groups * per_group
+        groups = np.repeat(np.arange(n_groups), per_group)
+        x1 = rng.normal(size=n)
+        x2 = rng.normal(size=n)
+        y_vals = np.empty(n)
+        for g in range(n_groups):
+            idx = np.flatnonzero(np.equal(groups, g))
+            slope = rng.normal(scale=1.5)
+            y_vals[idx] = (
+                0.6 * x2[idx]
+                + rng.normal(scale=2.0)
+                + slope * x1[idx]
+                + rng.normal(size=idx.size)
+            )
+        X = pd.DataFrame({"x1": x1, "x2": x2})
+        y = pd.DataFrame({"y": y_vals})
+
+        kwargs = dict(
+            n_randomizations=_N_PERMS,
+            random_state=_SEED,
+            family="linear_mixed",
+            groups=groups,
+            random_slopes=[0],
+        )
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            r_score = randomization_test_regression(X, y, method="score", **kwargs)
+            r_fl = randomization_test_regression(X, y, method="freedman_lane", **kwargs)
+
+        np.testing.assert_allclose(
+            np.asarray(r_score.permuted_coefs),
+            np.asarray(r_fl.permuted_coefs),
+            rtol=1e-9,
+            atol=1e-9,
+            err_msg=("score and freedman_lane null draws diverged under random slopes"),
+        )
+
 
 # ------------------------------------------------------------------ #
 # Linear joint
@@ -411,6 +501,82 @@ class TestScoreLMMJoint:
             confounders=["x2"],
         )
         assert 0.0 <= result.p_value <= 1.0
+
+
+# ------------------------------------------------------------------ #
+# Score joint ≡ Freedman–Lane joint equivalence (M13)
+# ------------------------------------------------------------------ #
+
+
+class TestScoreEqualsFreedmanLaneJoint:
+    """score_joint's residual-based branch shares one implementation with
+    freedman_lane_joint (``_residual_joint_statistic``), so with the same
+    permutation indices the null arrays and observed statistic must be
+    bit-identical -- not merely close.  Regression guard for M13, where
+    score_joint permuted full-model residuals instead of reduced-model
+    residuals and silently diverged from Freedman-Lane joint.
+    """
+
+    def test_linear_with_confounders_and_real_effect(self) -> None:
+        """The configuration that exposed M13 (q=2 features, real effect)."""
+        rng = np.random.default_rng(7)
+        n = 200
+        x1, x2, z = rng.normal(size=n), rng.normal(size=n), rng.normal(size=n)
+        y_vals = 0.7 * z + 0.5 * x1 + 0.5 * x2 + rng.normal(size=n)
+        X = pd.DataFrame({"x1": x1, "x2": x2, "z": z})
+        y = pd.DataFrame({"y": y_vals})
+
+        r_fl = randomization_test_regression(
+            X,
+            y,
+            family="linear",
+            method="freedman_lane_joint",
+            confounders=["z"],
+            n_randomizations=_N_PERMS,
+            random_state=_SEED,
+        )
+        r_sj = randomization_test_regression(
+            X,
+            y,
+            family="linear",
+            method="score_joint",
+            confounders=["z"],
+            n_randomizations=_N_PERMS,
+            random_state=_SEED,
+        )
+        assert r_fl.observed_improvement == r_sj.observed_improvement
+        np.testing.assert_array_equal(
+            r_fl.permuted_improvements, r_sj.permuted_improvements
+        )
+
+    def test_lmm_with_random_slopes(self) -> None:
+        """LMM under random slopes (whitening engaged) -- the configuration
+        where an unwhitened score_joint would previously have diverged."""
+        X, y, groups = _grouped_data()
+        r_fl = randomization_test_regression(
+            X,
+            y,
+            family="linear_mixed",
+            groups=groups,
+            method="freedman_lane_joint",
+            confounders=["x2"],
+            n_randomizations=_N_PERMS,
+            random_state=_SEED,
+        )
+        r_sj = randomization_test_regression(
+            X,
+            y,
+            family="linear_mixed",
+            groups=groups,
+            method="score_joint",
+            confounders=["x2"],
+            n_randomizations=_N_PERMS,
+            random_state=_SEED,
+        )
+        assert r_fl.observed_improvement == r_sj.observed_improvement
+        np.testing.assert_array_equal(
+            r_fl.permuted_improvements, r_sj.permuted_improvements
+        )
 
 
 # ------------------------------------------------------------------ #

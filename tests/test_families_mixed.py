@@ -74,7 +74,9 @@ class TestProtocolConformance:
         assert LinearMixedFamily().name == "linear_mixed"
 
     def test_residual_type(self):
-        assert LinearMixedFamily().residual_type == "conditional"
+        """M5: LMM permutes marginal residuals (y - Xβ̂), never conditional
+        (y - Xβ̂ - Zû) -- random effects are a nuisance covariance, not tested."""
+        assert LinearMixedFamily().residual_type == "marginal"
 
     def test_direct_permutation(self):
         assert LinearMixedFamily().direct_permutation is False

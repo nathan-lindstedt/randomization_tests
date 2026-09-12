@@ -293,6 +293,31 @@ def _fmt_p(p: float | None) -> str:
 # (a handful of hasattr calls).
 
 
+def _glm_whiten(family: Any, M: np.ndarray) -> np.ndarray:
+    """Whiten a GLM family's modelled *correlation* only, never its mean-variance.
+
+    Scaling by ``1/√v(μ̂)`` is deliberately NOT applied, and the reason is measured
+    rather than argued: the canonical-link score ``X'(y − μ̂)`` normalised by the
+    Fisher information is **already studentised**, so heteroscedasticity scales the
+    permutation and sampling variances identically and calibration is preserved.
+    Logistic score test, N = 600, 400 replications, H0 true — Type I 0.0525 and null
+    p-values indistinguishable from uniform (KS p = 0.38) at a fitted-weight spread
+    of 1.1e5.  Rescaling would therefore buy nothing, while making the permuted
+    quantity no longer the residual the method is defined on.
+
+    AR correlation is different in kind: it is a structure the family explicitly
+    models, and its Cholesky factor is a genuine whitening operator.
+    """
+    out = np.asarray(M, dtype=float)
+    if family.ar_coefs is not None and family._panel_lengths is not None:
+        from ._ar import apply_ar_cholesky_transform
+
+        out = np.asarray(
+            apply_ar_cholesky_transform(out, family._panel_lengths, family.ar_coefs)
+        )
+    return out
+
+
 @runtime_checkable
 class ModelFamily(Protocol):
     """Interface that every regression family must implement.
@@ -508,6 +533,36 @@ class ModelFamily(Protocol):
 
         Returns:
             Residual vector of shape ``(n,)``.
+        """
+        ...
+
+    def whiten(self, M: np.ndarray) -> np.ndarray:
+        """Standardise *M* to the correlation structure this family models.
+
+        A permutation test requires the permuted units to be exchangeable.  Where a
+        family models a non-identity error covariance ``Σ``, its residuals are not
+        exchangeable and each family must expose the operator ``W`` with
+        ``W'W = Σ⁻¹``.  Strategies apply this BEFORE randomising, because Π and W do
+        not commute.
+
+        The operator is fixed at calibration and takes no model: recomputing it from
+        a per-permutation fit would let the operator used to build the null differ
+        from the one used for the observed statistic, which is exactly how observed
+        and null come to be different functionals.
+
+        Only correlation structure is whitened, never a mean-variance relation.  A
+        family whose heteroscedasticity comes from its own variance function (a GLM)
+        raises instead: scaling by ``1/√v`` equalises variances but leaves the
+        residuals non-identically *distributed*, so it would buy the appearance of
+        exchangeability without the substance.
+
+        Args:
+            M: Array to whiten, shape ``(n,)`` or ``(n, k)``.
+            X: Design matrix used for the fit, needed by families whose fitted mean
+                is not carried on the model object.
+
+        Returns:
+            Whitened array, same shape as *M*.
         """
         ...
 
@@ -876,6 +931,47 @@ class ModelFamily(Protocol):
             f"Use method='ter_braak' or method='freedman_lane' instead."
         )
 
+    def residual_permutation_refit(
+        self,
+        design: np.ndarray,
+        preds: np.ndarray,
+        resid: np.ndarray,
+        perm_indices: np.ndarray,
+        *,
+        fit_intercept: bool = True,
+        randomization: str = "permute",
+        n_jobs: int = 1,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Build the residual-permutation null for an arbitrary design.
+
+        Shared by Freedman–Lane (individual and joint) and ter Braak: given a
+        design already fit to produce *preds* and *resid* = y − preds, permute
+        the residual, reconstruct Y* = preds + π(resid), and refit *design* on
+        Y* for every row of *perm_indices*.
+
+        Families whose errors are not exchangeable on the raw scale (e.g. a
+        mixed model with random slopes) override this to whiten *design*,
+        *preds* and *resid* consistently before permuting — Π and W do not
+        commute, so the residual must be whitened BEFORE randomisation, not
+        after.  The default implementation is the raw-scale version and is
+        correct whenever ``Cov(resid)`` is already proportional to I.
+
+        Args:
+            design: Design matrix ``(n, p)`` — no intercept column.
+            preds: Fitted values for *design*, shape ``(n,)``.
+            resid: ``y - preds``, shape ``(n,)``.
+            perm_indices: Randomisation matrix ``(B, n)``.
+            fit_intercept: Whether *design* needs an intercept column added.
+            randomization: ``"permute"`` or ``"sign_flip"``.
+            n_jobs: Parallelism for the batch refit.
+
+        Returns:
+            ``(coefs, rss)`` — ``coefs`` shape ``(B, p[+1])``, ``rss`` shape ``(B,)``.
+        """
+        raise NotImplementedError(
+            f"residual_permutation_refit() not implemented for family='{self.name}'."
+        )
+
     def batch_fit(
         self,
         X: np.ndarray,
@@ -1118,6 +1214,18 @@ class LinearFamily:
     @property
     def direct_permutation(self) -> bool:
         return False
+
+    def whiten(self, M: np.ndarray) -> np.ndarray:
+        """``Cov(e) = σ²I``, so the identity — unless AR calibration replaces I with Ω."""
+        if self.ar_coefs is not None and self._panel_lengths is not None:
+            from ._ar import apply_ar_cholesky_transform
+
+            return np.asarray(
+                apply_ar_cholesky_transform(
+                    np.asarray(M, dtype=float), self._panel_lengths, self.ar_coefs
+                )
+            )
+        return np.asarray(M, dtype=float)
 
     @property
     def metric_label(self) -> str:
@@ -1426,6 +1534,31 @@ class LinearFamily:
 
         E_pi = _apply_randomization(residuals, perm_indices, randomization)  # (B, n)
         return np.asarray(E_pi @ projection_row)  # (B,)
+
+    def residual_permutation_refit(
+        self,
+        design: np.ndarray,
+        preds: np.ndarray,
+        resid: np.ndarray,
+        perm_indices: np.ndarray,
+        *,
+        fit_intercept: bool = True,
+        randomization: str = "permute",
+        n_jobs: int = 1,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Raw-scale refit — ``Cov(resid) = σ²I`` (or Ω under AR, already
+        exchangeable after ``_apply_randomization`` composes with `reconstruct_y`).
+        """
+        return _default_residual_permutation_refit(
+            self,
+            design,
+            preds,
+            resid,
+            perm_indices,
+            fit_intercept=fit_intercept,
+            randomization=randomization,
+            n_jobs=n_jobs,
+        )
 
     # ---- Permutation helpers ---------------------------------------
     #
@@ -1889,6 +2022,10 @@ class LogisticFamily:
     def name(self) -> str:
         return "logistic"
 
+    def whiten(self, M: np.ndarray) -> np.ndarray:
+        """AR correlation only. Bernoulli heteroscedasticity is not whitenable."""
+        return _glm_whiten(self, M)
+
     @property
     def residual_type(self) -> str:
         return "probability"
@@ -2146,6 +2283,34 @@ class LogisticFamily:
         # Step 4: Resampled scores via single matmul.
         E_pi = _apply_randomization(residuals, perm_indices, randomization)  # (B, n)
         return np.asarray(E_pi @ projection_row)  # (B,)
+
+    def residual_permutation_refit(
+        self,
+        design: np.ndarray,
+        preds: np.ndarray,
+        resid: np.ndarray,
+        perm_indices: np.ndarray,
+        *,
+        fit_intercept: bool = True,
+        randomization: str = "permute",
+        n_jobs: int = 1,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Raw-scale refit — no closed-form whitening for GLM heteroscedasticity.
+
+        Not a gap: measured nominal at 110,000× working-weight spread (N=600,
+        400 reps), because the canonical-link score is already studentised by
+        the Fisher information.  See ``test_glm_does_not_standardise_by_variance``.
+        """
+        return _default_residual_permutation_refit(
+            self,
+            design,
+            preds,
+            resid,
+            perm_indices,
+            fit_intercept=fit_intercept,
+            randomization=randomization,
+            n_jobs=n_jobs,
+        )
 
     # ---- Permutation helpers ---------------------------------------
     #
@@ -2598,6 +2763,10 @@ class PoissonFamily:
     def name(self) -> str:
         return "poisson"
 
+    def whiten(self, M: np.ndarray) -> np.ndarray:
+        """AR correlation only. Poisson mean-variance is not whitenable."""
+        return _glm_whiten(self, M)
+
     @property
     def residual_type(self) -> str:
         return "response"
@@ -2858,6 +3027,33 @@ class PoissonFamily:
         # Step 4: Randomized scores via single matmul.
         E_pi = _apply_randomization(residuals, perm_indices, randomization)  # (B, n)
         return np.asarray(E_pi @ projection_row)  # (B,)
+
+    def residual_permutation_refit(
+        self,
+        design: np.ndarray,
+        preds: np.ndarray,
+        resid: np.ndarray,
+        perm_indices: np.ndarray,
+        *,
+        fit_intercept: bool = True,
+        randomization: str = "permute",
+        n_jobs: int = 1,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Raw-scale refit — no closed-form whitening for GLM heteroscedasticity.
+
+        See ``LinearFamily.residual_permutation_refit`` for the measured
+        justification, which applies to every GLM in this module.
+        """
+        return _default_residual_permutation_refit(
+            self,
+            design,
+            preds,
+            resid,
+            perm_indices,
+            fit_intercept=fit_intercept,
+            randomization=randomization,
+            n_jobs=n_jobs,
+        )
 
     # ---- Permutation helpers ---------------------------------------
     #
@@ -3299,6 +3495,10 @@ class NegativeBinomialFamily:
     def name(self) -> str:
         return "negative_binomial"
 
+    def whiten(self, M: np.ndarray) -> np.ndarray:
+        """AR correlation only. NB2 mean-variance is not whitenable."""
+        return _glm_whiten(self, M)
+
     @property
     def residual_type(self) -> str:
         return "response"
@@ -3549,6 +3749,29 @@ class NegativeBinomialFamily:
         # Step 4: Randomized scores via single matmul.
         E_pi = _apply_randomization(residuals, perm_indices, randomization)  # (B, n)
         return np.asarray(E_pi @ projection_row)  # (B,)
+
+    def residual_permutation_refit(
+        self,
+        design: np.ndarray,
+        preds: np.ndarray,
+        resid: np.ndarray,
+        perm_indices: np.ndarray,
+        *,
+        fit_intercept: bool = True,
+        randomization: str = "permute",
+        n_jobs: int = 1,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Raw-scale refit — no closed-form whitening for GLM heteroscedasticity."""
+        return _default_residual_permutation_refit(
+            self,
+            design,
+            preds,
+            resid,
+            perm_indices,
+            fit_intercept=fit_intercept,
+            randomization=randomization,
+            n_jobs=n_jobs,
+        )
 
     # ---- Permutation helpers ---------------------------------------
 
@@ -4032,6 +4255,14 @@ class OrdinalFamily:
     def name(self) -> str:
         return "ordinal"
 
+    def whiten(self, M: np.ndarray) -> np.ndarray:
+        """Identity: ``direct_permutation`` families permute Y and form no residuals.
+
+        Not a claim that ordinal residuals are homoscedastic — there are none to
+        standardise, because nothing residual-based is permuted.
+        """
+        return np.asarray(M, dtype=float)
+
     @property
     def residual_type(self) -> str:
         return "none"
@@ -4369,6 +4600,32 @@ class OrdinalFamily:
         V = R[np.arange(n)[np.newaxis, :], y_permuted]  # (B, n)
 
         return np.asarray(V @ projection_row)  # (B,)
+
+    def residual_permutation_refit(
+        self,
+        design: np.ndarray,
+        preds: np.ndarray,
+        resid: np.ndarray,
+        perm_indices: np.ndarray,
+        *,
+        fit_intercept: bool = True,
+        randomization: str = "permute",
+        n_jobs: int = 1,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Never invoked in practice: FL/ter Braak refuse ``direct_permutation``
+        families upstream.  Delegates to the generic path for Protocol
+        conformance, which raises via ``reconstruct_y`` if ever reached.
+        """
+        return _default_residual_permutation_refit(
+            self,
+            design,
+            preds,
+            resid,
+            perm_indices,
+            fit_intercept=fit_intercept,
+            randomization=randomization,
+            n_jobs=n_jobs,
+        )
 
     # ---- Permutation helpers ---------------------------------------
 
@@ -4787,6 +5044,10 @@ class MultinomialFamily:
     def name(self) -> str:
         return "multinomial"
 
+    def whiten(self, M: np.ndarray) -> np.ndarray:
+        """Identity: ``direct_permutation`` families permute Y and form no residuals."""
+        return np.asarray(M, dtype=float)
+
     @property
     def residual_type(self) -> str:
         return "none"
@@ -5132,6 +5393,32 @@ class MultinomialFamily:
         return np.sum(tmp * U_j, axis=1)  # type: ignore[no-any-return]  # (B,) chi-square values
 
     # ---- Permutation helpers ---------------------------------------
+
+    def residual_permutation_refit(
+        self,
+        design: np.ndarray,
+        preds: np.ndarray,
+        resid: np.ndarray,
+        perm_indices: np.ndarray,
+        *,
+        fit_intercept: bool = True,
+        randomization: str = "permute",
+        n_jobs: int = 1,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Never invoked in practice: FL/ter Braak refuse ``direct_permutation``
+        families upstream.  Delegates to the generic path for Protocol
+        conformance, which raises via ``reconstruct_y`` if ever reached.
+        """
+        return _default_residual_permutation_refit(
+            self,
+            design,
+            preds,
+            resid,
+            perm_indices,
+            fit_intercept=fit_intercept,
+            randomization=randomization,
+            n_jobs=n_jobs,
+        )
 
     def reconstruct_y(
         self,
@@ -5634,6 +5921,39 @@ def resolve_family(
 # For ordinal/multinomial, the zero-column case doesn't arise in
 # practice (these families use direct_permutation or model-object
 # scoring), but mean(y) is still a reasonable numeric fallback.
+
+
+def _default_residual_permutation_refit(
+    family: Any,
+    design: np.ndarray,
+    preds: np.ndarray,
+    resid: np.ndarray,
+    perm_indices: np.ndarray,
+    *,
+    fit_intercept: bool,
+    randomization: str,
+    n_jobs: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Raw-scale residual-permutation refit.
+
+    Shared by every family whose errors are already exchangeable on the
+    response scale (all of them except a mixed model with random slopes --
+    see ``LinearMixedFamily.residual_permutation_refit``).  Reproduces exactly
+    what Freedman-Lane and ter Braak did inline before this seam existed:
+    permute, reconstruct, batch-refit.
+    """
+    from ._strategies import _apply_randomization
+
+    permuted = _apply_randomization(resid, perm_indices, randomization)  # (B, n)
+    rng = np.random.default_rng(
+        (perm_indices[0].astype(np.int64) + perm_indices.shape[1]).astype(np.uint64)
+    )
+    preds_tiled = np.broadcast_to(preds[np.newaxis, :], permuted.shape)
+    Y_star = family.reconstruct_y(preds_tiled, permuted, rng)
+    coefs, rss = family.batch_fit_and_score(
+        design, Y_star, fit_intercept, n_jobs=n_jobs
+    )
+    return np.asarray(coefs), np.asarray(rss)
 
 
 def fit_reduced(

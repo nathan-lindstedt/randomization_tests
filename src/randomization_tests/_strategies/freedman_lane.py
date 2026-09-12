@@ -60,7 +60,7 @@ import numpy as np
 import pandas as pd
 
 from ..families import fit_reduced
-from . import _apply_randomization
+from . import _residual_joint_statistic
 
 if TYPE_CHECKING:
     from ..families import ModelFamily
@@ -120,15 +120,6 @@ class FreedmanLaneIndividualStrategy:
 
         result = np.zeros((n_perm, n_features))  # (B, p) permuted coefficients
 
-        # Deterministic RNG seeded from the first row of perm_indices.
-        # Ensures stochastic reconstruction steps (e.g. Bernoulli
-        # sampling for logistic) are reproducible for both permutation
-        # (0..n-1) and sign-flip (±1) matrices; shift makes all values
-        # positive so they are valid as seed entries.
-        rng = np.random.default_rng(
-            (perm_indices[0].astype(np.int64) + perm_indices.shape[1]).astype(np.uint64)
-        )
-
         # Loop over tested features j.  Each iteration tests
         # H₀(j): β_j = 0 with nuisance block X_{−j} (all other
         # columns, confounders included — canonical Freedman–Lane).
@@ -158,24 +149,19 @@ class FreedmanLaneIndividualStrategy:
                 # raw residuals e = Y − ŷ.
                 resids_red = y_values - preds_red  # (n,)
 
-            # Step 2: Resample the reduced-model residual vector.
-            permuted_resids = _apply_randomization(
-                resids_red, perm_indices, randomization
-            )  # (B, n)
-
-            # Step 3: Reconstruct Y* = ŷ₋ⱼ + π(e₋ⱼ).
-            # Nuisance signal preserved; X_j's contribution destroyed.
-            Y_perm = family.reconstruct_y(
-                preds_red[np.newaxis, :],  # (1, n) → broadcast to (B, n)
-                permuted_resids,  # (B, n)
-                rng,
-            )  # (B, n) synthetic response vectors
-
-            # Step 4: Batch-refit the full model; extract column j.
-            all_coefs = np.array(
-                family.batch_fit(X_np, Y_perm, fit_intercept, n_jobs=n_jobs)
+            # Steps 2-4: whiten (if applicable), permute, reconstruct, refit —
+            # owned by the family so it cannot diverge from method="score",
+            # which computes the same estimator through the same seam.
+            all_coefs, _ = family.residual_permutation_refit(
+                X_np,
+                preds_red,
+                resids_red,
+                perm_indices,
+                fit_intercept=fit_intercept,
+                randomization=randomization,
+                n_jobs=n_jobs,
             )  # (B, p)
-            result[:, j] = all_coefs[:, j]
+            result[:, j] = np.asarray(all_coefs)[:, j]
 
         return result
 
@@ -241,14 +227,7 @@ class FreedmanLaneJointStrategy:
         metric_type = family.metric_label  # e.g. "RSS", "deviance"
 
         X_np = X.values.astype(float)  # (n, p) full design matrix
-        n_perm, n = perm_indices.shape  # B permutations, n observations
-
-        # Deterministic RNG seeded from the first row of perm_indices.
-        # Shift by row length so sign-flip values (±1) become positive;
-        # permutation values (0..n-1) remain distinct and non-negative.
-        rng = np.random.default_rng(
-            (perm_indices[0].astype(np.int64) + perm_indices.shape[1]).astype(np.uint64)
-        )
+        n = perm_indices.shape[1]  # n observations
 
         # Z = confounder design matrix (n, q_z).
         if confounders:
@@ -257,72 +236,20 @@ class FreedmanLaneJointStrategy:
         else:
             Z = np.zeros((n, 0))  # (n, 0) — no confounders
 
-        # --- Observed reduced model (confounders only) ---
-        # ŷ_Z = predictions from Y ~ Z.  fit_metric compares Y to
-        # ŷ_Z to get the baseline metric with only confounders.
-        reduced_model, preds_reduced = fit_reduced(family, Z, y_values, fit_intercept)
-        # preds_reduced = ŷ_Z, shape (n,)
-
-        # Baseline metric: M(Y, ŷ_Z) = how well confounders alone
-        # explain Y.  Higher is worse ("lower is better" convention).
-        base_metric = family.fit_metric(y_values, preds_reduced)
-
-        # --- Observed full model (all features) ---
-        # Fit Y ~ X_full and compute M(Y, ŷ_full).
-        full_model = family.fit(X_np, y_values, fit_intercept)
-        preds_full = family.predict(full_model, X_np)  # ŷ_full, (n,)
-        # Δ_obs = M(Y, ŷ_Z) − M(Y, ŷ_full).  Positive means the
-        # tested features improve fit.
-        obs_improvement = base_metric - family.fit_metric(y_values, preds_full)
-
-        # --- Reduced-model residuals (canonical Freedman–Lane) ---
-        # e_Z = Y − ŷ_Z: residuals of the CONFOUNDER-ONLY reduced
-        # model.  Permuting these preserves the nuisance (confounder)
-        # signal exactly while destroying any contribution of the
-        # tested features (Freedman & Lane 1983; Winkler et al. 2014).
-        if reduced_model is not None:
-            reduced_resids = family.residuals(reduced_model, Z, y_values)
-        else:
-            # Zero-column edge case (no confounders): intercept-only
-            # reduced model; raw residuals.
-            reduced_resids = y_values - preds_reduced  # (n,)
-
-        # --- Permutation loop (vectorised via batch backend) ---
-        # Build Y*_batch in one vectorised call, then use
-        # batch_fit_and_score() to refit BOTH reduced and full
-        # models across all permutations simultaneously.
-        #
-        # For each permutation b:
-        #   1. Permute reduced-model residuals: e*_b = e_Z[perm_b]
-        #   2. Reconstruct: Y*_b = preds_reduced + e*_b
-        #   3. batch-fit reduced (Z, Y*_batch) -> reduced_scores
-        #   4. batch-fit full  (X, Y*_batch) -> full_scores
-        #   5. perm_improvements = reduced_scores - full_scores
-        #
-        # The score values (2*NLL / deviance / RSS) differ from
-        # fit_metric by a y-dependent constant that cancels in
-        # the improvement delta = S_reduced - S_full.
-
-        # Vectorised reconstruction: (B, n)
-        perm_resids_batch = _apply_randomization(
-            reduced_resids, perm_indices, randomization
-        )  # (B, n)
-        preds_reduced_tiled = np.broadcast_to(preds_reduced[np.newaxis, :], (n_perm, n))
-        Y_star_batch = family.reconstruct_y(
-            preds_reduced_tiled, perm_resids_batch, rng
-        )  # (B, n)
-
-        # Batch-fit reduced model (Z, Y*) for all permutations.
-        _, reduced_scores = family.batch_fit_and_score(
-            Z, Y_star_batch, fit_intercept, n_jobs=n_jobs
+        # --- Canonical Freedman–Lane reconstruction + refit (shared with
+        # ScoreJointStrategy's residual-based branch so the two "equivalent"
+        # methods cannot independently drift the way ScoreJointStrategy did
+        # before it was fixed to use the same helper — M13). ---
+        obs_improvement, perm_improvements = _residual_joint_statistic(
+            family,
+            Z,
+            X_np,
+            y_values,
+            perm_indices,
+            fit_intercept=fit_intercept,
+            randomization=randomization,
+            n_jobs=n_jobs,
         )
-
-        # Batch-fit full model (X_np, Y*) for all permutations.
-        _, full_scores = family.batch_fit_and_score(
-            X_np, Y_star_batch, fit_intercept, n_jobs=n_jobs
-        )
-
-        perm_improvements = reduced_scores - full_scores
 
         return (
             obs_improvement,

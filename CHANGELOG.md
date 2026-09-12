@@ -51,6 +51,122 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Mixed-model REML/Laplace solver silently returned wrong variance
+  components** (`linear_mixed`, `logistic_mixed`, `poisson_mixed`):
+  the Levenberg–Marquardt solver enforced its positive-definiteness
+  requirement `H + λI ≻ 0` only at the starting point, then rescaled
+  λ multiplicatively.  Under negative curvature at a later iterate the
+  damped Hessian could remain indefinite, producing an ascent step of
+  unbounded length; and because the acceptance test `ρ > 0` compares
+  an actual reduction to a *predicted* reduction that had also gone
+  negative, such uphill steps were **accepted**.  The NaN sentinel
+  inverted for the same reason, causing acceptance of the catastrophic
+  step it was written to reject.
+
+  Effect: on an ordinary ICC ≈ 0.2 random-intercept model the solver
+  returned `τ̂² = 0` for a real variance component, shifting β̂ by 1.5e-2
+  (~3%); on rarer datasets it diverged to `θ = −1809`, underflowed, and
+  raised `LinAlgError: Singular matrix`.  Measured on roughly 15–25% of
+  ordinary datasets.  Because the corrupted `projection_A` and standard
+  errors feed `raw_classic_p` as well, **classical inference was
+  affected as much as permutation inference**.  GLMM families had no
+  alternative solver, so every GLMM fit went through this path.
+
+  The invariant is now enforced at every iterate via an exact
+  Gill–Murray eigenvalue floor (branchless, so the XLA-traceable
+  design is preserved), and acceptance tests the primitive condition —
+  that the objective decreased.  Verified against the profile REML
+  criterion computed independently on a dense grid: 0/8 failures where
+  the previous solver had 2/8, and agreement with a 12-start reference
+  to 3.6e-9 on random slopes and on the GLMM Laplace path.
+
+  This also resolved the AR + mixed-model instability previously
+  attributed to AR estimation: standard-error spread across datasets
+  from an identical DGP fell from **61.7× to 1.15×**, matching the
+  1.17× of the non-AR arm.
+
+  Fitted variance components, β̂, standard errors, and p-values may
+  therefore change for mixed models — in every case measured, toward
+  the correct REML optimum.
+
+- **Freedman–Lane, ter Braak, and score permuted raw residuals under
+  non-compound-symmetric covariance** (`linear_mixed` with random
+  slopes or crossed grouping factors): a GLS model's errors are only
+  i.i.d. after whitening (`Ṽ⁻¹ = W'W`), but the permutation step
+  operated on raw residuals — valid only when Ṽ reduces to compound
+  symmetry (random-intercept-only). Under random slopes this made the
+  permutation null 2.5–3× too narrow (measured `sd(null)/SE(β̂)`
+  0.34–0.42). All three residual-based strategies now whiten (`W e`)
+  before permuting and contract against the matching whitened
+  projection (`pinv(WX) W = A`, so the observed statistic is
+  unaffected — only the null moves); ratio corrected to 0.92–1.02.
+  As a verified side effect (not independently targeted), a
+  previously undiagnosed level-2 near-invariance under `within`
+  permutation for cluster-constant confounders was also repaired
+  (ratio 0.82–0.90 at the gate's own B=399, power 0.475 against Type I
+  0.025); `between` remains the general-purpose fix for that case.
+
+- **`LinearMixedFamily.residual_type` mislabeled `"conditional"`**:
+  `residuals()` has always computed marginal residuals
+  (`y − Xβ̂`, excluding random effects), but the `residual_type`
+  property returned the wrong label. Corrected to `"marginal"`.
+
+- **AR-blind Woodbury identity in the reduced-design GLS projection**
+  (`fit()`'s reduced branch, used by ter Braak/Freedman–Lane's
+  confounder-only refit under AR correction): a second copy of the
+  Woodbury projection algebra omitted `Ω⁻¹` (the AR precision), which
+  coincides with the correct form only when `Ω = I`. Measured as a
+  sign-flipped coefficient (−10.39 vs the true +0.7) on 4 of 5
+  AR-corrected datasets. Both copies now share one derivation
+  (`_woodbury_gls_projection`), parameterised by the same optional AR
+  arguments.
+
+- **Silent OLS substitution when mixed-model p-values fail to
+  compute**: `classical_p_values()` for `linear_mixed` caught any
+  exception from the statsmodels refit and silently returned OLS
+  p-values under the mixed-model's name — OLS ignores the cluster
+  correlation entirely and is anticonservative for clustered data.
+  Now returns `NaN` and raises a `RuntimeWarning`; permutation
+  p-values are unaffected.
+
+- **`freedman_lane_joint` on `linear_mixed` compared RSS on two
+  different scales whenever confounders were present**: the reduced
+  (confounder-only) branch of the joint reconstruction fell back to
+  unweighted OLS while the full-design branch used the whitened GLS
+  projection, so `reduced_scores - full_scores` subtracted values
+  differing by an order of magnitude (measured ≈1975 raw vs ≈156
+  whitened), and the observed statistic (computed via `fit_metric`,
+  raw scale) was compared against a null on yet another scale — partly
+  a regression from the whitening fix above (which whitened only the
+  full-design branch) and partly an independent pre-existing defect
+  in the observed-statistic computation. `residual_permutation_refit`
+  now builds a whitened projection for the reduced design on the fly
+  when its shape doesn't match calibration (verified algebraically
+  identical to the reduced-model GLS β̂), and `obs_improvement` is
+  computed through the same mechanism at an identity permutation
+  (verified as an exact no-op for the 8 non-whitening families) —
+  both branches and the observed statistic now always share one
+  scale.
+
+- **`score_joint` permuted full-model residuals instead of
+  reduced-model residuals**: canonical Freedman–Lane (1983; Winkler
+  et al. 2014, Table 2) permutes the confounder-only reduced model's
+  residuals; `ScoreJointStrategy` instead reconstructed
+  `Y* = ŷ_reduced + π(e_full)`. Because nested least squares
+  mechanically shrinks fitted RSS as parameters are added (even ones
+  with no real effect), residuals from the full model understate the
+  noise scale relative to the reduced model's, narrowing the null
+  (measured null sd ratio 0.84 vs Freedman–Lane joint, correlation
+  0.80, under a real two-feature effect — the divergence was masked
+  under near-exact H0, where the two residual sources coincide, which
+  is why it shipped undetected). `score_joint`'s residual-based branch
+  and `freedman_lane_joint` now share one implementation
+  (`_residual_joint_statistic`), so the two are identical by
+  construction; `score_joint`'s direct-Y-permutation branch for
+  ordinal/multinomial is unaffected. `score_joint`'s docstring
+  previously also claimed to use `score_project()`'s one-step/Fisher-
+  information machinery — it does not; corrected.
+
 - **Degenerate permutation confidence intervals for
   `method="kennedy"` and `method="score"`**: `compute_permutation_ci`
   assumed Kennedy/score null distributions were centred on β̂ (they

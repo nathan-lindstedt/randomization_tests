@@ -56,11 +56,10 @@ from dataclasses import dataclass
 from typing import Any, final
 
 import numpy as np
-import statsmodels.api as sm
 from typing_extensions import Self
 
 from .exchangeability import ExchangeabilityTree
-from .families import _augment_intercept
+from .families import _augment_intercept, _default_residual_permutation_refit
 
 # ------------------------------------------------------------------ #
 # Z-construction helpers
@@ -347,6 +346,158 @@ def _format_variance_components(
     return lines
 
 
+def _whitening_blocks(
+    Z: np.ndarray,
+    groups_arr: np.ndarray,
+    ratio: np.ndarray,
+    re_struct: list[tuple[int, int]],
+    ar_coefs: np.ndarray | None,
+) -> tuple[np.ndarray, ...] | None:
+    """Lower-Cholesky factors of the per-cluster blocks of ``Ṽ = I + Z Γ Z'``.
+
+    A GLS model is an OLS problem on whitened data, so the permutation null must
+    act on whitened residuals: Π and W do not commute, and permuting raw residuals
+    applies a Ṽ-aware projection to units that are not exchangeable.
+
+    Block-Cholesky is chosen over the symmetric root deliberately.  Both satisfy
+    ``W'W = Ṽ⁻¹`` and give identical β̂, but they produce different whitened
+    residuals and therefore different permutation nulls (measured max |Δp| = 0.025
+    under shared permutations).  The Cholesky factor is block-local, so a cluster's
+    whitened residuals depend only on that cluster and cross-cluster independence is
+    preserved exactly; it also matches the AR path's existing idiom.
+
+    Returns ``None`` when Ṽ is not block-diagonal by cluster — AR correction or
+    crossed grouping factors — so that ``whiten()`` can raise at point of use rather
+    than silently applying a wrong operator.
+    """
+    if ar_coefs is not None or len(re_struct) != 1:
+        return None
+
+    _, d = re_struct[0]
+    blocks: list[np.ndarray] = []
+    for g in np.unique(groups_arr):
+        rows = np.flatnonzero(np.equal(groups_arr, g))
+        cols = np.arange(int(g) * d, (int(g) + 1) * d)
+        Zg = Z[np.ix_(rows, cols)]
+        Vg = np.eye(len(rows)) + Zg @ ratio @ Zg.T
+        try:
+            blocks.append(np.linalg.cholesky(Vg))
+        except np.linalg.LinAlgError:
+            return None
+    return tuple(blocks)
+
+
+def _glmm_whiten(
+    family: Any,
+    M: np.ndarray,
+    method: str,
+) -> np.ndarray:
+    """Whiten on the PQL **working** scale, where the GLMM score is defined.
+
+    The working-response covariance is ``V_z = W⁻¹ + Z Σ Z'`` (verified: the stored
+    precision equals ``V_z⁻¹`` exactly, and is *not* ``Var(y)⁻¹``).  Whitening on the
+    response scale would repeat M6 — applying a working-scale operator to
+    response-scale quantities.
+    """
+    family._require_calibrated(method)
+    w = np.asarray(family.W, dtype=float)
+    # Precondition assertion, not a fix: w > 0 is required for 1/w to exist. No
+    # measured fit reaches it (min w = 5.2e-08 over 40 fits with strong effects and
+    # tau2 up to 16), so this asserts an invariant rather than handling a known case.
+    if np.any(w <= 0.0):
+        msg = (
+            f"{type(family).__name__}.{method}(): the PQL working weights contain "
+            "non-positive values, which means fitted means at 0 or 1 (separation). "
+            "The working covariance is undefined there. Refit without the separating "
+            "predictor rather than treating the degenerate fit as usable."
+        )
+        raise ValueError(msg)
+    Z = np.asarray(family.Z, dtype=float)
+    groups = np.asarray(family._groups_arr)
+    sigma = np.atleast_2d(np.asarray(family.re_covariances[0], dtype=float))
+    _, d = family.re_struct[0]
+
+    arr = np.asarray(M, dtype=float)
+    flat = arr.ndim == 1
+    source = arr.reshape(-1, 1) if flat else arr
+    out = np.empty_like(source)
+    for g in np.unique(groups):
+        rows = np.flatnonzero(np.equal(groups, g))
+        cols = np.arange(int(g) * d, (int(g) + 1) * d)
+        Zg = Z[np.ix_(rows, cols)]
+        Vg = np.diag(1.0 / w[rows]) + Zg @ sigma @ Zg.T
+        out[rows] = np.linalg.solve(np.linalg.cholesky(Vg), source[rows])
+    return out.ravel() if flat else out
+
+
+def _whitened_projection(
+    blocks: tuple[np.ndarray, ...] | None,
+    groups_arr: np.ndarray | None,
+    X_aug: np.ndarray,
+) -> np.ndarray | None:
+    """``pinv(W X_aug)`` — the OLS projection on the whitened design.
+
+    Mirrors what ``LinearFamily.calibrate`` already does for AR, where the stored
+    projection is ``pinv(L @ X)`` and ``score_project`` whitens residuals to match.
+
+    Paired with whitened residuals this reproduces the GLS projection exactly:
+    ``pinv(WX) W = (X'W'WX)⁻¹X'W'W = (X'Ṽ⁻¹X)⁻¹X'Ṽ⁻¹ = A``.  The observed statistic
+    is therefore unchanged and only the permutation null moves — the invariant to
+    assert when wiring this in, because applying ``W`` while still using the raw
+    ``projection_A`` would apply it three times, silently.
+
+    Stored **alongside** ``projection_A``, never instead of it: β̂, the batch
+    backends, and every reported quantity need the raw-scale operator.
+
+    Returns ``None`` when no block-local whitening exists (AR correction or crossed
+    grouping factors), matching ``whitening_blocks``.
+    """
+    if blocks is None or groups_arr is None:
+        return None
+    source = np.asarray(X_aug, dtype=float)
+    out = np.empty_like(source)
+    for block, g in zip(blocks, np.unique(groups_arr), strict=True):
+        rows = np.flatnonzero(np.equal(groups_arr, g))
+        out[rows] = np.linalg.solve(block, source[rows])
+    return np.asarray(np.linalg.pinv(out))
+
+
+def _woodbury_gls_projection(
+    X_aug: np.ndarray,
+    Z: np.ndarray,
+    C22: np.ndarray,
+    *,
+    ar_coefs: np.ndarray | None = None,
+    panel_indices: np.ndarray | None = None,
+    panel_lengths: np.ndarray | None = None,
+) -> np.ndarray:
+    """GLS projection ``A = S⁻¹X'Ṽ⁻¹`` for an arbitrary design, via Woodbury.
+
+    ``Ṽ⁻¹ = Ω⁻¹ − Ω⁻¹Z C₂₂⁻¹ Z'Ω⁻¹`` with ``C₂₂ = Z'Ω⁻¹Z + Γ⁻¹``, which reduces to
+    ``I − Z C₂₂⁻¹ Z'`` when there is no AR correction.
+
+    ``Ω⁻¹`` is not optional once the family is AR-calibrated: the stored ``C₂₂``
+    already contains it, so omitting it here sandwiches an AR-aware ``C₂₂`` inside
+    a non-AR identity and yields neither estimator — measured as a sign-flipped
+    coefficient on 4 of 5 datasets.  The two forms coincide exactly when ``Ω = I``,
+    which is why a second, AR-blind copy of this algebra went unnoticed.
+    """
+    if ar_coefs is not None and panel_indices is not None and panel_lengths is not None:
+        from ._ar import apply_ar_precision
+
+        Oi_X = np.asarray(
+            apply_ar_precision(X_aug, panel_indices, panel_lengths, ar_coefs)
+        )
+        Oi_Z = np.asarray(apply_ar_precision(Z, panel_indices, panel_lengths, ar_coefs))
+    else:
+        Oi_X, Oi_Z = X_aug, Z
+
+    XtOiZ = Oi_X.T @ Z
+    S = Oi_X.T @ X_aug - XtOiZ @ np.linalg.solve(C22, Oi_Z.T @ X_aug)
+    Xt_Vinv = Oi_X.T - XtOiZ @ np.linalg.solve(C22, Oi_Z.T)
+    return np.asarray(np.linalg.solve(S, Xt_Vinv))
+
+
 def _require_calibrated_guard(
     obj: Any,
     method: str,
@@ -487,6 +638,25 @@ class LinearMixedFamily:
     _panel_indices: np.ndarray | None = None
     _panel_lengths: np.ndarray | None = None
 
+    whitening_blocks: tuple[np.ndarray, ...] | None = None
+    """Per-cluster lower-Cholesky factors ``L_g`` of ``Ṽ_g = I + Z_g (Σ/σ²) Z_g'``.
+
+    ``L_g⁻¹`` whitens cluster *g*, so the stacked operator ``W`` satisfies
+    ``W'W = Ṽ⁻¹``.  Block-local by construction, which preserves cross-cluster
+    independence exactly.  ``None`` when Ṽ is not block-diagonal by cluster
+    (AR correction, or crossed grouping factors) — ``whiten()`` raises in that case
+    rather than falling back.
+    """
+
+    projection_A_whitened: np.ndarray | None = None
+    """``pinv(W X_aug)`` — the OLS projection on the whitened design.
+
+    Held **alongside** ``projection_A``, not instead of it: β̂, the batch backends
+    and every reported quantity need the raw-scale operator, while the permutation
+    null needs this one.  ``pinv(WX) W = A``, so pairing it with whitened residuals
+    leaves the observed statistic unchanged and moves only the null.
+    """
+
     # ---- Protocol constants ----------------------------------------
 
     @property
@@ -495,7 +665,7 @@ class LinearMixedFamily:
 
     @property
     def residual_type(self) -> str:
-        return "conditional"
+        return "marginal"
 
     @property
     def direct_permutation(self) -> bool:
@@ -691,14 +861,17 @@ class LinearMixedFamily:
             # changes.  This mirrors batch_mixed_lm_varying_X in
             # the numpy backend.
             assert self.Z is not None and self.C22 is not None
-            Z = self.Z  # (n, q)
-            C22 = self.C22  # (q, q)
-            C22_inv_Zt = np.linalg.solve(C22, Z.T)  # (q, n)
-            XtZ = X_aug.T @ Z  # (p_aug, q)
-            S = X_aug.T @ X_aug - XtZ @ (C22_inv_Zt @ X_aug)  # (p_aug, p_aug)
-            Xt_Vinv = X_aug.T - XtZ @ C22_inv_Zt  # (p_aug, n)
-            A_red = np.linalg.solve(S, Xt_Vinv)  # (p_aug, n)
-            beta = A_red @ y  # (p_aug,)
+            beta = (
+                _woodbury_gls_projection(
+                    X_aug,
+                    self.Z,
+                    self.C22,
+                    ar_coefs=self.ar_coefs,
+                    panel_indices=self._panel_indices,
+                    panel_lengths=self._panel_lengths,
+                )
+                @ y
+            )
 
         predictions = X_aug @ beta
         return _LMMFitResult(
@@ -725,15 +898,47 @@ class LinearMixedFamily:
         return beta
 
     def residuals(self, model: Any, X: np.ndarray, y: np.ndarray) -> np.ndarray:
-        """Conditional residuals: ``e = y − ŷ``.
+        """Marginal residuals ``e = y − Xβ̂``.
 
-        These are marginal residuals (y − Xβ̂).  For the mixed
-        model, the "full" residual is y − Xβ̂ − Zû, but for the
-        Freedman–Lane permutation scheme we need the marginal
-        residual because the random effects are not features being
-        tested — they are a nuisance covariance structure.
+        Marginal rather than conditional (``y − Xβ̂ − Zû``) because the random
+        effects are not features under test — they are a nuisance covariance
+        structure, and the permutation scheme targets the fixed effects.
         """
         return np.asarray(y - model.predictions)
+
+    # ---- Whitening -------------------------------------------------
+
+    def whiten(self, M: np.ndarray) -> np.ndarray:
+        """Apply ``W = L⁻¹`` block-wise, so ``Cov(W e) ≈ I`` under the fitted model.
+
+        Accepts a vector ``(n,)`` or a matrix ``(n, k)`` and returns the same shape.
+        Ṽ is frozen at calibration, so the operator does not depend on which fit
+        produced *M* — which is what keeps the observed statistic and the null draws
+        in the same metric.
+
+        Raises when the marginal covariance is not block-diagonal by cluster, since
+        no block-local whitening exists in that case.
+        """
+        self._require_calibrated("whiten")
+        if self.whitening_blocks is None:
+            msg = (
+                "LinearMixedFamily.whiten() is unavailable for this calibration: "
+                "the marginal covariance is not block-diagonal by cluster "
+                "(AR correction or crossed grouping factors)."
+            )
+            raise NotImplementedError(msg)
+        assert self._groups_arr is not None
+
+        arr = np.asarray(M, dtype=float)
+        flat = arr.ndim == 1
+        source = arr.reshape(-1, 1) if flat else arr
+        out = np.empty_like(source)
+        for block, g in zip(
+            self.whitening_blocks, np.unique(self._groups_arr), strict=True
+        ):
+            rows = np.flatnonzero(np.equal(self._groups_arr, g))
+            out[rows] = np.linalg.solve(block, source[rows])
+        return out.ravel() if flat else out
 
     # ---- Score projection ------------------------------------------
 
@@ -748,24 +953,123 @@ class LinearMixedFamily:
         y: np.ndarray | None = None,  # noqa: ARG002
         randomization: str = "permute",
     ) -> np.ndarray:
-        """Score projection via GLS projection matrix A.
+        """Score projection via the GLS projection matrix A.
 
-        Computes ``projection_A[j] @ residuals[perm_indices]`` for
-        all B permutations simultaneously — a single matmul.
+        Computes ``A[j] @ residuals[perm_indices]`` for all B permutations
+        simultaneously — a single matmul.  Mathematically identical to the
+        Freedman–Lane refit coefficient, not an approximation — and now that
+        ``residual_permutation_refit`` whitens the Freedman–Lane/ter Braak
+        path, this must whiten the same way or the two "identical" estimators
+        would compute different nulls (measured: they did, on 5 of 6
+        configurations, undetected by a p-value-only guard because
+        permutation p-values are discrete counts — see
+        ``test_null_distributions_match`` in test_score_strategy.py).
 
-        This is mathematically identical to the Freedman–Lane refit
-        coefficient (not an approximation).  The projection matrix A
-        already incorporates the variance structure V̂⁻¹ from REML
-        calibration.
+        Raw marginal residuals are not exchangeable once the within-cluster
+        covariance departs from compound symmetry (random slopes gave a null
+        ~2.5× too narrow, measured ``sd(draws)/SE`` 0.34–0.42).  Whitening
+        first and contracting against ``projection_A_whitened`` repairs this;
+        ``pinv(WX) W = A`` keeps the observed statistic unchanged so only the
+        null moves.
         """
         from ._strategies import _apply_randomization
 
         self._require_calibrated("score_project")
         assert self.projection_A is not None  # for mypy
         j = feature_idx + 1 if fit_intercept else feature_idx
-        projection_row = self.projection_A[j]  # (n,)
+
+        if self.projection_A_whitened is not None:
+            projection_row = self.projection_A_whitened[j]
+            residuals = self.whiten(residuals)
+        else:
+            projection_row = self.projection_A[j]  # (n,)
+
         E_pi = _apply_randomization(residuals, perm_indices, randomization)  # (B, n)
         return np.asarray(E_pi @ projection_row)  # (B,)
+
+    def residual_permutation_refit(
+        self,
+        design: np.ndarray,
+        preds: np.ndarray,
+        resid: np.ndarray,
+        perm_indices: np.ndarray,
+        *,
+        fit_intercept: bool = True,
+        randomization: str = "permute",
+        n_jobs: int = 1,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Whiten *design*, *preds* and *resid* together, then refit on the
+        whitened scale.
+
+        Π and W do not commute, so the residual must be whitened BEFORE
+        permuting — permuting first and whitening the sum would apply W to
+        π(e) instead of the required π(We).  Because ``pinv(WX) W = A``, the
+        OBSERVED statistic is unaffected; only the null moves (verified to
+        1e-14 against the raw-scale observed value).
+
+        Whitening is gated on availability alone (``whitening_blocks``), not on
+        whether *design* matches the calibrated shape: a REDUCED design (e.g.
+        Freedman–Lane joint's confounder-only model) gets its own whitened
+        projection built on the fly via ``_whitened_projection`` — proven equal
+        to ``fit()``'s Woodbury-based reduced β̂ (M1). Without this, the reduced
+        branch fell back to raw OLS while the full branch stayed whitened,
+        so ``reduced_scores - full_scores`` subtracted RSS on two different
+        scales (measured ~1975 raw vs ~156 whitened) — a severe, undetected
+        defect (M1/M2), not the harmless "estimator mismatch" it was scoped as.
+
+        Falls back to the generic (raw-scale) path only when no block-local
+        whitening exists at all (crossed grouping factors; AR is unreachable
+        here since ``ar_order=`` requires ``method='score'``) — both branches
+        then share that fallback together, never split across scales.
+        """
+        self._require_calibrated("residual_permutation_refit")
+        design_aug = _augment_intercept(design, fit_intercept)
+        assert self.projection_A is not None  # for mypy
+        if self.whitening_blocks is None or self.projection_A_whitened is None:
+            return _default_residual_permutation_refit(
+                self,
+                design,
+                preds,
+                resid,
+                perm_indices,
+                fit_intercept=fit_intercept,
+                randomization=randomization,
+                n_jobs=n_jobs,
+            )
+
+        if design_aug.shape[1] == self.projection_A.shape[0]:
+            projection_w = self.projection_A_whitened
+        else:
+            assert (
+                self._groups_arr is not None
+            )  # for mypy — set alongside whitening_blocks
+            projection_w_reduced = _whitened_projection(
+                self.whitening_blocks, self._groups_arr, design_aug
+            )
+            assert (
+                projection_w_reduced is not None
+            )  # whitening_blocks confirmed not None above
+            projection_w = projection_w_reduced
+
+        preds_w = self.whiten(preds)
+        resid_w = self.whiten(resid)
+        design_w = self.whiten(design_aug)
+
+        from ._strategies import _apply_randomization
+
+        permuted_w = _apply_randomization(resid_w, perm_indices, randomization)
+        preds_w_tiled = np.broadcast_to(preds_w[np.newaxis, :], permuted_w.shape)
+        rng = np.random.default_rng(
+            (perm_indices[0].astype(np.int64) + perm_indices.shape[1]).astype(np.uint64)
+        )
+        Y_star_w = self.reconstruct_y(preds_w_tiled, permuted_w, rng)
+
+        coefs_aug = Y_star_w @ projection_w.T  # (B, p_aug)
+        fitted_w = coefs_aug @ design_w.T  # (B, n)
+        rss = np.sum((Y_star_w - fitted_w) ** 2, axis=1)  # (B,)
+        # Slope-only, matching batch_fit_and_score's (B, p) contract.
+        coefs = coefs_aug[:, 1:] if fit_intercept else coefs_aug
+        return coefs, rss
 
     # ---- Permutation helpers ---------------------------------------
 
@@ -1010,14 +1314,21 @@ class LinearMixedFamily:
             n_fe = X_sm.shape[1]
             fe_pvals = pvals[:n_fe]
             return np.asarray(fe_pvals[1:]) if fit_intercept else np.asarray(fe_pvals)
-        except Exception:
-            # Fallback: OLS p-values (approximate)
-            X_sm = _augment_intercept(X, fit_intercept)
-            with warnings.catch_warnings():
-                warnings.filterwarnings("ignore", category=RuntimeWarning)
-                sm_model = sm.OLS(y, X_sm).fit()
-            pvals = sm_model.pvalues[1:] if fit_intercept else sm_model.pvalues
-            return np.asarray(pvals)
+        except Exception as exc:
+            # NaN, not OLS. OLS p-values ignore the cluster correlation entirely
+            # and are anticonservative for clustered data, so returning them from
+            # a method documented to return mixed-model p-values would report a
+            # different model's number under this model's name.
+            n_out = X.shape[1] if X.ndim > 1 else 1
+            warnings.warn(
+                "Mixed-model p-values could not be computed "
+                f"({type(exc).__name__}: {exc}); returning NaN. "
+                "The classical p-values for this fit are unavailable — "
+                "permutation p-values are unaffected.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+            return np.full(n_out, np.nan)
 
     # ---- Exchangeability (v0.4.0) ----------------------------------
 
@@ -1185,6 +1496,13 @@ class LinearMixedFamily:
         ]
         groups_arr = np.argmax(intercept_cols, axis=1)
 
+        blocks = _whitening_blocks(
+            Z,
+            groups_arr,
+            np.asarray(result.re_covariances[0]) / max(result.sigma2, 1e-20),
+            re_struct,
+            ar_coefs_hat,
+        )
         return LinearMixedFamily(
             re_struct=tuple(re_struct),
             projection_A=result.projection,
@@ -1202,6 +1520,10 @@ class LinearMixedFamily:
             ar_coefs=ar_coefs_hat,
             _panel_indices=panel_indices,
             _panel_lengths=panel_lengths,
+            whitening_blocks=blocks,
+            projection_A_whitened=_whitened_projection(
+                blocks, groups_arr, _augment_intercept(X, fit_intercept)
+            ),
         )
 
     def _calibrate_statsmodels(
@@ -1360,6 +1682,14 @@ class LinearMixedFamily:
 
         A = np.linalg.solve(S, Xt_Vtilde_inv)  # (p, n)  projection
 
+        whitening_blocks = _whitening_blocks(
+            Z,
+            groups_arr,
+            re_covariances_list[0] / max(sigma2, 1e-20),
+            re_struct,
+            ar_coefs_hat,
+        )
+
         return LinearMixedFamily(
             re_struct=tuple(re_struct),
             projection_A=A,
@@ -1377,6 +1707,10 @@ class LinearMixedFamily:
             ar_coefs=ar_coefs_hat,
             _panel_indices=panel_indices,
             _panel_lengths=panel_lengths,
+            whitening_blocks=whitening_blocks,
+            projection_A_whitened=_whitened_projection(
+                whitening_blocks, groups_arr, X_aug
+            ),
         )
 
     # ---- Batch fitting (hot loop) ----------------------------------
@@ -1849,6 +2183,10 @@ class LogisticMixedFamily(_GLMMBatchStubMixin):
     def name(self) -> str:
         return "logistic_mixed"
 
+    def whiten(self, M: np.ndarray) -> np.ndarray:
+        """Whiten on the PQL working scale (``V_z = W⁻¹ + Z Σ Z'``)."""
+        return _glmm_whiten(self, M, "whiten")
+
     @property
     def residual_type(self) -> str:
         return "deviance"
@@ -2096,6 +2434,31 @@ class LogisticMixedFamily(_GLMMBatchStubMixin):
             fisher_inv_jj = np.linalg.pinv(self.fisher_info)[j, j]
         return np.asarray(U_j * fisher_inv_jj)  # (B,)
 
+    def residual_permutation_refit(
+        self,
+        design: np.ndarray,
+        preds: np.ndarray,
+        resid: np.ndarray,
+        perm_indices: np.ndarray,
+        *,
+        fit_intercept: bool = True,
+        randomization: str = "permute",
+        n_jobs: int = 1,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Raw-scale refit — the GLMM's own score defect (M4/M6) is fixed in
+        the score path directly, not here.
+        """
+        return _default_residual_permutation_refit(
+            self,
+            design,
+            preds,
+            resid,
+            perm_indices,
+            fit_intercept=fit_intercept,
+            randomization=randomization,
+            n_jobs=n_jobs,
+        )
+
     # ---- Permutation helpers ---------------------------------------
 
     def reconstruct_y(
@@ -2325,6 +2688,10 @@ class PoissonMixedFamily(_GLMMBatchStubMixin):
     @property
     def name(self) -> str:
         return "poisson_mixed"
+
+    def whiten(self, M: np.ndarray) -> np.ndarray:
+        """Whiten on the PQL working scale (``V_z = W⁻¹ + Z Σ Z'``)."""
+        return _glmm_whiten(self, M, "whiten")
 
     @property
     def residual_type(self) -> str:
@@ -2576,6 +2943,31 @@ class PoissonMixedFamily(_GLMMBatchStubMixin):
         except np.linalg.LinAlgError:
             fisher_inv_jj = np.linalg.pinv(self.fisher_info)[j, j]
         return np.asarray(U_j * fisher_inv_jj)  # (B,)
+
+    def residual_permutation_refit(
+        self,
+        design: np.ndarray,
+        preds: np.ndarray,
+        resid: np.ndarray,
+        perm_indices: np.ndarray,
+        *,
+        fit_intercept: bool = True,
+        randomization: str = "permute",
+        n_jobs: int = 1,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Raw-scale refit — the GLMM's own score defect (M4/M6) is fixed in
+        the score path directly, not here.
+        """
+        return _default_residual_permutation_refit(
+            self,
+            design,
+            preds,
+            resid,
+            perm_indices,
+            fit_intercept=fit_intercept,
+            randomization=randomization,
+            n_jobs=n_jobs,
+        )
 
     # ---- Permutation helpers ---------------------------------------
 

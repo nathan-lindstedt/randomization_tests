@@ -10,6 +10,8 @@ through the Newton–Raphson solver, and float32 precision.
 
 from __future__ import annotations
 
+import warnings
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -588,3 +590,113 @@ class TestJAXNumericalAccuracy:
             atol=0.02,
             err_msg="Linear empirical p-values differ too much between backends",
         )
+
+
+# ------------------------------------------------------------------ #
+# REML solver: must find the optimum, not merely avoid crashing
+# ------------------------------------------------------------------ #
+#
+# The defect these pin: the Levenberg-Marquardt REML solver enforced its
+# positive-definiteness requirement H + lambda*I > 0 only at the starting point,
+# so under negative curvature at a later iterate the damped Hessian could stay
+# indefinite, producing an ascent step of unbounded length — and because the gain
+# ratio compared an actual reduction to a *predicted* reduction that had also gone
+# negative, such uphill steps were ACCEPTED.
+#
+# It surfaced as LinAlgError on rare datasets, but on ordinary ones it silently
+# returned tau2_hat = 0 for a real variance component, shifting beta_hat by ~3%.
+#
+# The reference is the profile REML criterion on a dense grid in plain numpy,
+# derived from theory and computed WITHOUT the package's objective, so these
+# cannot pass by agreeing with a bug in the code under test. No crash-absence
+# check and no Type I rate can catch a solver that quietly converges to the wrong
+# optimum; only comparison against an independent optimum can.
+
+from randomization_tests.families_mixed import (  # noqa: E402
+    LinearMixedFamily,
+    _build_random_effects_design,
+)
+
+_REML_G, _REML_M = 20, 10
+_REML_N = _REML_G * _REML_M
+_REML_CLUSTER = np.repeat(np.arange(_REML_G), _REML_M)
+
+
+def _reml_design(seed: int, tau2: float):
+    rng = np.random.default_rng(seed)
+    X = rng.normal(size=(_REML_N, 2))
+    b = rng.normal(scale=np.sqrt(tau2), size=_REML_G) if tau2 > 0 else np.zeros(_REML_G)
+    y = X @ [0.5, -0.3] + b[_REML_CLUSTER] + rng.normal(size=_REML_N)
+    return X, y
+
+
+def _reml_criterion(X, y, Z):
+    """Profile REML criterion as a function of r = tau2/sigma2, sigma2 profiled out.
+
+    -2 logL_R(r) = (n-p) log Q(r) + log|V(r)| + log|X' V(r)^-1 X| + const
+    """
+    Xa = np.column_stack([np.ones(len(y)), X])
+    n, p = Xa.shape
+    ZZt = Z @ Z.T
+
+    def crit(r: float) -> float:
+        V = np.eye(n) + r * ZZt
+        _, logdet_V = np.linalg.slogdet(V)
+        Vi = np.linalg.inv(V)
+        S = Xa.T @ Vi @ Xa
+        beta = np.linalg.solve(S, Xa.T @ Vi @ y)
+        resid = y - Xa @ beta
+        _, logdet_S = np.linalg.slogdet(S)
+        return (n - p) * np.log(float(resid @ Vi @ resid)) + logdet_V + logdet_S
+
+    return crit
+
+
+def _dense_optimum(crit) -> float:
+    grid = np.exp(np.linspace(np.log(1e-10), np.log(50.0), 2000))
+    return float(grid[int(np.argmin([crit(r) for r in grid]))])
+
+
+def _reml_ratio(X, y) -> float:
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        fam = LinearMixedFamily().calibrate(X, y, True, groups=_REML_CLUSTER)
+    return float(np.asarray(fam.re_covariances[0])[0, 0]) / float(fam.sigma2)
+
+
+@pytest.mark.parametrize(
+    ("seed", "tau2"),
+    [(11, 0.25), (3, 0.01), (4, 0.25), (5, 1.0), (6, 9.0), (8, 0.05), (10, 0.5)],
+)
+def test_reml_solver_reaches_dense_optimum(seed, tau2):
+    """A continuous optimiser must do at least as well as a discrete grid."""
+    X, y = _reml_design(seed, tau2)
+    Z, _ = _build_random_effects_design(_REML_CLUSTER, X=X, random_slopes=None)
+    crit = _reml_criterion(X, y, np.asarray(Z, dtype=float))
+    r_star = _dense_optimum(crit)
+    r_hat = _reml_ratio(X, y)
+
+    assert crit(r_hat) <= crit(r_star) + 1e-6, (
+        f"solver settled at r={r_hat:.6e} (criterion {crit(r_hat):.6f}), worse "
+        f"than the dense-grid optimum r={r_star:.6e} ({crit(r_star):.6f})"
+    )
+
+
+def test_reml_variance_component_not_silently_collapsed():
+    """Regression guard for the exact defect: seed 11 is an ordinary ICC 0.2
+    design where the shipped solver returned tau2_hat = 0 exactly, shifting
+    beta_hat by 1.5e-2. The true optimum is r = 0.0746."""
+    X, y = _reml_design(11, 0.25)
+    assert _reml_ratio(X, y) > 0.01
+
+
+def test_reml_boundary_dataset_does_not_crash():
+    """The configuration that reached theta = -1809 and raised LinAlgError."""
+    rng = np.random.default_rng(201)
+    for _ in range(40):
+        x, z = rng.normal(size=_REML_N), rng.normal(size=_REML_N)
+        y = np.empty(_REML_N)
+        for g in range(_REML_G):
+            ci = np.arange(g * _REML_M, (g + 1) * _REML_M)
+            y[ci] = 0.7 * z[ci] + rng.normal(scale=1e-4) + rng.normal(size=len(ci))
+        assert np.isfinite(_reml_ratio(np.column_stack([x, z]), y))
