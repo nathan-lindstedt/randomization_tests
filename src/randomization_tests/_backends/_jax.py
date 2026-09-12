@@ -3429,6 +3429,7 @@ class JaxBackend:
             X_batch: Design matrices ``(B, n, p)`` — no intercept.
             y: Shared continuous response ``(n,)``.
             fit_intercept: Prepend intercept column.
+            **kwargs: Extra arguments accepted for backend protocol compatibility.
 
         Returns:
             Slope coefficients ``(B, p)`` (intercept excluded).

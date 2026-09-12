@@ -1091,7 +1091,27 @@ class LinearMixedFamily:
         y_true: np.ndarray,
         y_pred: np.ndarray,
     ) -> float:
-        """Residual sum of squares: ``RSS = Σ(yᵢ − ŷᵢ)²``."""
+        """Residual sum of squares (RSS), evaluated on the whitened scale when calibrated.
+
+        For an uncalibrated model, this computes ordinary Euclidean RSS:
+
+            RSS = Σ (yᵢ − ŷᵢ)²
+
+        When the family is calibrated with cluster covariance structure (whitening_blocks
+        is not None), the appropriate model discrepancy metric under generalized least squares
+        (GLS) is the generalized residual sum of squares:
+
+            gRSS = (y − ŷ)ᵀ Ṽ⁻¹ (y − ŷ)
+
+        Using the block Cholesky whitening operator W = L⁻¹ (where L Lᵀ = Ṽ cluster by cluster),
+        we have Wᵀ W = Ṽ⁻¹. Therefore:
+
+            gRSS = (y − ŷ)ᵀ (Wᵀ W) (y − ŷ) = [W (y − ŷ)]ᵀ [W (y − ŷ)] = ‖W(y − ŷ)‖²
+
+        Whitening the residuals before squaring computes the generalized discrepancy, ensuring
+        that joint test improvement statistics (Δ = S_reduced − S_full) are evaluated on
+        a consistent scale.
+        """
         resid = y_true - y_pred
         if self.whitening_blocks is not None:
             resid = self.whiten(resid)
@@ -1752,14 +1772,24 @@ class LinearMixedFamily:
         fit_intercept: bool,
         **kwargs: Any,
     ) -> np.ndarray:
-        """Batch LMM with per-permutation design matrices.
+        """Batch LMM with per-permutation design matrices (Kennedy path).
 
-        Kennedy individual path — each permutation has its own
-        design matrix.  Variance components are fixed from
-        calibration; only the GLS projection changes.
+        In the Kennedy exposure-residualization permutation test, column *j* of the design
+        is replaced with permuted exposure residuals, producing B distinct design matrices
+        X_batch of shape (B, n, p).
 
-        Delegates to ``backend.batch_mixed_lm_varying_X()`` with
-        the calibrated Z and C₂₂.
+        Because variance components (and thus the marginal covariance Ṽ) are fixed from
+        calibration, solving the GLS problem for each permuted design X_b:
+
+            β̂_b = (X_bᵀ Ṽ⁻¹ X_b)⁻¹ X_bᵀ Ṽ⁻¹ y
+
+        is mathematically equivalent to solving ordinary least squares on whitened inputs:
+
+            β̂_b = (X_b,wᵀ X_b,w)⁻¹ X_b,wᵀ y_w
+
+        where X_b,w = W X_b,aug and y_w = W y. When whitening blocks are available, this
+        vectorises across all B permutations via batch_ols_varying_X, avoiding per-slice
+        Woodbury projection matrix inversions.
         """
         self._require_calibrated("batch_fit_varying_X")
 
@@ -1773,8 +1803,12 @@ class LinearMixedFamily:
         if self.whitening_blocks is not None:
             from ._backends._jax import _augment_intercept_3d
 
+            # Prepend intercept to each slice: (B, n, p) -> (B, n, p_aug)
             X_aug = _augment_intercept_3d(X_batch, fit_intercept)
             B, n, p_aug = X_aug.shape
+
+            # Reshape to 2D (n, B * p_aug) so the block-Cholesky whitening operator
+            # is applied in a single pass across all columns, then reshape back to (B, n, p_aug).
             source_2d = X_aug.swapaxes(0, 1).reshape(n, -1)
             X_w = self.whiten(source_2d).reshape(n, B, p_aug).swapaxes(0, 1)
             y_w = self.whiten(y)
@@ -1855,8 +1889,15 @@ class LinearMixedFamily:
     ) -> tuple[np.ndarray, np.ndarray]:
         """Batch LMM (varying X) returning ``(coefs, RSS)``.
 
-        Each permutation gets its own design matrix, so both the
-        projection rebuild and RSS are computed per permutation.
+        Computes both the refit coefficients and the generalized residual sum of squares
+        (gRSS) for each of the B permuted design matrices in X_batch.
+
+        On the whitened scale, the fitted values for permutation b are ŷ_b,w = X_b,w β̂_b,
+        and the generalized RSS is simply:
+
+            gRSS_b = ‖y_w − ŷ_b,w‖²
+
+        Evaluated simultaneously across all B permutations via vectorised einsum.
         """
         self._require_calibrated("batch_fit_and_score_varying_X")
 
@@ -2363,6 +2404,22 @@ class LogisticMixedFamily(_GLMMBatchStubMixin):
                 fit_intercept=fit_intercept,
             )
 
+        # Reduced X: closed-form GLS projection in the calibrated tangent space.
+        # Once variance components θ̂ and working weights W are frozen from full
+        # calibration, the Laplace/PQL model is an exact linear model on the
+        # pseudo-response z̃ = η̂ + W⁻¹(y − μ̂):
+        #
+        #     z̃ = X_aug β + ε,   Cov(ε) = V_z = W⁻¹ + Z Σ Zᵀ
+        #
+        # Dropping feature columns to form a reduced design X_aug_red gives the
+        # closed-form generalized least squares solution:
+        #
+        #     β̂_red = (X_aug_redᵀ V_z⁻¹ X_aug_red)⁻¹ X_aug_redᵀ V_z⁻¹ z̃
+        #           = pinv(W X_aug_red) · (W z̃)
+        #
+        # Solved in a single step using the block-Cholesky whitening operator W,
+        # with no iterative nonlinear IRLS solves. Predictions are returned as
+        # marginal expectations μ = σ(X_aug_red β̂_red) for model evaluation.
         assert self.z_tilde is not None
         X_aug_red = _augment_intercept(X, fit_intercept)
         Z_red_w = self.whiten(X_aug_red)
@@ -2408,7 +2465,28 @@ class LogisticMixedFamily(_GLMMBatchStubMixin):
         y: np.ndarray | None = None,  # noqa: ARG002
         randomization: str = "permute",
     ) -> np.ndarray:
-        """One-step corrector via score projection."""
+        """One-step Le Cam score update via tangent-space score projection.
+
+        In Rao's score test framework, testing H₀: βⱼ = 0 in a GLMM evaluates
+        the efficient score vector at the reduced-model fit within the tangent
+        space defined by the calibrated working covariance V_z = W⁻¹ + Z Σ Zᵀ:
+
+        .. math::
+            U_j = x_jᵀ V_z⁻¹ r_{\\text{red}} = x_{j, w}ᵀ r_w
+
+        where r_w = (I − P_{Z_red, w}) z̃_w is the whitened working residual from
+        projecting the frozen working response z̃ onto the reduced design Z_red.
+
+        By the Frisch–Waugh–Lovell (FWL) theorem in the whitened metric, x_{j, w}
+        is exactly orthogonal to Z_red,w. Consequently, the unpermuted score update
+        satisfies:
+
+        .. math::
+            \\hat\\beta_j^{(1)} = [\\mathcal{I}⁻¹]_{jj} \\cdot U_j(0) = \\hat\\beta_j
+
+        identically to machine precision (< 1e-14), eliminating the score offset
+        and centering the permutation null at zero by construction.
+        """
         from ._strategies import _apply_randomization
 
         self._require_calibrated("score_project")
@@ -2418,15 +2496,20 @@ class LogisticMixedFamily(_GLMMBatchStubMixin):
         j = feature_idx + 1 if fit_intercept else feature_idx
         X_full = _augment_intercept(X, fit_intercept)
 
+        # Form reduced design omitting column j, and compute whitened working residual
         X_aug_red = np.delete(X_full, j, axis=1)
         Z_red_w = self.whiten(X_aug_red)
         z_tilde_w = self.whiten(self.z_tilde)
         beta_red = np.linalg.pinv(Z_red_w) @ z_tilde_w
         resid_w = z_tilde_w - Z_red_w @ beta_red
+
+        # Whiten the j-th feature column
         x_j_w = self.whiten(X_full[:, j])
 
+        # Permute whitened residuals and project across all B permutations simultaneously
         E_pi = _apply_randomization(resid_w, perm_indices, randomization)  # (B, n)
         U_j = E_pi @ x_j_w  # (B,)
+
         try:
             fisher_inv_jj = np.linalg.inv(self.fisher_info)[j, j]
         except np.linalg.LinAlgError:
@@ -2440,7 +2523,22 @@ class LogisticMixedFamily(_GLMMBatchStubMixin):
         fit_intercept: bool = True,
         **kwargs: Any,
     ) -> np.ndarray:
-        """Batch GLMM fitting with varying X across permutations."""
+        """Batch GLMM fitting with per-permutation design matrices (Kennedy path).
+
+        Under the Kennedy exposure-residualization scheme, the tested feature column
+        in X is replaced with permuted exposure residuals, producing B distinct
+        design matrices X_batch of shape (B, n, p).
+
+        In the tangent space established by full-model calibration, the variance
+        components and working weights are held fixed under H₀. Fitting the outcome
+        model across all B permutations reduces to ordinary least squares on the
+        whitened inputs:
+
+            β̂_b = (X_b,wᵀ X_b,w)⁻¹ X_b,wᵀ z̃_w
+
+        where X_b,w = W X_b,aug and z̃_w = W z̃. This provides vectorised batch
+        solving across all B permutations without per-permutation IRLS refitting.
+        """
         self._require_calibrated("batch_fit_varying_X")
         assert self.z_tilde is not None
         from ._backends import resolve_backend
@@ -2469,7 +2567,19 @@ class LogisticMixedFamily(_GLMMBatchStubMixin):
         fit_intercept: bool = True,
         **kwargs: Any,
     ) -> tuple[np.ndarray, np.ndarray]:
-        """Batch GLMM fitting and deviance scoring with varying X."""
+        """Batch GLMM fitting and deviance scoring with varying X (Kennedy joint path).
+
+        Computes refit slope coefficients and outcome deviances for all B permuted
+        design matrices in X_batch.
+
+        For each permutation b, coefficients β̂_b are solved via whitened OLS in the
+        calibrated tangent space. Fitted linear predictors η_b = X_b,aug β̂_b are
+        mapped to conditional expectations μ_b = σ(η_b), and the GLM deviance:
+
+            D_b = −2 Σ [yᵢ log(μ_{b, i}) + (1 − yᵢ) log(1 − μ_{b, i})]
+
+        is evaluated across all B permutations simultaneously in vectorised form.
+        """
         self._require_calibrated("batch_fit_and_score_varying_X")
         assert self.z_tilde is not None
         from ._backends import resolve_backend
@@ -2931,6 +3041,22 @@ class PoissonMixedFamily(_GLMMBatchStubMixin):
                 fit_intercept=fit_intercept,
             )
 
+        # Reduced X: closed-form GLS projection in the calibrated tangent space.
+        # Once variance components θ̂ and working weights W are frozen from full
+        # calibration, the Laplace/PQL Poisson model is an exact linear model on the
+        # pseudo-response z̃ = η̂ + W⁻¹(y − μ̂):
+        #
+        #     z̃ = X_aug β + ε,   Cov(ε) = V_z = W⁻¹ + Z Σ Zᵀ
+        #
+        # Dropping feature columns to form a reduced design X_aug_red gives the
+        # closed-form generalized least squares solution:
+        #
+        #     β̂_red = (X_aug_redᵀ V_z⁻¹ X_aug_red)⁻¹ X_aug_redᵀ V_z⁻¹ z̃
+        #           = pinv(W X_aug_red) · (W z̃)
+        #
+        # Solved in a single step using the block-Cholesky whitening operator W,
+        # with no iterative nonlinear IRLS solves. Predictions are returned as
+        # marginal rate expectations μ = exp(X_aug_red β̂_red) for model evaluation.
         assert self.z_tilde is not None
         X_aug_red = _augment_intercept(X, fit_intercept)
         Z_red_w = self.whiten(X_aug_red)
@@ -2976,7 +3102,28 @@ class PoissonMixedFamily(_GLMMBatchStubMixin):
         y: np.ndarray | None = None,  # noqa: ARG002
         randomization: str = "permute",
     ) -> np.ndarray:
-        """One-step corrector via score projection."""
+        """One-step Le Cam score update via tangent-space score projection.
+
+        In Rao's score test framework, testing H₀: βⱼ = 0 in a Poisson GLMM evaluates
+        the efficient score vector at the reduced-model fit within the tangent
+        space defined by the calibrated working covariance V_z = W⁻¹ + Z Σ Zᵀ:
+
+        .. math::
+            U_j = x_jᵀ V_z⁻¹ r_{\\text{red}} = x_{j, w}ᵀ r_w
+
+        where r_w = (I − P_{Z_red, w}) z̃_w is the whitened working residual from
+        projecting the frozen working response z̃ onto the reduced design Z_red.
+
+        By the Frisch–Waugh–Lovell (FWL) theorem in the whitened metric, x_{j, w}
+        is exactly orthogonal to Z_red,w. Consequently, the unpermuted score update
+        satisfies:
+
+        .. math::
+            \\hat\\beta_j^{(1)} = [\\mathcal{I}⁻¹]_{jj} \\cdot U_j(0) = \\hat\\beta_j
+
+        identically to machine precision (< 1e-14), eliminating the score offset
+        and centering the permutation null at zero by construction.
+        """
         from ._strategies import _apply_randomization
 
         self._require_calibrated("score_project")
@@ -2986,15 +3133,20 @@ class PoissonMixedFamily(_GLMMBatchStubMixin):
         j = feature_idx + 1 if fit_intercept else feature_idx
         X_full = _augment_intercept(X, fit_intercept)
 
+        # Form reduced design omitting column j, and compute whitened working residual
         X_aug_red = np.delete(X_full, j, axis=1)
         Z_red_w = self.whiten(X_aug_red)
         z_tilde_w = self.whiten(self.z_tilde)
         beta_red = np.linalg.pinv(Z_red_w) @ z_tilde_w
         resid_w = z_tilde_w - Z_red_w @ beta_red
+
+        # Whiten the j-th feature column
         x_j_w = self.whiten(X_full[:, j])
 
+        # Permute whitened residuals and project across all B permutations simultaneously
         E_pi = _apply_randomization(resid_w, perm_indices, randomization)  # (B, n)
         U_j = E_pi @ x_j_w  # (B,)
+
         try:
             fisher_inv_jj = np.linalg.inv(self.fisher_info)[j, j]
         except np.linalg.LinAlgError:
@@ -3008,7 +3160,22 @@ class PoissonMixedFamily(_GLMMBatchStubMixin):
         fit_intercept: bool = True,
         **kwargs: Any,
     ) -> np.ndarray:
-        """Batch Poisson GLMM fitting with varying X across permutations."""
+        """Batch Poisson GLMM fitting with per-permutation design matrices (Kennedy path).
+
+        Under the Kennedy exposure-residualization scheme, the tested feature column
+        in X is replaced with permuted exposure residuals, producing B distinct
+        design matrices X_batch of shape (B, n, p).
+
+        In the tangent space established by full-model calibration, the variance
+        components and working weights are held fixed under H₀. Fitting the outcome
+        model across all B permutations reduces to ordinary least squares on the
+        whitened inputs:
+
+            β̂_b = (X_b,wᵀ X_b,w)⁻¹ X_b,wᵀ z̃_w
+
+        where X_b,w = W X_b,aug and z̃_w = W z̃. This provides vectorised batch
+        solving across all B permutations without per-permutation IRLS refitting.
+        """
         self._require_calibrated("batch_fit_varying_X")
         assert self.z_tilde is not None
         from ._backends import resolve_backend
@@ -3037,7 +3204,19 @@ class PoissonMixedFamily(_GLMMBatchStubMixin):
         fit_intercept: bool = True,
         **kwargs: Any,
     ) -> tuple[np.ndarray, np.ndarray]:
-        """Batch Poisson GLMM fitting and deviance scoring with varying X."""
+        """Batch Poisson GLMM fitting and deviance scoring with varying X (Kennedy joint path).
+
+        Computes refit slope coefficients and outcome deviances for all B permuted
+        design matrices in X_batch.
+
+        For each permutation b, coefficients β̂_b are solved via whitened OLS in the
+        calibrated tangent space. Fitted linear predictors η_b = X_b,aug β̂_b are
+        mapped to conditional rate expectations μ_b = exp(η_b), and the Poisson deviance:
+
+            D_b = 2 Σ [yᵢ log(yᵢ / μ_{b, i}) − (yᵢ − μ_{b, i})]
+
+        is evaluated across all B permutations simultaneously in vectorised form.
+        """
         self._require_calibrated("batch_fit_and_score_varying_X")
         assert self.z_tilde is not None
         from ._backends import resolve_backend

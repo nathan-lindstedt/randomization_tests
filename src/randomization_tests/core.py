@@ -154,11 +154,18 @@ def randomization_test_regression(
             exchangeability (outermost first), or a pre-built
             :class:`ExchangeabilityTree`.
         permutation_strategy: Which cell-level permutation strategy
-            to use.  ``"within"`` shuffles only within cells,
-            ``"between"`` permutes entire cells as units, and
-            ``"two-stage"`` composes both.  When ``groups`` is
-            provided without a strategy, defaults to ``"within"``.
-            Cannot be set without ``groups``.
+            to use.  One of:
+            * ``"within"`` (default): shuffles only within cells.
+            * ``"between"``: permutes entire cells as atomic units.
+            * ``"two-stage"``: composes within-cell and between-cell.
+            * ``"unrestricted"``: unconstrained permutation across the
+              entire sample.  Decouples the model-structure grouping
+              (used by mixed models for random effects calibration and
+              cluster-robust standard errors) from the permutation
+              inference, appropriate when testing cluster-level effects
+              after whitening.
+            When ``groups`` is provided without a strategy, defaults to
+            ``"within"``.  Cannot be set without ``groups``.
         permutation_constraints: Optional post-filter callback.
             Receives a ``(B, n)`` permutation array and must return
             a ``(B', n)`` array with ``B' ≤ B`` rows.  Used to
