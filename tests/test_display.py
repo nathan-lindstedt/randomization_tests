@@ -180,9 +180,15 @@ class TestRecommendNPermutations:
         assert b < 1000
 
     def test_zero_gap_returns_max(self):
-        """When p_hat equals threshold, B is clamped to max."""
-        b = _recommend_n_randomizations(0.05, 0.05, alpha=0.05)
-        assert b == 10_000_000
+        """When p_hat equals threshold with k > 0, B is increased to refine resolution."""
+        b = _recommend_n_randomizations(0.05, 0.05, alpha=0.05, n_randomizations=1000)
+        assert b == 10_000
+
+    def test_zero_exceedance_rule_of_three(self):
+        """When k=0 (p_hat == 1/(B+1) <= threshold), Rule of Three gives exact stopping bound."""
+        # For alpha = 0.05, threshold = 0.001, Rule of Three gives ceil(-ln(0.05)/0.001) - 1 = 2995
+        b = _recommend_n_randomizations(0.001, 0.001, alpha=0.05, n_randomizations=999)
+        assert b == 2995
 
     def test_clamp_min(self):
         """Result never goes below 100."""

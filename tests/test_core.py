@@ -1427,15 +1427,17 @@ class TestSingletonWarnings:
         groups = np.zeros(n, dtype=int)
         groups[-2] = 1
         groups[-1] = 2
-        with pytest.warns(UserWarning, match="single observation"):
-            randomization_test_regression(
-                X,
-                y,
-                n_randomizations=20,
-                random_state=0,
-                groups=groups,
-                permutation_strategy="within",
-            )
+        # Singletons are captured onto context for 80-column wrapped display in Notes
+        res = randomization_test_regression(
+            X,
+            y,
+            n_randomizations=20,
+            random_state=0,
+            groups=groups,
+            permutation_strategy="within",
+        )
+        assert res.context is not None
+        assert any("single observation" in msg for msg in res.context.warnings_captured)
 
     def test_between_with_singleton_no_warning(self):
         n = 50
@@ -1444,25 +1446,23 @@ class TestSingletonWarnings:
         y = pd.DataFrame({"y": rng.standard_normal(n)})
         groups = np.repeat(np.arange(5), 10)
         groups[-1] = 5  # one singleton — 6 groups total
-        # Between strategy → no singleton warning
+        # Between strategy → no singleton note
         import warnings as w
 
         with w.catch_warnings():
-            w.simplefilter("error", UserWarning)
-            # This should NOT raise — between doesn't warn about singletons
-            # But it might warn about other things, so we just check no
-            # "single observation" warning
-            try:
-                randomization_test_regression(
-                    X,
-                    y,
-                    n_randomizations=20,
-                    random_state=0,
-                    groups=groups,
-                    permutation_strategy="between",
-                )
-            except UserWarning as exc:
-                assert "single observation" not in str(exc)
+            w.filterwarnings("ignore", message=".*unique between-cell.*")
+            res = randomization_test_regression(
+                X,
+                y,
+                n_randomizations=20,
+                random_state=0,
+                groups=groups,
+                permutation_strategy="between",
+            )
+            assert res.context is not None
+            assert not any(
+                "single observation" in msg for msg in res.context.warnings_captured
+            )
 
     def test_two_stage_with_singleton_warns(self):
         n = 16
@@ -1471,14 +1471,28 @@ class TestSingletonWarnings:
         y = pd.DataFrame({"y": rng.standard_normal(n)})
         # 5 groups of size 3 + 1 singleton → max/min = 3.0, not > 3
         groups = np.array([0, 0, 0, 1, 1, 1, 2, 2, 2, 3, 3, 3, 4, 4, 4, 5])
+        res = randomization_test_regression(
+            X,
+            y,
+            n_randomizations=20,
+            random_state=0,
+            groups=groups,
+            permutation_strategy="two-stage",
+        )
+        assert res.context is not None
+        assert any("single observation" in msg for msg in res.context.warnings_captured)
+
+    def test_validate_groups_without_context_warns(self):
+        """When called directly without FitContext, _validate_groups emits UserWarning."""
+        from randomization_tests.core import _validate_groups
+
+        n = 16
+        rng = np.random.default_rng(42)
+        X = pd.DataFrame({"x1": rng.standard_normal(n)})
+        groups = np.array([0, 0, 0, 1, 1, 1, 2, 2, 2, 3, 3, 3, 4, 4, 4, 5])
         with pytest.warns(UserWarning, match="single observation"):
-            randomization_test_regression(
-                X,
-                y,
-                n_randomizations=20,
-                random_state=0,
-                groups=groups,
-                permutation_strategy="two-stage",
+            _validate_groups(
+                X, groups, permutation_strategy="within", n_randomizations=20
             )
 
 

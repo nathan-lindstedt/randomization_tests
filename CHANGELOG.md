@@ -64,6 +64,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **LMM reduced-fit scale consistency in batch fitting (M1)**:
+  `LinearMixedFamily.batch_fit_and_score()` previously fell back to
+  unweighted OLS (`pinv`) when evaluating reduced designs with fewer
+  columns than the calibrated model, creating an estimator scale
+  mismatch against `fit_reduced()` (GLS) that diverged up to 0.35
+  under high ICC.  It now evaluates the exact Woodbury GLS projection
+  `A_red` holding variance components fixed from calibration and
+  evaluates generalized RSS via block-Cholesky whitening, eliminating
+  Defect M1 across all batch operations to machine precision (< 1e-14).
+  Permanent regression gate `test_lmm_reduced_fit_uses_same_estimator`
+  promoted from xfail to passing invariant.
+
+- **First-principles Rule of Three borderline B* recommendation (Step 11j)**:
+  `_recommend_n_randomizations()` now partitions borderline p-value
+  cases between interior normal-approximation half-widths and boundary
+  zero-exceedance resolution floors ($k = 0$, $\hat p = \frac{1}{B+1} \le \alpha_{\text{thresh}}$).
+  Applying the exact Poisson/Binomial Rule of Three ($B^* \ge \lceil -\ln(\alpha_{\text{mc}}) / \alpha_{\text{thresh}} \rceil - 1$)
+  replaces arbitrary 10-million clamps with exact bounds (e.g. $B^* \ge 2{,}995$
+  to certify $p < 0.001$ at 95% confidence).  Exchangeability cell
+  advisories are captured onto `FitContext.warnings_captured` and formatted
+  in 80-column wrapped Notes blocks, and `print_protocol_usage_table`
+  renders nested variance components as structured, aligned rows.
+
 - **Decoupled model-structure grouping from permutation strategy (M8 / Step 11f)**:
   `panel_id` calls on score methods without `ar_order` previously
   reset `groups = None`, causing `LinearMixedFamily.calibrate` to fail

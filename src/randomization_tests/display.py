@@ -22,6 +22,7 @@ import numpy as np
 from scipy import stats as _sp_stats
 
 from .families import ModelFamily
+from .families_mixed import _format_variance_components
 
 if TYPE_CHECKING:
     from ._context import FitContext
@@ -105,30 +106,76 @@ def _recommend_n_randomizations(
     p_hat: float,
     threshold: float,
     alpha: float = 0.05,
+    n_randomizations: int | None = None,
 ) -> int:
     """Minimum *B* so the Clopper-Pearson CI no longer straddles *threshold*.
 
-    Uses the normal approximation to the Clopper-Pearson half-width,
-    ``z_{1-α/2} √{p(1-p)/B}``, and solves for *B* such that
-    the half-width is at most ``|p_hat - threshold|``.
+    Derivation & Statistical Regimes:
+    ---------------------------------
+    1. **Regime A (Zero Exceedances / Resolution Floor, k = 0)**:
+       When no permuted statistics exceed the observed value, the Phipson &
+       Smyth (2010) estimator hits the resolution floor:
+       ``p_hat = 1 / (B + 1)``.
+       If this point estimate is at or below the significance threshold
+       (e.g. ``p_hat = 0.001`` at ``alpha_thresh = 0.001`` when ``B = 999``),
+       the observed count is ``k = 0``. By the exact Poisson limit / Binomial
+       Rule of Three, the one-sided upper ``(1 - alpha)`` confidence bound is:
+       ``U_B ≈ -ln(alpha) / (B + 1)``.
+       To certify that the true permutation tail probability is strictly
+       below ``threshold`` with ``(1 - alpha)`` confidence (i.e. ``U_B < threshold``):
+       ``B* >= ceil(-ln(alpha) / threshold) - 1``.
+       For 95% confidence (``alpha = 0.05``, ``-ln(0.05) ≈ 2.9957``):
+       - To certify p < 0.05:  B* >= 59.
+       - To certify p < 0.01:  B* >= 299.
+       - To certify p < 0.001: B* >= 2,995.
+       This replaces artificial multi-million caps with an exact, principled
+       stopping bound.
 
-    The result is rounded up and clamped to ``[100, 10_000_000]``.
+    2. **Regime B (Normal Approximation Half-Width)**:
+       When ``p_hat`` is interior and separated from ``threshold`` by a non-zero
+       gap (``|p_hat - threshold| >= 1e-6``), the normal approximation to the
+       binomial variance yields:
+       ``B* = ceil( (z_{1 - alpha/2} ** 2) * p_hat * (1 - p_hat) / gap**2 )``.
+
+    3. **Regime C (Exact Point Equality with k > 0)**:
+       If an interior estimate happens to land exactly on the threshold, increasing
+       B cannot separate a point estimate identical to the threshold under the same
+       sample proportion. We recommend an order-of-magnitude increase (capped at
+       100,000) to refine the empirical resolution.
 
     Args:
         p_hat: Observed empirical p-value.
-        threshold: The nearest significance threshold that the CI
-            straddles.
-        alpha: Confidence level for the CI (default 0.05).
+        threshold: The nearest significance threshold that the CI straddles.
+        alpha: Monte Carlo confidence level (default 0.05 for 95% CI).
+        n_randomizations: Total randomizations B in the current run (optional).
 
     Returns:
-        Recommended minimum number of permutations.
+        Recommended minimum number of permutations, clamped to ``[100, 100_000]``.
     """
+    # Regime A: Zero exceedances floor (p_hat == 1 / (B + 1) <= threshold)
+    is_zero_exceedance = False
+    if n_randomizations is not None and n_randomizations > 0:
+        floor_p = 1.0 / (n_randomizations + 1)
+        if abs(p_hat - floor_p) < 1e-9 and p_hat <= threshold:
+            is_zero_exceedance = True
+    elif threshold > 0 and abs(p_hat - threshold) < 1e-9 and p_hat <= 0.01:
+        # Fallback detection for zero-exceedance resolution floor when B is omitted
+        is_zero_exceedance = True
+
+    if is_zero_exceedance:
+        # Poisson / Binomial Rule of Three bound
+        rule_of_three_b = math.ceil(-math.log(alpha) / threshold) - 1
+        return max(100, min(rule_of_three_b, 100_000))
+
     gap = abs(p_hat - threshold)
-    if gap < 1e-12:
-        return 10_000_000  # effectively tied — need extreme B
+    if gap < 1e-6:
+        # Near-exact point equality on the threshold with k > 0
+        current_b = n_randomizations if n_randomizations is not None else 1_000
+        return max(100, min(current_b * 10, 100_000))
+
     z = _sp_stats.norm.ppf(1 - alpha / 2)
     b_min = math.ceil((z**2) * p_hat * (1 - p_hat) / (gap**2))
-    return max(100, min(b_min, 10_000_000))  # type: ignore[no-any-return]
+    return max(100, min(b_min, 100_000))  # type: ignore[no-any-return]
 
 
 def _render_header_rows(
@@ -287,12 +334,16 @@ def print_results_table(
             "full-model-residual test."
         )
 
-    # Recommend larger n_randomizations for borderline cases (Step 25)
+    # Recommend larger n_randomizations for borderline cases (Step 25 / Step 11j)
     if borderline_features:
         ci_alpha = ci.get("confidence_level", 0.95)
         alpha = 1 - ci_alpha if ci_alpha > 0.5 else ci_alpha
+        n_rand = getattr(results, "n_randomizations", None)
         b_recs = [
-            (feat, _recommend_n_randomizations(p_hat, t, alpha))
+            (
+                feat,
+                _recommend_n_randomizations(p_hat, t, alpha, n_randomizations=n_rand),
+            )
             for feat, p_hat, t in borderline_features
         ]
         max_b = max(b for _, b in b_recs)
@@ -301,6 +352,12 @@ def print_results_table(
             f"Consider n_randomizations \u2265 {max_b:,} to resolve "
             f"borderline p-values for: {feat_list}."
         )
+
+    # Append any warnings or context notes captured during the pipeline
+    ctx = getattr(results, "context", None)
+    if ctx is not None and getattr(ctx, "warnings_captured", None):
+        for w_msg in ctx.warnings_captured:
+            notes.append(w_msg)
 
     if notes:
         print("-" * 80)
@@ -730,6 +787,12 @@ def print_diagnostics_table(
         verdict = "borderline" if is_borderline else "sufficient"
         detail = f"B = {b_str} / {n_fact_str} \u2014 {verdict}"
         print(f"  {'Coverage:':<{lw}}{cov_pct:<{sw}}{detail}")
+
+    # Append any warnings or context notes captured during the pipeline
+    ctx = getattr(results, "context", None)
+    if ctx is not None and getattr(ctx, "warnings_captured", None):
+        for w_msg in ctx.warnings_captured:
+            notes.append(w_msg)
 
     # ── Notes ──────────────────────────────────────────────────── #
 
@@ -1418,7 +1481,7 @@ def print_protocol_usage_table(
         )
 
     W = 80
-    lw = 22  # label column width
+    lw = 26  # label column width
     family_name = ctx.family_name or "Unknown"
 
     if title is None:
@@ -1479,10 +1542,28 @@ def print_protocol_usage_table(
         print("-" * W)
         print("  Diagnostics")
         print("-" * W)
+        # Skip redundant raw dictionary bundles that duplicate unpacked stats
+        _REDUNDANT_DIAG_KEYS = {"glmm_gof", "lmm_gof"}
         for key, val in ctx.diagnostics.items():
+            if key in _REDUNDANT_DIAG_KEYS:
+                continue
             display_key = key.replace("_", " ").title()
-            if isinstance(val, float):
+            if key == "variance_components" and isinstance(val, dict):
+                # Clean nested rendering of variance components factors
+                print(f"    {display_key + ':':<{lw}}")
+                for factor_line, factor_stat, _ in _format_variance_components(val):
+                    print(f"      {factor_line:<{lw - 2}}{factor_stat}")
+            elif isinstance(val, float):
                 print(f"    {display_key + ':':<{lw}}{val:.4f}")
+            elif isinstance(val, dict):
+                # Formatted sub-dictionary items
+                print(f"    {display_key + ':':<{lw}}")
+                for sub_k, sub_v in val.items():
+                    sub_label = sub_k.replace("_", " ").title()
+                    if isinstance(sub_v, float):
+                        print(f"      {sub_label + ':':<{lw - 2}}{sub_v:.4f}")
+                    else:
+                        print(f"      {sub_label + ':':<{lw - 2}}{sub_v}")
             else:
                 print(f"    {display_key + ':':<{lw}}{val}")
 

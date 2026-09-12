@@ -282,15 +282,6 @@ def randomization_test_regression(
     if panel_id is not None and ar_order is None and method in _SCORE_METHODS_SET:
         permutation_strategy = "unrestricted"
 
-    # ---- Groups validation ---------------------------------------
-    cells, resolved_strategy = _validate_groups(
-        X, groups, permutation_strategy, n_randomizations
-    )
-
-    # ---- Callback validation -------------------------------------
-    if permutation_constraints is not None:
-        _validate_constraints(permutation_constraints, len(y_values))
-
     # ---- Context accumulator -----------------------------------
     ctx = FitContext()
     ctx.target_name = str(y.columns[0])
@@ -299,6 +290,15 @@ def randomization_test_regression(
     ctx.n_randomizations = n_randomizations
     ctx.confounders = confounders or []
     ctx.confidence_level = confidence_level
+
+    # ---- Groups validation ---------------------------------------
+    cells, resolved_strategy = _validate_groups(
+        X, groups, permutation_strategy, n_randomizations, ctx=ctx
+    )
+
+    # ---- Callback validation -------------------------------------
+    if permutation_constraints is not None:
+        _validate_constraints(permutation_constraints, len(y_values))
 
     # Store resolved panel_id for downstream diagnostics.
     if panel_id is not None:
@@ -707,6 +707,7 @@ def _validate_groups(
     ),
     permutation_strategy: str | list[str] | None,
     n_randomizations: int,
+    ctx: FitContext | None = None,
 ) -> tuple[np.ndarray | ExchangeabilityTree | None, str | None]:
     """Validate and resolve ``groups`` / ``permutation_strategy``.
 
@@ -867,42 +868,46 @@ def _validate_groups(
             )
 
         if between_available < 100:
-            warnings.warn(
+            warn_msg = (
                 f"Only {between_available} unique between-cell "
                 f"permutations are available (cells have sizes "
                 f"{sorted(set(non_empty_sizes))}).  Between-cell "
                 f"permutations can only swap same-size cells, limiting "
                 f"the reference distribution.  Consider "
                 f"permutation_strategy='two-stage' for a richer "
-                f"reference set.",
-                UserWarning,
-                stacklevel=3,
+                f"reference set."
             )
+            warnings.warn(warn_msg, UserWarning, stacklevel=3)
+            if ctx is not None:
+                ctx.warnings_captured.append(warn_msg)
 
-    # ---- Singleton warnings (Step 11b) ---------------------------
+    # ---- Singleton warnings (Step 11b / Step 11j) -----------------
     n_singletons = int(np.sum(cell_sizes == 1))
 
     if n_singletons > 0 and resolved in ("within", "two-stage"):
-        warnings.warn(
+        warn_msg = (
             f"{n_singletons} cell(s) contain a single observation and "
             f"contribute nothing to the '{resolved}' within-cell "
-            f"reference distribution.  Their members are never shuffled.",
-            UserWarning,
-            stacklevel=3,
+            f"reference distribution.  Their members are never shuffled."
         )
+        if ctx is not None:
+            ctx.warnings_captured.append(warn_msg)
+        else:
+            warnings.warn(warn_msg, UserWarning, stacklevel=3)
 
-    # ---- Two-stage imbalance (Step 11d) --------------------------
+    # ---- Two-stage imbalance (Step 11d / Step 11j) ---------------
     if resolved == "two-stage":
         ratio = float(max(non_empty_sizes)) / float(min(non_empty_sizes))
         if ratio > 3.0:
-            warnings.warn(
+            warn_msg = (
                 f"Two-stage permutation assumes independence of between-"
                 f"cell and within-cell exchangeability.  Cell sizes are "
                 f"highly unbalanced (max/min = {ratio:.1f} > 3).  "
-                f"Consider 'within' for safer inference.",
-                UserWarning,
-                stacklevel=3,
+                f"Consider 'within' for safer inference."
             )
+            warnings.warn(warn_msg, UserWarning, stacklevel=3)
+            if ctx is not None:
+                ctx.warnings_captured.append(warn_msg)
 
     return cells, resolved
 

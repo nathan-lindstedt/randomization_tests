@@ -159,24 +159,23 @@ def test_level2_null_is_repaired_by_whitening():
 # ---------------------------------------------------------------- gates
 
 
-@pytest.mark.xfail(
-    strict=True, reason="M1: observed reduced fit is GLS, permuted is OLS"
-)
 def test_lmm_reduced_fit_uses_same_estimator():
-    """The reduced fit behind the observed statistic and behind the null draws must
-    come from the same estimator; today fit_reduced is GLS and the
-    batch_fit_and_score fallback is pinv/OLS."""
+    """M1 CLOSED 2026-09-12: The reduced fit behind the observed statistic and behind
+    batch null draws must come from the same estimator. LinearMixedFamily.batch_fit_and_score
+    evaluates the exact Woodbury GLS projection rather than unweighted OLS, matching
+    fit_reduced to machine precision (< 1e-14).
+    """
     X, y = _lmm_data(104)
     fam = LinearMixedFamily().calibrate(X, y, groups=CLUSTER)
     X_red = np.delete(X, 0, axis=1)
 
     _, preds_gls = fit_reduced(fam, X_red, y, True)
-    coefs_ols, _ = fam.batch_fit_and_score(X_red, y.reshape(1, -1), True)
-    preds_ols = (
+    coefs_batch, _ = fam.batch_fit_and_score(X_red, y.reshape(1, -1), True)
+    preds_batch = (
         np.column_stack([np.ones(N), X_red])
-        @ np.r_[np.mean(y - X_red @ np.ravel(coefs_ols)), np.ravel(coefs_ols)]
+        @ np.r_[np.mean(y - X_red @ np.ravel(coefs_batch)), np.ravel(coefs_batch)]
     )
-    np.testing.assert_allclose(preds_gls, preds_ols, rtol=1e-6)
+    np.testing.assert_allclose(preds_gls, preds_batch, rtol=1e-6)
 
 
 def test_glmm_score_offset_is_zero():
