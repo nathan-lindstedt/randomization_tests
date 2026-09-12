@@ -341,18 +341,14 @@ def test_kennedy_unblocked_for_mixed_families():
     assert 0.0 <= float(res_poi_jnt.p_value) <= 1.0
 
 
-@pytest.mark.xfail(strict=True, reason="M7a: residuals permuted without AR whitening")
 def test_ar_lmm_spread_ratio():
-    """M7a inflates the null because Omega^-1 is applied to residuals the permutation
-    has already de-correlated.
+    """M7a / M11 CLOSED 2026-09-12: AR coefficients are decontaminated from cluster
+    random effects via within-panel demeaning (M11), and composite cluster covariance
+    blocks V_g = Omega_g + Z_g Gamma Z_g' are whitened via block Cholesky before
+    permutation (M7a).
 
-    Asserted on the MEDIAN over several datasets, not one: a single seed passing or
-    failing would be selecting on the outcome. The effect is systematic and
-    one-directional — every measured ratio is >= 1.0 (1.43, 2.39, 1.02, 1.71, 3.62,
-    1.28, 1.15, 1.01) — where the no-AR arm sits at 1.0 with 1.17x spread.
-
-    The sub-1 ratios seen before (0.14, 0.30) were the diverging REML solver, not
-    M7a; they disappeared once that was fixed.
+    Asserted on the MEDIAN over several datasets, confirming the permutation null
+    spread matches SE(beta_hat) within [0.8, 1.25].
     """
     ratios = []
     for seed in (110, 111, 112, 113, 114):

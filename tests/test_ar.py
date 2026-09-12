@@ -181,3 +181,96 @@ class TestArDiagnostics:
             "ljung_box_Q",
             "ljung_box_p",
         }
+
+
+class TestEstimatePanelArCoefficients:
+    """Tests for decontaminated panel AR estimation (Defect M11)."""
+
+    def test_recovers_known_rho_with_random_intercept(self):
+        """M11: Random intercept contamination is eliminated by within-panel demeaning."""
+        from randomization_tests._ar import estimate_panel_ar_coefficients
+
+        rng = np.random.default_rng(101)
+        G, T = 30, 20
+        N = G * T
+        true_rho = 0.60
+        tau2 = 4.0  # ICC ≈ 0.80
+
+        x = rng.normal(size=N)
+        z = rng.normal(size=N)
+        y = np.empty(N)
+        for g in range(G):
+            idx = slice(g * T, (g + 1) * T)
+            e = np.zeros(T)
+            e[0] = rng.normal()
+            for t in range(1, T):
+                e[t] = true_rho * e[t - 1] + rng.normal(scale=np.sqrt(1 - true_rho**2))
+            u = rng.normal(scale=np.sqrt(tau2))
+            y[idx] = 0.8 * x[idx] + 0.7 * z[idx] + u + e
+
+        panel_starts = np.arange(0, N, T, dtype=np.intp)
+        panel_lengths = np.full(G, T, dtype=np.intp)
+        clean_rho = estimate_panel_ar_coefficients(
+            np.column_stack([x, z]), y, panel_starts, panel_lengths, order=1
+        )
+        assert abs(clean_rho[0] - true_rho) < 0.10
+
+    def test_invariant_across_icc_sweep(self):
+        """M11: Estimated rho must not scale upward with ICC."""
+        from randomization_tests._ar import estimate_panel_ar_coefficients
+
+        rng = np.random.default_rng(202)
+        G, T = 25, 20
+        N = G * T
+        true_rho = 0.60
+        panel_starts = np.arange(0, N, T, dtype=np.intp)
+        panel_lengths = np.full(G, T, dtype=np.intp)
+
+        estimates = []
+        for tau2 in [0.0, 1.0, 4.0, 9.0]:
+            x = rng.normal(size=N)
+            y = np.empty(N)
+            for g in range(G):
+                idx = slice(g * T, (g + 1) * T)
+                e = np.zeros(T)
+                e[0] = rng.normal()
+                for t in range(1, T):
+                    e[t] = true_rho * e[t - 1] + rng.normal(
+                        scale=np.sqrt(1 - true_rho**2)
+                    )
+                u = rng.normal(scale=np.sqrt(tau2)) if tau2 > 0 else 0.0
+                y[idx] = 0.5 * x[idx] + u + e
+
+            rho_hat = estimate_panel_ar_coefficients(
+                x, y, panel_starts, panel_lengths, order=1
+            )
+            estimates.append(float(rho_hat[0]))
+
+        # All estimates should be near true_rho (0.60), not climbing with tau2
+        for est in estimates:
+            assert abs(est - true_rho) < 0.12
+
+    def test_unbalanced_panels(self):
+        """Unbalanced panel lengths are handled correctly."""
+        from randomization_tests._ar import estimate_panel_ar_coefficients
+
+        rng = np.random.default_rng(303)
+        lengths = rng.integers(10, 25, size=25)
+        N = int(np.sum(lengths))
+        starts = np.zeros(len(lengths), dtype=np.intp)
+        starts[1:] = np.cumsum(lengths[:-1])
+
+        x = rng.normal(size=N)
+        y = np.empty(N)
+        for start, T_i in zip(starts, lengths, strict=True):
+            idx = slice(start, start + T_i)
+            e = np.zeros(T_i)
+            e[0] = rng.normal()
+            for t in range(1, T_i):
+                e[t] = 0.5 * e[t - 1] + rng.normal(scale=np.sqrt(1 - 0.5**2))
+            u = rng.normal(scale=1.5)  # cluster random intercept
+            y[idx] = 1.0 + 0.5 * x[idx] + u + e
+
+        rho_hat = estimate_panel_ar_coefficients(x, y, starts, lengths, order=1)
+        assert len(rho_hat) == 1
+        assert 0.3 < rho_hat[0] < 0.7

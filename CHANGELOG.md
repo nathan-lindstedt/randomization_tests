@@ -64,6 +64,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Decontaminated AR parameter estimation in longitudinal LMMs (M11) and composite cluster whitening (M7a)**:
+  `LinearMixedFamily` previously estimated autoregressive parameters
+  from raw marginal residuals $y - \bar y$. Because cluster random
+  intercepts $u_i \sim \mathcal{N}(0, \tau^2)$ are time-invariant
+  within panel, they contributed a spurious positive covariance at
+  every lag, artificially inflating $\hat\rho$ from 0.60 to 0.87 at
+  ICC 0.9.  Added `estimate_panel_ar_coefficients()` in `_ar.py`,
+  which projects out cluster effects via within-panel demeaning
+  (Frisch–Waugh–Lovell) and applies the exact Nickell (1981) first-order
+  bias correction for finite panels.  `_whitening_blocks()` in
+  `LinearMixedFamily` now constructs composite cluster covariance
+  blocks $V_g = \Omega_g(\hat\rho) + Z_g (\Sigma / \sigma^2) Z_g^T$
+  and evaluates lower Cholesky factors $L_g$, whitening AR-correlated
+  mixed-model residuals prior to within-panel permutation.
+  Permanent regression gate `test_ar_lmm_spread_ratio` promoted from
+  strict xfail to passing invariant (median spread ratio 1.079 in
+  $[0.8, 1.25]$).
+
 - **LMM reduced-fit scale consistency in batch fitting (M1)**:
   `LinearMixedFamily.batch_fit_and_score()` previously fell back to
   unweighted OLS (`pinv`) when evaluating reduced designs with fewer

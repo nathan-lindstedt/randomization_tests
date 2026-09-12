@@ -84,6 +84,121 @@ def estimate_ar_coefficients(
     return ar_coefs
 
 
+def estimate_panel_ar_coefficients(
+    X: np.ndarray,
+    y: np.ndarray,
+    panel_indices: np.ndarray,
+    panel_lengths: np.ndarray,
+    order: int,
+    fit_intercept: bool = True,
+) -> np.ndarray:
+    r"""Estimate AR(p) coefficients for longitudinal mixed models decontaminated from cluster effects (M11).
+
+    In longitudinal panel data with random intercepts:
+
+    .. math::
+
+        y_{it} = X_{it}\beta + u_i + \epsilon_{it}
+
+    the cluster random effect :math:`u_i \sim \mathcal{N}(0, \tau^2)` is constant
+    across time within subject *i*. Estimating AR coefficients from raw or
+    intercept-only residuals retains :math:`u_i`, adding a constant positive
+    covariance at *every* lag and artificially inflating :math:`\hat{\rho}`
+    (measured: true :math:`\rho = 0.6` was estimated as :math:`0.87` at ICC 0.9).
+
+    This function eliminates :math:`u_i` by applying the Frisch–Waugh–Lovell (FWL)
+    within-panel (demeaning) projection to both *X* and *y*:
+
+    .. math::
+
+        \tilde{y}_{it} = y_{it} - \bar{y}_i, \quad \tilde{X}_{it} = X_{it} - \bar{X}_i
+
+    Because :math:`u_i - \bar{u}_i \equiv 0`, the random intercept vanishes
+    identically. The within-panel OLS residuals
+    :math:`\tilde{e} = \tilde{y} - \tilde{X}\hat{\beta}_{\text{within}}`
+    contain only the idiosyncratic autoregressive errors :math:`\epsilon_{it}`.
+
+    For finite :math:`T`, within-panel demeaning induces Nickell (1981) attenuation
+    bias of order :math:`\mathcal{O}(1/T)`. For :math:`p=1`, we apply the exact
+    first-order Nickell bias correction:
+
+    .. math::
+
+        \hat{\rho}_{\text{clean}} = \frac{\hat{\rho}_{\text{within}} + 1/\bar{T}}{1 - 1/\bar{T}}
+
+    clamped to :math:`(-0.99, 0.99)` for stationarity.
+
+    Parameters
+    ----------
+    X : np.ndarray
+        Design matrix of shape ``(n, p)`` or ``(n,)``.
+    y : np.ndarray
+        Response vector of shape ``(n,)``.
+    panel_indices : np.ndarray
+        Contiguous panel start offsets of shape ``(n_panels,)``.
+    panel_lengths : np.ndarray
+        Length of each panel of shape ``(n_panels,)``.
+    order : int
+        Autoregressive order *p* (must be ≥ 1).
+    fit_intercept : bool, optional
+        Whether the model includes an intercept (default True).
+
+    Returns
+    -------
+    np.ndarray
+        Shape ``(order,)`` — decontaminated AR coefficients.
+    """
+    X_mat = np.atleast_2d(X)
+    if X_mat.shape[0] != len(y):
+        X_mat = X_mat.T
+    n, p_vars = X_mat.shape
+
+    y_within = np.empty_like(y, dtype=float)
+    X_within = np.empty((n, p_vars), dtype=float)
+
+    start = 0
+    valid_lengths: list[int] = []
+    for length in panel_lengths:
+        T_i = int(length)
+        end = start + T_i
+        y_slice = y[start:end]
+        X_slice = X_mat[start:end]
+
+        y_within[start:end] = y_slice - np.mean(y_slice)
+        if p_vars > 0:
+            X_within[start:end] = X_slice - np.mean(X_slice, axis=0)
+
+        valid_lengths.append(T_i)
+        start = end
+
+    # Fit within-panel OLS to remove fixed effects
+    if p_vars > 0:
+        beta_within = np.linalg.lstsq(X_within, y_within, rcond=None)[0]
+        resid_within = y_within - X_within @ beta_within
+    else:
+        resid_within = y_within
+
+    residuals_by_panel: list[np.ndarray] = []
+    start = 0
+    for length in panel_lengths:
+        T_i = int(length)
+        residuals_by_panel.append(resid_within[start : start + T_i])
+        start += T_i
+
+    raw_ar = estimate_ar_coefficients(residuals_by_panel, order)
+
+    # Apply Nickell (1981) bias adjustment for panel AR(1)
+    if order == 1 and len(valid_lengths) > 0:
+        mean_T = float(np.mean(valid_lengths))
+        if mean_T > 1.0:
+            rho_within = float(raw_ar[0])
+            adj_rho = (rho_within + 1.0 / mean_T) / (1.0 - 1.0 / mean_T)
+            clean_rho = float(np.clip(adj_rho, -0.99, 0.99))
+            return np.array([clean_rho])
+
+    return raw_ar
+
+
 def build_ar_precision_block(
     ar_coefs: np.ndarray,
     T: int,

@@ -353,7 +353,7 @@ def _whitening_blocks(
     re_struct: list[tuple[int, int]],
     ar_coefs: np.ndarray | None,
 ) -> tuple[np.ndarray, ...] | None:
-    """Lower-Cholesky factors of the per-cluster blocks of ``Ṽ = I + Z Γ Z'``.
+    """Lower-Cholesky factors of the per-cluster blocks of ``Ṽ``.
 
     A GLS model is an OLS problem on whitened data, so the permutation null must
     act on whitened residuals: Π and W do not commute, and permuting raw residuals
@@ -366,12 +366,20 @@ def _whitening_blocks(
     whitened residuals depend only on that cluster and cross-cluster independence is
     preserved exactly; it also matches the AR path's existing idiom.
 
-    Returns ``None`` when Ṽ is not block-diagonal by cluster — AR correction or
-    crossed grouping factors — so that ``whiten()`` can raise at point of use rather
-    than silently applying a wrong operator.
+    When AR is not active: ``Ṽ_g = I_T + Z_g (Σ / σ²) Z_g'``.
+    When AR is active:     ``Ṽ_g = Ω_g(ρ) + Z_g (Σ / σ²) Z_g'``,
+    where ``Ω_g(ρ)`` is the AR(p) autocovariance block for panel g.
+
+    Returns ``None`` when Ṽ is not block-diagonal by cluster — crossed grouping
+    factors — so that ``whiten()`` can raise at point of use rather than silently
+    applying a wrong operator.
     """
-    if ar_coefs is not None or len(re_struct) != 1:
+    if len(re_struct) != 1:
         return None
+
+    import scipy.linalg
+
+    from ._ar import _ar_autocovariance
 
     _, d = re_struct[0]
     blocks: list[np.ndarray] = []
@@ -379,7 +387,15 @@ def _whitening_blocks(
         rows = np.flatnonzero(np.equal(groups_arr, g))
         cols = np.arange(int(g) * d, (int(g) + 1) * d)
         Zg = Z[np.ix_(rows, cols)]
-        Vg = np.eye(len(rows)) + Zg @ ratio @ Zg.T
+        T_g = len(rows)
+
+        if ar_coefs is not None:
+            acov = _ar_autocovariance(ar_coefs, T_g)
+            Omega_g = scipy.linalg.toeplitz(acov)
+            Vg = Omega_g + Zg @ ratio @ Zg.T
+        else:
+            Vg = np.eye(T_g) + Zg @ ratio @ Zg.T
+
         try:
             blocks.append(np.linalg.cholesky(Vg))
         except np.linalg.LinAlgError:
@@ -1481,19 +1497,22 @@ class LinearMixedFamily:
         panel_indices = kwargs.get("panel_indices")
         panel_lengths = kwargs.get("panel_lengths")
 
-        if ar_order is not None and panel_indices is not None:
-            from ._ar import estimate_ar_coefficients
+        if (
+            ar_order is not None
+            and panel_indices is not None
+            and panel_lengths is not None
+        ):
+            from ._ar import estimate_panel_ar_coefficients
 
-            # Estimate AR from intercept-only residuals.
-            y_mean = np.mean(y)
-            resid_null = y - y_mean
-            residuals_by_panel: list[np.ndarray] = []
-            start = 0
-            for length in panel_lengths:  # type: ignore[union-attr]
-                T = int(length)
-                residuals_by_panel.append(resid_null[start : start + T])
-                start += T
-            ar_coefs_hat = estimate_ar_coefficients(residuals_by_panel, ar_order)
+            # Decontaminate AR estimation from cluster random effects via within OLS (M11)
+            ar_coefs_hat = estimate_panel_ar_coefficients(
+                X,
+                y,
+                panel_indices,
+                panel_lengths,
+                ar_order,
+                fit_intercept=fit_intercept,
+            )
 
         result = _reml_solve(
             X,
@@ -1646,19 +1665,22 @@ class LinearMixedFamily:
         panel_indices = kwargs.get("panel_indices")
         panel_lengths = kwargs.get("panel_lengths")
 
-        if ar_order is not None and panel_indices is not None:
-            from ._ar import apply_ar_precision, estimate_ar_coefficients
+        if (
+            ar_order is not None
+            and panel_indices is not None
+            and panel_lengths is not None
+        ):
+            from ._ar import apply_ar_precision, estimate_panel_ar_coefficients
 
-            # Estimate AR from intercept-only residuals.
-            y_mean = np.mean(y)
-            resid_null = y - y_mean
-            residuals_by_panel: list[np.ndarray] = []
-            start = 0
-            for length in panel_lengths:  # type: ignore[union-attr]
-                T = int(length)
-                residuals_by_panel.append(resid_null[start : start + T])
-                start += T
-            ar_coefs_hat = estimate_ar_coefficients(residuals_by_panel, ar_order)
+            # Decontaminate AR estimation from cluster random effects via within OLS (M11)
+            ar_coefs_hat = estimate_panel_ar_coefficients(
+                X,
+                y,
+                panel_indices,
+                panel_lengths,
+                ar_order,
+                fit_intercept=fit_intercept,
+            )
 
         # Build projection A = S⁻¹ X'Ṽ⁻¹ via the Woodbury identity.
         #
