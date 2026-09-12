@@ -45,7 +45,7 @@ from .pvalues import calculate_p_values
 from .sign_flips import generate_sign_flips
 
 # Valid permutation strategy strings.
-_VALID_STRATEGIES = {"within", "between", "two-stage"}
+_VALID_STRATEGIES = {"within", "between", "two-stage", "unrestricted"}
 
 # ------------------------------------------------------------------ #
 # Public API
@@ -268,16 +268,12 @@ def randomization_test_regression(
     # unmodeled).  Within-panel permutation is invalid: between-
     # panel features (constant within a day) cannot be broken by
     # within-panel shuffles, producing spuriously small p-values.
-    # Reset the permutation strategy to global so the null
-    # distribution is valid.  Keep the panel_arr available so
-    # ctx.groups can still be populated for cluster-robust
-    # asymptotic comparisons.
+    # Set the permutation strategy to unrestricted so the null
+    # distribution is valid while preserving groups for family
+    # calibration and cluster-robust comparisons.
     _SCORE_METHODS_SET = {"score", "score_joint", "score_exact"}
-    _panel_groups_for_cluster: np.ndarray | None = None
     if panel_id is not None and ar_order is None and method in _SCORE_METHODS_SET:
-        _panel_groups_for_cluster = np.asarray(groups) if groups is not None else None
-        groups = None
-        permutation_strategy = None
+        permutation_strategy = "unrestricted"
 
     # ---- Groups validation ---------------------------------------
     cells, resolved_strategy = _validate_groups(
@@ -307,18 +303,12 @@ def randomization_test_regression(
             ctx.panel_id = np.asarray(panel_id)
 
     # Store resolved groups for cluster-robust asymptotic p-values.
-    # `cells` holds the validated groups array, ExchangeabilityTree,
-    # or None (from explicit groups= or panel_id= via _validate_panel).
-    # When the score guard fires, cells is None but we still need
-    # cluster-robust asymptotic SEs.
     if cells is not None:
         ctx.groups = (
             cells.to_flat_cells()
             if isinstance(cells, ExchangeabilityTree)
             else np.asarray(cells)
         )
-    elif _panel_groups_for_cluster is not None:
-        ctx.groups = np.asarray(_to_integer_labels(_panel_groups_for_cluster))
 
     # ---- AR panel arrays -----------------------------------------
     # Build panel_indices / panel_lengths for AR estimation when

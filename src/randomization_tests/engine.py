@@ -424,7 +424,7 @@ class PermutationEngine:
             # previous approach of calling exchangeability_cells() with
             # placeholder zeros — which only worked by accident for
             # families that ignore X and y in that method.
-            if cells is None:
+            if cells is None and strategy != "unrestricted":
                 family_cells = self.ctx.exchangeability_cells
                 if family_cells is not None:
                     cells = family_cells
@@ -479,7 +479,7 @@ class PermutationEngine:
                 exclude_identity=True,
             )
 
-        if cells is None or strategy is None:
+        if cells is None or strategy is None or strategy == "unrestricted":
             return generate_unique_permutations(
                 n_samples=n_samples,
                 n_randomizations=n_randomizations,

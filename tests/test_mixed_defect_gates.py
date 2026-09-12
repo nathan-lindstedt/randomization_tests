@@ -208,14 +208,13 @@ def test_lmm_spread_ratio_random_slopes():
     assert 0.8 < _spread_ratio(res) < 1.25
 
 
-@pytest.mark.xfail(
-    strict=True, reason="M8: panel_id does not reach calibration without ar_order"
-)
 def test_panel_id_works_without_ar_order():
-    """panel_id is documented as setting groups=panel_id, but linear_mixed rejects it
-    unless ar_order is also supplied."""
+    """M8 CLOSED 2026-09-12: panel_id reaches family calibration cleanly without
+    requiring ar_order, decoupling model-structure grouping from the permutation
+    strategy via permutation_strategy='unrestricted'.
+    """
     X, y = _lmm_data(107)
-    randomization_test_regression(
+    res = randomization_test_regression(
         pd.DataFrame({"x": X[:, 0], "z": X[:, 1]}),
         pd.DataFrame({"y": y}),
         family="linear_mixed",
@@ -225,6 +224,25 @@ def test_panel_id_works_without_ar_order():
         n_randomizations=99,
         random_state=107,
     )
+    assert len(res.raw_empirical_p) == 2
+
+
+def test_groups_with_unrestricted_permutation_strategy():
+    """Step 11f: groups= specifies model-structure grouping while
+    permutation_strategy='unrestricted' specifies unconstrained permutations.
+    """
+    X, y = _lmm_data(107)
+    res = randomization_test_regression(
+        pd.DataFrame({"x": X[:, 0], "z": X[:, 1]}),
+        pd.DataFrame({"y": y}),
+        family="linear_mixed",
+        groups=CLUSTER,
+        permutation_strategy="unrestricted",
+        method="score",
+        n_randomizations=99,
+        random_state=107,
+    )
+    assert len(res.raw_empirical_p) == 2
 
 
 def test_glmm_null_is_zero_centred():

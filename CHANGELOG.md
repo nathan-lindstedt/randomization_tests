@@ -55,9 +55,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   varying-X refitting reduces to whitened linear regression,
   avoiding iterative per-permutation IRLS re-solves.
 
+- **`permutation_strategy="unrestricted"` supported**: users can
+  now decouple model grouping from the permutation strategy,
+  fitting cluster-correlated models while evaluating unconstrained
+  permutations on whitened residuals.
+
 
 
 ### Fixed
+
+- **Decoupled model-structure grouping from permutation strategy (M8 / Step 11f)**:
+  `panel_id` calls on score methods without `ar_order` previously
+  reset `groups = None`, causing `LinearMixedFamily.calibrate` to fail
+  with a missing `groups` error.  The permutation strategy is now
+  routed to `"unrestricted"` while preserving group labels for family
+  calibration and cluster-robust standard errors.
 
 - **GLMM score projection offset and null miscalibration (M4/M6)**:
   `LogisticMixedFamily.score_project` and `PoissonMixedFamily.score_project`
