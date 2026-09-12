@@ -837,8 +837,6 @@ _GLMM_GROUPS = np.repeat(np.arange(6), 5)
 
 _GLMM_BLOCKED = [
     "ter_braak",
-    "kennedy",
-    "kennedy_joint",
     "freedman_lane",
     "freedman_lane_joint",
     "manly",
@@ -879,6 +877,19 @@ class TestGLMMCompatGuards:
                 family="poisson_mixed",
                 groups=_GLMM_GROUPS,
             )
+
+    @pytest.mark.parametrize("method", ["kennedy", "kennedy_joint"])
+    def test_glmm_kennedy_allowed(self, method):
+        res = randomization_test_regression(
+            _GLMM_X,
+            _GLMM_Y_LOGISTIC,
+            n_randomizations=5,
+            method=method,
+            family="logistic_mixed",
+            groups=_GLMM_GROUPS,
+            confounders=["x2"],
+        )
+        assert res is not None
 
     def test_score_exact_linear_warns(self):
         """score_exact on a non-mixed family emits a UserWarning.
