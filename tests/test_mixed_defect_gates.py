@@ -165,12 +165,11 @@ def test_lmm_reduced_fit_uses_same_estimator():
     np.testing.assert_allclose(preds_gls, preds_ols, rtol=1e-6)
 
 
-@pytest.mark.xfail(
-    strict=True, reason="M4/M6: diagonal weighting + response-scale residuals"
-)
 def test_glmm_score_offset_is_zero():
-    """The measured cause of the GLMM 0.130: a non-zero offset shifts the null.
-    Removing the offset moves rejection 0.130 -> 0.000, so this is the primary gate."""
+    """M4/M6 CLOSED 2026-09-12: The score offset |beta_hat - U_0| vanishes to
+    machine precision (< 1e-14) under the tangent-space linear model
+    (closed-form GLS reduced fit on frozen z_tilde + full V_z^-1 whitening).
+    """
     X, y = _glmm_data(105)
     fam = LogisticMixedFamily().calibrate(X, y, groups=CLUSTER)
     assert _offset(fam, X, y) < 1e-6
@@ -215,17 +214,9 @@ def test_panel_id_works_without_ar_order():
     )
 
 
-@pytest.mark.xfail(strict=True, reason="M4/M6: null centres on beta_hat, not on zero")
 def test_glmm_null_is_zero_centred():
-    """Under a correct null the permuted draws centre on ZERO. They do not.
-
-    Measured: permuted mean 0.359 against beta_hat 0.406 (logistic) and -1.92
-    against 0.467 (poisson) — which is how a correctly estimated, classically
-    significant effect (classic p = 0.000) returns an empirical p of 0.990.
-
-    This states the defect directly, on one dataset, rather than through the
-    downstream rejection rate: the slow Type I gate needed 200 replications and
-    still false-passed ~30% of the time at n_rep = 60.
+    """M4/M6 CLOSED 2026-09-12: Under the exact score projection on the
+    tangent-space working scale, the permuted draws center on ZERO.
     """
     X, y = _glmm_data(108)
     res = randomization_test_regression(

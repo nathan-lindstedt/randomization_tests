@@ -2116,6 +2116,8 @@ def _calibrate_glmm(
         nll=result.nll,
         _groups_arr=groups_arr,
         _raw_groups=groups,
+        eta=result.eta,
+        z_tilde=result.z_tilde,
     )
 
 
@@ -2176,6 +2178,8 @@ class LogisticMixedFamily(_GLMMBatchStubMixin):
     nll: float | None = None
     _groups_arr: np.ndarray | None = None
     _raw_groups: Any = None
+    eta: np.ndarray | None = None
+    z_tilde: np.ndarray | None = None
 
     # ---- Protocol properties ---------------------------------------
 
@@ -2347,29 +2351,18 @@ class LogisticMixedFamily(_GLMMBatchStubMixin):
                 fit_intercept=fit_intercept,
             )
 
-        # Reduced X: fit a fixed-effects GLM (ignoring RE).
-        # Variance structure is already encoded in V_inv_diag
-        # for the score projection — this is just for residuals.
-        from ._backends._jax import (
-            _fit_glm_irls,
-            _logistic_nll_np,
-        )
-        from ._backends._jax import (
-            _logistic_working_response_and_weights as _logistic_wf,
-        )
-
+        assert self.z_tilde is not None and self.eta is not None
+        assert self.mu is not None and self.W is not None
         X_aug_red = _augment_intercept(X, fit_intercept)
-        glm_res = _fit_glm_irls(
-            X_aug_red,
-            y,
-            _logistic_wf,
-            _logistic_nll_np,
-            family="logistic",
-        )
+        Z_red_w = self.whiten(X_aug_red)
+        z_tilde_w = self.whiten(self.z_tilde)
+        beta_red = np.linalg.pinv(Z_red_w) @ z_tilde_w
+        eta_red = X_aug_red @ beta_red
+        predictions = self.mu + self.W * (eta_red - self.eta)
         return _GLMMFitResult(
-            beta=glm_res.beta,
+            beta=beta_red,
             u=np.zeros(0),
-            predictions=glm_res.mu,
+            predictions=predictions,
             fit_intercept=fit_intercept,
         )
 
@@ -2418,15 +2411,18 @@ class LogisticMixedFamily(_GLMMBatchStubMixin):
         from ._strategies import _apply_randomization
 
         self._require_calibrated("score_project")
-        assert self.V_inv_diag is not None
+        assert self.W is not None
         assert self.fisher_info is not None
 
         j = feature_idx + 1 if fit_intercept else feature_idx
         X_full = _augment_intercept(X, fit_intercept)
 
-        score_weights = X_full[:, j] * self.V_inv_diag  # (n,)
-        E_pi = _apply_randomization(residuals, perm_indices, randomization)  # (B, n)
-        U_j = E_pi @ score_weights  # (B,)
+        working_resid = residuals / self.W
+        resid_w = self.whiten(working_resid)
+        x_j_w = self.whiten(X_full[:, j])
+
+        E_pi = _apply_randomization(resid_w, perm_indices, randomization)  # (B, n)
+        U_j = E_pi @ x_j_w  # (B,)
         # Full Fisher inverse [I⁻¹]_{jj} accounts for cross-correlations.
         try:
             fisher_inv_jj = np.linalg.inv(self.fisher_info)[j, j]
@@ -2682,6 +2678,8 @@ class PoissonMixedFamily(_GLMMBatchStubMixin):
     nll: float | None = None
     _groups_arr: np.ndarray | None = None
     _raw_groups: Any = None
+    eta: np.ndarray | None = None
+    z_tilde: np.ndarray | None = None
 
     # ---- Protocol properties ---------------------------------------
 
@@ -2864,27 +2862,18 @@ class PoissonMixedFamily(_GLMMBatchStubMixin):
                 fit_intercept=fit_intercept,
             )
 
-        # Reduced X: fixed-effects GLM fallback (pure internal IRLS)
-        from ._backends._jax import (
-            _fit_glm_irls,
-            _poisson_nll_np,
-        )
-        from ._backends._jax import (
-            _poisson_working_response_and_weights as _poisson_wf,
-        )
-
+        assert self.z_tilde is not None and self.eta is not None
+        assert self.mu is not None and self.W is not None
         X_aug_red = _augment_intercept(X, fit_intercept)
-        glm_res = _fit_glm_irls(
-            X_aug_red,
-            y,
-            _poisson_wf,
-            _poisson_nll_np,
-            family="poisson",
-        )
+        Z_red_w = self.whiten(X_aug_red)
+        z_tilde_w = self.whiten(self.z_tilde)
+        beta_red = np.linalg.pinv(Z_red_w) @ z_tilde_w
+        eta_red = X_aug_red @ beta_red
+        predictions = self.mu + self.W * (eta_red - self.eta)
         return _GLMMFitResult(
-            beta=glm_res.beta,
+            beta=beta_red,
             u=np.zeros(0),
-            predictions=glm_res.mu,
+            predictions=predictions,
             fit_intercept=fit_intercept,
         )
 
@@ -2928,15 +2917,18 @@ class PoissonMixedFamily(_GLMMBatchStubMixin):
         from ._strategies import _apply_randomization
 
         self._require_calibrated("score_project")
-        assert self.V_inv_diag is not None
+        assert self.W is not None
         assert self.fisher_info is not None
 
         j = feature_idx + 1 if fit_intercept else feature_idx
         X_full = _augment_intercept(X, fit_intercept)
 
-        score_weights = X_full[:, j] * self.V_inv_diag  # (n,)
-        E_pi = _apply_randomization(residuals, perm_indices, randomization)  # (B, n)
-        U_j = E_pi @ score_weights  # (B,)
+        working_resid = residuals / self.W
+        resid_w = self.whiten(working_resid)
+        x_j_w = self.whiten(X_full[:, j])
+
+        E_pi = _apply_randomization(resid_w, perm_indices, randomization)  # (B, n)
+        U_j = E_pi @ x_j_w  # (B,)
         # Full Fisher inverse [I⁻¹]_{jj} accounts for cross-correlations.
         try:
             fisher_inv_jj = np.linalg.inv(self.fisher_info)[j, j]

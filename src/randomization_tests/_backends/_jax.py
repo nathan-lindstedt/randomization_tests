@@ -2483,6 +2483,8 @@ if _CAN_IMPORT_JAX:
         n_iter_outer: int
         n_iter_inner_total: int
         nll: float  # final Laplace NLL value
+        eta: np.ndarray  # (n,) linear predictor Xβ̂ + Zû at convergence
+        z_tilde: np.ndarray  # (n,) working response at convergence
 
     def _pql_fixed_irls_vmap(
         X: np.ndarray,
@@ -2948,6 +2950,8 @@ if _CAN_IMPORT_JAX:
             n_iter_outer=int(n_iter_final),
             n_iter_inner_total=int(n_iter_final) * max_inner,
             nll=float(nll_final),
+            eta=eta_final,
+            z_tilde=np.asarray(z_final_j),
         )
 
     def _batch_mixed_project(
