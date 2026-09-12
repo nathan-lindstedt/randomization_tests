@@ -1118,14 +1118,15 @@ class TestLogisticBatchFitRaises:
                 X, np.vstack([y, y]), fit_intercept=True
             )
 
-    def test_batch_fit_varying_X_raises(
+    def test_batch_fit_varying_X_succeeds(
         self, calibrated_logistic_family, logistic_mixed_data
     ):
         X, y, groups = logistic_mixed_data
-        with pytest.raises(NotImplementedError, match="method='score'"):
-            calibrated_logistic_family.batch_fit_varying_X(
-                np.stack([X, X]), y, fit_intercept=True
-            )
+        coefs = calibrated_logistic_family.batch_fit_varying_X(
+            np.stack([X, X]), y, fit_intercept=True
+        )
+        assert coefs.shape == (2, X.shape[1])
+        assert np.all(np.isfinite(coefs))
 
     def test_batch_fit_and_score_raises(
         self, calibrated_logistic_family, logistic_mixed_data
@@ -1562,6 +1563,16 @@ class TestPoissonBatchFitRaises:
             calibrated_poisson_family.batch_fit(
                 X, np.vstack([y, y]), fit_intercept=True
             )
+
+    def test_batch_fit_varying_X_succeeds(
+        self, calibrated_poisson_family, poisson_mixed_data
+    ):
+        X, y, groups = poisson_mixed_data
+        coefs = calibrated_poisson_family.batch_fit_varying_X(
+            np.stack([X, X]), y, fit_intercept=True
+        )
+        assert coefs.shape == (2, X.shape[1])
+        assert np.all(np.isfinite(coefs))
 
     def test_batch_fit_and_score_raises(
         self, calibrated_poisson_family, poisson_mixed_data

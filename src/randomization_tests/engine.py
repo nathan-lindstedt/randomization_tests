@@ -168,8 +168,6 @@ class PermutationEngine:
         _GLMM_BLOCKED_METHODS = frozenset(
             {
                 "ter_braak",
-                "kennedy",
-                "kennedy_joint",
                 "freedman_lane",
                 "freedman_lane_joint",
                 "manly",
@@ -185,7 +183,7 @@ class PermutationEngine:
                 "Re-estimating variance components per permutation is "
                 "computationally prohibitive and statistically incorrect — "
                 "the null hypothesis holds the random-effects structure fixed. "
-                "Use method='score' or method='score_exact' instead."
+                "Use method='score', method='score_exact', or method='kennedy' instead."
             )
 
         # Warn when Manly is used on a family that supports residuals.

@@ -48,8 +48,6 @@ _RESIDUAL_ONLY_METHODS: frozenset[str] = frozenset(
 _GLMM_BLOCKED_METHODS: frozenset[str] = frozenset(
     {
         "ter_braak",
-        "kennedy",
-        "kennedy_joint",
         "freedman_lane",
         "freedman_lane_joint",
         "manly",
@@ -515,7 +513,9 @@ def validate_compatibility(
                     "per permutation is computationally prohibitive and "
                     "statistically incorrect."
                 ),
-                suggestion="Use method='score' or method='score_exact'.",
+                suggestion=(
+                    "Use method='score', method='score_exact', or method='kennedy'."
+                ),
             )
         )
 

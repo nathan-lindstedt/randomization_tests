@@ -17,13 +17,13 @@ same optimum, so agreement is limited by convergence tolerance rather than float
 associativity. Demanding bit-equality would be demanding that such a fix not
 happen.
 
-!! THE GLMM p-VALUES HERE RECORD KNOWN-BROKEN BEHAVIOUR. A characterization test
-pins what the code does today, not what it should do. The GLMM permutation null
-is currently centred near beta_hat rather than near zero (M4/M6): measured
-permuted mean 0.359 against beta_hat 0.406 for logistic, and -1.92 against 0.467
-for poisson, which is why a correctly estimated strong effect returns p = 0.99.
-Step 11e is EXPECTED to move these a long way -- that is the fix landing, not a
-regression. Regenerate then, and review the deltas.
+!! REGENERATED 2026-09-12 for glmm_logistic / glmm_poisson -- Step 11e (M4/M6
+fix: tangent-space linear model on frozen z_tilde with full V_z^-1 whitening).
+glmm_poisson p-values moved from [0.99, 0.945] to [0.005, 0.005] because the
+broken offset that shifted the null onto beta_hat was eliminated to machine
+precision (5.55e-17), allowing true significant effects to reject; glmm_logistic
+p-values moved from [0.085, 0.535] to [0.06, 0.88]. The `_fit_quantities`
+baseline is UNCHANGED for all cases.
 
 !! REGENERATED 2026-09-07 for lmm_slopes / lmm_unbalanced -- M3's fix (score,
 freedman_lane and ter_braak now whiten before permuting via

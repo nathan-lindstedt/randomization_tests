@@ -1091,13 +1091,10 @@ class LinearMixedFamily:
         y_true: np.ndarray,
         y_pred: np.ndarray,
     ) -> float:
-        """Residual sum of squares: ``RSS = Σ(yᵢ − ŷᵢ)²``.
-
-        Uses marginal predictions (Xβ̂, not Xβ̂ + Zû) because the
-        permutation test is about fixed effects — the same metric
-        as LinearFamily.
-        """
+        """Residual sum of squares: ``RSS = Σ(yᵢ − ŷᵢ)²``."""
         resid = y_true - y_pred
+        if self.whitening_blocks is not None:
+            resid = self.whiten(resid)
         return float(np.sum(resid**2))
 
     # ---- Scoring (joint test interface) ----------------------------
@@ -1772,6 +1769,20 @@ class LinearMixedFamily:
         n_jobs = kwargs.pop("n_jobs", 1)
         if backend is None:
             backend = resolve_backend()
+
+        if self.whitening_blocks is not None:
+            from ._backends._jax import _augment_intercept_3d
+
+            X_aug = _augment_intercept_3d(X_batch, fit_intercept)
+            B, n, p_aug = X_aug.shape
+            source_2d = X_aug.swapaxes(0, 1).reshape(n, -1)
+            X_w = self.whiten(source_2d).reshape(n, B, p_aug).swapaxes(0, 1)
+            y_w = self.whiten(y)
+            all_coefs = backend.batch_ols_varying_X(
+                X_w, y_w, fit_intercept=False, n_jobs=n_jobs, **kwargs
+            )
+            return np.asarray(all_coefs[:, 1:] if fit_intercept else all_coefs)
+
         if backend.name == "numpy":
             return np.asarray(
                 backend.batch_mixed_lm_varying_X(
@@ -1848,8 +1859,6 @@ class LinearMixedFamily:
         projection rebuild and RSS are computed per permutation.
         """
         self._require_calibrated("batch_fit_and_score_varying_X")
-        assert self.Z is not None
-        assert self.C22 is not None
 
         from ._backends import resolve_backend
 
@@ -1858,12 +1867,30 @@ class LinearMixedFamily:
         if backend is None:
             backend = resolve_backend()
 
-        # Get slope coefficients via batch_fit_varying_X
+        if self.whitening_blocks is not None:
+            from ._backends._jax import _augment_intercept_3d
+
+            X_aug = _augment_intercept_3d(X_batch, fit_intercept)
+            B, n, p_aug = X_aug.shape
+            source_2d = X_aug.swapaxes(0, 1).reshape(n, -1)
+            X_w = self.whiten(source_2d).reshape(n, B, p_aug).swapaxes(0, 1)
+            y_w = self.whiten(y)
+
+            all_coefs = backend.batch_ols_varying_X(
+                X_w, y_w, fit_intercept=False, n_jobs=n_jobs, **kwargs
+            )
+            coefs = np.asarray(all_coefs[:, 1:] if fit_intercept else all_coefs)
+            fitted_w = np.einsum("bni,bi->bn", X_w, all_coefs)
+            rss = np.sum((y_w - fitted_w) ** 2, axis=1)
+            return coefs, rss
+
+        assert self.Z is not None
+        assert self.C22 is not None
+
         coefs = self.batch_fit_varying_X(
             X_batch, y, fit_intercept, backend=backend, n_jobs=n_jobs, **kwargs
         )
 
-        # Compute RSS per permutation
         B = X_batch.shape[0]
         rss = np.empty(B)
         C22_inv_Zt = np.linalg.solve(self.C22, self.Z.T)
@@ -1895,6 +1922,21 @@ class LinearMixedFamily:
         its own β̂ computation.
         """
         self._require_calibrated("batch_fit_paired")
+
+        if self.whitening_blocks is not None:
+            from ._backends._jax import _augment_intercept_3d
+
+            X_aug = _augment_intercept_3d(X_batch, fit_intercept)
+            B, n, p_aug = X_aug.shape
+            source_2d = X_aug.swapaxes(0, 1).reshape(n, -1)
+            X_w = self.whiten(source_2d).reshape(n, B, p_aug).swapaxes(0, 1)
+            Y_w = self.whiten(Y_batch.T).T
+            result = np.empty((B, p_aug - 1 if fit_intercept else p_aug))
+            for b in range(B):
+                c, _, _, _ = np.linalg.lstsq(X_w[b], Y_w[b], rcond=None)
+                result[b] = c[1:] if fit_intercept else c
+            return result
+
         assert self.Z is not None
         assert self.C22 is not None
 
@@ -1954,12 +1996,11 @@ class _GLMMFitResult:
 
 
 class _GLMMBatchStubMixin:
-    """Mixin providing ``batch_*`` stubs that reject non-score methods.
+    """Mixin providing ``batch_*`` stubs for unsupported methods.
 
-    GLMM families (logistic_mixed, poisson_mixed) require
-    ``method='score'`` or ``method='score_exact'`` — conventional
-    batch-refit strategies are not supported because re-estimating
-    variance components per permutation is prohibitively expensive.
+    GLMM families do not support outcome-permutation batch refitting
+    methods (ter_braak, freedman_lane) because re-estimating variance
+    components per permutation is prohibitively expensive.
     """
 
     def batch_fit(
@@ -1969,20 +2010,6 @@ class _GLMMBatchStubMixin:
         fit_intercept: bool,
         **kwargs: Any,
     ) -> np.ndarray:
-        """Not supported — use ``method='score'``."""
-        raise NotImplementedError(
-            "GLMM families require method='score'. "
-            "Use randomization_test_regression(..., method='score')."
-        )
-
-    def batch_fit_varying_X(
-        self,
-        X_batch: np.ndarray,
-        y: np.ndarray,
-        fit_intercept: bool,
-        **kwargs: Any,
-    ) -> np.ndarray:
-        """Not supported — use ``method='score'``."""
         raise NotImplementedError(
             "GLMM families require method='score'. "
             "Use randomization_test_regression(..., method='score')."
@@ -1995,20 +2022,6 @@ class _GLMMBatchStubMixin:
         fit_intercept: bool,
         **kwargs: Any,
     ) -> tuple[np.ndarray, np.ndarray]:
-        """Not supported — use ``method='score'``."""
-        raise NotImplementedError(
-            "GLMM families require method='score'. "
-            "Use randomization_test_regression(..., method='score')."
-        )
-
-    def batch_fit_and_score_varying_X(
-        self,
-        X_batch: np.ndarray,
-        y: np.ndarray,
-        fit_intercept: bool,
-        **kwargs: Any,
-    ) -> tuple[np.ndarray, np.ndarray]:
-        """Not supported — use ``method='score'``."""
         raise NotImplementedError(
             "GLMM families require method='score'. "
             "Use randomization_test_regression(..., method='score')."
@@ -2021,7 +2034,6 @@ class _GLMMBatchStubMixin:
         fit_intercept: bool,
         **kwargs: Any,
     ) -> np.ndarray:
-        """Not supported — use ``method='score'``."""
         raise NotImplementedError(
             "GLMM families require method='score'. "
             "Use randomization_test_regression(..., method='score')."
@@ -2351,14 +2363,13 @@ class LogisticMixedFamily(_GLMMBatchStubMixin):
                 fit_intercept=fit_intercept,
             )
 
-        assert self.z_tilde is not None and self.eta is not None
-        assert self.mu is not None and self.W is not None
+        assert self.z_tilde is not None
         X_aug_red = _augment_intercept(X, fit_intercept)
         Z_red_w = self.whiten(X_aug_red)
         z_tilde_w = self.whiten(self.z_tilde)
         beta_red = np.linalg.pinv(Z_red_w) @ z_tilde_w
         eta_red = X_aug_red @ beta_red
-        predictions = self.mu + self.W * (eta_red - self.eta)
+        predictions = 1.0 / (1.0 + np.exp(-eta_red))
         return _GLMMFitResult(
             beta=beta_red,
             u=np.zeros(0),
@@ -2397,38 +2408,96 @@ class LogisticMixedFamily(_GLMMBatchStubMixin):
         y: np.ndarray | None = None,  # noqa: ARG002
         randomization: str = "permute",
     ) -> np.ndarray:
-        """One-step corrector via score projection.
-
-        Computes the Le Cam estimator for feature *j* across all B
-        permutations in a single matmul — O(n·B), no IRLS.
-
-        .. math::
-            \\hat\\beta_{j,\\pi}^{(1)}
-            = \\frac{U_{j,\\pi}}{\\mathcal{I}_{jj}}
-            = \\frac{(x_j \\odot V^{-1}_{\\mathrm{diag}})' e_\\pi}
-                   {\\mathcal{I}_{jj}}
-        """
+        """One-step corrector via score projection."""
         from ._strategies import _apply_randomization
 
         self._require_calibrated("score_project")
-        assert self.W is not None
         assert self.fisher_info is not None
+        assert self.z_tilde is not None
 
         j = feature_idx + 1 if fit_intercept else feature_idx
         X_full = _augment_intercept(X, fit_intercept)
 
-        working_resid = residuals / self.W
-        resid_w = self.whiten(working_resid)
+        X_aug_red = np.delete(X_full, j, axis=1)
+        Z_red_w = self.whiten(X_aug_red)
+        z_tilde_w = self.whiten(self.z_tilde)
+        beta_red = np.linalg.pinv(Z_red_w) @ z_tilde_w
+        resid_w = z_tilde_w - Z_red_w @ beta_red
         x_j_w = self.whiten(X_full[:, j])
 
         E_pi = _apply_randomization(resid_w, perm_indices, randomization)  # (B, n)
         U_j = E_pi @ x_j_w  # (B,)
-        # Full Fisher inverse [I⁻¹]_{jj} accounts for cross-correlations.
         try:
             fisher_inv_jj = np.linalg.inv(self.fisher_info)[j, j]
         except np.linalg.LinAlgError:
             fisher_inv_jj = np.linalg.pinv(self.fisher_info)[j, j]
         return np.asarray(U_j * fisher_inv_jj)  # (B,)
+
+    def batch_fit_varying_X(
+        self,
+        X_batch: np.ndarray,
+        y: np.ndarray,  # noqa: ARG002
+        fit_intercept: bool = True,
+        **kwargs: Any,
+    ) -> np.ndarray:
+        """Batch GLMM fitting with varying X across permutations."""
+        self._require_calibrated("batch_fit_varying_X")
+        assert self.z_tilde is not None
+        from ._backends import resolve_backend
+        from ._backends._jax import _augment_intercept_3d
+
+        backend = kwargs.pop("backend", None)
+        n_jobs = kwargs.pop("n_jobs", 1)
+        if backend is None:
+            backend = resolve_backend()
+
+        X_aug = _augment_intercept_3d(X_batch, fit_intercept)
+        B, n, p_aug = X_aug.shape
+        source_2d = X_aug.swapaxes(0, 1).reshape(n, -1)
+        X_w = self.whiten(source_2d).reshape(n, B, p_aug).swapaxes(0, 1)
+        z_w = self.whiten(self.z_tilde)
+
+        all_coefs = backend.batch_ols_varying_X(
+            X_w, z_w, fit_intercept=False, n_jobs=n_jobs, **kwargs
+        )
+        return np.asarray(all_coefs[:, 1:] if fit_intercept else all_coefs)
+
+    def batch_fit_and_score_varying_X(
+        self,
+        X_batch: np.ndarray,
+        y: np.ndarray,
+        fit_intercept: bool = True,
+        **kwargs: Any,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Batch GLMM fitting and deviance scoring with varying X."""
+        self._require_calibrated("batch_fit_and_score_varying_X")
+        assert self.z_tilde is not None
+        from ._backends import resolve_backend
+        from ._backends._jax import _augment_intercept_3d
+
+        backend = kwargs.pop("backend", None)
+        n_jobs = kwargs.pop("n_jobs", 1)
+        if backend is None:
+            backend = resolve_backend()
+
+        X_aug = _augment_intercept_3d(X_batch, fit_intercept)
+        B, n, p_aug = X_aug.shape
+        source_2d = X_aug.swapaxes(0, 1).reshape(n, -1)
+        X_w = self.whiten(source_2d).reshape(n, B, p_aug).swapaxes(0, 1)
+        z_w = self.whiten(self.z_tilde)
+
+        all_coefs = backend.batch_ols_varying_X(
+            X_w, z_w, fit_intercept=False, n_jobs=n_jobs, **kwargs
+        )
+        coefs = np.asarray(all_coefs[:, 1:] if fit_intercept else all_coefs)
+
+        eta_batch = np.einsum("bni,bi->bn", X_aug, all_coefs)
+        p = np.clip(1.0 / (1.0 + np.exp(-eta_batch)), 1e-15, 1.0 - 1e-15)
+        devs = -2.0 * np.sum(
+            y[None, :] * np.log(p) + (1.0 - y[None, :]) * np.log(1.0 - p),
+            axis=1,
+        )
+        return coefs, np.asarray(devs)
 
     def residual_permutation_refit(
         self,
@@ -2862,14 +2931,13 @@ class PoissonMixedFamily(_GLMMBatchStubMixin):
                 fit_intercept=fit_intercept,
             )
 
-        assert self.z_tilde is not None and self.eta is not None
-        assert self.mu is not None and self.W is not None
+        assert self.z_tilde is not None
         X_aug_red = _augment_intercept(X, fit_intercept)
         Z_red_w = self.whiten(X_aug_red)
         z_tilde_w = self.whiten(self.z_tilde)
         beta_red = np.linalg.pinv(Z_red_w) @ z_tilde_w
         eta_red = X_aug_red @ beta_red
-        predictions = self.mu + self.W * (eta_red - self.eta)
+        predictions = np.exp(np.clip(eta_red, -20.0, 20.0))
         return _GLMMFitResult(
             beta=beta_red,
             u=np.zeros(0),
@@ -2908,33 +2976,96 @@ class PoissonMixedFamily(_GLMMBatchStubMixin):
         y: np.ndarray | None = None,  # noqa: ARG002
         randomization: str = "permute",
     ) -> np.ndarray:
-        """One-step corrector via score projection.
-
-        Same formula as ``LogisticMixedFamily`` — the family-
-        specific information is already encoded in ``V_inv_diag``
-        and ``fisher_info`` from calibration.
-        """
+        """One-step corrector via score projection."""
         from ._strategies import _apply_randomization
 
         self._require_calibrated("score_project")
-        assert self.W is not None
         assert self.fisher_info is not None
+        assert self.z_tilde is not None
 
         j = feature_idx + 1 if fit_intercept else feature_idx
         X_full = _augment_intercept(X, fit_intercept)
 
-        working_resid = residuals / self.W
-        resid_w = self.whiten(working_resid)
+        X_aug_red = np.delete(X_full, j, axis=1)
+        Z_red_w = self.whiten(X_aug_red)
+        z_tilde_w = self.whiten(self.z_tilde)
+        beta_red = np.linalg.pinv(Z_red_w) @ z_tilde_w
+        resid_w = z_tilde_w - Z_red_w @ beta_red
         x_j_w = self.whiten(X_full[:, j])
 
         E_pi = _apply_randomization(resid_w, perm_indices, randomization)  # (B, n)
         U_j = E_pi @ x_j_w  # (B,)
-        # Full Fisher inverse [I⁻¹]_{jj} accounts for cross-correlations.
         try:
             fisher_inv_jj = np.linalg.inv(self.fisher_info)[j, j]
         except np.linalg.LinAlgError:
             fisher_inv_jj = np.linalg.pinv(self.fisher_info)[j, j]
         return np.asarray(U_j * fisher_inv_jj)  # (B,)
+
+    def batch_fit_varying_X(
+        self,
+        X_batch: np.ndarray,
+        y: np.ndarray,  # noqa: ARG002
+        fit_intercept: bool = True,
+        **kwargs: Any,
+    ) -> np.ndarray:
+        """Batch Poisson GLMM fitting with varying X across permutations."""
+        self._require_calibrated("batch_fit_varying_X")
+        assert self.z_tilde is not None
+        from ._backends import resolve_backend
+        from ._backends._jax import _augment_intercept_3d
+
+        backend = kwargs.pop("backend", None)
+        n_jobs = kwargs.pop("n_jobs", 1)
+        if backend is None:
+            backend = resolve_backend()
+
+        X_aug = _augment_intercept_3d(X_batch, fit_intercept)
+        B, n, p_aug = X_aug.shape
+        source_2d = X_aug.swapaxes(0, 1).reshape(n, -1)
+        X_w = self.whiten(source_2d).reshape(n, B, p_aug).swapaxes(0, 1)
+        z_w = self.whiten(self.z_tilde)
+
+        all_coefs = backend.batch_ols_varying_X(
+            X_w, z_w, fit_intercept=False, n_jobs=n_jobs, **kwargs
+        )
+        return np.asarray(all_coefs[:, 1:] if fit_intercept else all_coefs)
+
+    def batch_fit_and_score_varying_X(
+        self,
+        X_batch: np.ndarray,
+        y: np.ndarray,
+        fit_intercept: bool = True,
+        **kwargs: Any,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Batch Poisson GLMM fitting and deviance scoring with varying X."""
+        self._require_calibrated("batch_fit_and_score_varying_X")
+        assert self.z_tilde is not None
+        from ._backends import resolve_backend
+        from ._backends._jax import _augment_intercept_3d
+
+        backend = kwargs.pop("backend", None)
+        n_jobs = kwargs.pop("n_jobs", 1)
+        if backend is None:
+            backend = resolve_backend()
+
+        X_aug = _augment_intercept_3d(X_batch, fit_intercept)
+        B, n, p_aug = X_aug.shape
+        source_2d = X_aug.swapaxes(0, 1).reshape(n, -1)
+        X_w = self.whiten(source_2d).reshape(n, B, p_aug).swapaxes(0, 1)
+        z_w = self.whiten(self.z_tilde)
+
+        all_coefs = backend.batch_ols_varying_X(
+            X_w, z_w, fit_intercept=False, n_jobs=n_jobs, **kwargs
+        )
+        coefs = np.asarray(all_coefs[:, 1:] if fit_intercept else all_coefs)
+
+        eta_batch = np.einsum("bni,bi->bn", X_aug, all_coefs)
+        mu = np.maximum(np.exp(np.clip(eta_batch, -20.0, 20.0)), 1e-15)
+        y_safe = np.maximum(y[None, :], 0.0)
+        log_ratio = np.log(np.maximum(y_safe / mu, 1e-300))
+        ratio = np.where(y_safe > 0, y_safe * log_ratio, 0.0)
+        devs = 2.0 * np.sum(ratio - (y_safe - mu), axis=1)
+        return coefs, np.asarray(devs)
 
     def residual_permutation_refit(
         self,

@@ -47,9 +47,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   from the UCI Machine Learning Repository) alongside the previously
   cited Breast Cancer Wisconsin and Real Estate Valuation datasets.
 
+- **Kennedy and Kennedy joint strategies unblocked for GLMMs**
+  (`logistic_mixed`, `poisson_mixed`): exposure-residualization
+  permutation testing is now supported for GLMM families via the
+  tangent-space linear model on the calibrated working response
+  `z̃`.  Because `z̃` and `V_z` are frozen from calibration,
+  varying-X refitting reduces to whitened linear regression,
+  avoiding iterative per-permutation IRLS re-solves.
+
 
 
 ### Fixed
+
+- **GLMM score projection offset and null miscalibration (M4/M6)**:
+  `LogisticMixedFamily.score_project` and `PoissonMixedFamily.score_project`
+  previously used diagonal-only precision weights on response-scale
+  residuals against full Fisher information, and reduced-model fits
+  ignored random-effects covariance.  Under the tangent-space linear
+  model on the frozen working response `z̃`, reduced-model fits are
+  now closed-form whitened GLS projections and score projections
+  apply full whitening `V_z⁻¹`, causing the unpermuted score offset
+  to vanish to machine precision (< 1e-14) and centering the permutation
+  null at zero.
+
+- **Unified varying-X batch solver for mixed models (Step 11d)**:
+  `batch_fit_varying_X` and `batch_fit_and_score_varying_X` across
+  linear and generalized mixed models now delegate to vectorised
+  whitened OLS (`batch_ols_varying_X`), verified bit-for-bit identical
+  to the legacy Woodbury projection rebuild to 4.7e-16 across NumPy
+  and JAX backends.  Eliminates the redundant secondary Woodbury solve
+  in `LinearMixedFamily` during RSS computation and ensures deviance
+  and RSS reductions are evaluated on the consistent generalized scale.
 
 - **Mixed-model REML/Laplace solver silently returned wrong variance
   components** (`linear_mixed`, `logistic_mixed`, `poisson_mixed`):

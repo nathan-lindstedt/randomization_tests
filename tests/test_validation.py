@@ -323,6 +323,11 @@ class TestValidateCompatibility:
         codes = [i.code for i in issues]
         assert "GLMM_BLOCKED_METHOD" not in codes
 
+    def test_kennedy_logistic_mixed_is_valid(self):
+        issues = validate_compatibility("kennedy", "logistic_mixed", confounders=["z"])
+        codes = [i.code for i in issues]
+        assert "GLMM_BLOCKED_METHOD" not in codes
+
     # ---- Kennedy / Freedman-Lane without confounders ----
 
     def test_kennedy_no_confounders_warns(self):

@@ -21,7 +21,10 @@ from scipy.stats import norm
 
 from randomization_tests import randomization_test_regression
 from randomization_tests.families import fit_reduced
-from randomization_tests.families_mixed import LinearMixedFamily, LogisticMixedFamily
+from randomization_tests.families_mixed import (
+    LinearMixedFamily,
+    LogisticMixedFamily,
+)
 
 G, M = 20, 10
 N = G * M
@@ -54,6 +57,16 @@ def _glmm_data(seed: int, tau2: float = 4.0):
     x, z = rng.normal(size=N), rng.normal(size=N)
     b = rng.normal(scale=np.sqrt(tau2), size=G)
     y = rng.binomial(1, 1 / (1 + np.exp(-(1.5 * z + b[CLUSTER])))).astype(float)
+    return np.column_stack([x, z]), y
+
+
+def _poisson_glmm_data(seed: int, tau2: float = 1.0):
+    rng = np.random.default_rng(seed)
+    x, z = rng.normal(size=N), rng.normal(size=N)
+    b = rng.normal(scale=np.sqrt(tau2), size=G)
+    eta = 0.5 + 0.3 * z + b[CLUSTER]
+    mu = np.exp(np.clip(eta, -10.0, 10.0))
+    y = rng.poisson(mu).astype(float)
     return np.column_stack([x, z]), y
 
 
@@ -232,6 +245,84 @@ def test_glmm_null_is_zero_centred():
     assert abs(float(np.mean(draws))) / float(np.std(draws)) < 0.5
 
 
+def test_kennedy_unblocked_for_mixed_families():
+    """Kennedy individual and joint work across linear and generalized mixed models."""
+    X_lmm, y_lmm = _lmm_data(109)
+    res_lmm_ind = randomization_test_regression(
+        pd.DataFrame({"x": X_lmm[:, 0], "z": X_lmm[:, 1]}),
+        pd.DataFrame({"y": y_lmm}),
+        family="linear_mixed",
+        groups=CLUSTER,
+        method="kennedy",
+        confounders=["z"],
+        n_randomizations=99,
+        random_state=109,
+    )
+    assert 0.0 <= float(res_lmm_ind.raw_empirical_p[0]) <= 1.0
+
+    res_lmm_jnt = randomization_test_regression(
+        pd.DataFrame({"x": X_lmm[:, 0], "z": X_lmm[:, 1]}),
+        pd.DataFrame({"y": y_lmm}),
+        family="linear_mixed",
+        groups=CLUSTER,
+        method="kennedy_joint",
+        confounders=["z"],
+        n_randomizations=99,
+        random_state=109,
+    )
+    assert 0.0 <= float(res_lmm_jnt.p_value) <= 1.0
+
+    X_log, y_log = _glmm_data(109)
+    res_log_ind = randomization_test_regression(
+        pd.DataFrame({"x": X_log[:, 0], "z": X_log[:, 1]}),
+        pd.DataFrame({"y": y_log}),
+        family="logistic_mixed",
+        groups=CLUSTER,
+        method="kennedy",
+        confounders=["z"],
+        n_randomizations=99,
+        random_state=109,
+    )
+    assert 0.0 <= float(res_log_ind.raw_empirical_p[0]) <= 1.0
+
+    res_log_jnt = randomization_test_regression(
+        pd.DataFrame({"x": X_log[:, 0], "z": X_log[:, 1]}),
+        pd.DataFrame({"y": y_log}),
+        family="logistic_mixed",
+        groups=CLUSTER,
+        method="kennedy_joint",
+        confounders=["z"],
+        n_randomizations=99,
+        random_state=109,
+    )
+    assert 0.0 <= float(res_log_jnt.p_value) <= 1.0
+
+    X_poi, y_poi = _poisson_glmm_data(109)
+    res_poi_ind = randomization_test_regression(
+        pd.DataFrame({"x": X_poi[:, 0], "z": X_poi[:, 1]}),
+        pd.DataFrame({"y": y_poi}),
+        family="poisson_mixed",
+        groups=CLUSTER,
+        method="kennedy",
+        confounders=["z"],
+        n_randomizations=99,
+        random_state=109,
+    )
+    assert 0.0 <= float(res_poi_ind.raw_empirical_p[0]) <= 1.0
+
+    res_poi_jnt = randomization_test_regression(
+        pd.DataFrame({"x": X_poi[:, 0], "z": X_poi[:, 1]}),
+        pd.DataFrame({"y": y_poi}),
+        family="poisson_mixed",
+        groups=CLUSTER,
+        method="kennedy_joint",
+        confounders=["z"],
+        n_randomizations=99,
+        random_state=109,
+    )
+    assert 0.0 <= float(res_poi_jnt.p_value) <= 1.0
+
+
 @pytest.mark.xfail(strict=True, reason="M7a: residuals permuted without AR whitening")
 def test_ar_lmm_spread_ratio():
     """M7a inflates the null because Omega^-1 is applied to residuals the permutation
@@ -269,6 +360,50 @@ def test_ar_lmm_spread_ratio():
         )
         ratios.append(_spread_ratio(res))
     assert 0.8 < float(np.median(ratios)) < 1.25
+
+
+@pytest.mark.parametrize("family", ["linear_mixed", "logistic_mixed", "poisson_mixed"])
+def test_kennedy_mixed_models_individual_and_joint(family: str) -> None:
+    """Kennedy individual and joint permutation tests work across all mixed models."""
+    rng = np.random.default_rng(42)
+    x, z = rng.normal(size=N), rng.normal(size=N)
+    b = rng.normal(scale=1.5, size=G)
+    df = pd.DataFrame({"x": x, "z": z})
+
+    if family == "linear_mixed":
+        y = 0.7 * z + b[CLUSTER] + rng.normal(size=N)
+    elif family == "logistic_mixed":
+        y = rng.binomial(1, 1 / (1 + np.exp(-(0.7 * z + b[CLUSTER])))).astype(float)
+    else:
+        y = rng.poisson(np.exp(np.clip(0.5 * z + b[CLUSTER] * 0.5, -5, 5))).astype(
+            float
+        )
+
+    target = pd.DataFrame({"y": y})
+
+    res_ind = randomization_test_regression(
+        df,
+        target,
+        family=family,
+        groups=CLUSTER,
+        method="kennedy",
+        confounders=["z"],
+        n_randomizations=49,
+        random_state=42,
+    )
+    assert 0.0 <= float(res_ind.raw_empirical_p[0]) <= 1.0
+
+    res_jnt = randomization_test_regression(
+        df,
+        target,
+        family=family,
+        groups=CLUSTER,
+        method="kennedy_joint",
+        confounders=["z"],
+        n_randomizations=49,
+        random_state=42,
+    )
+    assert 0.0 <= float(res_jnt.p_value) <= 1.0
 
 
 # ------------------------------------------------------------------ #

@@ -3416,6 +3416,7 @@ class JaxBackend:
         X_batch: np.ndarray,
         y: np.ndarray,
         fit_intercept: bool = True,
+        **kwargs: Any,
     ) -> np.ndarray:
         """Batch OLS with per-permutation design matrices via vmap.
 
