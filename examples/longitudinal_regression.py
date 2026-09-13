@@ -215,6 +215,31 @@ print_results_table(
 )
 
 # ============================================================================
+# Score test WITH AR(3) correction
+# ============================================================================
+
+print("\n" + "=" * 72)
+print("Score test WITH AR(3) correction")
+print("=" * 72)
+
+results_ar3 = randomization_test_regression(
+    X,
+    y,
+    method="score",
+    family="linear",
+    panel_id=panel_id,
+    time_id=time_id,
+    ar_order=3,
+    n_randomizations=2_000,
+    random_state=42,
+)
+
+print_results_table(
+    results_ar3,
+    title="Score Permutation Test — AR(3) Correction",
+)
+
+# ============================================================================
 # Extended diagnostics — each model
 # ============================================================================
 
@@ -233,6 +258,11 @@ print_diagnostics_table(
     title="Extended Diagnostics — AR(2) Corrected",
 )
 
+print_diagnostics_table(
+    results_ar3,
+    title="Extended Diagnostics — AR(3) Corrected",
+)
+
 # ============================================================================
 # P-value comparison across AR orders
 # ============================================================================
@@ -242,6 +272,7 @@ print_ar_comparison_table(
         ("No AR", results_no_ar),
         ("AR(1)", results_ar1),
         ("AR(2)", results_ar2),
+        ("AR(3)", results_ar3),
     ],
-    title="P-Value Comparison: No AR vs. AR(1) vs. AR(2)",
+    title="P-Value Comparison: No AR vs. AR(1) vs. AR(2) vs. AR(3)",
 )

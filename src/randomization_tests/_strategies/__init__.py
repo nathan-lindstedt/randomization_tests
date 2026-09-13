@@ -203,9 +203,7 @@ def _residual_joint_statistic(
     """Canonical Freedman–Lane (1983) joint reconstruction, refit, and RSS reduction.
 
     Shared by ``FreedmanLaneJointStrategy`` and ``ScoreJointStrategy``'s residual-based
-    branch so the two "equivalent" methods cannot independently drift the way
-    ``ScoreJointStrategy`` previously did (M13: it permuted full-model residuals instead
-    of reduced-model residuals, silently understating the null's noise scale).
+    branch so equivalent methods cannot independently drift.
 
     Permutes REDUCED-model residuals ``e_Z = y − ŷ_Z`` (never full-model residuals —
     those have already had any real signal in the tested features regressed out, which

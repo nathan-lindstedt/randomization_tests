@@ -283,7 +283,7 @@ else:
 # classical_p_values
 p_classical = calibrated.classical_p_values(X_np, y_arr, fit_intercept=True)
 
-# exchangeability_cells (v0.4.0 stub)
+# exchangeability_cells
 cells = calibrated.exchangeability_cells(X_np, y_arr)
 assert cells is None
 

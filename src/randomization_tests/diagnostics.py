@@ -1822,7 +1822,7 @@ def rosenbaum_bounds(
     * Continuous-exposure permutation tests permute regression
       residuals, not binary treatment assignments, so the Rosenbaum
       framework does not apply.  Generalisation via influence-function
-      sensitivity is deferred to v0.5.0+.
+    sensitivity analysis is outside the scope of this diagnostic.
 
     Args:
         result: Permutation test result dict (must contain
@@ -2145,7 +2145,7 @@ def compute_all_diagnostics(
             fit_intercept,
         )
 
-    # ---- Panel diagnostics (Step 15) ----
+    # ---- Panel diagnostics ------------------------------
     if panel_id is not None:
         _, panel_counts = np.unique(panel_id, return_counts=True)
         n_panels = len(panel_counts)
@@ -2157,7 +2157,7 @@ def compute_all_diagnostics(
             "balanced": bool(panel_counts.min() == panel_counts.max()),
         }
 
-        # ---- AR diagnostics (Step 17) ----
+        # ---- AR diagnostics ------------------------------
         if ctx is not None and getattr(ctx, "ar_order", None) is not None:
             from ._ar import ar_diagnostics
 

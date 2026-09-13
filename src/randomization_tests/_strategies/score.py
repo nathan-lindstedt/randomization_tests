@@ -23,7 +23,7 @@ with the existing p-value computation.
   (bit-for-bit identical: for each tested feature j both permute the
   X_{−j} reduced-model residuals and evaluate A_j @ Y*, the score
   strategy via one matmul, Freedman–Lane via the full batch refit).
-* **GLMM (Plan C):** The one-step corrector upgrades score accuracy
+* **GLMM:** The one-step corrector upgrades score accuracy
   to second-order (Le Cam estimator).  Handled inside
   ``family.score_project()``, transparent to this strategy.
 

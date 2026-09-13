@@ -162,7 +162,7 @@ def test_lmm_whitening_unavailable_raises_for_ar():
 def test_glmm_whitens_on_the_working_scale():
     """GLMM whitening targets ``V_z = W^-1 + Z Sigma Z'`` -- the *working*-scale
     covariance, where the PQL score is defined. Whitening on the response scale
-    would repeat M6, applying working-scale weights to response-scale residuals.
+    would apply working-scale weights to response-scale residuals.
     """
     rng = np.random.default_rng(5)
     X = rng.normal(size=(N, 2))

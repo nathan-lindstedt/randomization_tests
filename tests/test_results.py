@@ -102,7 +102,7 @@ def _knockoff_result(**overrides) -> KnockoffResult:
 
 
 class TestDictAccessMixinFixes:
-    """Verify the two technical-debt fixes applied in Step 2."""
+    """Verify the dict-access mixin invariants."""
 
     def test_mixin_serializers_is_empty(self):
         """Base mixin _SERIALIZERS must be {} — no domain coupling."""

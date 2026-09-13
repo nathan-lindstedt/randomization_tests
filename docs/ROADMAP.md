@@ -412,46 +412,50 @@ special case of within-group exchangeability).
   `_significance_marker()` with `[!]` flag; `_recommend_n_randomizations()`
   suggests minimum B to resolve ambiguity.
 - [ ] Adaptive stopping: optionally halt the permutation loop early
-  once the CI for the p-value is narrow enough to determine
-  significance with a specified confidence.  Implementation via
-  chunked batches — the engine pre-generates all B indices, then
-  processes them in fixed-size chunks with Clopper-Pearson CI
-  evaluation between chunks.  All components are B-agnostic (vmap,
-  batch_fit, p-value counts), so no architectural restructuring is
-  required.
+  once significance or non-significance is established.  To avoid
+  optional-stopping bias (super-uniformity of $(b+1)/(B+1)$ holds only
+  for fixed $B$), sequential evaluation adopts the Besag & Clifford (1991)
+  stopping boundary: halt when the exceedance count reaches a fixed target
+  $h$ (e.g. $h=10$) with total randomizations $L$, computing the exact
+  sequential p-value $h/L$; or continue to the maximum $B$ cap.
+  Implementation operates via chunked batches — the engine pre-generates
+  randomization indices and evaluates them in fixed-size blocks with
+  vectorised batch fitting.  (Deferred to v0.5.2).
 - [ ] Conditional Monte Carlo: permute within the sufficient-statistic
   strata of a nuisance parameter for exact conditional tests.
-  **Deferred to v0.5.0** — the current `score_exact` is GLMM-only
-  (PQL-fixed vmap); a general exact-enumeration mode for non-GLMM
-  families is needed first for sufficient-statistic conditioning to
-  have a meaningful integration point.
+  `ScoreExactStrategy` currently implements full PQL-fixed IRLS on GLMM
+  working responses via `_pql_fixed_irls_vmap`; a general exact-enumeration
+  and network-algorithm mode for non-mixed GLMs (conditioning on sufficient
+  statistics $\sum X_j y$) is needed first for sufficient-statistic
+  conditioning to have a meaningful integration point across general
+  families.  (Deferred to v0.5.x).
 
 ### Compatibility validation module
 
 Consolidates the distributed method-incompatibility checks scattered
 across `core.py` and `engine.py` into a single `_validation.py`
-module with a structured compatibility matrix.  **Deferred to v0.5.0**
-— audit of the codebase (142 validation checks total) found that the
-existing checks are already well-organized into natural groupings:
-method/family guards in `engine.py __init__()`, sign-flip/AR/confounder
-guards in `core.py _validate_and_prepare_inputs()`, and group/cell
-guards in `core.py _validate_groups()`.  Messages are already
-consistent (what was requested, why incompatible, what to use instead).
-Centralising now would add indirection without changing behaviour.
-The v0.5.0 graph compiler — which needs programmatic
-`validate_compatibility()` access for per-equation validation — is the
-right trigger for this work.
+module with a structured compatibility matrix.  Audit of the codebase
+(142 validation checks total) found that existing checks are already
+organized into natural groupings: method/family guards in
+`engine.py __init__()`, sign-flip/AR/confounder guards in
+`core.py _validate_and_prepare_inputs()`, and group/cell guards in
+`core.py _validate_groups()`.  Messages are already consistent (what
+was requested, why incompatible, what to use instead).  The v0.5.0
+graph compiler — which requires programmatic `validate_compatibility()`
+access for per-equation validation — serves as the natural trigger
+for centralisation without adding redundant runtime indirection.
 
-- [ ] `_validation.py` module with compatibility matrix and
+- [X] `_validation.py` module with compatibility matrix and
   `validate_compatibility()` public function.
-- [ ] `ValidationIssue(level, code, message, suggestion)` typed
+- [X] `ValidationIssue(level, code, message, suggestion)` typed
   objects for programmatic handling by the graph compiler.
 - [ ] Refactor 19 compatibility checks from `core.py` and `engine.py`
-  to delegate to the compatibility matrix.
+  to delegate to the compatibility matrix (deferred to graph compiler
+  integration).
 
 ---
 
-## v0.5.0 — Graph Specification & Multi-Equation Orchestration
+## v0.5.0 — Graph Specification & Inference Abstraction Tower
 
 The architectural centrepiece: a typed hypergraph data structure that
 lets users declare multi-equation models and have the package
@@ -461,7 +465,85 @@ test.  A standard regression is a single-layer graph with all
 predictors pointing at one outcome; mediation, path models, and
 multi-equation systems are deeper graphs composed of the same
 node-level equation solvers built in v0.3.0, constrained by the
-exchangeability cells built in v0.4.0.
+exchangeability cells built in v0.4.0.  This milestone also builds out
+the inference abstraction tower, incorporating nonparametric kernel
+tests, text representations, debiased machine learning, conformal
+prediction, and invariance testing.
+
+### Kernel protocol & nonparametric tests
+
+- [X] `Kernel` protocol and `KernelEval` unified representation
+  supporting full Gram and low-rank Nyström factorisations with
+  leverage score sampling (`_kernels.py`).
+- [X] Concrete kernel implementations: `GaussianKernel` (with median
+  heuristic), `CosineKernel`, `LinearKernel`, `LaplacianKernel`,
+  and `PrecomputedKernel`.
+- [X] Factored Gram-matrix operations (`gram_trace_product`,
+  `gram_centering`, `gram_permute`, `gram_row_sums`).
+- [X] Nonparametric two-sample testing via Maximum Mean Discrepancy
+  (`mmd_test`).
+- [X] Nonparametric independence testing via Hilbert-Schmidt Independence
+  Criterion (`hsic_test`).
+- [X] Nonparametric regression testing in the RKHS (`kernel_regression_test`).
+
+### Text processing pipeline
+
+- [X] Text vectorisation via TF-IDF (`docs_to_tfidf`) and topic
+  proportions via KL-NMF (`docs_to_topics`).
+- [X] Topic model diagnostic tools: `coherence_score` (NPMI),
+  `exclusivity_score`, and joint model selection `select_n_components`.
+- [X] End-to-end `text_mmd_test` with automatic pooled-vocabulary
+  handling and custom embedding support.
+
+### Mixed-model inference-space refactor
+
+- [X] Whitened tangent-space linear model for GLMM score projection,
+  eliminating score projection offset to machine precision.
+- [X] Longitudinal AR estimation decontaminated from cluster random
+  effects via within-panel Frisch–Waugh–Lovell demeaning and Nickell
+  bias correction (`estimate_panel_ar_coefficients`).
+- [X] Composite cluster covariance whitening ($V_g = \Omega_g + Z_g \Gamma Z_g^T$)
+  via block Cholesky for longitudinal AR mixed models.
+- [X] Unified varying-X batch solver delegating to vectorised whitened
+  OLS across LMM and GLMM, unblocking Kennedy and Kennedy joint for GLMM families.
+- [X] Decoupled model-structure grouping from permutation strategy via
+  `permutation_strategy="unrestricted"`.
+- [X] Exact Woodbury GLS projection in `LinearMixedFamily.batch_fit_and_score()`
+  for reduced designs, eliminating scale mismatches across batch fits.
+- [X] Poisson/Binomial Rule of Three borderline $B^*$ recommendation in
+  display tables.
+
+### Double/Debiased Machine Learning (DML)
+
+- [ ] Cross-fitting implementation (`_cross_fit_residualize`) with
+  $K$-fold and `GroupKFold` support, estimator cloning, and deterministic
+  seed propagation.
+- [ ] Polymorphic `_DMLReducedModel` container satisfying `predict()` and
+  `predict_proba()` across all model families.
+- [ ] Freedman–Lane integration with `reduced_model=` parameter on
+  `randomization_test_regression` and `kernel_regression_test`.
+
+### Conformal prediction
+
+- [ ] Distribution-free split conformal prediction intervals and sets for
+  regression and classification (`conformal_prediction`).
+- [ ] Jackknife+ conformal prediction with leave-one-out cross-validation.
+
+### Invariance testing
+
+- [ ] Testing invariance of conditional distributions ($Y \perp E \mid X$)
+  across environments.
+- [ ] Multi-tier test dispatch: exact discrete stratification, Kennedy
+  joint tests on environment indicators, and conditional permutation tests.
+
+### Knockoff filters
+
+- [ ] False Discovery Rate (FDR) controlled variable selection via
+  knockoff filters (`knockoff_filters`).
+- [ ] Fixed-X knockoffs for linear regression ($n \ge 2p$) and Model-X
+  knockoffs for general designs.
+- [ ] MMD swap exchangeability diagnostic to verify knockoff construction
+  quality.
 
 ### Specification data structure
 
@@ -485,8 +567,8 @@ exchangeability cells built in v0.4.0.
   `(outcome, predictors, family, permutation_strategy, null_type)`.
 - [ ] Resolve families automatically (from outcome type) or from
   per-node annotation.
-- [ ] Map hyperedges to Kennedy joint tests; map simple edges to
-  ter Braak or Kennedy individual tests based on the presence of
+- [ ] Map hyperedges to joint permutation tests; map simple edges to
+  Freedman–Lane or Kennedy individual tests based on the presence of
   declared confounders.
 
 ### Multi-equation orchestrator
@@ -500,7 +582,19 @@ exchangeability cells built in v0.4.0.
   enabling permutation-based indirect-effect testing through
   multi-step paths.
 - [ ] Collect per-equation results into a unified graph-level result
-  object.
+  object (`GraphTestResult`).
+
+### Indirect effect extraction
+
+- [ ] For a declared path X → M → Y, compute the product of per-edge
+  coefficients ($a \times b$) and test $H_0: ab = 0$ via the
+  propagated-mode permutation null.
+- [ ] Path confidence intervals evaluated via case-resampling bootstrap
+  percentiles (resampling rows/clusters and refitting all equations),
+  strictly distinguishing hypothesis testing (zero-centred permutation null)
+  from parameter estimation.
+- [ ] Support arbitrary-length causal chains ($X \to M_1 \to M_2 \to Y$)
+  with product-of-coefficients test statistics.
 
 ### Hyperedge testing
 
@@ -514,29 +608,37 @@ exchangeability cells built in v0.4.0.
 - [ ] Support mixed-family hyperedges (e.g., Poisson outcome with
   linear exposure models).
 
-### Indirect effect extraction
-
-- [ ] For a declared path X → M → Y, compute the product of per-edge
-  coefficients (a × b) and test via permutation.
-- [ ] Extend the existing BCa bootstrap framework to support
-  permutation-based indirect effect p-values for paths declared in
-  the graph specification.
-- [ ] Support arbitrary-length causal chains (X → M₁ → M₂ → Y) with
-  product-of-coefficients test statistics.
-
 ### Model specification syntax
 
 - [ ] Primary API: Python method calls —
   `g.add_node("Y", family="linear")`,
   `g.add_edge("X1", "Y")`,
   `g.add_hyperedge(["X1", "X2"], "Y")`.
-- [ ] Convenience: formula-style string parser —
-  `"Y ~ X1 + X2; M ~ X1; Y ~ M"` with equations parsed and DAG
-  inferred.
+- [ ] Convenience: arrow-style string parser —
+  `"Y <- X1 + X2 [linear]; M <- X1 [linear]; Y <- M"` with equations
+  parsed and DAG inferred.
 - [ ] Convenience: dictionary specification for programmatic and
   configuration-file workflows.
 
-### Interoperability
+### Markov compatibility testing
+
+- [ ] Test the Local Markov Condition for declared DAG structures
+  (`markov_compatibility_test`) via permutation conditional independence
+  tests across parents and non-descendants.
+- [ ] Westfall–Young stepdown resampling for family-wise error rate
+  (FWER) control across graph constraints.
+- [ ] Return structured `MarkovCompatibilityResult` with per-node
+  diagnostics and constraint summaries.
+
+### Model guidance & diagnostic engine
+
+- [ ] Automated pre-test and post-test diagnostic evaluation to assess
+  model assumptions (linearity, dispersion, zero-inflation, clustering,
+  temporal correlation).
+- [ ] Context-aware recommendation engine guiding users to appropriate
+  families, strategies, and permutation configurations.
+
+### Interoperability (deferred to v0.5.1)
 
 - [ ] The `CausalGraph` internal representation should use a directed
   incidence matrix as its canonical form (sparse, with +1/−1 entries
@@ -578,10 +680,14 @@ This release builds on that foundation.
 - [X] `JointTestResult` — group-level improvement tests (pulled
   forward to v0.3.0 Step 6b).
 - [X] `.to_dict()` with full JSON serialisability (pulled forward).
+- [X] `KernelTestResult`, `ConformalResult`, `InvarianceResult`,
+  `KnockoffResult` — extended result dataclasses (pulled forward to v0.5.0).
 - [ ] `GraphTestResult` — multi-equation results from the graph
   specification layer (v0.5.0), containing per-equation results,
   per-edge p-values, per-hyperedge p-values, and per-path indirect
   effects.
+- [ ] `MarkovCompatibilityResult` — results from Markov compatibility
+  testing (v0.5.0).
 - [ ] Direct attribute access for graph results: `.equations`,
   `.edge_p_values`, `.hyperedge_p_values`, `.indirect_effects`.
 

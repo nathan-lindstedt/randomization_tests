@@ -236,10 +236,9 @@ class FreedmanLaneJointStrategy:
         else:
             Z = np.zeros((n, 0))  # (n, 0) — no confounders
 
-        # --- Canonical Freedman–Lane reconstruction + refit (shared with
-        # ScoreJointStrategy's residual-based branch so the two "equivalent"
-        # methods cannot independently drift the way ScoreJointStrategy did
-        # before it was fixed to use the same helper — M13). ---
+        # --- Canonical Freedman–Lane reconstruction + refit, shared with
+        # ScoreJointStrategy's residual-based branch so equivalent methods
+        # evaluate the same joint statistic. ---
         obs_improvement, perm_improvements = _residual_joint_statistic(
             family,
             Z,

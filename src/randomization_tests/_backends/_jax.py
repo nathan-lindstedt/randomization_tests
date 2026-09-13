@@ -98,9 +98,8 @@ MLE.  Only the linear-algebra solve is protected.
 # Optional JAX import
 # ------------------------------------------------------------------ #
 #
-# The try/except here mirrors the pattern from the v0.2.0 _jax.py
-# module.  If JAX is absent, the module loads successfully but the
-# JIT-compiled helpers are not defined; ``is_available`` returns
+# If JAX is absent, the module loads successfully but the JIT-compiled
+# helpers are not defined; ``is_available`` returns
 # ``False`` and resolve_backend() gates on that.
 
 try:
@@ -1557,8 +1556,8 @@ if _CAN_IMPORT_JAX:
     # and enables batch permutation via the single matmul A @ E_π,
     # structurally identical to batch_ols.
     #
-    # Mathematical reference: plan-v040Series.prompt.md Appendix A.
-    # Validated implementation: research/test_henderson_reml.py.
+    # The Henderson equations and their REML profile are validated against
+    # an independent dense-grid reference implementation.
     # -------------------------------------------------------------- #
 
     def _fill_lower_triangular_jax(
@@ -1626,8 +1625,7 @@ if _CAN_IMPORT_JAX:
     #   z~  = eta + (y - mu) / w           (working response)
     #
     # Pre-scaling by sqrt(W) converts the weighted Henderson system
-    # into the unweighted system from Plan A — same algebra,
-    # different inputs.
+    # into the unweighted system with the same algebra and transformed inputs.
 
     def _logistic_conditional_nll(
         y: jnp.ndarray,
@@ -1656,8 +1654,8 @@ if _CAN_IMPORT_JAX:
         * ``z_tilde = eta + (y - mu) / w`` — working response
 
         Pre-scaling X̃ = √W ⊙ X, Z̃ = √W ⊙ Z, ỹ* = √W ⊙ z̃
-        converts the weighted Henderson system into the unweighted
-        Henderson system from Plan A.
+        converts the weighted Henderson system into the corresponding
+        unweighted Henderson system.
         """
         mu = jax.nn.sigmoid(eta)
         w = jnp.clip(mu * (1.0 - mu), 1e-10)
@@ -3867,10 +3865,17 @@ class JaxBackend:
         fit_intercept: bool = True,
         **kwargs: Any,
     ) -> tuple[np.ndarray, np.ndarray]:
-        """Batch Poisson returning ``(coefs, 2·NLL)``."""
-        return self._batch_shared_X(  # type: ignore[return-value]
+        """Batch Poisson returning ``(coefs, deviance)``."""
+        coefs, two_nll = self._batch_shared_X(  # type: ignore[return-value]
             _make_poisson_solver, X, Y_matrix, fit_intercept, True, **kwargs
         )
+        # Saturated log-likelihood offset per permutation row:
+        # D = 2·(NLL_model + Σ_{y>0} [y·ln(y) − y])
+        pos = Y_matrix > 0
+        y_safe = np.where(pos, Y_matrix, 1.0)
+        sat_terms = np.where(pos, y_safe * np.log(y_safe) - y_safe, 0.0)
+        sat_offset = 2.0 * np.sum(sat_terms, axis=1)
+        return coefs, two_nll + sat_offset
 
     def batch_negbin_fit_and_score(
         self,
@@ -3879,15 +3884,24 @@ class JaxBackend:
         fit_intercept: bool = True,
         **kwargs: Any,
     ) -> tuple[np.ndarray, np.ndarray]:
-        """Batch NB2 returning ``(coefs, 2·NLL)``."""
+        """Batch NB2 returning ``(coefs, deviance)``."""
         alpha: float = kwargs["alpha"]
 
         def solver(X: Any, y: Any, mi: Any, t: Any, md: Any) -> Any:
             return _make_negbin_solver(X, y, alpha, mi, t, md)
 
-        return self._batch_shared_X(  # type: ignore[return-value]
+        coefs, two_nll = self._batch_shared_X(  # type: ignore[return-value]
             solver, X, Y_matrix, fit_intercept, True, **kwargs
         )
+        # Saturated offset for NB2:
+        # D_NB = 2·(NLL_model + Σ [y·ln(y) − (y + 1/α)·ln(1 + α·y)])
+        inv_a = 1.0 / alpha
+        pos = Y_matrix > 0
+        y_safe = np.where(pos, Y_matrix, 1.0)
+        sat_term1 = np.where(pos, y_safe * np.log(y_safe), 0.0)
+        sat_term2 = (Y_matrix + inv_a) * np.log(1.0 + alpha * Y_matrix)
+        sat_offset = 2.0 * np.sum(sat_term1 - sat_term2, axis=1)
+        return coefs, two_nll + sat_offset
 
     def batch_ordinal_fit_and_score(
         self,
@@ -4017,10 +4031,14 @@ class JaxBackend:
         fit_intercept: bool = True,
         **kwargs: Any,
     ) -> tuple[np.ndarray, np.ndarray]:
-        """Batch Poisson (varying X) returning ``(coefs, 2·NLL)``."""
-        return self._batch_varying_X(  # type: ignore[return-value]
+        """Batch Poisson (varying X) returning ``(coefs, deviance)``."""
+        coefs, two_nll = self._batch_varying_X(  # type: ignore[return-value]
             _make_poisson_solver, X_batch, y, fit_intercept, True, **kwargs
         )
+        pos = y > 0
+        y_safe = np.where(pos, y, 1.0)
+        sat_term = 2.0 * np.sum(np.where(pos, y_safe * np.log(y_safe) - y_safe, 0.0))
+        return coefs, two_nll + sat_term
 
     def batch_negbin_fit_and_score_varying_X(
         self,
@@ -4029,15 +4047,22 @@ class JaxBackend:
         fit_intercept: bool = True,
         **kwargs: Any,
     ) -> tuple[np.ndarray, np.ndarray]:
-        """Batch NB2 (varying X) returning ``(coefs, 2·NLL)``."""
+        """Batch NB2 (varying X) returning ``(coefs, deviance)``."""
         alpha: float = kwargs["alpha"]
 
         def solver(X: Any, y: Any, mi: Any, t: Any, md: Any) -> Any:
             return _make_negbin_solver(X, y, alpha, mi, t, md)
 
-        return self._batch_varying_X(  # type: ignore[return-value]
+        coefs, two_nll = self._batch_varying_X(  # type: ignore[return-value]
             solver, X_batch, y, fit_intercept, True, **kwargs
         )
+        inv_a = 1.0 / alpha
+        pos = y > 0
+        y_safe = np.where(pos, y, 1.0)
+        sat_term1 = np.where(pos, y_safe * np.log(y_safe), 0.0)
+        sat_term2 = (y + inv_a) * np.log(1.0 + alpha * y)
+        sat_offset = 2.0 * float(np.sum(sat_term1 - sat_term2))
+        return coefs, two_nll + sat_offset
 
     def batch_ordinal_fit_and_score_varying_X(
         self,

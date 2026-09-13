@@ -1,13 +1,13 @@
 """Structured validation utilities for the graph compiler and core pipeline.
 
 All validators return ``list[ValidationIssue]`` rather than raising, so that
-the graph compiler (Phase 9) can collect and report all issues at once rather
-than failing on the first problem.
+callers can collect and report all issues at once rather than failing on the
+first problem.
 
 ``core.py`` and ``engine.py`` continue to raise ``ValueError`` /
-``UserWarning`` as before.  The delegation of those hot-path checks to these
-validators is deferred to Phase 9 (Step 26), at the same time
-``validate_compatibility()`` is first consumed by the graph compiler.
+``UserWarning`` as before.  Runtime validation remains local to the hot path;
+callers that need to collect compatibility issues can use
+``validate_compatibility()`` directly.
 
 Public API (re-exported via ``__init__.py``):
     ValidationIssue
@@ -428,8 +428,8 @@ def validate_compatibility(
 ) -> list[ValidationIssue]:
     """Structured compatibility matrix for method × family × parameter combinations.
 
-    This is the primary entry point for the graph compiler (Phase 9) to
-    perform per-equation validation before dispatching to
+    This is the primary entry point for callers that need per-equation
+    validation before dispatching to
     ``randomization_test_regression``.
 
     Args:

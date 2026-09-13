@@ -195,6 +195,87 @@ def _render_header_rows(
         print(f"{left}{right}")
 
 
+def _resolve_guarantee_tier(results: Any) -> str:
+    """Resolve human-readable mathematical guarantee tier for result objects.
+
+    Follows the 4-tier inferential guarantee taxonomy:
+    1. Finite-Sample Exact: label permutation of iid units, within-stratum
+       permutation, fixed-X knockoffs, split conformal prediction.
+    2. Exact up to Model TV Error: Conditional Permutation Test (CPT).
+    3. Asymptotically Exact: Freedman–Lane, DML cross-fitting, whitened
+       mixed models, Rao score projection, ter Braak, Kennedy.
+    4. Distribution-Free Worst-Case (1-2α): Jackknife+ conformal prediction.
+    """
+    tier = getattr(results, "guarantee_tier", None)
+    if tier:
+        return str(tier)
+    ctx = getattr(results, "context", None)
+    if ctx and getattr(ctx, "guarantee_tier", None):
+        return str(ctx.guarantee_tier)
+
+    # ConformalResult
+    if hasattr(results, "prediction_interval") and hasattr(results, "prediction_set"):
+        method = getattr(results, "method", "split")
+        if method == "jackknife_plus":
+            return "Distribution-Free Worst-Case (Coverage \u2265 1-2\u03b1)"
+        return "Finite-Sample Exact (Marginal Coverage \u2265 1-\u03b1)"
+
+    # InvarianceResult
+    if hasattr(results, "is_invariant") and hasattr(
+        results, "environment_coefficients"
+    ):
+        method = getattr(results, "method", "kennedy")
+        if method == "stratified":
+            return "Finite-Sample Exact (Within-Stratum Permutation)"
+        elif method == "conditional":
+            return "Exact up to Model TV Error (CPT Resampling)"
+        return "Asymptotically Exact (Kennedy Environment Block)"
+
+    # KnockoffResult
+    if hasattr(results, "selected_features") and hasattr(
+        results, "knockoff_statistics"
+    ):
+        method = getattr(results, "method", "equicorrelated")
+        if method == "fixed_x":
+            return "Finite-Sample Exact FDR (Fixed-X)"
+        return "Model-X Approximate FDR (Gaussian Design / Estimated \u03a3)"
+
+    # Regression result (IndividualTestResult / JointTestResult)
+    randomization = getattr(results, "randomization", None)
+    if ctx and randomization is None:
+        randomization = getattr(ctx, "randomization", None)
+
+    if randomization == "sign_flip":
+        return "Exact under Symmetry (Rademacher Sign-Flip)"
+
+    method = getattr(results, "method", "")
+    family = getattr(results, "family", None)
+    fam_name = family.name if family is not None else ""
+
+    if method in ("manly", "manly_joint"):
+        return "Finite-Sample Exact (Unconditional Y-Permutation)"
+
+    if method == "score_exact":
+        return "Asymptotically Exact (PQL-Fixed IRLS)"
+
+    if fam_name.endswith("_mixed"):
+        return "Asymptotically Exact (Whitened Mixed Model)"
+
+    if method in ("freedman_lane", "freedman_lane_joint"):
+        return "Asymptotically Exact (Canonical Freedman\u2013Lane)"
+
+    if method in ("kennedy", "kennedy_joint"):
+        return "Asymptotically Exact (Kennedy Exposure Residualization)"
+
+    if method == "ter_braak":
+        return "Asymptotically Exact (Canonical ter Braak)"
+
+    if method in ("score", "score_joint"):
+        return "Asymptotically Exact (Rao Score Projection)"
+
+    return "Asymptotically Exact"
+
+
 def print_results_table(
     results: IndividualTestResult,
     *,
@@ -217,6 +298,10 @@ def print_results_table(
     print("=" * 80)
     for line in textwrap.wrap(title, width=78):
         print(f"{line:^80}")
+    guarantee = _resolve_guarantee_tier(results)
+    if guarantee:
+        g_banner = f"[ Guarantee: {guarantee} ]"
+        print(f"{g_banner:^80}")
     print("=" * 80)
 
     diag = getattr(results, "diagnostics", {})
@@ -238,6 +323,12 @@ def print_results_table(
         f"{'Method:':<16}{results.method:<{col1 - 16}}"
         f"{'AIC:':>{col2 - 11}} {aic_str:>10}"
     )
+
+    groups_val = getattr(results, "groups", None)
+    if groups_val is not None and not family.name.endswith("_mixed"):
+        n_clusters = len(np.unique(groups_val))
+        strat = getattr(results, "permutation_strategy", None) or "within"
+        print(f"{'Clusters:':<16}{f'{n_clusters} ({strat})':<{col1 - 16}}{'':<{col2}}")
 
     _render_header_rows(family.display_header(diag), col1, col2)
 
@@ -328,13 +419,13 @@ def print_results_table(
     if method in ("kennedy", "freedman_lane") and not confounders:
         method_label = "Freedman\u2013Lane" if method == "freedman_lane" else "Kennedy"
         notes.append(
-            f"{method_label} method called without confounders \u2014 all "
-            "features will be tested, each conditioning on the remaining "
-            "predictors. Consider 'ter_braak' for a single "
-            "full-model-residual test."
+            f"{method_label} method called without confounders \u2014 each feature "
+            "is tested partialling out all remaining predictors (standard "
+            "multiple regression). If marginal (unconditional) associations "
+            "are desired, consider method='manly'."
         )
 
-    # Recommend larger n_randomizations for borderline cases (Step 25 / Step 11j)
+    # Recommend larger n_randomizations for borderline cases.
     if borderline_features:
         ci_alpha = ci.get("confidence_level", 0.95)
         alpha = 1 - ci_alpha if ci_alpha > 0.5 else ci_alpha
@@ -373,6 +464,14 @@ def print_results_table(
         f"(*) p < {results.p_value_threshold_one}   "
         f"(ns) p >= {results.p_value_threshold_one}"
     )
+    n_rand = getattr(results, "n_randomizations", None)
+    if n_rand is not None and n_rand > 0:
+        res_floor = 1.0 / (n_rand + 1)
+        print(
+            f"Permutations: B = {n_rand:,}  |  "
+            f"Resolution floor: 1/(B+1) = {res_floor:.4f}  |  "
+            f"\u03b1 = {results.p_value_threshold_one}"
+        )
     print()
 
 
@@ -398,6 +497,10 @@ def print_joint_results_table(
     print("=" * 80)
     for line in textwrap.wrap(title, width=78):
         print(f"{line:^80}")
+    guarantee = _resolve_guarantee_tier(results)
+    if guarantee:
+        g_banner = f"[ Guarantee: {guarantee} ]"
+        print(f"{g_banner:^80}")
     print("=" * 80)
 
     diag = getattr(results, "diagnostics", {})
@@ -447,8 +550,7 @@ def print_joint_results_table(
         print(
             _wrap(
                 f"  [!] {method_label} method called without confounders \u2014 all "
-                "features will be tested unconditionally. Consider 'ter_braak' "
-                "for unconditional tests.",
+                "features will be tested against the null model.",
                 width=80,
                 indent=6,
             )
@@ -462,6 +564,14 @@ def print_joint_results_table(
         f"(ns) p >= {results.p_value_threshold_one}"
     )
     print("Omnibus test: single p-value for all tested features combined.")
+    n_rand = getattr(results, "n_randomizations", None)
+    if n_rand is not None and n_rand > 0:
+        res_floor = 1.0 / (n_rand + 1)
+        print(
+            f"Permutations: B = {n_rand:,}  |  "
+            f"Resolution floor: 1/(B+1) = {res_floor:.4f}  |  "
+            f"\u03b1 = {results.p_value_threshold_one}"
+        )
     print()
 
 
@@ -743,15 +853,29 @@ def print_diagnostics_table(
     if cd:
         n_inf = cd.get("n_influential", 0)
         thresh = cd.get("threshold", 0)
+        cooks_arr = cd.get("cooks_d")
+        max_d = (
+            float(np.nanmax(cooks_arr))
+            if cooks_arr is not None and len(cooks_arr) > 0
+            else 0.0
+        )
         n_inf_str = f"{n_inf} obs."
         cd_label = "Cook's D (> 4/n):"
         print(f"  {cd_label:<{lw}}{n_inf_str:<{sw}}threshold = {thresh:.4f}")
         if isinstance(n_inf, (int, float)) and n_inf > 0:
-            notes.append(
-                f"{int(n_inf)} obs. with Cook's D > {thresh:.4f} "
-                f"(4/n); results may be sensitive to "
-                f"influential points."
-            )
+            if max_d > 0.5:
+                notes.append(
+                    f"{int(n_inf)} obs. with Cook's D > {thresh:.4f} (4/n), "
+                    f"max D = {max_d:.3f} (> 0.5); severe leverage detected, "
+                    "results may be sensitive to influential points."
+                )
+            else:
+                notes.append(
+                    f"{int(n_inf)} obs. with Cook's D > {thresh:.4f} (4/n), "
+                    f"max D = {max_d:.3f}. All points remain below severe "
+                    "threshold (D < 0.5); influence on parameter estimates "
+                    "is minor."
+                )
 
     # Permutation coverage with sufficiency verdict
     pc = ext.get("permutation_coverage", {})
@@ -842,6 +966,8 @@ def print_ar_comparison_table(
     print("=" * W)
     for line in textwrap.wrap(title, width=W - 2):
         print(f"{line:^{W}}")
+    g_banner = "[ Guarantee: Asymptotically Exact (FGLS Autoregressive Whitening) ]"
+    print(f"{g_banner:^{W}}")
     print("=" * W)
 
     # ── Column widths ──────────────────────────────────────────── #
@@ -919,6 +1045,8 @@ def print_symmetry_table(
     print("=" * W)
     for line in textwrap.wrap(title, width=W - 2):
         print(f"{line:^{W}}")
+    g_banner = "[ Diagnostic: Nonparametric Wilcoxon Signed-Rank Symmetry Test ]"
+    print(f"{g_banner:^{W}}")
     print("=" * W)
 
     stat = symmetry.get("test_statistic", float("nan"))
@@ -1481,7 +1609,9 @@ def print_protocol_usage_table(
         )
 
     W = 80
-    lw = 26  # label column width
+    VAL_COL = 30
+    lw_top = VAL_COL - 2  # 28 chars for 2-space indented top-level items
+    lw_sub = VAL_COL - 4  # 26 chars for 4-space indented sub-items
     family_name = ctx.family_name or "Unknown"
 
     if title is None:
@@ -1492,14 +1622,16 @@ def print_protocol_usage_table(
     print("=" * W)
     for line in textwrap.wrap(title, width=W - 2):
         print(f"{line:^{W}}")
+    g_banner = "[ Execution & Protocol Artifacts ]"
+    print(f"{g_banner:^{W}}")
     print("=" * W)
 
     # ── Family properties ─────────────────────────────────────── #
 
-    print(f"  {'Name:':<{lw}}{family_name}")
-    print(f"  {'Residual Type:':<{lw}}{ctx.residual_type or 'N/A'}")
-    print(f"  {'Direct Permutation:':<{lw}}{ctx.direct_permutation}")
-    print(f"  {'Metric Label:':<{lw}}{ctx.metric_label or 'N/A'}")
+    print(f"  {'Name:':<{lw_top}}{family_name}")
+    print(f"  {'Residual Type:':<{lw_top}}{ctx.residual_type or 'N/A'}")
+    print(f"  {'Direct Permutation:':<{lw_top}}{ctx.direct_permutation}")
+    print(f"  {'Metric Label:':<{lw_top}}{ctx.metric_label or 'N/A'}")
 
     # ── Observed fit ───────────────────────────────────────────── #
 
@@ -1511,30 +1643,28 @@ def print_protocol_usage_table(
     if ctx.coefficients is not None:
         coefs = ctx.coefficients
         names = ctx.feature_names or [f"x{i}" for i in range(len(coefs))]
-        print(
-            f"    {'Coefs:':<{lw}}{np.array2string(coefs, precision=4, suppress_small=True)}"
-        )
+        print("  Coefficients:")
         for _i, (name, c) in enumerate(zip(names, coefs, strict=False)):
             trunc_name = _truncate(name, 20)
-            print(f"      {trunc_name + ':':<{lw}}{c:.6f}")
+            print(f"    {trunc_name + ':':<{lw_sub}}{c:.6f}")
 
     # Predictions
     if ctx.predictions is not None:
         preds = ctx.predictions
-        print(f"    {'Pred Range:':<{lw}}[{preds.min():.4f}, {preds.max():.4f}]")
-        print(f"    {'Pred Mean:':<{lw}}{preds.mean():.4f}")
+        print(f"  {'Pred Range:':<{lw_top}}[{preds.min():.4f}, {preds.max():.4f}]")
+        print(f"  {'Pred Mean:':<{lw_top}}{preds.mean():.4f}")
 
     # Residuals (may be None for direct-permutation families)
     if ctx.residuals is not None:
         resids = ctx.residuals
-        print(f"    {'Mean |Residual|:':<{lw}}{np.mean(np.abs(resids)):.4f}")
+        print(f"  {'Mean |Residual|:':<{lw_top}}{np.mean(np.abs(resids)):.4f}")
     elif ctx.direct_permutation:
-        print(f"    {'Residuals:':<{lw}}N/A (direct permutation)")
+        print(f"  {'Residuals:':<{lw_top}}N/A (direct permutation)")
 
     # Fit metric
     if ctx.fit_metric_value is not None:
         label = ctx.metric_label or "Fit Metric"
-        print(f"    {label + ':':<{lw}}{ctx.fit_metric_value:.4f}")
+        print(f"  {label + ':':<{lw_top}}{ctx.fit_metric_value:.4f}")
 
     # ── Diagnostics ────────────────────────────────────────────── #
 
@@ -1542,30 +1672,40 @@ def print_protocol_usage_table(
         print("-" * W)
         print("  Diagnostics")
         print("-" * W)
-        # Skip redundant raw dictionary bundles that duplicate unpacked stats
-        _REDUNDANT_DIAG_KEYS = {"glmm_gof", "lmm_gof"}
+        # Skip redundant raw dictionary bundles and metrics already reported in primary tables
+        _SKIP_DIAG_KEYS = {
+            "n_observations",
+            "n_features",
+            "aic",
+            "bic",
+            "r_squared",
+            "r_squared_adj",
+            "f_statistic",
+            "f_p_value",
+            "glmm_gof",
+            "lmm_gof",
+        }
         for key, val in ctx.diagnostics.items():
-            if key in _REDUNDANT_DIAG_KEYS:
+            if key in _SKIP_DIAG_KEYS:
                 continue
             display_key = key.replace("_", " ").title()
             if key == "variance_components" and isinstance(val, dict):
                 # Clean nested rendering of variance components factors
-                print(f"    {display_key + ':':<{lw}}")
+                print("  Variance Components:")
                 for factor_line, factor_stat, _ in _format_variance_components(val):
-                    print(f"      {factor_line:<{lw - 2}}{factor_stat}")
+                    print(f"    {factor_line:<{lw_sub}}{factor_stat}")
             elif isinstance(val, float):
-                print(f"    {display_key + ':':<{lw}}{val:.4f}")
+                print(f"  {display_key + ':':<{lw_top}}{val:.4f}")
             elif isinstance(val, dict):
-                # Formatted sub-dictionary items
-                print(f"    {display_key + ':':<{lw}}")
+                print(f"  {display_key + ':'}")
                 for sub_k, sub_v in val.items():
-                    sub_label = sub_k.replace("_", " ").title()
+                    sub_label = sub_k.replace("_", " ").title() + ":"
                     if isinstance(sub_v, float):
-                        print(f"      {sub_label + ':':<{lw - 2}}{sub_v:.4f}")
+                        print(f"    {sub_label:<{lw_sub}}{sub_v:.4f}")
                     else:
-                        print(f"      {sub_label + ':':<{lw - 2}}{sub_v}")
+                        print(f"    {sub_label:<{lw_sub}}{sub_v}")
             else:
-                print(f"    {display_key + ':':<{lw}}{val}")
+                print(f"  {display_key + ':':<{lw_top}}{val}")
 
     # ── Inference ──────────────────────────────────────────────── #
 
@@ -1573,25 +1713,25 @@ def print_protocol_usage_table(
     print("  Inference")
     print("-" * W)
 
-    if ctx.classical_p_values is not None:
-        p_vals = ctx.classical_p_values
-        print(
-            f"    {'Classical P-values:':<{lw}}{np.array2string(p_vals, precision=6, suppress_small=True)}"
-        )
-    else:
-        # Fall back to result's own classical p-values
-        if hasattr(result, "raw_classic_p"):
-            p_vals = result.raw_classic_p
-            print(
-                f"    {'Classical P-values:':<{lw}}{np.array2string(p_vals, precision=6, suppress_small=True)}"
-            )
+    p_vals = (
+        ctx.classical_p_values
+        if ctx.classical_p_values is not None
+        else getattr(result, "raw_classic_p", None)
+    )
+    if p_vals is not None:
+        names = ctx.feature_names or [f"x{i}" for i in range(len(p_vals))]
+        print("  Classical P-values:")
+        for name, p_v in zip(names, p_vals, strict=False):
+            trunc_name = _truncate(name, 20)
+            p_str = f"{p_v:.6f}" if not np.isnan(p_v) else "NaN"
+            print(f"    {trunc_name + ':':<{lw_sub}}{p_str}")
 
     cells = ctx.exchangeability_cells
     if cells is None:
-        print(f"    {'Exchangeability:':<{lw}}global (None)")
+        print(f"  {'Exchangeability:':<{lw_top}}global (None)")
     else:
         n_cells = len(np.unique(cells))
-        print(f"    {'Exchangeability:':<{lw}}{n_cells} cell(s)")
+        print(f"  {'Exchangeability:':<{lw_top}}{n_cells} cell(s)")
 
     # ── Permutation metadata ───────────────────────────────────── #
 
@@ -1599,24 +1739,24 @@ def print_protocol_usage_table(
     print("  Permutation Config")
     print("-" * W)
 
-    print(f"    {'Method:':<{lw}}{ctx.method or result.method}")
-    print(f"    {'Backend:':<{lw}}{ctx.backend or 'N/A'}")
+    print(f"  {'Method:':<{lw_top}}{ctx.method or result.method}")
+    print(f"  {'Backend:':<{lw_top}}{ctx.backend or 'N/A'}")
     print(
-        f"    {'N Randomizations:':<{lw}}{ctx.n_randomizations or result.n_randomizations}"
+        f"  {'N Randomizations:':<{lw_top}}{ctx.n_randomizations or result.n_randomizations}"
     )
     if ctx.permutation_strategy:
-        print(f"    {'Strategy:':<{lw}}{ctx.permutation_strategy}")
+        print(f"  {'Strategy:':<{lw_top}}{ctx.permutation_strategy}")
     if ctx.confounders:
-        print(f"    {'Confounders:':<{lw}}{', '.join(ctx.confounders)}")
+        print(f"  {'Confounders:':<{lw_top}}{', '.join(ctx.confounders)}")
 
     # Batch-fit convergence
     if ctx.batch_shape is not None:
         B, p = ctx.batch_shape
-        print(f"    {'Batch Shape:':<{lw}}({B}, {p})")
+        print(f"  {'Batch Shape:':<{lw_top}}({B}, {p})")
     if ctx.convergence_count is not None and ctx.batch_shape is not None:
         total = ctx.batch_shape[0]
         print(
-            f"    {'Convergence:':<{lw}}{ctx.convergence_count}/{total} fits converged"
+            f"  {'Convergence:':<{lw_top}}{ctx.convergence_count}/{total} fits converged"
         )
 
     print("=" * W)

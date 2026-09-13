@@ -15,7 +15,7 @@ The :class:`PermutationEngine` centralises everything that happens
    ``generate_unique_permutations`` shared by all strategies.
 
 The engine also exposes :meth:`permute_indices` as the single shared
-primitive that v0.4.0 exchangeability cells will hook into — all
+primitive used by exchangeability cells — all
 strategies receive their indices from this method.
 """
 
@@ -311,7 +311,7 @@ class PermutationEngine:
 
         # Model diagnostics — wrapped in try/except for degenerate data.
         # Each family's diagnostics() method handles its own warning
-        # suppression internally (Step 7a).
+        # suppression internally.
         try:
             self.diagnostics: dict[str, Any] = self.family.diagnostics(
                 X_np, y_values, fit_intercept
@@ -356,7 +356,7 @@ class PermutationEngine:
         This is the single point of permutation generation that all
         strategies consume.  Delegates to :meth:`_permute_hook`, which
         subclasses can override to implement exchangeability-constrained
-        permutations (v0.4.1).
+        permutations.
 
         Args:
             n_samples: Number of observations.

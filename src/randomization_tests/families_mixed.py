@@ -412,8 +412,8 @@ def _glmm_whiten(
 
     The working-response covariance is ``V_z = W⁻¹ + Z Σ Z'`` (verified: the stored
     precision equals ``V_z⁻¹`` exactly, and is *not* ``Var(y)⁻¹``).  Whitening on the
-    response scale would repeat M6 — applying a working-scale operator to
-    response-scale quantities.
+    response scale would apply a working-scale operator to quantities on the
+    wrong statistical scale.
     """
     family._require_calibrated(method)
     w = np.asarray(family.W, dtype=float)
@@ -618,6 +618,7 @@ class LinearMixedFamily:
     C22: np.ndarray | None = None
     converged: bool | None = None
     n_iter: int | None = None
+    nll: float | None = None
 
     # ---- Cached calibration artifacts (avoid redundant refits) -----
     _groups_arr: np.ndarray | None = None
@@ -714,9 +715,19 @@ class LinearMixedFamily:
         icc_str = f"{icc:.4f}" if icc is not None else "N/A"
 
         bic_val = diagnostics.get("bic")
-        if bic_val is None or (isinstance(bic_val, float) and bic_val != bic_val):
-            bic_str = "N/A"
+        if bic_val is None or (
+            isinstance(bic_val, float) and (bic_val != bic_val or np.isnan(bic_val))
+        ):
+            # Under REML, AIC/BIC are undefined (NaN); report REML criterion instead
+            ll_reml = diagnostics.get("log_likelihood_reml")
+            if ll_reml is not None and not np.isnan(ll_reml):
+                right_label = "REML Log-Lik:"
+                bic_str = f"{ll_reml:.2f}"
+            else:
+                right_label = "BIC:"
+                bic_str = "N/A"
         else:
+            right_label = "BIC:"
             bic_str = str(bic_val)
 
         n_groups = diagnostics.get("n_groups", "N/A")
@@ -728,7 +739,7 @@ class LinearMixedFamily:
             (
                 "RE Structure:",
                 str(re_summary),
-                "BIC:",
+                right_label,
                 bic_str,
             ),
             (
@@ -1027,11 +1038,10 @@ class LinearMixedFamily:
         whether *design* matches the calibrated shape: a REDUCED design (e.g.
         Freedman–Lane joint's confounder-only model) gets its own whitened
         projection built on the fly via ``_whitened_projection`` — proven equal
-        to ``fit()``'s Woodbury-based reduced β̂ (M1). Without this, the reduced
-        branch fell back to raw OLS while the full branch stayed whitened,
-        so ``reduced_scores - full_scores`` subtracted RSS on two different
-        scales (measured ~1975 raw vs ~156 whitened) — a severe, undetected
-        defect (M1/M2), not the harmless "estimator mismatch" it was scoped as.
+        to ``fit()``'s Woodbury-based reduced β̂. Without this, the reduced
+        branch would fall back to raw OLS while the full branch stayed whitened,
+        so ``reduced_scores - full_scores`` would subtract RSS values on two
+        different scales.
 
         Falls back to the generic (raw-scale) path only when no block-local
         whitening exists at all (crossed grouping factors; AR is unreachable
@@ -1276,6 +1286,7 @@ class LinearMixedFamily:
             "n_iter": self.n_iter,
             "aic": aic,
             "bic": bic,
+            "log_likelihood_reml": -self.nll if self.nll is not None else None,
         }
 
     def classical_p_values(
@@ -1363,7 +1374,7 @@ class LinearMixedFamily:
             )
             return np.full(n_out, np.nan)
 
-    # ---- Exchangeability (v0.4.0) ----------------------------------
+    # ---- Exchangeability -------------------------------------------
 
     def exchangeability_cells(
         self,
@@ -1504,7 +1515,7 @@ class LinearMixedFamily:
         ):
             from ._ar import estimate_panel_ar_coefficients
 
-            # Decontaminate AR estimation from cluster random effects via within OLS (M11)
+            # Remove time-invariant cluster effects before estimating AR structure.
             ar_coefs_hat = estimate_panel_ar_coefficients(
                 X,
                 y,
@@ -1549,6 +1560,7 @@ class LinearMixedFamily:
             C22=result.C22,
             converged=result.converged,
             n_iter=result.n_iter,
+            nll=float(result.nll),
             _groups_arr=groups_arr,
             _exog_re_kw=None,
             _sm_model=None,
@@ -1672,7 +1684,7 @@ class LinearMixedFamily:
         ):
             from ._ar import apply_ar_precision, estimate_panel_ar_coefficients
 
-            # Decontaminate AR estimation from cluster random effects via within OLS (M11)
+            # Remove time-invariant cluster effects before estimating AR structure.
             ar_coefs_hat = estimate_panel_ar_coefficients(
                 X,
                 y,
@@ -1874,7 +1886,7 @@ class LinearMixedFamily:
         Evaluates coefficients and generalized RSS across B permuted outcome
         vectors simultaneously.
 
-        Mathematical Rationale & Design Alignment (Defect M1 Resolution):
+        Mathematical Rationale & Design Alignment:
         ------------------------------------------------------------------
         In a linear mixed-effects model with marginal covariance matrix
         ``V = σ² (I + Z Γ Z')``, both the observed model and any permuted
@@ -2687,9 +2699,7 @@ class LogisticMixedFamily(_GLMMBatchStubMixin):
         randomization: str = "permute",
         n_jobs: int = 1,
     ) -> tuple[np.ndarray, np.ndarray]:
-        """Raw-scale refit — the GLMM's own score defect (M4/M6) is fixed in
-        the score path directly, not here.
-        """
+        """Raw-scale refit for a generalized linear mixed model."""
         return _default_residual_permutation_refit(
             self,
             design,
@@ -3324,9 +3334,7 @@ class PoissonMixedFamily(_GLMMBatchStubMixin):
         randomization: str = "permute",
         n_jobs: int = 1,
     ) -> tuple[np.ndarray, np.ndarray]:
-        """Raw-scale refit — the GLMM's own score defect (M4/M6) is fixed in
-        the score path directly, not here.
-        """
+        """Raw-scale refit for a generalized linear mixed model."""
         return _default_residual_permutation_refit(
             self,
             design,

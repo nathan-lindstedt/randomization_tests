@@ -616,7 +616,7 @@ def screen_potential_confounders(
 # signals a collider.
 #
 # **Suppressor pre-filtering**: true suppressors (correlated with X
-# but not Y) fail the Z-Y dual-threshold screen in Step 4 and never
+# but not Y) fail the Z-Y dual-threshold screen and never
 # reach the collider test, mitigating the conditioning-test
 # conflation with suppressors.
 #
@@ -624,7 +624,7 @@ def screen_potential_confounders(
 # direction *opposes* the true causal direction produces amplification
 # indistinguishable from a collider signal.  This miss is conservative
 # — biases toward the null, not away from it.  Full causal direction
-# testing (LiNGAM/ANM) deferred to v0.7.0.
+# testing (LiNGAM/ANM) is outside this exploratory sieve.
 
 
 def _collider_test(
@@ -667,7 +667,7 @@ def _collider_test(
         This miss is conservative: failing to control for a
         suppressive confounder biases X → Y toward the null
         (underestimation, not false positive).  Full causal direction
-        testing (LiNGAM / ANM) is deferred to v0.7.0.
+        testing (LiNGAM / ANM) is outside this exploratory sieve.
     """
     x = np.asarray(x, dtype=float).ravel()
     y = np.asarray(y, dtype=float).ravel()
@@ -1834,7 +1834,7 @@ def identify_confounders(
     # What's left → confounders.
     identified_confounders = list(remaining)
 
-    # --- Collinearity guard (Step 10) ---
+    # --- Collinearity guard ---
     if len(identified_confounders) >= 2:
         try:
             confounder_vals = X[identified_confounders].values

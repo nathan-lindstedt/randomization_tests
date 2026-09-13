@@ -843,3 +843,100 @@ class TestModelLevelDiagnosticsRendering:
         assert "414!" in out
         assert "B = 5,000" in out
         assert "> 10^" not in out
+
+
+class TestGuaranteeBannerAndResolutionFooter:
+    """Tests for centered guarantee banner and footer resolution display."""
+
+    def test_results_table_has_centered_guarantee(self, capsys):
+        res = SimpleNamespace(
+            model_coefs=[1.0],
+            permuted_p_values=["0.01  (**)"],
+            classic_p_values=["0.01  (**)"],
+            p_value_threshold_one=0.05,
+            p_value_threshold_two=0.01,
+            p_value_threshold_three=0.001,
+            method="freedman_lane",
+            confounders=["z"],
+            family=LinearFamily(),
+            feature_names=["x1"],
+            target_name="y",
+            n_randomizations=999,
+            diagnostics={
+                "n_observations": 50,
+                "n_features": 1,
+            },
+        )
+        print_results_table(res)
+        out = capsys.readouterr().out
+        assert (
+            "[ Guarantee: Asymptotically Exact (Canonical Freedman\u2013Lane) ]" in out
+        )
+        assert "Resolution floor: 1/(B+1) = 0.0010" in out
+
+    def test_joint_table_has_guarantee_and_footer(self, capsys):
+        res = SimpleNamespace(
+            observed_improvement=25.4,
+            p_value_str="0.0020  (**)",
+            metric_type="Deviance Reduction",
+            features_tested=["x1", "x2"],
+            confounders=["z"],
+            p_value_threshold_one=0.05,
+            p_value_threshold_two=0.01,
+            p_value_threshold_three=0.001,
+            method="freedman_lane_joint",
+            family=LinearFamily(),
+            target_name="y",
+            n_randomizations=999,
+            diagnostics={
+                "n_observations": 100,
+                "n_features": 2,
+            },
+        )
+        print_joint_results_table(res)
+        out = capsys.readouterr().out
+        assert (
+            "[ Guarantee: Asymptotically Exact (Canonical Freedman\u2013Lane) ]" in out
+        )
+        assert "Resolution floor: 1/(B+1) = 0.0010" in out
+
+
+class TestPrintProtocolUsageTable:
+    """Tests for print_protocol_usage_table execution artifacts."""
+
+    def test_prints_cleanly_without_untyped_array_dumps(self, capsys):
+        from randomization_tests._context import FitContext
+        from randomization_tests.display import print_protocol_usage_table
+
+        ctx = FitContext()
+        ctx.family_name = "linear"
+        ctx.residual_type = "deviance"
+        ctx.direct_permutation = False
+        ctx.metric_label = "RSS"
+        ctx.coefficients = np.array([1.2345, -0.6789])
+        ctx.feature_names = ["feat1", "feat2"]
+        ctx.predictions = np.array([2.0, 3.0, 4.0])
+        ctx.residuals = np.array([-0.1, 0.0, 0.1])
+        ctx.fit_metric_value = 0.02
+        ctx.classical_p_values = np.array([0.001234, 0.045678])
+        ctx.diagnostics = {
+            "n_observations": 100,
+            "aic": 250.0,
+            "custom_diagnostic": 42.0,
+        }
+
+        res = SimpleNamespace(
+            context=ctx,
+            method="score",
+            n_randomizations=999,
+        )
+
+        print_protocol_usage_table(res)
+        out = capsys.readouterr().out
+        assert "[ Execution & Protocol Artifacts ]" in out
+        assert "feat1:" in out
+        assert "feat2:" in out
+        # Untyped bracketed array dump must not appear
+        assert "Coefs: [" not in out
+        assert "p = 0.001234" not in out  # printed as feat1: 0.001234
+        assert "0.001234" in out

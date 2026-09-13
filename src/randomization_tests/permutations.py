@@ -339,9 +339,8 @@ def generate_unique_permutations(
 # typically far smaller than the global n!, and can be exhausted for
 # small cells.
 #
-# The implementation follows the pattern from Appendix A §A.9 of the
-# v0.4.0 series plan: for each permutation row, independently shuffle
-# each cell's member indices.  Hash-based dedup ensures uniqueness.
+# For each permutation row, independently shuffle each cell's member
+# indices. Hash-based deduplication ensures uniqueness.
 #
 # Singleton cells (n_c = 1) contribute factor 1! = 1 to the product —
 # they are never shuffled and never affect the reference set size.

@@ -125,11 +125,10 @@ def test_lmm_spread_ratio_random_intercept():
 
 
 def test_level2_null_is_repaired_by_whitening():
-    """M3b, side-effect finding (2026-09-07): whitening repairs the level-2
-    near-invariance too, though nothing in Step 11c targeted it.
+    """Whitening repairs the near-invariance of a level-2 predictor.
 
     A cluster-constant regressor's near-invariance under raw within-cluster
-    permutation was M3b: ``sd(draws)/SE`` collapsed and power equalled Type I at
+    permutation: ``sd(draws)/SE`` collapsed and power equalled Type I at
     0.080. Once `score_project` whitens (fixing M3), the SAME mechanism was
     measured to repair this too -- robustly, not as one lucky seed: ratio
     0.819-0.902 across 8 seeds at the gate's own B=399, and
@@ -160,7 +159,7 @@ def test_level2_null_is_repaired_by_whitening():
 
 
 def test_lmm_reduced_fit_uses_same_estimator():
-    """M1 CLOSED 2026-09-12: The reduced fit behind the observed statistic and behind
+    """The reduced fit behind the observed statistic and behind
     batch null draws must come from the same estimator. LinearMixedFamily.batch_fit_and_score
     evaluates the exact Woodbury GLS projection rather than unweighted OLS, matching
     fit_reduced to machine precision (< 1e-14).
@@ -179,7 +178,7 @@ def test_lmm_reduced_fit_uses_same_estimator():
 
 
 def test_glmm_score_offset_is_zero():
-    """M4/M6 CLOSED 2026-09-12: The score offset |beta_hat - U_0| vanishes to
+    """The score offset |beta_hat - U_0| vanishes to
     machine precision (< 1e-14) under the tangent-space linear model
     (closed-form GLS reduced fit on frozen z_tilde + full V_z^-1 whitening).
     """
@@ -189,10 +188,9 @@ def test_glmm_score_offset_is_zero():
 
 
 def test_lmm_spread_ratio_random_slopes():
-    """M3 CLOSED 2026-09-07: score/Freedman-Lane/ter Braak now whiten together
+    """Score, Freedman-Lane, and ter Braak whiten together
     via ``residual_permutation_refit`` before permuting, repairing the
-    within-cluster exchangeability random slopes broke. Was xfail (0.34-0.42);
-    now a plain regression guard.
+    within-cluster exchangeability under random slopes.
     """
     X, y = _lmm_data(106, slopes=True)
     res = randomization_test_regression(
@@ -209,7 +207,7 @@ def test_lmm_spread_ratio_random_slopes():
 
 
 def test_panel_id_works_without_ar_order():
-    """M8 CLOSED 2026-09-12: panel_id reaches family calibration cleanly without
+    """panel_id reaches family calibration cleanly without
     requiring ar_order, decoupling model-structure grouping from the permutation
     strategy via permutation_strategy='unrestricted'.
     """
@@ -246,7 +244,7 @@ def test_groups_with_unrestricted_permutation_strategy():
 
 
 def test_glmm_null_is_zero_centred():
-    """M4/M6 CLOSED 2026-09-12: Under the exact score projection on the
+    """Under the exact score projection on the
     tangent-space working scale, the permuted draws center on ZERO.
     """
     X, y = _glmm_data(108)
@@ -342,10 +340,10 @@ def test_kennedy_unblocked_for_mixed_families():
 
 
 def test_ar_lmm_spread_ratio():
-    """M7a / M11 CLOSED 2026-09-12: AR coefficients are decontaminated from cluster
-    random effects via within-panel demeaning (M11), and composite cluster covariance
+    """AR coefficients are decontaminated from cluster
+    random effects via within-panel demeaning, and composite cluster covariance
     blocks V_g = Omega_g + Z_g Gamma Z_g' are whitened via block Cholesky before
-    permutation (M7a).
+    permutation.
 
     Asserted on the MEDIAN over several datasets, confirming the permutation null
     spread matches SE(beta_hat) within [0.8, 1.25].
@@ -488,7 +486,7 @@ def _rate(seed, beta, *, n_rep=N_REP, b=B_MC, joint=False, **kwargs):
     return hits / n_rep
 
 
-# ICC = 0 is where GLS and OLS coincide, so M1 cannot bite. This must pass BOTH
+# ICC = 0 is where GLS and OLS coincide, so the reduced-fit scale issue cannot bite. This must pass BOTH
 # before and after the fix: a change that repairs high ICC but breaks ICC = 0 is a
 # different bug, not a fix.
 
@@ -501,7 +499,7 @@ def test_joint_type_i_at_zero_icc():
 
 
 @pytest.mark.slow
-@pytest.mark.xfail(strict=True, reason="M1: measured 0.340/0.370 at ICC 0.9")
+@pytest.mark.xfail(strict=True, reason="Joint Type I remains inflated at high ICC")
 def test_joint_type_i_at_high_icc():
     assert _rate(
         202, 0.0, joint=True, method="freedman_lane_joint", confounders=["z"]
@@ -514,13 +512,17 @@ def test_individual_type_i_random_intercept():
 
 
 @pytest.mark.slow
-@pytest.mark.xfail(strict=True, reason="M3: measured 0.480 under random slopes")
+@pytest.mark.xfail(
+    strict=True, reason="Individual Type I remains inflated under random slopes"
+)
 def test_individual_type_i_random_slopes():
     assert _rate(204, 0.0, method="score", slopes=True) <= _bound(N_REP)
 
 
 @pytest.mark.slow
-@pytest.mark.xfail(strict=True, reason="M3: measured 0.433, two-stage inherits within")
+@pytest.mark.xfail(
+    strict=True, reason="Two-stage Type I remains inflated under random slopes"
+)
 def test_two_stage_type_i_random_slopes():
     assert _rate(
         205, 0.0, method="score", slopes=True, permutation_strategy="two-stage"
@@ -550,7 +552,7 @@ def test_individual_power_random_intercept():
 
 @pytest.mark.slow
 @pytest.mark.xfail(
-    strict=True, reason="M3b: level-2 power == its own Type I under 'within'"
+    strict=True, reason="Within-cell permutation has no power for level-2 predictors"
 )
 def test_level2_power_under_within():
     assert _rate(209, 1.5, method="score", level2=True) > 0.5
@@ -578,10 +580,10 @@ def _glmm_rate(seed, beta, tau2=4.0):
 
 @pytest.mark.slow
 @pytest.mark.xfail(
-    strict=True, reason="M4/M6: measured 0.130, caused by the score offset"
+    strict=True, reason="GLMM individual Type I corroboration remains inflated"
 )
 def test_glmm_type_i_level1():
-    """Corroboration only. The primary M4/M6 gates are the deterministic
+    """Corroboration only. The primary gates are the deterministic
     ``test_glmm_score_offset_is_zero`` and ``test_glmm_null_is_zero_centred``
     above: both state the defect directly on one dataset, where this needs 300
     replications to say the same thing less precisely."""
@@ -593,11 +595,6 @@ def test_glmm_power_level1():
     assert _glmm_rate(211, 0.8) > 0.5
 
 
-# M7 note: the former ``test_ar_lmm_not_degenerate`` asserted power > 0.5 at
-# beta = 0.8 under the reason "measured Type I 0.000, zero power" — which
-# overgeneralised a single Type I measurement into a claim about power, and
-# XPASSed while the defect was fully present. M7 has since split: M7b (SE spread
-# 61.7x across identical DGPs) was the diverging REML solver and is fixed, with
-# spread now 1.15x against the no-AR arm's 1.17x. What remains is M7a, whose
-# signature is one-directional — every measured sd(draws)/SE ratio >= 1.0 — and
-# is pinned deterministically by ``test_ar_lmm_spread_ratio`` above.
+# The former AR power gate was removed because a single Type I measurement cannot
+# establish a general power claim. Calibration is pinned by the deterministic
+# spread-ratio gate above.

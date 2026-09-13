@@ -205,7 +205,7 @@ class IndividualTestResult(_DictAccessMixin):
     """Actual number of randomizations used."""
 
     groups: np.ndarray | None
-    """Exchangeability group labels (``None`` until v0.4.1)."""
+    """Exchangeability group labels, or ``None`` for global exchangeability."""
 
     permutation_strategy: str | None
     """``"within"``, ``"between"``, ``"two-stage"``, or ``None``."""
@@ -288,7 +288,7 @@ class JointTestResult(_DictAccessMixin):
     """Actual number of randomizations used."""
 
     groups: np.ndarray | None
-    """Exchangeability group labels (``None`` until v0.4.1)."""
+    """Exchangeability group labels, or ``None`` for global exchangeability."""
 
     permutation_strategy: str | None
     """``"within"``, ``"between"``, ``"two-stage"``, or ``None``."""

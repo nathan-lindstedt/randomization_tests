@@ -92,7 +92,7 @@ def estimate_panel_ar_coefficients(
     order: int,
     fit_intercept: bool = True,
 ) -> np.ndarray:
-    r"""Estimate AR(p) coefficients for longitudinal mixed models decontaminated from cluster effects (M11).
+    r"""Estimate AR(p) coefficients decontaminated from cluster random effects.
 
     In longitudinal panel data with random intercepts:
 

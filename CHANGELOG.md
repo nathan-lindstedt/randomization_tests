@@ -64,6 +64,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **JAX batch Poisson and Negative Binomial deviance calculation**:
+  `batch_poisson_fit_and_score`, `batch_poisson_fit_and_score_varying_X`,
+  `batch_negbin_fit_and_score`, and `batch_negbin_fit_and_score_varying_X`
+  in `_backends/_jax.py` previously returned raw $2 \cdot \text{NLL}$ without
+  the saturated model offset ($2 \sum_{y>0} [y \ln y - y]$ for Poisson,
+  $2 \sum [y \ln y - (y + 1/\alpha)\ln(1 + \alpha y)]$ for NB2). Because
+  constant factorials were dropped in NLL, $2 \cdot \text{NLL}$ was
+  negative, causing joint test improvement statistics to subtract
+  negative numbers and inflate permuted null draws, producing false-negative
+  joint p-values ($p = 1.000$) on real signals.  Added exact saturated offsets,
+  matching the true deviance metric across both backends to machine precision.
+
+- **Unified vertical metric alignment in protocol artifacts table**:
+  `print_protocol_usage_table()` in `display.py` now aligns all metrics and
+  values—across family properties, fitted moments, coefficients, diagnostics,
+  variance components, classical benchmarks, and permutation configuration—along
+  a single uniform vertical column (column 30).
+
+- **Calibrated Cook's distance large-sample advisory**:
+  In large datasets ($N > 1{,}000$), $4/n$ drops to near-zero ($< 0.004$),
+  flagging minor leverage points as influential. `print_diagnostics_table()`
+  now reports the maximum Cook's distance alongside the $4/n$ count,
+  reassuring users when all points remain well below severe influence thresholds
+  ($D < 0.5$).
+
+- **REML log-likelihood in linear mixed results headers**:
+  Under REML estimation, AIC and BIC are undefined (NaN).
+  `LinearMixedFamily.display_header()` now displays the maximized restricted
+  log-likelihood (`REML Log-Lik: -30396.16`) in place of `BIC: N/A`.
+
 - **Decontaminated AR parameter estimation in longitudinal LMMs (M11) and composite cluster whitening (M7a)**:
   `LinearMixedFamily` previously estimated autoregressive parameters
   from raw marginal residuals $y - \bar y$. Because cluster random

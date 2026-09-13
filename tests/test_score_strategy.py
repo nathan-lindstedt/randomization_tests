@@ -1,4 +1,4 @@
-"""Tests for the score projection strategy (Plan B).
+"""Tests for the score projection strategy.
 
 Covers:
 - Protocol conformance and registry wiring
@@ -504,7 +504,7 @@ class TestScoreLMMJoint:
 
 
 # ------------------------------------------------------------------ #
-# Score joint ≡ Freedman–Lane joint equivalence (M13)
+# Score joint ≡ Freedman–Lane joint equivalence
 # ------------------------------------------------------------------ #
 
 
@@ -512,9 +512,8 @@ class TestScoreEqualsFreedmanLaneJoint:
     """score_joint's residual-based branch shares one implementation with
     freedman_lane_joint (``_residual_joint_statistic``), so with the same
     permutation indices the null arrays and observed statistic must be
-    bit-identical -- not merely close.  Regression guard for M13, where
-    score_joint permuted full-model residuals instead of reduced-model
-    residuals and silently diverged from Freedman-Lane joint.
+    bit-identical -- not merely close. The shared residual reconstruction
+    keeps the two equivalent joint methods synchronized.
     """
 
     def test_linear_with_confounders_and_real_effect(self) -> None:
@@ -588,7 +587,7 @@ class TestUnsupportedFamily:
     """score methods with previously unsupported families now work.
 
     LogisticFamily and PoissonFamily gained real ``score_project()``
-    implementations in Phase 5, so ``score`` and ``score_joint``
+    implementations, so ``score`` and ``score_joint``
     should complete without raising.  ``score_exact`` remains GLMM-
     only and is tested in ``TestScoreExactNonGLMM`` below.
     """
@@ -793,7 +792,7 @@ class TestSingularityGuards:
 
 
 # ------------------------------------------------------------------ #
-# AR score parity (Step 19)
+# AR score parity
 # ------------------------------------------------------------------ #
 
 

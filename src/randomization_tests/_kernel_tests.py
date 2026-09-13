@@ -403,9 +403,7 @@ def kernel_regression_test(
     positives — residual independence e_X ⊥ e_Y is a proxy for
     X ⊥ Y | Z that is exact only under additive linear confounding.
     For nonlinear confounders, use a flexible cross-fitted reduced
-    model (``reduced_model=`` arrives with the DML integration) or a
-    fully kernelised conditional test (``conditional_hsic_test``,
-    v0.5.2).
+    model (``reduced_model=``) or a fully kernelised conditional test.
     """
     X_arr = np.asarray(X, dtype=float)
     Y_arr = np.asarray(Y, dtype=float)

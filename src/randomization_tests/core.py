@@ -368,18 +368,17 @@ def randomization_test_regression(
     # see a misleading "no confounders" warning before the hard error.
     if method in ("kennedy", "kennedy_joint") and not confounders:
         warnings.warn(
-            f"{method!r} method called without confounders — all features "
-            "will be tested. Consider 'ter_braak' for unconditional tests.",
+            f"{method!r} method called without confounders \u2014 all features "
+            "will be tested, each partialling out the remaining predictors.",
             UserWarning,
             stacklevel=2,
         )
 
     if method in ("freedman_lane", "freedman_lane_joint") and not confounders:
         warnings.warn(
-            f"{method!r} method called without confounders — all features "
-            "will be tested, each against the reduced model containing the "
-            "remaining predictors. Consider 'ter_braak' for a single "
-            "full-model-residual test of all coefficients.",
+            f"{method!r} method called without confounders \u2014 all features "
+            "will be tested, each conditioning on the remaining predictors "
+            "(standard multiple regression).",
             UserWarning,
             stacklevel=2,
         )
@@ -556,7 +555,7 @@ def _validate_inputs(
 
 
 # ------------------------------------------------------------------ #
-# Panel-data convenience layer (Step 15)
+# Panel-data convenience layer
 # ------------------------------------------------------------------ #
 
 
@@ -690,7 +689,7 @@ def _validate_panel(
 
 
 # ------------------------------------------------------------------ #
-# Groups validation (Step 10a + 11b-d)
+# Groups validation
 # ------------------------------------------------------------------ #
 
 
@@ -881,7 +880,7 @@ def _validate_groups(
             if ctx is not None:
                 ctx.warnings_captured.append(warn_msg)
 
-    # ---- Singleton warnings (Step 11b / Step 11j) -----------------
+    # ---- Singleton warnings ---------------------------------------
     n_singletons = int(np.sum(cell_sizes == 1))
 
     if n_singletons > 0 and resolved in ("within", "two-stage"):
@@ -895,7 +894,7 @@ def _validate_groups(
         else:
             warnings.warn(warn_msg, UserWarning, stacklevel=3)
 
-    # ---- Two-stage imbalance (Step 11d / Step 11j) ---------------
+    # ---- Two-stage imbalance --------------------------------------
     if resolved == "two-stage":
         ratio = float(max(non_empty_sizes)) / float(min(non_empty_sizes))
         if ratio > 3.0:
@@ -959,7 +958,7 @@ def _factorial_safe(n: int) -> int:
 
 
 # ------------------------------------------------------------------ #
-# Callback validation (Step 11a)
+# Callback validation
 # ------------------------------------------------------------------ #
 
 

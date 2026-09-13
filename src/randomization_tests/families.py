@@ -15,8 +15,8 @@ and communicates exclusively through the protocol methods.  The
 Architecture
 ~~~~~~~~~~~~
 The protocol is deliberately minimal — every method maps 1:1 to an
-existing branch in the v0.2.0 ``core.py`` code, so that the Phase 2
-core refactor is a mechanical replacement of ``if is_binary:`` checks
+existing branch in the original ``core.py`` code, so that the core
+refactor is a mechanical replacement of ``if is_binary:`` checks
 with ``family.<method>()`` calls.  No new statistical logic is
 introduced here; the protocol merely formalises the interface that was
 previously implicit.
@@ -429,7 +429,7 @@ class ModelFamily(Protocol):
 
         Returns a dict whose keys match exactly what
         ``display_diagnostics()`` reads — the contract is locked in
-        by Step 4.  Each family produces its own diagnostic key:
+        by the display contract.  Each family produces its own diagnostic key:
 
         =============================  =========================
         Family                         Dict key produced
@@ -785,7 +785,7 @@ class ModelFamily(Protocol):
         """
         ...
 
-    # ---- Exchangeability (v0.4.0 forward-compat) -------------------
+    # ---- Exchangeability -------------------------------------------
     #
     # Protocol default: return ``None`` (global exchangeability).
     #
@@ -804,8 +804,8 @@ class ModelFamily(Protocol):
     ) -> np.ndarray | None:
         """Return group labels defining exchangeability cells, or ``None``.
 
-        Under v0.4.0 the permutation engine will restrict permutations
-        to within-cell shuffles when this returns a non-``None`` array
+        The permutation engine restricts permutations to within-cell
+        shuffles when this returns a non-``None`` array
         or :class:`ExchangeabilityTree`.
 
         Families that assume global exchangeability (linear, logistic)
@@ -813,8 +813,8 @@ class ModelFamily(Protocol):
         mixed-effects) may return cluster labels (flat array) or an
         ``ExchangeabilityTree`` for multi-factor designs.
 
-        This method exists on the protocol now so that v0.4.0 can
-        call it on any family without a protocol-breaking change.
+        This method is part of the protocol so the engine can apply
+        the same exchangeability contract to every family.
 
         Args:
             X: Design matrix ``(n, p)``.
@@ -1292,9 +1292,10 @@ class LinearFamily:
             bp_p = bp.get("lm_p_value")
             if bp_p is not None and bp_p < 0.05:
                 notes.append(
-                    f"Breusch-Pagan p = {bp_p:.4f}: "
-                    f"heteroscedastic residuals detected; "
-                    f"exchangeability assumption may be violated."
+                    f"Breusch\u2013Pagan p = {bp_p:.4f}: heteroscedastic residuals "
+                    "detected. Consider method='score', which studentizes by "
+                    "Fisher information to remain asymptotically robust to "
+                    "heteroscedasticity."
                 )
 
         # ---- Panel / AR diagnostics --------------------------------
@@ -1384,8 +1385,8 @@ class LinearFamily:
                 if p_val < 0.05:
                     notes.append(
                         f"Ljung\u2013Box p = {p_val:.4f} after AR({ar_order}) "
-                        f"correction: significant residual autocorrelation "
-                        f"remains."
+                        f"correction: significant residual autocorrelation remains. "
+                        f"Consider increasing ar_order to {ar_order + 1}."
                     )
 
         return lines, notes
@@ -1751,7 +1752,7 @@ class LinearFamily:
         pvals = sm_model.pvalues[1:] if fit_intercept else sm_model.pvalues
         return np.asarray(pvals)  # shape: (p,)
 
-    # ---- Exchangeability (v0.4.0 forward-compat) -------------------
+    # ---- Exchangeability -------------------------------------------
 
     def exchangeability_cells(
         self,
@@ -2531,7 +2532,7 @@ class LogisticFamily:
         pvals = sm_model.pvalues[1:] if fit_intercept else sm_model.pvalues
         return np.asarray(pvals)  # shape: (p,)
 
-    # ---- Exchangeability (v0.4.0 forward-compat) -------------------
+    # ---- Exchangeability -------------------------------------------
 
     def exchangeability_cells(
         self,
@@ -3253,7 +3254,7 @@ class PoissonFamily:
         pvals = sm_model.pvalues[1:] if fit_intercept else sm_model.pvalues
         return np.asarray(pvals)
 
-    # ---- Exchangeability (v0.4.0 forward-compat) -------------------
+    # ---- Exchangeability -------------------------------------------
 
     def exchangeability_cells(
         self,
@@ -3429,7 +3430,7 @@ class PoissonFamily:
 # reduces to Poisson.  The NB2 parameterisation is the statsmodels
 # default and the most common in applied work.
 #
-# **Key design decision** (from the v0.3.0 plan):
+# **Key design decision**:
 # Estimate α ONCE on the observed (unpermuted) data using
 # ``sm.NegativeBinomial(y, X).fit()``, which jointly estimates β and
 # α via maximum likelihood.  Hold α fixed for all permutation refits
@@ -3949,7 +3950,7 @@ class NegativeBinomialFamily:
         pvals = sm_model.pvalues[1:] if fit_intercept else sm_model.pvalues
         return np.asarray(pvals)
 
-    # ---- Exchangeability (v0.4.0 forward-compat) -------------------
+    # ---- Exchangeability -------------------------------------------
 
     def exchangeability_cells(
         self,
@@ -4194,7 +4195,7 @@ class NegativeBinomialFamily:
 # slope coefficients.  The model assumes proportional odds: the
 # effect of each predictor is constant across cutpoints.
 #
-# **Key design decisions** (from the v0.3.0 plan):
+# **Key design decisions**:
 #
 # 1. **direct_permutation = True** — Ordinal residuals are not well-
 #    defined, so the residual→permute→reconstruct pipeline is replaced
@@ -4840,7 +4841,7 @@ class OrdinalFamily:
         model = self.fit(X, y, fit_intercept)
         return np.asarray(model.pvalues[:n_features])  # Wald z p-values, shape (p,)
 
-    # ---- Exchangeability (v0.4.0 forward-compat) -------------------
+    # ---- Exchangeability -------------------------------------------
 
     def exchangeability_cells(
         self,
@@ -4985,7 +4986,7 @@ class OrdinalFamily:
 #
 # with class 0 as the reference category (β_0 = 0 ⇒ identifiability).
 #
-# **Key design decisions** (from the v0.3.0 plan):
+# **Key design decisions**:
 #
 # 1. **Wald χ² test statistic** — Each predictor j has K−1
 #    coefficients across the non-reference categories.  The scalar
@@ -5635,7 +5636,7 @@ class MultinomialFamily:
             sp_stats.chi2.sf(wald_stats, df=df)
         )  # 1 − F_{χ²}(χ²_j; K−1), shape (p,)
 
-    # ---- Exchangeability (v0.4.0 forward-compat) -------------------
+    # ---- Exchangeability -------------------------------------------
 
     def exchangeability_cells(
         self,
@@ -5777,9 +5778,7 @@ class MultinomialFamily:
 # time side effects from heavyweight families that may pull in optional
 # dependencies.
 #
-# Concrete family classes are registered here as they are implemented
-# in later steps.  Until then, the registry contains only placeholders
-# that are populated during the Phase 1 build-out.
+# Concrete family classes are registered here after their definitions.
 
 _FAMILIES: dict[str, type] = {}
 """Registry mapping family name strings to concrete ModelFamily classes."""
