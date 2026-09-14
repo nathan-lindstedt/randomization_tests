@@ -598,7 +598,7 @@ prediction, and invariance testing.
 
 ### Hyperedge testing
 
-- [ ] Generalise the Kennedy joint test to arbitrary hyperedges
+- [ ] Generalise joint tests to arbitrary hyperedges
   declared in the specification.  A hyperedge {X₁, X₂, X₃} → Y
   triggers joint row-wise permutation of exposure residuals for
   X₁, X₂, X₃ simultaneously, with the test statistic being the
