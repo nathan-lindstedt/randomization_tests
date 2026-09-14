@@ -6,9 +6,7 @@ Thank you for your interest in contributing to **randomization_tests**.
 
 | Branch                        | Purpose                                                                                                |
 | ----------------------------- | ------------------------------------------------------------------------------------------------------ |
-| `main`                      | Instructional branch — not actively developed.                                                        |
-| `experimental`              | Active development branch where all hardening, performance, and feature work lands.                    |
-| `v0.X.0` (feature branches) | Branch off `experimental` for a major version scope, merge back into `experimental` when complete. |
+| `main`                      | Main branch — actively developed.                                                        |
 
 All CI runs against `experimental`.  `main` remains a simple,
 self-contained reference implementation.
@@ -86,7 +84,7 @@ mypy src/randomization_tests/
 
 ## Pull request guidelines
 
-1. Fork the repository and create your branch from `experimental`.
+1. Fork the repository and create your branch from `main`.
 2. Add tests for any new functionality.
 3. Ensure `pytest`, `ruff check`, and `mypy` all pass before opening a PR.
 4. Update `CHANGELOG.md` under the `[Unreleased]` section.
