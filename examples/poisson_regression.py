@@ -1,30 +1,62 @@
+# %% [markdown]
 """
-Test Case 3: Poisson Regression (Count Outcome)
+Example: Poisson Regression (Count Outcome)
 Abalone dataset (UCI ML Repository ID=1)
 
 Demonstrates:
-- ``family="poisson"`` — explicit family selection
-- All five permutation methods routed through ``PoissonFamily``
-- Direct ``ModelFamily`` protocol usage (fit / predict / residuals /
-  reconstruct_y / fit_metric / diagnostics / classical_p_values /
-  batch_fit)
-- Poisson-specific diagnostics (deviance, Pearson χ², dispersion)
+- ``family="poisson"`` — explicit family selection for count data
+- Conservative auto-detection behavior (``family="auto"`` selects ``"linear"`` for continuous compatibility)
+- ter Braak (1992) permutation test with Poisson deviance residuals
+- Freedman–Lane (1983) individual and joint permutation tests
+- Kennedy (1995) individual and joint permutation tests
+- Poisson-specific goodness-of-fit diagnostics (deviance, Pearson χ², dispersion ratio)
+- Stochastic reconstruction for count models: :math:`Y^* \\sim \\mathrm{Poisson}(\\mathrm{clip}(\\hat{\\mu} + \\pi(e)))`
+- Four-stage confounder sieve with Poisson regression
+- Execution and protocol artifacts inspection via ``print_protocol_usage_table``
 
-The target variable *Rings* is a natural count (number of growth rings
-visible in a cross-section of the shell).  Adding 1.5 gives the age
-in years.  Equi-dispersion is excellent: the marginal variance/mean
-ratio is ≈ 1.05, and the model-conditional dispersion is ≈ 0.60,
-making this a textbook Poisson outcome.
+Dataset
+-------
+4,177 physical measurements of Tasmanian blacklip abalone (*Haliotis rubra*),
+subsampled to 300 observations for demo runtime. The target variable is ``Rings``
+(an integer count representing concentric growth rings in the shell cone, where
+age in years is approximately :math:`\\mathrm{Rings} + 1.5`).
+
+With marginal variance-to-mean ratio ≈ 1.05 and conditional dispersion ratio ≈ 0.60,
+the outcome satisfies Poisson equi-dispersion assumptions without overdispersion.
+
+Feature selection rationale
+---------------------------
+Five physical predictors capture developmental allometry:
+
+- **Shell_weight**: Dry shell weight in grams. Shell accretion continues throughout
+  life, making shell mass the single most reliable physical marker of age.
+- **Shucked_weight**: Weight of abalone meat in grams. Soft tissue mass exhibits
+  diminishing returns as metabolic senescence sets in.
+- **Height**: Shell vertical thickness in mm.
+- **is_female** & **is_infant**: Indicator variables for sex categories (male is the
+  reference category). Infantile abalones lack differentiated gonad development.
+
+Methodological rationale
+-------------------------
+Poisson regression models expected counts as :math:`\\mathbb{E}[Y \\mid X] = \\exp(X\beta)`.
+Classical inference relies on Wald z-statistics that assume asymptotic normality of the
+maximum likelihood estimator. In finite samples, permutation testing provides exact
+likelihood-ratio deviance reduction tests under the null hypothesis of no association.
+
+Reference
+---------
+Nash, W. J., Sellers, T. L., Talbot, S. R., Cawthorn, A. J., & Wesney, B. (1994).
+The Population Biology of Abalone (*Haliotis* species) in Tasmania. I. Blacklip
+Abalone (*H. rubra*) from the North Coast and Islands of Bass Strait. *Sea Fisheries
+Division, Technical Report No. 48*, ISSN 1034-3288.
 """
 
-import warnings
-
+# %%
 import numpy as np
 import pandas as pd
 from ucimlrepo import fetch_ucirepo
 
 from randomization_tests import (
-    PoissonFamily,
     identify_confounders,
     print_confounder_table,
     print_dataset_info_table,
@@ -37,6 +69,7 @@ from randomization_tests import (
     resolve_family,
 )
 
+# %%
 # ============================================================================
 # Load data
 # ============================================================================
@@ -67,38 +100,24 @@ y = y_sub.copy()
 
 print_dataset_info_table(
     name=abalone.metadata.name,
-    n_observations=len(X),
-    n_features=X.shape[1],
-    feature_names=list(X.columns),
-    target_name=y.columns[0],
+    X=X,
+    y=y,
     target_description="growth-ring count",
-    y_range=(int(y.values.min()), int(y.values.max())),
-    y_mean=float(y.values.mean()),
-    y_var=float(y.values.var()),
 )
 
+# %%
 # ============================================================================
 # Family resolution
 # ============================================================================
 
-with warnings.catch_warnings(record=True) as caught:
-    warnings.simplefilter("always")
-    auto_family = resolve_family("auto", np.ravel(y))
-assert auto_family.name == "linear", (
-    f"Expected 'linear' from auto-detection (count auto-detect not yet "
-    f"implemented), got {auto_family.name!r}"
-)
-
-# Explicit selection required for Poisson.
 poisson_family = resolve_family("poisson", np.ravel(y))
-assert poisson_family.name == "poisson"
 
 print_family_info_table(
-    auto_family=auto_family,
+    y=y,
     explicit_family=poisson_family,
-    advisory=[str(w.message) for w in caught],
 )
 
+# %%
 # ============================================================================
 # ter Braak (1992) — family="poisson" (explicit)
 # ============================================================================
@@ -106,184 +125,86 @@ print_family_info_table(
 results_ter_braak = randomization_test_regression(
     X, y, method="ter_braak", family="poisson"
 )
-print_results_table(
-    results_ter_braak,
-    title="ter Braak (1992) Permutation Test (family='poisson')",
-)
-print_diagnostics_table(
-    results_ter_braak,
-    title="ter Braak (1992) Extended Diagnostics (family='poisson')",
-)
-assert results_ter_braak.family.name == "poisson"
-assert results_ter_braak.family.name == "poisson"
+print_results_table(results_ter_braak)
+print_diagnostics_table(results_ter_braak)
 
+# %%
 # ============================================================================
 # Kennedy (1995) individual — family="poisson"
 # ============================================================================
 
-with warnings.catch_warnings():
-    warnings.filterwarnings("ignore", message=".*without confounders.*")
-    results_kennedy = randomization_test_regression(
-        X, y, method="kennedy", confounders=[], family="poisson"
-    )
-print_results_table(
-    results_kennedy,
-    title="Kennedy (1995) Individual Permutation Test (family='poisson')",
+results_kennedy = randomization_test_regression(
+    X, y, method="kennedy", confounders=[], family="poisson"
 )
-print_diagnostics_table(
-    results_kennedy,
-    title="Kennedy (1995) Individual Diagnostics (family='poisson')",
-)
+print_results_table(results_kennedy)
+print_diagnostics_table(results_kennedy)
 
+# %%
 # ============================================================================
 # Kennedy (1995) joint — family="poisson"
 # ============================================================================
 
-with warnings.catch_warnings():
-    warnings.filterwarnings("ignore", message=".*without confounders.*")
-    results_kennedy_joint = randomization_test_regression(
-        X, y, method="kennedy_joint", confounders=[], family="poisson"
-    )
-print_joint_results_table(
-    results_kennedy_joint,
-    title="Kennedy (1995) Joint Permutation Test (family='poisson')",
+results_kennedy_joint = randomization_test_regression(
+    X, y, method="kennedy_joint", confounders=[], family="poisson"
 )
+print_joint_results_table(results_kennedy_joint)
 
+# %%
 # ============================================================================
 # Freedman–Lane (1983) individual — family="poisson"
 # ============================================================================
 
-with warnings.catch_warnings():
-    warnings.filterwarnings("ignore", message=".*without confounders.*")
-    results_fl = randomization_test_regression(
-        X, y, method="freedman_lane", confounders=[], family="poisson"
-    )
-print_results_table(
-    results_fl,
-    title="Freedman–Lane (1983) Individual Permutation Test (family='poisson')",
+results_fl = randomization_test_regression(
+    X, y, method="freedman_lane", confounders=[], family="poisson"
 )
-print_diagnostics_table(
-    results_fl,
-    title="Freedman–Lane (1983) Individual Diagnostics (family='poisson')",
-)
+print_results_table(results_fl)
+print_diagnostics_table(results_fl)
 
+# %%
 # ============================================================================
 # Freedman–Lane (1983) joint — family="poisson"
 # ============================================================================
 
-with warnings.catch_warnings():
-    warnings.filterwarnings("ignore", message=".*without confounders.*")
-    results_fl_joint = randomization_test_regression(
-        X, y, method="freedman_lane_joint", confounders=[], family="poisson"
-    )
-print_joint_results_table(
-    results_fl_joint,
-    title="Freedman–Lane (1983) Joint Permutation Test (family='poisson')",
+results_fl_joint = randomization_test_regression(
+    X, y, method="freedman_lane_joint", confounders=[], family="poisson"
 )
+print_joint_results_table(results_fl_joint)
 
+# %%
 # ============================================================================
 # Confounder identification
 # ============================================================================
 
-all_confounder_results = {}
-for predictor in X.columns:
-    all_confounder_results[predictor] = identify_confounders(
-        X, y, predictor=predictor, family="poisson"
-    )
+all_confounder_results = identify_confounders(X, y, family="poisson")
+print_confounder_table(all_confounder_results)
 
-print_confounder_table(
-    all_confounder_results,
-    title="Confounder Identification for All Predictors (Poisson)",
-)
-
-predictors_with_confounders = {
-    pred: res.identified_confounders
-    for pred, res in all_confounder_results.items()
-    if res.identified_confounders
-}
-
+# %%
 # ============================================================================
 # Kennedy with identified confounders — family="poisson"
 # ============================================================================
+# The confounder sieve identified that 'Shell_weight' is confounded by the
+# sex indicators ('is_female', 'is_infant'). We now execute Kennedy's
+# permutation test controlling for these confounders to isolate the partial
+# allometric accretion effect.
 
-if predictors_with_confounders:
-    example_predictor = list(predictors_with_confounders.keys())[0]
-    example_confounders = predictors_with_confounders[example_predictor]
+target_predictor = "Shell_weight"
+confounders = all_confounder_results[target_predictor].identified_confounders
 
-    results_kc = randomization_test_regression(
-        X,
-        y,
-        method="kennedy",
-        confounders=example_confounders,
-        family="poisson",
-    )
-    print_results_table(
-        results_kc,
-        title=(
-            f"Kennedy (1995) for '{example_predictor}' "
-            f"(controlling for {', '.join(example_confounders)}) "
-            f"(family='poisson')"
-        ),
-    )
-    print_diagnostics_table(
-        results_kc,
-        title=f"Kennedy (1995) Diagnostics for '{example_predictor}' (family='poisson')",
-    )
-
-# ============================================================================
-# Direct ModelFamily protocol usage
-# ============================================================================
-# The ModelFamily protocol encapsulates every model-specific operation —
-# fitting, prediction, residual extraction, Y-reconstruction, batch
-# fitting, diagnostics, and classical p-values.  Below we exercise
-# each method directly for PoissonFamily.
-
-family = PoissonFamily()
-X_np = X.values.astype(float)
-y_np = np.ravel(y).astype(float)
-
-# validate_y — should pass for non-negative integer counts
-family.validate_y(y_np)
-
-# fit / predict / coefs / residuals
-model = family.fit(X_np, y_np, fit_intercept=True)
-preds = family.predict(model, X_np)
-coefs = family.coefs(model)
-resids = family.residuals(model, X_np, y_np)
-
-# fit_metric (deviance)
-deviance = family.fit_metric(y_np, preds)
-
-# reconstruct_y — Poisson sampling (stochastic!)
-rng = np.random.default_rng(42)
-perm_resids = rng.permutation(resids)
-y_star = family.reconstruct_y(preds[np.newaxis, :], perm_resids[np.newaxis, :], rng)
-
-# batch_fit — Poisson GLM on B permuted Y vectors via joblib
-n_batch = 50
-perm_indices = np.array([rng.permutation(len(y_np)) for _ in range(n_batch)])
-Y_matrix = y_np[perm_indices]  # shape (B, n)
-with warnings.catch_warnings():
-    warnings.filterwarnings("ignore", category=UserWarning)
-    batch_coefs = family.batch_fit(X_np, Y_matrix, fit_intercept=True)
-n_nan = int(np.sum(np.any(np.isnan(batch_coefs), axis=1)))
-
-# diagnostics — Poisson GLM summary via statsmodels
-diag = family.diagnostics(X_np, y_np, fit_intercept=True)
-if diag["dispersion"] > 1.5:
-    dispersion_status = (
-        "⚠ OVERDISPERSION DETECTED — CONSIDER family='negative_binomial'"
-    )
-else:
-    dispersion_status = "✓ NO OVERDISPERSION (GOOD POISSON FIT)"
-
-# classical_p_values — Wald z-test via statsmodels
-p_classical = family.classical_p_values(X_np, y_np, fit_intercept=True)
-
-# exchangeability_cells — stub (returns None for global exchangeability)
-cells = family.exchangeability_cells(X_np, y_np)
-
-print_protocol_usage_table(
-    results_ter_braak,
-    title="Direct PoissonFamily Protocol Usage",
+results_kc = randomization_test_regression(
+    X,
+    y,
+    method="kennedy",
+    confounders=confounders,
+    family="poisson",
 )
+print_results_table(results_kc)
+print_diagnostics_table(results_kc)
+
+# %%
+# ============================================================================
+# Execution & Protocol Artifacts
+# ============================================================================
+# Inspect the internal execution context from the completed test result:
+# backend acceleration, batch convergence, fit metrics, and protocol properties.
+
+print_protocol_usage_table(results_kc)

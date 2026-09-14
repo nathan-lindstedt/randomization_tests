@@ -1,26 +1,91 @@
+# %% [markdown]
 """
-Test Case 6: Multinomial Logistic Regression (Unordered Categorical Outcome)
-Wine dataset (UCI ML Repository ID=109)
+Example: Multinomial Logistic Regression (Unordered Categorical Outcome)
+Dataset: Wine (UCI Machine Learning Repository ID=109)
+
+Dataset Context & Theoretical Background:
+    The Wine dataset (Forina et al., 1991; Aeberhard et al., 1992) reports the
+    chemical analysis of wines grown in the Piedmont region of Italy, derived
+    from three distinct cultivars: Barolo (Class 1), Grignolino (Class 2), and
+    Barbera (Class 3). The objective is to identify which chemical attributes
+    statistically distinguish the three wine cultivars.
+
+    When the response variable Y is nominal (unordered categorical with K >= 3
+    classes), neither standard metric regression nor ordinal regression is
+    appropriate. Multinomial logistic regression models the log-odds of
+    belonging to class k relative to a chosen baseline class K (the reference):
+
+        log( P(Y = k | X) / P(Y = K | X) ) = alpha_k + X * beta_k,  k = 1, ..., K - 1
+
+    Because each predictor has K - 1 independent slope coefficients across the
+    contrast equations, testing whether a predictor significantly affects class
+    membership requires a joint multidimensional test. Under the null
+    hypothesis H_0: beta_{j,1} = beta_{j,2} = ... = beta_{j,K-1} = 0, the
+    scalar test statistic is the Wald chi-square statistic:
+
+        W_j = hat{beta}_j^T * [Cov(hat{beta}_j)]^{-1} * hat{beta}_j ~ chi^2(K - 1)
+
+Features Selected for Modeling:
+    - Alcohol: Alcohol percent by volume (% vol). Reflects grape maturity, sugar
+      accumulation, and yeast fermentation characteristics across cultivars.
+    - Malicacid: Malic acid concentration (g/L). A key dicarboxylic organic acid
+      strongly dependent on vine microclimate, altitude, and harvest timing.
+    - Ash: Total inorganic mineral residue remaining after sample incineration (g/L),
+      reflecting soil uptake and vineyard geology.
+    - Magnesium: Magnesium mineral content (mg/L), acting as an enzyme cofactor in
+      fermentation and vine nutrition.
+    - Hue: The color ratio of absorbance at 420 nm to 520 nm, characterizing
+      anthocyanin coloration and oxidation state.
+
+Methodological Rationale for Resampling Tests:
+    1. Direct Y Permutation vs. Residual Permutation:
+       Multinomial models produce K-dimensional probability simplex predictions
+       rather than scalar continuous residuals. Scalar error reconstruction
+       is undefined. Therefore, residual-based resampling algorithms such as
+       Freedman-Lane (1983) and ter Braak (1992) cannot be applied, and are
+       safeguarded against by raising informative ValueErrors.
+    2. Manly (1997) Direct Permutation:
+       The exact finite-sample test for multinomial regression permutes the
+       discrete class labels Y directly across observation units (Manly, 1997).
+       Under the global null hypothesis that cultivar identity is independent
+       of chemical composition, the exchangeability of Y holds unconditionally
+       under the symmetric group S_n.
+    3. Kennedy (1995) Exposure-Residual Permutation:
+       When assessing the partial significance of a chemical attribute while
+       adjusting for confounding covariates Z, Kennedy's (1995) method permutes
+       the exposure residuals e_X = (I - H_Z) X. Because e_X is continuous and
+       derived from an OLS projection of X onto Z, it remains valid regardless
+       of the outcome's discrete multinomial nature.
 
 Demonstrates:
-- ``family="multinomial"`` — explicit family selection (no auto-detection)
-- ``ter_braak``, ``kennedy``, and ``kennedy_joint`` permutation methods
-  (Freedman-Lane methods are not supported for multinomial because
-  residuals are not well-defined)
-- Wald χ² test statistics as the per-predictor scalar summary
-- Direct ``ModelFamily`` protocol usage (fit / predict / coefs /
-  category_coefs / batch_fit / diagnostics / classical_p_values)
+    - family="multinomial" -- unordered multinomial logit via MultinomialFamily
+    - Manly (1997) direct permutation testing (individual Wald chi^2 and joint deviance)
+    - Kennedy (1995) exposure-residual permutation testing
+    - Method compatibility matrix via print_compatibility_table
+    - Automated confounder identification and partial permutation testing
+    - Execution and protocol artifacts inspection via print_protocol_usage_table
+
+References:
+    - Forina, M., Armanino, C., Castino, M., & Ubigli, M. (1991). Multivariate
+      data analysis as a discriminating tool of the origin of wines. Vitis,
+      25, 189-201.
+    - Aeberhard, S., Coomans, D., & de Vel, O. (1992). Comparative analysis of
+      statistical pattern recognition methods in high dimensional settings.
+      Pattern Recognition, 27(8), 1065-1077.
+    - Manly, B. F. J. (1997). Randomization, Bootstrap and Monte Carlo Methods
+      in Biology (2nd ed.). Chapman & Hall/CRC.
+    - Kennedy, P. E. (1995). Randomization tests in econometrics. Journal of
+      Business & Economic Statistics, 13(1), 85-94.
 """
 
-import warnings
-
+# %%
 import numpy as np
 import pandas as pd
 from ucimlrepo import fetch_ucirepo
 
 from randomization_tests import (
-    MultinomialFamily,
     identify_confounders,
+    print_compatibility_table,
     print_confounder_table,
     print_dataset_info_table,
     print_diagnostics_table,
@@ -32,34 +97,33 @@ from randomization_tests import (
     resolve_family,
 )
 
+# %%
 # ============================================================================
 # Load data
 # ============================================================================
 
 wine = fetch_ucirepo(id=109)
-X_wine = wine.data.features
-y_wine = wine.data.targets
+X = wine.data.features
+y = wine.data.targets
 
 # Wine classes are 1, 2, 3 — recode to 0, 1, 2 for MultinomialFamily.
-y_wine = pd.DataFrame(
-    y_wine.iloc[:, 0].values - 1,
+y = pd.DataFrame(
+    y.iloc[:, 0].values - 1,
     columns=["class"],
 )
 
 # Select 5 features with low multicollinearity (all VIF ≤ 1.5).
 selected_features = ["Alcohol", "Malicacid", "Ash", "Magnesium", "Hue"]
-X_wine = X_wine[selected_features]
+X = X[selected_features]
 
-y_values = np.ravel(y_wine)
+y_values = np.ravel(y)
 class_names = ["class_0", "class_1", "class_2"]
 counts = np.bincount(y_values)
 
 print_dataset_info_table(
     name=wine.metadata.name,
-    n_observations=len(X_wine),
-    n_features=X_wine.shape[1],
-    feature_names=list(X_wine.columns),
-    target_name="class",
+    X=X,
+    y=y,
     target_description="wine cultivar (3 classes)",
     extra_stats={
         "Classes": ", ".join(class_names),
@@ -75,178 +139,97 @@ print_family_info_table(
     explicit_family=_family,
 )
 
+# %%
 # ============================================================================
-# ter Braak (1992) — family="multinomial"
+# Manly (1997) individual — direct Y permutation (family="multinomial")
 # ============================================================================
 
-results_ter_braak = randomization_test_regression(
-    X_wine, y_wine, method="ter_braak", family="multinomial"
+results_manly = randomization_test_regression(
+    X, y, method="manly", family="multinomial", n_randomizations=999
 )
-print_results_table(
-    results_ter_braak,
-    title="ter Braak (1992) Permutation Test (family='multinomial')",
-)
-print_diagnostics_table(
-    results_ter_braak,
-    title="ter Braak (1992) Diagnostics (family='multinomial')",
-)
-assert results_ter_braak.family.name == "multinomial"
+print_results_table(results_manly)
+print_diagnostics_table(results_manly)
 
+# %%
+# ============================================================================
+# Manly (1997) joint — direct Y permutation (family="multinomial")
+# ============================================================================
+
+results_manly_joint = randomization_test_regression(
+    X, y, method="manly_joint", family="multinomial", n_randomizations=999
+)
+print_joint_results_table(results_manly_joint)
+
+# %%
 # ============================================================================
 # Kennedy (1995) individual — family="multinomial"
 # ============================================================================
 
-with warnings.catch_warnings():
-    warnings.filterwarnings("ignore", message=".*without confounders.*")
-    results_kennedy = randomization_test_regression(
-        X_wine, y_wine, method="kennedy", confounders=[], family="multinomial"
-    )
-print_results_table(
-    results_kennedy,
-    title="Kennedy (1995) Individual Permutation Test (family='multinomial')",
+results_kennedy = randomization_test_regression(
+    X, y, method="kennedy", confounders=[], family="multinomial", n_randomizations=999
 )
-print_diagnostics_table(
-    results_kennedy,
-    title="Kennedy (1995) Individual Diagnostics (family='multinomial')",
-)
+print_results_table(results_kennedy)
+print_diagnostics_table(results_kennedy)
 
+# %%
 # ============================================================================
 # Kennedy (1995) joint — family="multinomial"
 # ============================================================================
 
-with warnings.catch_warnings():
-    warnings.filterwarnings("ignore", message=".*without confounders.*")
-    results_kennedy_joint = randomization_test_regression(
-        X_wine,
-        y_wine,
-        method="kennedy_joint",
-        confounders=[],
-        family="multinomial",
-    )
-print_joint_results_table(
-    results_kennedy_joint,
-    title="Kennedy (1995) Joint Permutation Test (family='multinomial')",
+results_kennedy_joint = randomization_test_regression(
+    X,
+    y,
+    method="kennedy_joint",
+    confounders=[],
+    family="multinomial",
+    n_randomizations=999,
 )
+print_joint_results_table(results_kennedy_joint)
 
+# %%
+# ============================================================================
+# Method compatibility
+# ============================================================================
+# Multinomial models predict K-class probabilities rather than continuous
+# scalar errors. Residual-based methods like Freedman-Lane and ter Braak are
+# incompatible and rejected with ValueError. We inspect the compatibility matrix.
+
+print_compatibility_table("multinomial")
+
+# %%
 # ============================================================================
 # Confounder identification — multinomial
 # ============================================================================
 
-all_confounder_results = {}
-for predictor in X_wine.columns:
-    all_confounder_results[predictor] = identify_confounders(
-        X_wine, y_wine, predictor=predictor, family="multinomial"
-    )
+all_confounder_results = identify_confounders(X, y, family="multinomial")
+print_confounder_table(all_confounder_results, family=_family)
 
-print_confounder_table(
-    all_confounder_results,
-    title="Confounder Identification for All Predictors (Multinomial)",
-    family=_family,
-)
-
-predictors_with_confounders = {
-    pred: res.identified_confounders
-    for pred, res in all_confounder_results.items()
-    if res.identified_confounders
-}
-
+# %%
 # ============================================================================
 # Kennedy with identified confounders — family="multinomial"
 # ============================================================================
+# The confounder sieve identified that 'Alcohol' is confounded by 'Magnesium'.
+# We execute a Kennedy permutation test for 'Alcohol' controlling for 'Magnesium'.
 
-if predictors_with_confounders:
-    example_predictor = list(predictors_with_confounders.keys())[0]
-    example_confounders = predictors_with_confounders[example_predictor]
+target_predictor = "Alcohol"
+confounders = all_confounder_results[target_predictor].identified_confounders
 
-    results_kc = randomization_test_regression(
-        X_wine,
-        y_wine,
-        method="kennedy",
-        confounders=example_confounders,
-        family="multinomial",
-    )
-    print_results_table(
-        results_kc,
-        title=(
-            f"Kennedy (1995) for '{example_predictor}' "
-            f"(controlling for {', '.join(example_confounders)}) "
-            f"(family='multinomial')"
-        ),
-    )
-    print_diagnostics_table(
-        results_kc,
-        title=(
-            f"Kennedy (1995) Diagnostics for '{example_predictor}' "
-            f"(family='multinomial')"
-        ),
-    )
-
-# ============================================================================
-# Direct ModelFamily protocol usage
-# ============================================================================
-# MultinomialFamily implements the ModelFamily protocol with key
-# differences from scalar-response families:
-#
-# - coefs() returns per-predictor Wald χ² statistics (scalar per
-#   predictor), since each predictor has K−1 coefficients.
-# - category_coefs() (duck-typed, not on the protocol) returns the
-#   full (p, K−1) coefficient matrix.
-# - residuals(), reconstruct_y(), and fit_metric() raise
-#   NotImplementedError — the engine uses direct Y permutation.
-
-family = MultinomialFamily()
-X_np = X_wine.values.astype(float)
-y_np = y_values.astype(float)
-
-# validate_y — should pass for {0, 1, 2}
-family.validate_y(y_np)
-
-# fit / predict / coefs
-model = family.fit(X_np, y_np, fit_intercept=True)
-preds = family.predict(model, X_np)
-wald_chi2 = family.coefs(model)
-
-# category_coefs — (p, K-1) coefficient matrix
-cat_coefs = family.category_coefs(model)
-
-# score / null_score — deviance
-dev = family.score(model, X_np, y_np)
-dev_null = family.null_score(y_np)
-
-# NotImplementedError checks — multinomial does not support residuals,
-# reconstruct_y, or fit_metric (the engine uses direct Y permutation).
-for method_name in ("residuals", "reconstruct_y", "fit_metric"):
-    try:
-        if method_name == "residuals":
-            family.residuals(model, X_np, y_np)
-        elif method_name == "reconstruct_y":
-            _rng = np.random.default_rng(0)
-            family.reconstruct_y(np.zeros((1, 5)), np.zeros((1, 5)), _rng)
-        elif method_name == "fit_metric":
-            family.fit_metric(y_np, preds)
-    except NotImplementedError:
-        pass  # Expected: multinomial does not support these methods
-
-# batch_fit — fit multinomial on B permuted Y vectors at once
-rng = np.random.default_rng(42)
-n_batch = 50
-perm_indices = np.array([rng.permutation(len(y_np)) for _ in range(n_batch)])
-Y_matrix = y_np[perm_indices]  # shape (B, n)
-with warnings.catch_warnings():
-    warnings.filterwarnings("ignore", category=UserWarning)
-    batch_stats = family.batch_fit(X_np, Y_matrix, fit_intercept=True)
-n_nan = int(np.sum(np.any(np.isnan(batch_stats), axis=1)))
-
-# diagnostics — pseudo-R², LL, AIC, BIC, category counts
-diag = family.diagnostics(X_np, y_np, fit_intercept=True)
-
-# classical_p_values — Wald χ²(K-1) p-values
-p_classical = family.classical_p_values(X_np, y_np, fit_intercept=True)
-
-# exchangeability_cells — stub (returns None for global exchangeability)
-cells = family.exchangeability_cells(X_np, y_np)
-
-print_protocol_usage_table(
-    results_ter_braak,
-    title="Direct MultinomialFamily Protocol Usage",
+results_kc = randomization_test_regression(
+    X,
+    y,
+    method="kennedy",
+    confounders=confounders,
+    family="multinomial",
+    n_randomizations=999,
 )
+print_results_table(results_kc)
+print_diagnostics_table(results_kc)
+
+# %%
+# ============================================================================
+# Execution & Protocol Artifacts
+# ============================================================================
+# Inspect the internal execution context from the completed test result:
+# backend acceleration, batch convergence, fit metrics, and protocol properties.
+
+print_protocol_usage_table(results_kc)

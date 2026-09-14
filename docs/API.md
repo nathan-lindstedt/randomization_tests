@@ -2,10 +2,10 @@
 
 > **Package:** `randomization_tests`
 >
-> Permutation tests for regression models using ter Braak (1992),
-> Kennedy (1995), and Freedman–Lane (1983) methods with vectorised
-> batch fitting, optional JAX autodiff for all GLM families, and
-> pre‑generated unique permutations.
+> Permutation tests for regression models using canonical ter Braak (1992),
+> Kennedy (1995), Freedman–Lane (1983), Manly (1997), Rao score, and
+> Rademacher sign-flip procedures with vectorised batch fitting, optional JAX
+> acceleration, clustered exchangeability, and autoregressive whitening.
 >
 > All functions accepting data inputs support both **pandas** and
 > **Polars** DataFrames (coerced internally via `_ensure_pandas_df`).
@@ -55,14 +55,14 @@ to override auto‑detection.
 | Parameter | Description |
 |---|---|
 | `X` | Feature matrix, shape `(n_samples, n_features)`. Accepts pandas or Polars DataFrames. |
-| `y` | Target values, shape `(n_samples,)`. When `family="auto"`, binary targets (`{0, 1}`) trigger logistic regression; otherwise linear regression is used. |
+| `y` | Target values, shape `(n_samples,)`. When `family="auto"`, binary targets (`{0, 1}`) trigger logistic regression; otherwise linear regression is used. Count-like targets produce an advisory recommending an explicit count family. |
 | `n_randomizations` | Number of unique permutations to generate. |
 | `precision` | Decimal places for reported p‑values. |
 | `p_value_threshold_one` | First significance level (marked `*`). |
 | `p_value_threshold_two` | Second significance level (marked `**`). |
 | `p_value_threshold_three` | Third significance level (marked `***`). |
 | `method` | `"ter_braak"`, `"kennedy"`, `"kennedy_joint"`, `"freedman_lane"`, `"freedman_lane_joint"`, `"manly"`, `"manly_joint"`, `"score"`, `"score_joint"`, or `"score_exact"`. |
-| `confounders` | Column names of confounders (required for Kennedy and Freedman–Lane methods). |
+| `confounders` | Column names excluded from the tested hypotheses. For Kennedy and Freedman–Lane methods, omitting them is valid but produces a structured advisory explaining that all features are tested conditionally. |
 | `random_state` | Seed for reproducibility. |
 | `fit_intercept` | Whether to include an intercept in the regression model. Set to `False` for through‑origin regression. |
 | `family` | Model family string **or** a `ModelFamily` instance. `"auto"` (default) detects binary `{0, 1}` targets → logistic, otherwise linear. Explicit values: `"linear"`, `"logistic"`, `"poisson"`, `"negative_binomial"`, `"ordinal"`, `"multinomial"`, `"linear_mixed"`, `"logistic_mixed"`, `"poisson_mixed"`. Pre‑configured instances (e.g. `NegativeBinomialFamily(alpha=2.0)`) are accepted directly. |
@@ -75,18 +75,22 @@ to override auto‑detection.
 | `confidence_level` | Confidence level for all CI types (permutation, Wald, Clopper–Pearson, standardised). Defaults to `0.95`. |
 | `panel_id` | Panel (subject/unit) identifier for longitudinal data. When provided, automatically sets `groups=panel_id` and `permutation_strategy="within"`. Accepts a 1‑D array‑like of labels or a column name (string) in `X`. Cannot be used together with an explicit `groups=` argument. |
 | `time_id` | Time‑period identifier for longitudinal data. Only meaningful when `panel_id` is also provided. Used for validation checks: warns if data is not sorted by `(panel_id, time_id)` or if panels are unbalanced. |
-| `ar_order` | Order of the autoregressive working‑correlation correction for longitudinal panel data. When set (e.g. `ar_order=1`), the design matrix and residuals are Cholesky‑whitened under an FGLS framework that accounts for AR(p) serial correlation within panels, ensuring permuted residuals are approximately exchangeable. Requires `panel_id`, `time_id`, and a score‑based method (`"score"`, `"score_joint"`, or `"score_exact"`). Not supported for `"ordinal"` or `"multinomial"` families. |
+| `ar_order` | Order of the autoregressive working-correlation correction for longitudinal panel data. Requires `panel_id`, `time_id`, and a score-based method. The AR comparison display contrasts the uncorrected baseline with the highest supplied AR order. |
 | `randomization` | `"permute"` (default) or `"sign_flip"`. With `"sign_flip"`, residuals are randomised by random sign reversal (±1) rather than permutation, requiring only that errors are symmetrically distributed — a weaker assumption than exchangeability. Not valid for `"ordinal"` or `"multinomial"` families (no well‑defined residuals) or for `"manly"`, `"manly_joint"`, and `"score_exact"` methods (which permute Y directly). |
 
-**Returns:** A dictionary containing model coefficients, empirical
-(permutation) and classical (asymptotic) p‑values, extended diagnostics,
-and method metadata. When `method="kennedy_joint"`, the dictionary
-instead contains the observed improvement statistic and a single joint
-p‑value.
+**Returns:** An immutable `IndividualTestResult` or `JointTestResult` with
+attribute access, dict-style access, `to_dict()` serialization, and an
+attached `FitContext`. The context contains observed-fit artifacts,
+execution metadata, and structured advisories in `warnings_captured`.
 
 **Raises:** `ValueError` if *method* is not one of the recognised
 options, or if the method × family combination is not supported (see
 the compatibility table below).
+
+Expected package advisories are captured on the result context and rendered
+by the display functions. Unexpected warnings from NumPy, SciPy, statsmodels,
+or other dependencies remain ordinary Python warnings; the package does not
+blanket-suppress them.
 
 **Method × family compatibility:**
 
@@ -121,6 +125,72 @@ direct‑permutation categorical families.
   *J. Business & Economic Statistics*, 13(1), 85–94.
 - Phipson, B. & Smyth, G. K. (2010). Permutation p‑values should never
   be zero. *Stat. Appl. Genet. Mol. Biol.*, 9(1), Article 39.
+
+---
+
+## Results and Execution Objects
+
+### `IndividualTestResult` and `JointTestResult`
+
+`randomization_test_regression()` returns one of these immutable result
+dataclasses:
+
+| Type | Use |
+|---|---|
+| `IndividualTestResult` | One empirical and classical p-value per tested feature. |
+| `JointTestResult` | One omnibus statistic and p-value for the tested feature set. |
+
+Both support attribute access (`result.p_value`), dict-style access
+(`result["p_value"]`), membership checks for data fields, and
+`result.to_dict()` serialization. Each result carries a `context` field with
+the observed fit, diagnostics, permutation metadata, and captured expected
+advisories.
+
+### `ConfounderAnalysisResult`
+
+Immutable result for one predictor from the four-stage confounder sieve. Fields
+include `predictor`, `identified_confounders`, `identified_mediators`,
+`identified_moderators`, `identified_colliders`, and the corresponding stage
+results. It supports attribute access, dict-style access, and `to_dict()`.
+
+### `ConfounderAnalysisResultSet`
+
+Dict-like container returned by `identify_confounders(..., predictor=None)`.
+Keys are predictor names and values are `ConfounderAnalysisResult` objects.
+
+```python
+result_set.predictors_with_confounders  # dict[str, list[str]]
+result_set.clean_predictors              # list[str]
+result_set.advisories                    # list[str]
+```
+
+`advisories` contains structured messages intended for display. It is not a
+replacement for unexpected Python warnings, which remain ordinary warnings.
+
+### `FitContext`
+
+Mutable computation context attached to a completed test result. It stores:
+
+- input and feature metadata;
+- resolved family and protocol properties;
+- observed model, predictions, coefficients, residuals, and fit metric;
+- model and extended diagnostics;
+- classical p-values and exchangeability cells;
+- method, randomization scheme, backend, groups, panel and AR metadata;
+- batch shape and convergence counts; and
+- expected pipeline advisories in `warnings_captured`.
+
+Consumers should treat fields as optional: `None` means that the corresponding
+pipeline stage did not run or is not defined for that family.
+
+### `PermutationEngine`
+
+Lower-level execution object used by `randomization_test_regression()`. It
+resolves the family and backend, calibrates the observed model, generates
+exchangeability-constrained permutation indices, and exposes the shared
+`permute_indices()` primitive. Most users should call
+`randomization_test_regression()` instead; the engine is useful for advanced
+integrations and custom strategies.
 
 ---
 
@@ -445,7 +515,7 @@ triggering fresh resolution or construction.
 
 | Value | Behaviour |
 |---|---|
-| `"auto"` | Binary `{0, 1}` → `LogisticFamily`; otherwise `LinearFamily`. |
+| `"auto"` | Binary `{0, 1}` → `LogisticFamily`; otherwise `LinearFamily`. Count-like integer outcomes remain linear by default and produce a warning/advisory recommending Poisson or negative-binomial explicitly. |
 | `"linear"` | `LinearFamily()`. |
 | `"logistic"` | `LogisticFamily()`. |
 | `"poisson"` | `PoissonFamily()`. |
@@ -472,6 +542,21 @@ The class must satisfy the `ModelFamily` protocol.
 ---
 
 ## Permutations
+
+### `ExchangeabilityNode` and `ExchangeabilityTree`
+
+These structures represent nested exchangeability constraints for clustered or
+multilevel data.
+
+- `ExchangeabilityNode` describes one exchangeability level and its child
+  nodes or observation members.
+- `ExchangeabilityTree` is the root container for nested exchangeability
+  structure and can be flattened to observation-level cells for permutation
+  generation.
+
+They are normally created indirectly from `groups=` or a multi-column grouping
+specification. Pass the resulting structure to advanced permutation workflows
+only when the default group handling is insufficient.
 
 ### `generate_unique_permutations`
 
@@ -615,7 +700,7 @@ significance markers (`*`, `**`, or `ns`) and the last two are raw
 identify_confounders(
     X: DataFrameLike,
     y: DataFrameLike,
-    predictor: str,
+    predictor: str | None = None,
     correlation_threshold: float = 0.1,
     p_value_threshold: float = 0.05,
     n_bootstrap_mediation: int = 1000,
@@ -626,7 +711,7 @@ identify_confounders(
     correlation_method: str = "pearson",
     correction_method: str | None = None,
     groups: np.ndarray | None = None,
-) -> ConfounderAnalysisResult
+  ) -> ConfounderAnalysisResult | ConfounderAnalysisResultSet
 ```
 
 Four‑stage confounder sieve.
@@ -640,15 +725,21 @@ or true confounders via sequential testing:
 4. **Moderator test** — labels moderators (informational; stays in
    confounder pool).
 
-The sieve is an **exploratory** tool for data‑driven confounder
+The sieve is an **exploratory** tool for data-driven confounder
 selection.  For guaranteed Type I error control, specify
 `confounders=` based on domain knowledge.
+
+When `predictor=None`, the sieve runs across every feature and returns a
+`ConfounderAnalysisResultSet`. The set exposes
+`.predictors_with_confounders` and `.clean_predictors` for downstream model
+selection. Multinomial-family advisories are collected on the result set and
+rendered by `print_confounder_table()`.
 
 | Parameter | Description |
 |---|---|
 | `X` | Feature matrix. Accepts pandas or Polars DataFrames. |
 | `y` | Target variable. |
-| `predictor` | Predictor of interest. |
+| `predictor` | Predictor of interest. If `None`, analyze all columns in `X`. |
 | `correlation_threshold` | Minimum absolute correlation to flag. |
 | `p_value_threshold` | Significance cutoff for screening. |
 | `n_bootstrap_mediation` | Bootstrap iterations for mediation tests. |
@@ -660,12 +751,24 @@ selection.  For guaranteed Type I error control, specify
 | `correction_method` | `None`, `"holm"`, or `"fdr_bh"` for multiple‑testing correction. |
 | `groups` | Optional group labels for cluster bootstrap (passed to mediation/moderation). |
 
+Expected multinomial-family advisories are collected by the multi-predictor
+result set and displayed by `print_confounder_table()`.
+
 **Returns:** `ConfounderAnalysisResult` dataclass with fields
 `predictor`, `identified_confounders`, `identified_mediators`,
 `identified_moderators`, `identified_colliders`, `screening_results`,
 `mediation_results`, `moderation_results`, and `collider_results`.
 Supports `to_dict()` and dict‑style `[]` access for backward
 compatibility.
+
+When `predictor=None`, returns `ConfounderAnalysisResultSet`, a dict-like
+mapping from predictor name to `ConfounderAnalysisResult` with:
+
+```python
+result_set.predictors_with_confounders  # dict[str, list[str]]
+result_set.clean_predictors              # list[str]
+result_set.advisories                    # list[str]
+```
 
 ---
 
@@ -804,7 +907,7 @@ is tested via BCa bootstrap CIs.
 print_results_table(
     results: IndividualTestResult,
     *,
-    title: str = "Permutation Test Results",
+  title: str | None = None,
 ) -> None
 ```
 
@@ -819,7 +922,12 @@ the result object.
 | Parameter | Description |
 |---|---|
 | `results` | `IndividualTestResult` from `randomization_test_regression`. |
-| `title` | Title for the output table. |
+| `title` | Optional title override. If omitted, the display layer generates `[Model Type] — [Procedure]`, for example `Linear Regression — Kennedy (1995) Test`. |
+
+The table prints a centered guarantee banner, method metadata, empirical and
+classical p-values, Monte Carlo resolution information, and wrapped advisories
+from `result.context.warnings_captured`. Custom titles are supported, but
+example scripts normally rely on the generated title.
 
 ---
 
@@ -829,7 +937,7 @@ the result object.
 print_joint_results_table(
     results: JointTestResult,
     *,
-    title: str = "Joint Permutation Test Results",
+  title: str | None = None,
 ) -> None
 ```
 
@@ -841,7 +949,7 @@ Target name and model family are read directly from the result object.
 | Parameter | Description |
 |---|---|
 | `results` | `JointTestResult` from `randomization_test_regression` (joint methods). |
-| `title` | Title for the output table. |
+| `title` | Optional title override. If omitted, the display layer generates a concise model-and-procedure title such as `Linear Regression — Freedman–Lane (1983) Joint Test`. |
 
 ---
 
@@ -851,7 +959,7 @@ Target name and model family are read directly from the result object.
 print_diagnostics_table(
     results: IndividualTestResult,
     *,
-    title: str = "Extended Diagnostics",
+  title: str = "Permutation Diagnostics",
 ) -> None
 ```
 
@@ -873,7 +981,11 @@ directly from the result object.  The table has four sections:
 | Parameter | Description |
 |---|---|
 | `results` | `IndividualTestResult` from `randomization_test_regression`. Must contain `extended_diagnostics`. |
-| `title` | Title for the output table. |
+| `title` | Title for the output table. The default is the non-redundant `Permutation Diagnostics`. |
+
+The diagnostic table includes family-specific checks, influence, permutation
+coverage, and sign-flip symmetry diagnostics when the result was produced with
+`randomization="sign_flip"`.
 
 ---
 
@@ -881,8 +993,8 @@ directly from the result object.  The table has four sections:
 
 ```python
 print_confounder_table(
-    confounder_results: dict | ConfounderAnalysisResult,
-    title: str = "Confounder Identification Results",
+  confounder_results: dict | ConfounderAnalysisResult | ConfounderAnalysisResultSet,
+  title: str = "Confounder Identification",
     correlation_threshold: float = 0.1,
     p_value_threshold: float = 0.05,
     n_bootstrap: int = 1000,
@@ -910,6 +1022,133 @@ mapping predictor names to their individual result dicts.
 | `family` | Optional `ModelFamily` instance. When supplied, the family name is shown in the header. |
 | `correlation_method` | `"pearson"`, `"partial"`, or `"distance"` (shown in header). |
 | `correction_method` | `None`, `"holm"`, or `"fdr_bh"` (shown in header). |
+
+The table accepts the multi-predictor result set returned when
+`identify_confounders(..., predictor=None)` is used. Its advisories are shown
+in the same wrapped `Notes` section as model-result tables.
+
+### `print_dataset_info_table`
+
+```python
+print_dataset_info_table(
+  *,
+  name: str,
+  X: DataFrameLike | np.ndarray | None = None,
+  y: DataFrameLike | np.ndarray | None = None,
+  n_observations: int | None = None,
+  n_features: int | None = None,
+  feature_names: list[str] | None = None,
+  target_name: str | None = None,
+  target_description: str | None = None,
+  y_range: tuple[float, float] | tuple[int, int] | None = None,
+  y_mean: float | None = None,
+  y_var: float | None = None,
+  extra_stats: dict[str, str] | None = None,
+  title: str = "Dataset Information",
+) -> None
+```
+
+Print dataset metadata in the standard 80-column format. Passing `X` and `y`
+lets the display layer derive dimensions, feature names, target name, range,
+mean, and variance. Explicit metadata overrides derived values, preserving
+backward compatibility and allowing domain-specific descriptions such as
+prevalence, class counts, or dispersion ratios through `extra_stats`.
+
+### `print_family_info_table`
+
+```python
+print_family_info_table(
+  *,
+  auto_family: ModelFamily | None = None,
+  explicit_family: ModelFamily | None = None,
+  y: np.ndarray | DataFrameLike | None = None,
+  advisory: list[str] | None = None,
+  title: str = "Family Resolution",
+) -> None
+```
+
+Print family resolution and protocol properties. When `y` is supplied, the
+function performs auto-resolution through the same context-based advisory
+path used by the main pipeline, so count-data notices appear in `Notes` rather
+than as duplicated raw warnings.
+
+### `print_compatibility_table`
+
+```python
+print_compatibility_table(
+  family: str | ModelFamily,
+  *,
+  methods: list[str] | None = None,
+  title: str | None = None,
+) -> None
+```
+
+Display the method-by-family compatibility matrix, including concise details
+for guarded combinations. If `title` is omitted, it is generated from the
+family name. The table explains why methods such as Freedman–Lane or ter Braak
+are rejected for direct-permutation ordinal and multinomial families.
+
+### `print_symmetry_table`
+
+```python
+print_symmetry_table(
+  symmetry: dict[str, object] | IndividualTestResult,
+  *,
+  title: str = "Symmetry Diagnostic (Fisher 1935 / Wilcoxon Signed-Rank Test)",
+) -> None
+```
+
+Render a standalone `validate_symmetry()` result or extract the integrated
+symmetry diagnostic from a completed sign-flip `IndividualTestResult`.
+
+### `print_comparison_table`
+
+```python
+print_comparison_table(
+  results: list[tuple[str, IndividualTestResult] | IndividualTestResult],
+  *,
+  title: str | None = None,
+  alpha: float = 0.05,
+  is_ar: bool = False,
+) -> None
+```
+
+Render a pairwise A/B p-value benchmark in a fixed 80-column grid. The generic
+comparison is capped at two models. Results may be supplied as labelled pairs
+or bare result objects; missing labels default to `A` and `B`.
+
+The current Configuration A geometry is:
+
+| Column | Width |
+|---|---:|
+| Feature | 16 |
+| A / baseline | 18 |
+| B / comparison | 22 |
+| Verdict | 24 |
+
+Generic verdicts are `Both sig.`, `Both (ns)`, `DIVERGENT`, and `Confounder`.
+When `is_ar=True` (or auto-detected when comparing AR models), the verdict is based
+on the first and last supplied models: the first is the uncorrected baseline (`No AR`)
+and the last is the highest AR order (e.g. `AR(3)`). AR verdicts use `Both sig.`,
+`Both (ns)`, `ARTIFACT`, or `EMERGENT`.
+
+### `print_protocol_usage_table`
+
+```python
+print_protocol_usage_table(
+  result: IndividualTestResult | JointTestResult,
+  *,
+  title: str | None = None,
+) -> None
+```
+
+Render observed-fit artifacts and execution metadata from a completed result's
+`FitContext`: family properties, coefficients, predictions, residual summary,
+diagnostics, classical p-values, exchangeability, backend, randomization
+method, confounders, batch shape, and convergence count. The default title is
+`<FamilyName> Protocol Summary` with a centered `[ Execution & Protocol Artifacts ]`
+banner. Passing a result explicitly avoids ambiguity about which model run is
+being inspected.
 
 ---
 

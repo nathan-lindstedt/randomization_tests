@@ -60,11 +60,12 @@ print_diagnostics_table(results)
 | Score joint | `"score_joint"` | Joint version of score test. |
 | Score exact | `"score_exact"` | Exact score test via PQL-fixed vmap IRLS; GLMM families only. |
 
-Kennedy and Freedman–Lane methods require the `confounders` parameter
-(a list of column names).
+For Kennedy and Freedman–Lane methods, specifying `confounders=` isolates
+the partial effect of the remaining features; omitting confounders tests each
+feature conditioning on all other predictors.
 
 > **Note:** Ordinal and multinomial families do not support Freedman–Lane
-> methods (residuals are ill-defined for these model types).
+> or ter Braak methods (residuals are ill-defined for these model types).
 
 ## Sign-flip tests
 
@@ -73,21 +74,33 @@ applied to residuals.  They are valid when the error distribution is
 symmetric about zero — a weaker assumption than exchangeability.
 
 ```python
-from randomization_tests import randomization_test_regression, validate_symmetry
-
-# Check symmetry assumption before running
-sym = validate_symmetry(y.values.ravel() - y.values.mean())
-print(f"Symmetric: {sym['is_symmetric']}  (p={sym['p_value']:.3f})")
+from randomization_tests import (
+    print_comparison_table,
+    print_diagnostics_table,
+    print_results_table,
+    randomization_test_regression,
+)
 
 # Run a sign-flip test (Freedman–Lane with ±1 multipliers)
-results = randomization_test_regression(
+results_sf = randomization_test_regression(
     X, y,
     n_randomizations=5_000,
     random_state=42,
     randomization="sign_flip",
 )
 
-print_results_table(results)
+# Display results table and extended diagnostics (includes Wilcoxon symmetry check)
+print_results_table(results_sf)
+print_diagnostics_table(results_sf)
+
+# Compare sign-flip against canonical permutation
+results_perm = randomization_test_regression(
+    X, y,
+    method="freedman_lane",
+    n_randomizations=5_000,
+    random_state=42,
+)
+print_comparison_table([("Sign-Flip", results_sf), ("Permutation", results_perm)])
 ```
 
 Sign-flip tests support the same families as permutation tests, except
@@ -113,15 +126,14 @@ result = identify_confounders(
 print_confounder_table(result, family=resolve_family("poisson"))
 ```
 
-For all predictors at once:
+For all predictors at once (omit `predictor`):
 
 ```python
-all_results = {}
-for predictor in X.columns:
-    all_results[predictor] = identify_confounders(
-        X, y, predictor=predictor, random_state=42,
-    )
+all_results = identify_confounders(X, y, random_state=42)
 print_confounder_table(all_results)
+
+# Access filtered dictionary of predictors with confounders
+confounder_dict = all_results.predictors_with_confounders
 ```
 
 ## Input formats
@@ -280,6 +292,17 @@ coefficient and Cholesky-whitens X and residuals before projection,
 ensuring permuted residuals are approximately exchangeable.  Diagnostics include before/after Durbin–Watson
 and Ljung–Box statistics in
 `results.extended_diagnostics["panel_diagnostics"]`.
+
+To compare uncorrected vs. AR-corrected p-values side-by-side:
+
+```python
+from randomization_tests import print_comparison_table
+
+results_no_ar = randomization_test_regression(
+    X, y, method="score", panel_id=panel_id, time_id=time_id, n_randomizations=1_000, random_state=42,
+)
+print_comparison_table([("No AR", results_no_ar), ("AR(1)", results)])
+```
 
 ## Backend configuration
 

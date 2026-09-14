@@ -940,3 +940,80 @@ class TestPrintProtocolUsageTable:
         assert "Coefs: [" not in out
         assert "p = 0.001234" not in out  # printed as feat1: 0.001234
         assert "0.001234" in out
+
+
+class TestPrintComparisonTable:
+    """Tests for print_comparison_table."""
+
+    @staticmethod
+    def _make_res(p_vals, feature_names=None):
+        if feature_names is None:
+            feature_names = [f"feat_{i}" for i in range(len(p_vals))]
+        return SimpleNamespace(
+            feature_names=feature_names,
+            raw_empirical_p=np.asarray(p_vals, dtype=float),
+            context=None,
+        )
+
+    def test_pairwise_custom_labels_and_verdicts(self, capsys):
+        from randomization_tests.display import print_comparison_table
+
+        features = ["x1", "x2", "x3"]
+        res1 = self._make_res([0.001, 0.850, 0.010], features)
+        res2 = self._make_res([0.002, 0.720, 0.120], features)
+
+        print_comparison_table(
+            [("Sign-Flip", res1), ("Permutation", res2)],
+            title="Sign-Flip vs. Permutation Test",
+        )
+        out = capsys.readouterr().out
+        assert "Sign-Flip" in out
+        assert "Permutation" in out
+        assert "Verdict" in out
+        assert "Both sig." in out
+        assert "Both (ns)" in out
+        assert "DIVERGENT" in out
+        for line in out.splitlines():
+            assert len(line) <= 80
+
+    def test_default_labels_when_omitted(self, capsys):
+        from randomization_tests.display import print_comparison_table
+
+        features = ["x1"]
+        res1 = self._make_res([0.001], features)
+        res2 = self._make_res([0.002], features)
+
+        # Pass bare result objects without tuple labels
+        print_comparison_table([res1, res2])
+        out = capsys.readouterr().out
+        assert " A " in out or " A" in out
+        assert " B " in out or " B" in out
+        assert "Both sig." in out
+
+    def test_ar_comparison_table_extracts_first_and_last(self, capsys):
+        from randomization_tests.display import print_comparison_table
+
+        features = ["feat_sig", "feat_artifact", "feat_emergent", "feat_ns"]
+        res_no_ar = self._make_res([0.001, 0.002, 0.600, 0.600], features)
+        res_ar1 = self._make_res([0.001, 0.080, 0.300, 0.650], features)
+        res_ar2 = self._make_res([0.001, 0.150, 0.100, 0.700], features)
+        res_ar3 = self._make_res([0.001, 0.220, 0.005, 0.750], features)
+
+        print_comparison_table(
+            [
+                ("No AR", res_no_ar),
+                ("AR(1)", res_ar1),
+                ("AR(2)", res_ar2),
+                ("AR(3)", res_ar3),
+            ]
+        )
+        out = capsys.readouterr().out
+        assert "No AR" in out
+        assert "AR(3)" in out
+        assert "AR(1)" not in out  # Only baseline and highest order compared
+        assert "Both sig." in out
+        assert "ARTIFACT" in out
+        assert "EMERGENT" in out
+        assert "Both (ns)" in out
+        for line in out.splitlines():
+            assert len(line) <= 80

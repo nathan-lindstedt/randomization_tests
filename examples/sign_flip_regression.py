@@ -1,72 +1,103 @@
+# %% [markdown]
 """
-Test Case 11: Sign-Flip Test for Linear Regression
-Energy Efficiency dataset (UCI ML Repository ID=242)
+Example: Sign-Flip Randomization Test for Linear Regression
+Dataset: Energy Efficiency (UCI Machine Learning Repository ID=242)
+
+Dataset Context & Theoretical Background:
+    The Energy Efficiency dataset (Tsanas & Xifara, 2012) investigates the
+    thermal performance of residential architectural building forms simulated
+    using Ecotect software across 12 distinct building configurations. The primary
+    outcome is `Y1` (Heating Load, measured in kilowatt-hours per square meter,
+    kWh/m^2), representing the thermal energy required to maintain conditioned
+    interior comfort.
+
+    Classical permutation tests rely on the assumption of exchangeability: under
+    the null hypothesis H_0: beta_j = 0, the joint distribution of the error
+    vector eps = (eps_1, ..., eps_n)^T is invariant under all n! permutations pi in S_n.
+    When observations exhibit conditional heteroscedasticity (e.g. Var(eps_i | X_i)
+    varies across design points), standard permutation tests can suffer inflated
+    false positive rates because swapping errors across points with different
+    variances violates exchangeability.
+
+    The Sign-Flip Randomization Test (Fisher, 1935; Pitman, 1937; DiCiccio & Efron,
+    1992) replaces exchangeability with the weaker assumption of **conditional
+    symmetry**: under the null hypothesis, the distribution of each error is
+    symmetric about zero:
+
+        P(eps_i <= -u | X_i) = P(eps_i >= u | X_i),   forall u > 0,  i = 1, ..., n
+
+    Instead of permuting the residual vector across observation indices, each
+    residual e_i is multiplied independently by a Rademacher random variable
+    s_i in {-1, +1} where P(s_i = +1) = P(s_i = -1) = 1/2. Because sign-flipping
+    operates point-by-point, it remains exact even when errors are heteroscedastic,
+    provided each conditional error distribution remains symmetric.
+
+Features Selected for Modeling:
+    - compactness (X1): Relative compactness ratio of building shape. Lower
+      compactness implies greater exterior surface area relative to volume,
+      increasing conductive thermal heat loss.
+    - height (X5): Overall building height (meters). Directly dictates interior
+      stack effect and buoyancy-driven thermal stratification.
+    - orientation (X6): Cardinal building orientation (2: North, 3: East,
+      4: South, 5: West), governing solar radiation capture.
+    - glazing_area (X7): Glazing area percentage of exterior facade (0%, 10%, 25%, 40%).
+      Primary vector of window conductive and radiant thermal transfer.
+    - glazing_dist (X8): Spatial distribution of fenestration (uniform, north,
+      south, east, west).
+
+    Note: Features X2 (Surface Area), X3 (Wall Area), and X4 (Roof Area) are
+    exact deterministic linear combinations of X1 and X5; including them causes
+    singular design matrices and infinite VIFs, and they are appropriately omitted.
+
+Methodological Highlights:
+    1. Pre-test Symmetry Verification:
+       Before executing a sign-flip test, the conditional symmetry assumption must
+       be empirically evaluated. The function `validate_symmetry()` performs a
+       Wilcoxon signed-rank test and evaluates sample skewness on OLS residuals.
+    2. Freedman-Lane Sign-Flip Framework:
+       Sign-flipping is embedded into the Freedman-Lane partial regression
+       framework: for each predictor j, Y is regressed onto X_{-j} to obtain
+       reduced-model residuals e_{-j}. Rademacher signs are flipped: e* = s * e_{-j},
+       reconstructing Y* = X_{-j} hat{gamma} + e* to re-estimate beta_j.
+    3. Head-to-Head Comparison:
+       Side-by-side comparison with the standard Freedman-Lane permutation test
+       isolates the effect of the randomization mechanism (permutation vs.
+       Rademacher sign-flip) holding the partial regression architecture constant.
 
 Demonstrates:
-- ``randomization_test_regression(randomization="sign_flip")`` — the
-  sign-flip analogue of permutation testing for symmetric residual
-  distributions
-- ``validate_symmetry()`` — Wilcoxon signed-rank diagnostic
-- Side-by-side comparison with Freedman–Lane permutation test
-- Why Freedman–Lane is the natural comparator (both use reduced-
-  model residuals; the only difference is permutation vs sign-flip)
+    - randomization="sign_flip" -- Rademacher sign-flip test via Freedman-Lane
+    - validate_symmetry() -- Wilcoxon signed-rank diagnostic table
+    - print_symmetry_table() -- structured presentation of symmetry diagnostics
+    - Direct head-to-head comparison table between permutation and sign-flip
+    - Execution and protocol artifacts inspection via print_protocol_usage_table
 
-Background
-----------
-The sign-flip test replaces the exchangeability assumption of
-standard permutation tests with a weaker **symmetry** assumption:
-under the null, residuals are symmetric about zero.  Instead of
-permuting the residual vector, each residual is independently
-multiplied by a Rademacher variable (+1 or -1).
-
-This is particularly useful when:
-- Residuals are symmetric but not identically distributed
-  (heteroscedastic but symmetric errors)
-- The analyst wants an alternative randomization scheme to
-  cross-validate permutation test findings
-
-The procedure follows the Freedman-Lane framework, replacing
-permutation with sign-flipping in the residual randomization step.
-
-Dataset
--------
-768 samples of simulated building shapes.  Eight structural
-features describe each building; we select five with low
-collinearity (VIF < 5):
-
-- **compactness** (X1 — relative compactness)
-- **height** (X5 — overall height)
-- **orientation** (X6 — orientation: 2/3/4/5)
-- **glazing_area** (X7 — glazing area)
-- **glazing_dist** (X8 — glazing area distribution)
-
-Three geometry features (X2 surface area, X3 wall area,
-X4 roof area) are dropped because they are linearly derived
-from X1, producing degenerate VIF values.
-
-Reference
----------
-Tsanas, A. & Xifara, A. (2012). Accurate quantitative estimation
-of energy performance of residential buildings using statistical
-machine learning tools. *Energy and Buildings*, 49, 560-567.
+References:
+    - Tsanas, A., & Xifara, A. (2012). Accurate quantitative estimation of energy
+      performance of residential buildings using statistical machine learning tools.
+      Energy and Buildings, 49, 560-567.
+    - Fisher, R. A. (1935). The Design of Experiments. Oliver & Boyd.
+    - Pitman, E. J. G. (1937). Significance tests which may be applied to samples
+      from any populations. Journal of the Royal Statistical Society, 4(1), 119-130.
+    - DiCiccio, T. J., & Efron, B. (1992). More accurate confidence intervals in
+      exponential families. Biometrika, 79(2), 231-245.
+    - Freedman, D., & Lane, D. (1983). A nonstochastic interpretation of reported
+      significance levels. Journal of Business & Economic Statistics, 1(4), 292-298.
 """
 
-import warnings
-
-import numpy as np
-from sklearn.linear_model import LinearRegression
+# %%
 from ucimlrepo import fetch_ucirepo
 
 from randomization_tests import (
     print_comparison_table,
     print_dataset_info_table,
     print_diagnostics_table,
+    print_protocol_usage_table,
     print_results_table,
     print_symmetry_table,
     randomization_test_regression,
-    validate_symmetry,
 )
 
+# %%
 # ============================================================================
 # Load data
 # ============================================================================
@@ -82,27 +113,13 @@ y = ds.data.targets[["Y1"]].copy()  # Heating load
 
 print_dataset_info_table(
     name="Energy Efficiency",
-    n_observations=len(X),
-    n_features=X.shape[1],
-    feature_names=list(X.columns),
+    X=X,
+    y=y,
     target_name="Y1",
     target_description="heating load (kWh/m²)",
-    y_range=(float(y.values.min()), float(y.values.max())),
-    y_mean=float(y.values.mean()),
-    y_var=float(y.values.var()),
 )
 
-# ============================================================================
-# Symmetry diagnostic — validate the sign-flip assumption
-# ============================================================================
-
-# Fit a linear model to obtain residuals for the symmetry check.
-model = LinearRegression().fit(X.values, np.ravel(y))
-residuals = np.ravel(y) - model.predict(X.values)
-
-sym = validate_symmetry(residuals)
-print_symmetry_table(sym)
-
+# %%
 # ============================================================================
 # Sign-flip test
 # ============================================================================
@@ -116,16 +133,20 @@ results_sf = randomization_test_regression(
     randomization="sign_flip",
 )
 
-print_results_table(
-    results_sf,
-    title="Sign-Flip Test — Linear Regression",
-)
+print_results_table(results_sf)
+print_diagnostics_table(results_sf)
 
-print_diagnostics_table(
-    results_sf,
-    title="Sign-Flip Test — Extended Diagnostics",
-)
+# %%
+# ============================================================================
+# Symmetry diagnostic — validate the sign-flip assumption
+# ============================================================================
+# The Wilcoxon signed-rank test evaluates whether residuals are symmetric about
+# zero, validating the conditional symmetry assumption required by sign-flipping.
+# The diagnostic is extracted directly from the completed test result.
 
+print_symmetry_table(results_sf)
+
+# %%
 # ============================================================================
 # Freedman–Lane permutation test for comparison
 # ============================================================================
@@ -137,23 +158,20 @@ print_diagnostics_table(
 # (permutation vs Rademacher sign-flip) while holding the framework
 # constant.  This is an apples-to-apples comparison.
 
-with warnings.catch_warnings():
-    warnings.filterwarnings("ignore", message=".*without confounders.*")
-    results_perm = randomization_test_regression(
-        X,
-        y,
-        method="freedman_lane",
-        confounders=[],
-        family="linear",
-        n_randomizations=2_000,
-        random_state=42,
-    )
-
-print_results_table(
-    results_perm,
-    title="Freedman\u2013Lane (1983) Permutation Test \u2014 Linear Regression",
+results_perm = randomization_test_regression(
+    X,
+    y,
+    method="freedman_lane",
+    confounders=[],
+    family="linear",
+    n_randomizations=2_000,
+    random_state=42,
 )
 
+print_results_table(results_perm)
+print_diagnostics_table(results_perm)
+
+# %%
 # ============================================================================
 # Side-by-side comparison
 # ============================================================================
@@ -165,3 +183,12 @@ print_comparison_table(
     ],
     title="Sign-Flip vs. Freedman\u2013Lane P-Value Comparison",
 )
+
+# %%
+# ============================================================================
+# Execution & Protocol Artifacts
+# ============================================================================
+# Inspect the internal execution context from the completed test result:
+# backend acceleration, batch convergence, fit metrics, and protocol properties.
+
+print_protocol_usage_table(results_sf)

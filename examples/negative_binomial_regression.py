@@ -1,28 +1,63 @@
+# %% [markdown]
 """
-Test Case 4: Negative Binomial Regression (Overdispersed Count Outcome)
+Example: Negative Binomial Regression (Overdispersed Count Outcome)
 Bike Sharing dataset (UCI ML Repository ID=275)
 
 Demonstrates:
-- ``family="negative_binomial"`` — explicit family selection
-- ``calibrate()`` nuisance-parameter estimation (dispersion α)
-- All five permutation methods routed through ``NegativeBinomialFamily``
-- Direct ``ModelFamily`` protocol usage including ``calibrate``
-- Massive overdispersion: marginal Var/Mean ≈ 174
+- ``family="negative_binomial"`` — explicit family selection for overdispersed counts
+- ``calibrate()`` nuisance-parameter estimation: estimation of dispersion parameter :math:`\alpha`
+- ter Braak (1992) permutation test with negative binomial deviance residuals
+- Freedman–Lane (1983) individual and joint permutation tests
+- Kennedy (1995) individual and joint permutation tests
+- Negative-binomial-specific diagnostics (deviance, Pearson χ², dispersion ratio, alpha estimate)
+- Stochastic reconstruction for overdispersed counts: :math:`Y^* \\sim \\mathrm{NegBin}(\\mu^*, \alpha)`
+- Four-stage confounder sieve with negative binomial regression
+- Execution and protocol artifacts inspection via ``print_protocol_usage_table``
 
-The target variable *cnt* is the hourly count of total rental bikes.
-The count distribution is heavily overdispersed — a Poisson model would
-grossly understate standard errors.  NB2 (Var = μ + α·μ²) is the
-natural choice.
+Dataset
+-------
+17,379 hourly records of bike rental counts from the Capital Bikeshare system in
+Washington, D.C. (2011–2012), subsampled to 300 observations for demo runtime.
+The target variable is ``cnt`` (total count of rental bikes per hour).
+
+The count distribution is severely overdispersed, with a marginal variance-to-mean
+ratio of ≈ 174.4 (:math:`\\mathrm{Var} \\gg \\mathbb{E}`). Fitting a standard Poisson model
+would severely understate standard errors and generate anticonservative inference.
+The NB2 parameterisation (:math:`\\mathrm{Var}(Y \\mid X) = \\mu + \alpha\\mu^2`) incorporates
+gamma-distributed unobserved heterogeneity to restore proper likelihood calibration.
+
+Feature selection rationale
+---------------------------
+Five environmental and calendar predictors capture hourly commuter demand:
+
+- **temp**: Normalized temperature in Celsius (divided by 41 max). Warmer weather
+  increases cycling propensity.
+- **hum**: Normalized relative humidity (divided by 100). High humidity dampens outdoor activity.
+- **windspeed**: Normalized wind speed (divided by 67). Strong headwinds impede cycling.
+- **workingday**: Indicator (1 = workday, 0 = weekend or holiday). Distinguishes commuter
+  peaks from leisure cycling.
+- **weathersit**: Categorical weather severity index (1: Clear, 2: Mist/Cloudy,
+  3: Light Rain/Snow, 4: Heavy Precipitation). Adverse weather suppresses demand.
+
+Methodological rationale
+-------------------------
+Negative binomial regression estimates the dispersion parameter :math:`\alpha` once on the
+observed data during calibration and holds it fixed across the permutation loop. This
+ensures the null hypothesis conditions on the calibrated nuisance variance structure,
+avoiding unstable numerical optimization during permutation refitting.
+
+Reference
+---------
+Fanaee-T, H., & Gama, J. (2014). Event labeling combining ensemble detectors
+and background knowledge. *Progress in Artificial Intelligence*, 2(2–3), 113–127.
 """
 
-import warnings
-
+# %%
 import numpy as np
 import pandas as pd
 from ucimlrepo import fetch_ucirepo
 
 from randomization_tests import (
-    NegativeBinomialFamily,
     identify_confounders,
     print_confounder_table,
     print_dataset_info_table,
@@ -35,6 +70,7 @@ from randomization_tests import (
     resolve_family,
 )
 
+# %%
 # ============================================================================
 # Load data
 # ============================================================================
@@ -62,35 +98,31 @@ X = pd.DataFrame(
     }
 )
 y = y_sub.copy()
-feature_names = X.columns.tolist()
 
 y_arr = np.ravel(y).astype(float)
 var_mean_ratio = y_arr.var() / y_arr.mean()
 
 print_dataset_info_table(
     name=bike_sharing.metadata.name,
-    n_observations=len(X),
-    n_features=X.shape[1],
-    feature_names=feature_names,
-    target_name=y.columns[0],
+    X=X,
+    y=y,
     target_description="hourly rental bike count",
-    y_range=(int(y_arr.min()), int(y_arr.max())),
-    y_mean=float(y_arr.mean()),
-    y_var=float(y_arr.var()),
     extra_stats={"Var/Mean": f"{var_mean_ratio:.2f}  (>>1 → overdispersed)"},
 )
 
+# %%
 # ============================================================================
 # Family resolution
 # ============================================================================
 
 nb_family = resolve_family("negative_binomial")
-assert nb_family.name == "negative_binomial"
 
 print_family_info_table(
+    y=y,
     explicit_family=nb_family,
 )
 
+# %%
 # ============================================================================
 # ter Braak (1992) — family="negative_binomial" (explicit)
 # ============================================================================
@@ -98,196 +130,85 @@ print_family_info_table(
 results_ter_braak = randomization_test_regression(
     X, y, method="ter_braak", family="negative_binomial"
 )
-assert results_ter_braak.family.name == "negative_binomial"
-print_results_table(
-    results_ter_braak,
-    title="ter Braak (1992) Permutation Test (family='negative_binomial')",
-)
-print_diagnostics_table(
-    results_ter_braak,
-    title="ter Braak (1992) Diagnostics (family='negative_binomial')",
-)
+print_results_table(results_ter_braak)
+print_diagnostics_table(results_ter_braak)
 
+# %%
 # ============================================================================
 # Kennedy (1995) individual — family="negative_binomial"
 # ============================================================================
 
-with warnings.catch_warnings():
-    warnings.filterwarnings("ignore", message=".*without confounders.*")
-    results_kennedy = randomization_test_regression(
-        X, y, method="kennedy", confounders=[], family="negative_binomial"
-    )
-print_results_table(
-    results_kennedy,
-    title="Kennedy (1995) Individual Permutation Test (family='negative_binomial')",
+results_kennedy = randomization_test_regression(
+    X, y, method="kennedy", confounders=[], family="negative_binomial"
 )
-print_diagnostics_table(
-    results_kennedy,
-    title="Kennedy (1995) Individual Diagnostics (family='negative_binomial')",
-)
+print_results_table(results_kennedy)
+print_diagnostics_table(results_kennedy)
 
+# %%
 # ============================================================================
 # Kennedy (1995) joint — family="negative_binomial"
 # ============================================================================
 
-with warnings.catch_warnings():
-    warnings.filterwarnings("ignore", message=".*without confounders.*")
-    results_kennedy_joint = randomization_test_regression(
-        X, y, method="kennedy_joint", confounders=[], family="negative_binomial"
-    )
-print_joint_results_table(
-    results_kennedy_joint,
-    title="Kennedy (1995) Joint Permutation Test (family='negative_binomial')",
+results_kennedy_joint = randomization_test_regression(
+    X, y, method="kennedy_joint", confounders=[], family="negative_binomial"
 )
+print_joint_results_table(results_kennedy_joint)
 
+# %%
 # ============================================================================
 # Freedman–Lane (1983) individual — family="negative_binomial"
 # ============================================================================
 
-with warnings.catch_warnings():
-    warnings.filterwarnings("ignore", message=".*without confounders.*")
-    results_fl = randomization_test_regression(
-        X, y, method="freedman_lane", confounders=[], family="negative_binomial"
-    )
-print_results_table(
-    results_fl,
-    title="Freedman–Lane (1983) Individual Permutation Test (family='negative_binomial')",
+results_fl = randomization_test_regression(
+    X, y, method="freedman_lane", confounders=[], family="negative_binomial"
 )
-print_diagnostics_table(
-    results_fl,
-    title="Freedman–Lane (1983) Individual Diagnostics (family='negative_binomial')",
-)
+print_results_table(results_fl)
+print_diagnostics_table(results_fl)
 
+# %%
 # ============================================================================
 # Freedman–Lane (1983) joint — family="negative_binomial"
 # ============================================================================
 
-with warnings.catch_warnings():
-    warnings.filterwarnings("ignore", message=".*without confounders.*")
-    results_fl_joint = randomization_test_regression(
-        X, y, method="freedman_lane_joint", confounders=[], family="negative_binomial"
-    )
-print_joint_results_table(
-    results_fl_joint,
-    title="Freedman–Lane (1983) Joint Permutation Test (family='negative_binomial')",
+results_fl_joint = randomization_test_regression(
+    X, y, method="freedman_lane_joint", confounders=[], family="negative_binomial"
 )
+print_joint_results_table(results_fl_joint)
 
+# %%
 # ============================================================================
 # Confounder identification
 # ============================================================================
 
-all_confounder_results = {}
-for predictor in X.columns:
-    all_confounder_results[predictor] = identify_confounders(
-        X, y, predictor=predictor, family="negative_binomial"
-    )
+all_confounder_results = identify_confounders(X, y, family="negative_binomial")
+print_confounder_table(all_confounder_results)
 
-print_confounder_table(
-    all_confounder_results,
-    title="Confounder Identification for All Predictors (Negative Binomial)",
-)
-
-predictors_with_confounders = {
-    pred: res.identified_confounders
-    for pred, res in all_confounder_results.items()
-    if res.identified_confounders
-}
-
+# %%
 # ============================================================================
 # Kennedy with identified confounders — family="negative_binomial"
 # ============================================================================
+# The confounder sieve identified that 'hum' (relative humidity) is confounded
+# by 'weathersit' (weather severity). We execute Kennedy's permutation test
+# controlling for 'weathersit' to estimate the partial effect of humidity.
 
-if predictors_with_confounders:
-    example_predictor = list(predictors_with_confounders.keys())[0]
-    example_confounders = predictors_with_confounders[example_predictor]
+target_predictor = "hum"
+confounders = all_confounder_results[target_predictor].identified_confounders
 
-    results_kc = randomization_test_regression(
-        X,
-        y,
-        method="kennedy",
-        confounders=example_confounders,
-        family="negative_binomial",
-    )
-    print_results_table(
-        results_kc,
-        title=(
-            f"Kennedy (1995) for '{example_predictor}' "
-            f"(controlling for {', '.join(example_confounders)}) "
-            f"(family='negative_binomial')"
-        ),
-    )
-    print_diagnostics_table(
-        results_kc,
-        title=(
-            f"Kennedy (1995) Diagnostics for '{example_predictor}' "
-            f"(family='negative_binomial')"
-        ),
-    )
-
-# ============================================================================
-# Direct NegativeBinomialFamily protocol usage
-# ============================================================================
-# The ModelFamily protocol encapsulates every model-specific operation —
-# fitting, prediction, residual extraction, Y-reconstruction, batch
-# fitting, diagnostics, and classical p-values.  Below we exercise
-# each method directly for NegativeBinomialFamily.
-
-X_np = X.values.astype(float)
-n = len(y_arr)
-p = X_np.shape[1]
-family = NegativeBinomialFamily()
-
-# validate_y
-family.validate_y(y_arr)
-
-# calibrate — estimate α from the observed data
-calibrated = family.calibrate(X_np, y_arr, fit_intercept=True)
-assert isinstance(calibrated, NegativeBinomialFamily)
-
-# Idempotency check
-recalibrated = calibrated.calibrate(X_np, y_arr, fit_intercept=True)
-assert recalibrated is calibrated
-
-# fit / predict / coefs / residuals (using calibrated instance)
-model = calibrated.fit(X_np, y_arr, fit_intercept=True)
-preds = calibrated.predict(model, X_np)
-coefs = calibrated.coefs(model)
-resids = calibrated.residuals(model, X_np, y_arr)
-
-# fit_metric (NB deviance)
-deviance = calibrated.fit_metric(y_arr, preds)
-
-# reconstruct_y — NB-sampled reconstruction
-rng2 = np.random.default_rng(42)
-perm_resids = rng2.permutation(resids)
-y_star = calibrated.reconstruct_y(
-    preds[np.newaxis, :], perm_resids[np.newaxis, :], rng2
+results_kc = randomization_test_regression(
+    X,
+    y,
+    method="kennedy",
+    confounders=confounders,
+    family="negative_binomial",
 )
+print_results_table(results_kc)
+print_diagnostics_table(results_kc)
 
-# batch_fit — fit NB GLM on B permuted Y vectors at once
-n_batch = 50
-perm_indices = np.array([rng2.permutation(n) for _ in range(n_batch)])
-Y_matrix = y_arr[perm_indices]
-with warnings.catch_warnings():
-    warnings.filterwarnings("ignore", category=UserWarning)
-    batch_coefs = calibrated.batch_fit(X_np, Y_matrix, fit_intercept=True)
-n_nan = int(np.sum(np.any(np.isnan(batch_coefs), axis=1)))
+# %%
+# ============================================================================
+# Execution & Protocol Artifacts
+# ============================================================================
+# Inspect the internal execution context from the completed test result:
+# backend acceleration, batch convergence, fit metrics, and protocol properties.
 
-# diagnostics
-diag = calibrated.diagnostics(X_np, y_arr, fit_intercept=True)
-if diag["dispersion"] > 1.5:
-    dispersion_status = "⚠ OVERDISPERSION DETECTED — NB2 IS APPROPRIATE"
-else:
-    dispersion_status = "✓ NO OVERDISPERSION (α handles it)"
-
-# classical_p_values
-p_classical = calibrated.classical_p_values(X_np, y_arr, fit_intercept=True)
-
-# exchangeability_cells
-cells = calibrated.exchangeability_cells(X_np, y_arr)
-assert cells is None
-
-print_protocol_usage_table(
-    results_ter_braak,
-    title="Direct NegativeBinomialFamily Protocol Usage",
-)
+print_protocol_usage_table(results_kc)

@@ -361,27 +361,31 @@ def randomization_test_regression(
     # ---- Strategy resolution -------------------------------------
     # Validate method string and special-case guards.
     #
-    # Contextual warnings for running confounder-aware methods without
+    # Contextual advisories for running confounder-aware methods without
     # confounders are placed here — AFTER the engine constructor —
     # so that family compatibility checks (e.g., "Freedman-Lane not
     # supported for ordinal") fire first.  Otherwise the user would
     # see a misleading "no confounders" warning before the hard error.
     if method in ("kennedy", "kennedy_joint") and not confounders:
-        warnings.warn(
+        warn_msg = (
             f"{method!r} method called without confounders \u2014 all features "
-            "will be tested, each partialling out the remaining predictors.",
-            UserWarning,
-            stacklevel=2,
+            "will be tested, each partialling out the remaining predictors."
         )
+        if ctx is not None:
+            ctx.warnings_captured.append(warn_msg)
+        else:
+            warnings.warn(warn_msg, UserWarning, stacklevel=2)
 
     if method in ("freedman_lane", "freedman_lane_joint") and not confounders:
-        warnings.warn(
+        warn_msg = (
             f"{method!r} method called without confounders \u2014 all features "
             "will be tested, each conditioning on the remaining predictors "
-            "(standard multiple regression).",
-            UserWarning,
-            stacklevel=2,
+            "(standard multiple regression)."
         )
+        if ctx is not None:
+            ctx.warnings_captured.append(warn_msg)
+        else:
+            warnings.warn(warn_msg, UserWarning, stacklevel=2)
 
     if (
         method == "freedman_lane"

@@ -4232,14 +4232,14 @@ class OrdinalFamily:
     Uses ``statsmodels.miscmodels.ordinal_model.OrderedModel`` with
     the logit link (proportional-odds assumption).
 
-    **Permutation method restrictions**: Only ``ter_braak``,
-    ``kennedy``, and ``kennedy_joint`` are supported.  Freedman-Lane
+    **Permutation method restrictions**: Supported methods include
+    ``manly``, ``manly_joint``, ``kennedy``, ``kennedy_joint``,
+    ``score``, and ``score_joint``.  Freedman-Lane and ter Braak
     methods raise ``ValueError`` because ordinal residuals are not
-    meaningfully defined.
+    well-defined.
 
-    The ter Braak path uses direct Y permutation (equivalent to
-    Manly 1997) rather than the residual-based approach used by
-    continuous/binary families.
+    The Manly path uses direct Y permutation (Manly 1997) rather
+    than the residual-based approach used by continuous/binary families.
 
     **Optimizer strategy**: The single-model ``fit()`` (used for
     reported coefficients and diagnostics) uses BFGS for exact
@@ -5027,11 +5027,15 @@ class MultinomialFamily:
     coefficients in the multinomial model and the permutation engine
     requires a scalar per predictor.
 
-    **Permutation method restrictions**: Only ``ter_braak``,
-    ``kennedy``, and ``kennedy_joint`` are supported.  Freedman-Lane
+    **Permutation method restrictions**: Supported methods include
+    ``manly``, ``manly_joint``, ``kennedy``, ``kennedy_joint``,
+    ``score``, and ``score_joint``.  Freedman-Lane and ter Braak
     methods raise ``ValueError`` because multinomial residuals do not
-    support the reduced-model residual exchange required by the
-    Freedman-Lane algorithm.
+    support the reduced-model residual exchange required by residual-based
+    algorithms.
+
+    The Manly path uses direct Y permutation (Manly 1997) rather
+    than the residual-based approach used by continuous/binary families.
 
     **Optimizer strategy**: The single-model ``fit()`` uses
     statsmodels MNLogit with Newton-Raphson (default).  Batch
@@ -5811,6 +5815,7 @@ def register_family(name: str, cls: type) -> None:
 def resolve_family(
     family: str | ModelFamily,
     y: np.ndarray | None = None,
+    ctx: Any | None = None,
 ) -> ModelFamily:
     """Resolve a family string or instance to a concrete ``ModelFamily``.
 
@@ -5832,6 +5837,9 @@ def resolve_family(
         y: Response vector of shape ``(n,)``, used only when
             *family* is ``"auto"``.  May be omitted when *family*
             is an explicit string or a ``ModelFamily`` instance.
+        ctx: Optional ``FitContext`` for recording advisories. When
+            provided, count-data advisories are recorded onto
+            ``ctx.warnings_captured`` rather than emitted to stderr.
 
     Returns:
         A ``ModelFamily`` instance ready for use by the permutation
@@ -5864,16 +5872,22 @@ def resolve_family(
             )  # True if every y_i is whole
             _is_nonneg = bool(np.all(y >= 0))  # True if no negative values
             if _is_integer and _is_nonneg and len(unique_y) > 2:
-                import warnings
-
-                warnings.warn(
+                warn_msg = (
                     "Y looks like count data (non-negative integers with "
                     f"{len(unique_y)} unique values). Consider specifying "
                     "family='poisson' or family='negative_binomial' "
-                    "explicitly.",
-                    UserWarning,
-                    stacklevel=2,
+                    "explicitly."
                 )
+                if ctx is not None:
+                    ctx.warnings_captured.append(warn_msg)
+                else:
+                    import warnings
+
+                    warnings.warn(
+                        warn_msg,
+                        UserWarning,
+                        stacklevel=2,
+                    )
 
     if family not in _FAMILIES:
         available = ", ".join(sorted(_FAMILIES)) or "(none registered)"

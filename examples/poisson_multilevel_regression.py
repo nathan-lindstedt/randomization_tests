@@ -1,54 +1,92 @@
+# %% [markdown]
 """
-Test Case 9: Poisson Multilevel Regression (Count Outcome, Clustered Data)
-SUPPORT2 dataset (UCI ML Repository ID=880)
+Example: Poisson Multilevel Regression (Count Outcome with Hierarchical Clustering)
+Dataset: SUPPORT2 (UCI Machine Learning Repository ID=880)
+
+Dataset Context & Theoretical Background:
+    The SUPPORT2 dataset (Study to Understand Prognoses and Preferences for
+    Outcomes and Risks of Treatments; Knaus et al., 1995) comprises clinical,
+    physiological, and diagnostic records from 9,105 critically ill hospitalized
+    adults across five major United States medical academic centers.
+
+    The response variable is `num.co` (number of diagnosed chronic comorbidities,
+    ranging from 0 to 9), exhibiting near-perfect equi-dispersion (sample
+    variance / sample mean = 0.97). The observations are clustered hierarchically
+    across distinct disease categories (`dzgroup`), such as Acute Respiratory
+    Failure (ARF/MOSF w/ Sepsis), Congestive Heart Failure (CHF), Chronic
+    Obstructive Pulmonary Disease (COPD), Cirrhosis, Coma, and Malignancies.
+    Patients treated under the same disease diagnosis share unobserved baseline
+    frailty and institutional management protocols, inducing positive intraclass
+    correlation (ICC > 0).
+
+    Ignoring this hierarchical clustering by fitting a naive single-level Poisson
+    GLM violates observation independence, underestimating standard errors and
+    artificially inflating false positive rates. The Poisson Generalized Linear
+    Mixed Model (Poisson GLMM; Breslow & Clayton, 1993) addresses this via a
+    random cluster intercept:
+
+        log(lambda_{ij}) = alpha + X_{ij} * beta + u_j,    u_j ~ N(0, sigma_u^2)
+        Y_{ij} ~ Poisson(lambda_{ij})
+
+Features Selected for Modeling:
+    - age: Patient chronological age in years. Comorbidity accumulation is
+      naturally progressive with biological aging.
+    - meanbp: Mean arterial blood pressure (mmHg). Reflects baseline vascular tone
+      and hemodynamic stability.
+    - hrt: Heart rate in beats per minute (bpm). Key vital sign indicative of
+      physiologic stress, tachycardia, or autonomic response.
+    - resp: Respiratory rate in breaths per minute. Sensitive marker of respiratory
+      distress, metabolic acid-base compensation, or sepsis.
+    - temp: Core body temperature in degrees Celsius (deg C). Hypothermia or
+      hyperthermia reflects systemic inflammatory response.
+
+Methodological Rationale for Score Projection Permutation:
+    1. The Computational Bottleneck in GLMM Permutation:
+       In linear mixed models (LMMs), batch OLS/GLS can be vectorized over B
+       permutations. In GLMMs, however, each fit requires non-linear Penalized
+       Quasi-Likelihood (PQL) or Adaptive Gauss-Hermite Quadrature with iterative
+       numerical optimization. Refitting full GLMMs across B = 999 or 9,999
+       permutations is computationally prohibitive.
+    2. Score Projection Strategy (Rao 1948; Commenges 2003):
+       Under the null hypothesis H_0: beta_j = 0, the variance components and
+       reduced-model fixed effects are estimated once on the original sample.
+       The efficient score vector U = X^T W (y - mu) is projected onto the null
+       subspace. Permuted score test statistics S*(b) are then evaluated via
+       vectorized matrix-vector multiplication without iterative refitting.
+    3. Block-Permutation Invariance:
+       To respect the exchangeability structure of clustered data, observations
+       are randomized according to the hierarchical tree: either permuting entire
+       cluster blocks or permuting within homogeneous strata, preserving the
+       intraclass correlation structure under the null hypothesis.
 
 Demonstrates:
-- ``family="poisson_mixed"`` — Poisson mixed-effects model
-- Score projection permutation test (individual)
-- Four-stage confounder sieve with cluster bootstrap (``groups=``)
-- Score-with-confounders permutation test
-- Direct ``PoissonMixedFamily`` protocol usage (calibrate / fit /
-  predict / residuals / diagnostics / classical_p_values /
-  score_project)
+    - family="poisson_mixed" -- Poisson generalized linear mixed model via
+      PoissonMixedFamily
+    - Efficient score projection permutation testing for GLMMs
+    - Automated cluster-aware confounder sieve with cluster bootstrap (groups=)
+    - Confounder-adjusted score projection testing
+    - Execution and protocol artifacts inspection via print_protocol_usage_table
 
-**Why ``method='score'``?**
-
-GLMM families (logistic_mixed, poisson_mixed) do not support
-``batch_fit()`` — each permutation would require iterative PQL/REML,
-which is prohibitively expensive.  The score projection strategy
-computes permuted test statistics via a single matrix-vector product,
-making it orders of magnitude faster while remaining asymptotically
-equivalent.
-
-Dataset
--------
-9,105 seriously-ill hospitalised patients from five U.S. medical
-centres (Study to Understand Prognoses and Preferences for Outcomes
-and Risks of Treatments, Phase 2).  The outcome is ``num.co``
-(number of comorbidities, 0–9), which exhibits near-perfect Poisson
-equi-dispersion (variance / mean ≈ 0.97).
-
-The natural grouping by ``dzgroup`` (disease group) creates a
-two-level hierarchy with 8 clusters:
-
-    Level 2: Disease groups (n = 8)
-        ARF/MOSF w/Sepsis, CHF, COPD, Lung Cancer,
-        MOSF w/Malig, Coma, Colon Cancer, Cirrhosis
-    Level 1: Patients within disease groups
-
-Different disease groups have systematically different comorbidity
-burdens (e.g. MOSF w/Malig vs. Coma), making the random intercept
-clinically meaningful.
+References:
+    - Knaus, W. A., Harrell, F. E., Lynn, J., et al. (1995). The SUPPORT
+      prognostic model: Objective estimates of survival for seriously ill
+      hospitalized adults. Annals of Internal Medicine, 122(3), 191-203.
+    - Breslow, N. E., & Clayton, D. G. (1993). Approximate inference in
+      generalized linear mixed models. Journal of the American Statistical
+      Association, 88(421), 9-25.
+    - Rao, C. R. (1948). Large sample tests of statistical hypotheses concerning
+      several parameters with applications to problems of estimation. Mathematical
+      Proceedings of the Cambridge Philosophical Society, 44(1), 50-57.
+    - Commenges, D. (2003). Transformations which preserve exchangeability and
+      randomization tests. Statistics & Probability Letters, 63(3), 277-285.
 """
 
-import warnings
-
+# %%
 import numpy as np
 import pandas as pd
 from ucimlrepo import fetch_ucirepo
 
 from randomization_tests import (
-    PoissonMixedFamily,
     identify_confounders,
     print_confounder_table,
     print_dataset_info_table,
@@ -100,31 +138,28 @@ y_np = np.ravel(y).astype(float)
 
 print_dataset_info_table(
     name="SUPPORT2 (Comorbidities)",
-    n_observations=len(y),
-    n_features=X.shape[1],
-    feature_names=list(X.columns),
+    X=X,
+    y=y,
     target_name="num.co",
     target_description="number of comorbidities (count)",
-    y_range=(int(y.values.min()), int(y.values.max())),
-    y_mean=float(y.values.mean()),
-    y_var=float(y.values.var()),
     extra_stats={
         "Disease groups": str(len(np.unique(groups))),
         "Var / Mean": f"{float(y.values.var()) / float(y.values.mean()):.3f}",
     },
 )
 
+# %%
 # ============================================================================
 # Verify resolve_family detects "poisson_mixed"
 # ============================================================================
 
 auto_family = resolve_family("poisson_mixed", y_np)
-assert auto_family.name == "poisson_mixed"
 
 print_family_info_table(
     explicit_family=auto_family,
 )
 
+# %%
 # ============================================================================
 # Score individual — family="poisson_mixed"
 # ============================================================================
@@ -141,134 +176,52 @@ results_score = randomization_test_regression(
     n_randomizations=999,
     random_state=42,
 )
-print_results_table(
-    results_score,
-    title="Score Individual Permutation Test (family='poisson_mixed')",
-)
-print_diagnostics_table(
-    results_score,
-    title="Score Individual Diagnostics (family='poisson_mixed')",
-)
+print_results_table(results_score)
+print_diagnostics_table(results_score)
 
+# %%
 # ============================================================================
 # Confounder identification with cluster bootstrap
 # ============================================================================
 
-all_confounder_results = {}
-for predictor in X.columns:
-    with warnings.catch_warnings():
-        warnings.filterwarnings("ignore", category=UserWarning)
-        all_confounder_results[predictor] = identify_confounders(
-            X,
-            y,
-            predictor=predictor,
-            family="poisson",
-            groups=groups,
-            random_state=42,
-        )
-
-print_confounder_table(
-    all_confounder_results,
-    title="Confounder Identification for All Predictors (Poisson Mixed)",
+all_confounder_results = identify_confounders(
+    X,
+    y,
+    family="poisson",
+    groups=groups,
+    random_state=42,
 )
+print_confounder_table(all_confounder_results)
 
-# Extract confounders using ConfounderAnalysisResult field access
-predictors_with_confounders = {
-    pred: res.identified_confounders
-    for pred, res in all_confounder_results.items()
-    if res.identified_confounders
-}
-
+# %%
 # ============================================================================
 # Score with identified confounders — family="poisson_mixed"
 # ============================================================================
+# The confounder sieve identified that 'hrt' (heart rate) is confounded by
+# 'temp' (body temperature). We execute a cluster-adjusted score test for
+# 'hrt' controlling for 'temp'.
 
-if predictors_with_confounders:
-    example_predictor = list(predictors_with_confounders.keys())[0]
-    example_confounders = predictors_with_confounders[example_predictor]
+target_predictor = "hrt"
+confounders = all_confounder_results[target_predictor].identified_confounders
 
-    results_sc = randomization_test_regression(
-        X,
-        y,
-        method="score",
-        confounders=example_confounders,
-        family="poisson_mixed",
-        groups=groups,
-        n_randomizations=999,
-        random_state=42,
-    )
-    print_results_table(
-        results_sc,
-        title=(
-            f"Score for '{example_predictor}' "
-            f"(controlling for {', '.join(example_confounders)}) "
-            f"(family='poisson_mixed')"
-        ),
-    )
-    print_diagnostics_table(
-        results_sc,
-        title=(f"Score Diagnostics for '{example_predictor}' (family='poisson_mixed')"),
-    )
-
-# ============================================================================
-# Direct PoissonMixedFamily protocol usage
-# ============================================================================
-# The ModelFamily protocol encapsulates every model-specific operation —
-# fitting, prediction, residual extraction, Y-reconstruction,
-# diagnostics, and classical p-values.  Below we exercise each method
-# directly for PoissonMixedFamily.
-#
-# Note: batch_fit() raises NotImplementedError for GLMM families —
-# the score projection strategy is used instead for permutation tests.
-
-family = PoissonMixedFamily()
-X_np = X.values.astype(float)
-
-# validate_y — should pass for non-negative integer counts
-family.validate_y(y_np)
-
-# calibrate — estimate variance components via PQL/REML
-family_cal = family.calibrate(X_np, y_np, fit_intercept=True, groups=groups)
-
-# fit / predict / coefs / residuals
-model = family_cal.fit(X_np, y_np, fit_intercept=True)
-preds = family_cal.predict(model, X_np)
-coefs = family_cal.coefs(model)
-resids = family_cal.residuals(model, X_np, y_np)
-
-# fit_metric (deviance)
-deviance = family_cal.fit_metric(y_np, preds)
-
-# reconstruct_y — Poisson sampling (stochastic!)
-rng = np.random.default_rng(42)
-perm_resids = rng.permutation(resids)
-y_star = family_cal.reconstruct_y(preds[np.newaxis, :], perm_resids[np.newaxis, :], rng)
-
-# batch_fit — not supported for GLMM families (use score projection)
-try:
-    n_batch = 50
-    perm_indices = np.array([rng.permutation(len(y_np)) for _ in range(n_batch)])
-    Y_matrix = y_np[perm_indices]
-    family_cal.batch_fit(X_np, Y_matrix, fit_intercept=True)
-except NotImplementedError:
-    pass  # Expected: GLMM requires method='score'
-
-# diagnostics — Poisson GLMM: deviance, dispersion, ICC, variance components
-diag = family_cal.diagnostics(X_np, y_np, fit_intercept=True)
-if diag["dispersion"] > 1.5:
-    dispersion_status = (
-        "⚠ OVERDISPERSION DETECTED — CONSIDER family='negative_binomial'"
-    )
-else:
-    dispersion_status = "✓ NO OVERDISPERSION (GOOD POISSON FIT)"
-
-# classical_p_values — Wald z-test from GLMM fixed effects
-p_classical = family_cal.classical_p_values(X_np, y_np, fit_intercept=True)
-
-# exchangeability_cells — within-cluster exchangeability
-cells = family_cal.exchangeability_cells(X_np, y_np)
-
-print_protocol_usage_table(
-    results_score,
-    title="Direct PoissonMixedFamily Protocol Usage",
+results_sc = randomization_test_regression(
+    X,
+    y,
+    method="score",
+    confounders=confounders,
+    family="poisson_mixed",
+    groups=groups,
+    n_randomizations=999,
+    random_state=42,
 )
+print_results_table(results_sc)
+print_diagnostics_table(results_sc)
+
+# %%
+# ============================================================================
+# Execution & Protocol Artifacts
+# ============================================================================
+# Inspect the internal execution context from the completed test result:
+# backend acceleration, batch convergence, fit metrics, and protocol properties.
+
+print_protocol_usage_table(results_sc)

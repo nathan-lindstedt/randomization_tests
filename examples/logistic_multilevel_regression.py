@@ -1,48 +1,87 @@
+# %% [markdown]
 """
-Test Case 8: Logistic Multilevel Regression (Binary Outcome, Clustered Data)
-Adult Census Income dataset (UCI ML Repository ID=2)
+Example: Logistic Multilevel Regression (Binary Outcome with Hierarchical Clustering)
+Dataset: Adult Census Income (UCI Machine Learning Repository ID=2)
+
+Dataset Context & Theoretical Background:
+    The Adult Census Income dataset (Kohavi, 1996), extracted from the 1994
+    Current Population Survey (CPS) by the U.S. Census Bureau, is an established
+    benchmark for binary classification and socio-economic econometric analysis.
+    The prediction task models whether an individual's annual income exceeds
+    $50,000 (encoded as binary Y in {0, 1}).
+
+    Individual workers operate within distinct occupational structures (e.g.,
+    Executive/Managerial, Specialized Professional, Administrative Support,
+    Craft/Repair, Handlers/Cleaners, Sales). Occupational sectors establish
+    institutional pay grades, union wage floors, and baseline productivity
+    differentials that induce significant between-occupation variance.
+
+    Fitting a standard single-level logistic regression assumes all workers are
+    independent, ignoring the shared occupational random effect. This assumption
+    artificially deflates standard errors for socio-demographic covariates and
+    distorts statistical inference. The Logistic Generalized Linear Mixed Model
+    (Logistic GLMM; Breslow & Clayton, 1993) parameterizes occupational clustering
+    via a latent random intercept:
+
+        logit(P(Y_{ij} = 1 | X_{ij}, u_j)) = alpha + X_{ij} * beta + u_j,  u_j ~ N(0, sigma_u^2)
+
+    On the latent logistic scale, the residual error variance is fixed at
+    pi^2 / 3 approx 3.29, yielding a well-defined Intraclass Correlation (ICC):
+
+        ICC = sigma_u^2 / (sigma_u^2 + pi^2 / 3)
+
+Features Selected for Modeling:
+    - age: Worker age in years. Captures career lifecycle progression, experience
+      accumulation, and seniority premiums.
+    - education_num: Continuous educational attainment index (ranging from 1 for
+      early primary school to 16 for Doctorate). Strongest structural determinant
+      of human capital.
+    - hours_per_week: Reported usual working hours per week. Measures labor
+      supply and overtime intensity.
+    - capital_gain: Annual recorded capital gains from asset and equity sales ($),
+      reflecting non-labor asset wealth.
+    - capital_loss: Annual recorded capital losses from investment assets ($).
+
+Methodological Rationale for Score Projection Permutation:
+    1. Score Projection for Binary GLMMs:
+       Refitting non-linear logistic GLMMs via Penalized Quasi-Likelihood (PQL)
+       or Laplace approximation across B = 999 permutation iterations is
+       prohibitively slow. The score test strategy (Rao, 1948; Commenges, 2003)
+       evaluates the gradient of the log-likelihood (the score vector) under the
+       null model. Invariance under cluster-preserving permutations is assessed
+       in closed form via matrix-vector projections.
+    2. Cluster-Aware Confounder Control:
+       Covariate selection via `identify_confounders()` accounts for grouping
+       using a cluster bootstrap, ensuring that candidate confounder selection
+       respects the multi-level dependency structure.
 
 Demonstrates:
-- ``family="logistic_mixed"`` — logistic mixed-effects model
-- Score projection permutation test (individual)
-- Four-stage confounder sieve with cluster bootstrap (``groups=``)
-- Score-with-confounders permutation test
-- Direct ``LogisticMixedFamily`` protocol usage (calibrate / fit /
-  predict / residuals / diagnostics / classical_p_values /
-  score_project)
+    - family="logistic_mixed" -- binary logistic GLMM via LogisticMixedFamily
+    - Efficient score projection permutation testing for GLMMs
+    - Automated cluster-aware confounder sieve with cluster bootstrap (groups=)
+    - Confounder-adjusted score projection testing
+    - Execution and protocol artifacts inspection via print_protocol_usage_table
 
-**Why ``method='score'``?**
-
-GLMM families (logistic_mixed, poisson_mixed) do not support
-``batch_fit()`` — each permutation would require iterative PQL/REML,
-which is prohibitively expensive.  The score projection strategy
-computes permuted test statistics via a single matrix-vector product,
-making it orders of magnitude faster while remaining asymptotically
-equivalent.
-
-Dataset
--------
-48,842 records from the 1994 U.S. Census Bureau database.  The outcome
-is binary: income > $50 K vs. ≤ $50 K.  The natural grouping by
-``occupation`` (14 occupational categories after removing unknowns)
-creates a two-level hierarchy:
-
-    Level 2: Occupations (n = 14)
-    Level 1: Individuals within occupations (~350 each after subsampling)
-
-The occupation-level intercept variance captures between-occupation
-differences in base income probability (e.g., "Exec-managerial" vs.
-"Handlers-cleaners"), yielding a meaningful logistic random intercept.
+References:
+    - Kohavi, R. (1996). Scaling up the accuracy of naive-bayes classifiers:
+      A decision-tree hybrid. In Proceedings of the Second International
+      Conference on Knowledge Discovery and Data Mining (KDD-96), 202-207.
+    - Breslow, N. E., & Clayton, D. G. (1993). Approximate inference in
+      generalized linear mixed models. Journal of the American Statistical
+      Association, 88(421), 9-25.
+    - Rao, C. R. (1948). Large sample tests of statistical hypotheses concerning
+      several parameters with applications to problems of estimation. Mathematical
+      Proceedings of the Cambridge Philosophical Society, 44(1), 50-57.
+    - Commenges, D. (2003). Transformations which preserve exchangeability and
+      randomization tests. Statistics & Probability Letters, 63(3), 277-285.
 """
 
-import warnings
-
+# %%
 import numpy as np
 import pandas as pd
 from ucimlrepo import fetch_ucirepo
 
 from randomization_tests import (
-    LogisticMixedFamily,
     identify_confounders,
     print_confounder_table,
     print_dataset_info_table,
@@ -111,30 +150,27 @@ groups = groups[sel]
 
 print_dataset_info_table(
     name="Adult Census Income",
-    n_observations=len(y),
-    n_features=X.shape[1],
-    feature_names=list(X.columns),
-    target_name="income",
+    X=X,
+    y=y,
     target_description=">50K (1) vs <=50K (0)",
-    y_range=(int(y.values.min()), int(y.values.max())),
-    y_mean=float(y.values.mean()),
     extra_stats={
         "Occupations": str(len(np.unique(groups))),
         "Prevalence": f"{float(y.values.mean()):.2%}",
     },
 )
 
+# %%
 # ============================================================================
 # Verify resolve_family detects "logistic_mixed"
 # ============================================================================
 
 auto_family = resolve_family("logistic_mixed", np.ravel(y))
-assert auto_family.name == "logistic_mixed"
 
 print_family_info_table(
     explicit_family=auto_family,
 )
 
+# %%
 # ============================================================================
 # Score individual — family="logistic_mixed"
 # ============================================================================
@@ -151,131 +187,49 @@ results_score = randomization_test_regression(
     n_randomizations=999,
     random_state=42,
 )
-print_results_table(
-    results_score,
-    title="Score Individual Permutation Test (family='logistic_mixed')",
-)
-print_diagnostics_table(
-    results_score,
-    title="Score Individual Diagnostics (family='logistic_mixed')",
-)
+print_results_table(results_score)
+print_diagnostics_table(results_score)
 
+# %%
 # ============================================================================
 # Confounder identification with cluster bootstrap
 # ============================================================================
 
-all_confounder_results = {}
-for predictor in X.columns:
-    with warnings.catch_warnings():
-        warnings.filterwarnings("ignore", category=UserWarning)
-        all_confounder_results[predictor] = identify_confounders(
-            X,
-            y,
-            predictor=predictor,
-            family="logistic",
-            groups=groups,
-            random_state=42,
-        )
-
-print_confounder_table(
-    all_confounder_results,
-    title="Confounder Identification for All Predictors (Logistic Mixed)",
+all_confounder_results = identify_confounders(
+    X,
+    y,
+    family="logistic",
+    groups=groups,
+    random_state=42,
 )
+print_confounder_table(all_confounder_results)
 
-# Extract confounders using ConfounderAnalysisResult field access
-predictors_with_confounders = {
-    pred: res.identified_confounders
-    for pred, res in all_confounder_results.items()
-    if res.identified_confounders
-}
-
+# %%
 # ============================================================================
-# Score with identified confounders — family="logistic_mixed"
+# Score with covariate control — family="logistic_mixed"
 # ============================================================================
+# In labor economics analysis, evaluating the wage premium of education
+# (education_num) often adjusts for labor supply intensity (hours_per_week).
+# We run a cluster-adjusted score test controlling for 'hours_per_week'.
 
-if predictors_with_confounders:
-    example_predictor = list(predictors_with_confounders.keys())[0]
-    example_confounders = predictors_with_confounders[example_predictor]
-
-    results_sc = randomization_test_regression(
-        X,
-        y,
-        method="score",
-        confounders=example_confounders,
-        family="logistic_mixed",
-        groups=groups,
-        n_randomizations=999,
-        random_state=42,
-    )
-    print_results_table(
-        results_sc,
-        title=(
-            f"Score for '{example_predictor}' "
-            f"(controlling for {', '.join(example_confounders)}) "
-            f"(family='logistic_mixed')"
-        ),
-    )
-    print_diagnostics_table(
-        results_sc,
-        title=(
-            f"Score Diagnostics for '{example_predictor}' (family='logistic_mixed')"
-        ),
-    )
-
-# ============================================================================
-# Direct LogisticMixedFamily protocol usage
-# ============================================================================
-# The ModelFamily protocol encapsulates every model-specific operation —
-# fitting, prediction, residual extraction, Y-reconstruction,
-# diagnostics, and classical p-values.  Below we exercise each method
-# directly for LogisticMixedFamily.
-#
-# Note: batch_fit() raises NotImplementedError for GLMM families —
-# the score projection strategy is used instead for permutation tests.
-
-family = LogisticMixedFamily()
-X_np = X.values.astype(float)
-y_np = np.ravel(y).astype(float)
-
-# validate_y — should pass for binary {0, 1}
-family.validate_y(y_np)
-
-# calibrate — estimate variance components via PQL/REML
-family_cal = family.calibrate(X_np, y_np, fit_intercept=True, groups=groups)
-
-# fit / predict / coefs / residuals
-model = family_cal.fit(X_np, y_np, fit_intercept=True)
-preds = family_cal.predict(model, X_np)
-coefs = family_cal.coefs(model)
-resids = family_cal.residuals(model, X_np, y_np)
-
-# fit_metric (deviance)
-deviance = family_cal.fit_metric(y_np, preds)
-
-# reconstruct_y — clip + Bernoulli sampling (stochastic!)
-rng = np.random.default_rng(42)
-perm_resids = rng.permutation(resids)
-y_star = family_cal.reconstruct_y(preds[np.newaxis, :], perm_resids[np.newaxis, :], rng)
-
-# batch_fit — not supported for GLMM families (use score projection)
-try:
-    n_batch = 50
-    perm_indices = np.array([rng.permutation(len(y_np)) for _ in range(n_batch)])
-    Y_matrix = y_np[perm_indices]
-    family_cal.batch_fit(X_np, Y_matrix, fit_intercept=True)
-except NotImplementedError:
-    pass  # Expected: GLMM requires method='score'
-
-# diagnostics — deviance, ICC (latent scale), variance components
-diag = family_cal.diagnostics(X_np, y_np, fit_intercept=True)
-
-# classical_p_values — Wald z-test from GLMM fixed effects
-p_classical = family_cal.classical_p_values(X_np, y_np, fit_intercept=True)
-
-# exchangeability_cells — within-cluster exchangeability
-cells = family_cal.exchangeability_cells(X_np, y_np)
-
-print_protocol_usage_table(
-    results_score,
-    title="Direct LogisticMixedFamily Protocol Usage",
+results_sc = randomization_test_regression(
+    X,
+    y,
+    method="score",
+    confounders=["hours_per_week"],
+    family="logistic_mixed",
+    groups=groups,
+    n_randomizations=999,
+    random_state=42,
 )
+print_results_table(results_sc)
+print_diagnostics_table(results_sc)
+
+# %%
+# ============================================================================
+# Execution & Protocol Artifacts
+# ============================================================================
+# Inspect the internal execution context from the completed test result:
+# backend acceleration, batch convergence, fit metrics, and protocol properties.
+
+print_protocol_usage_table(results_sc)

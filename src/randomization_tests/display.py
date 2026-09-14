@@ -21,11 +21,11 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 from scipy import stats as _sp_stats
 
-from .families import ModelFamily
+from ._context import FitContext
+from .families import ModelFamily, _fmt_p, resolve_family
 from .families_mixed import _format_variance_components
 
 if TYPE_CHECKING:
-    from ._context import FitContext
     from ._results import IndividualTestResult, JointTestResult
 
 
@@ -276,10 +276,67 @@ def _resolve_guarantee_tier(results: Any) -> str:
     return "Asymptotically Exact"
 
 
+_FAMILY_DISPLAY_NAMES: dict[str, str] = {
+    "linear": "Linear Regression",
+    "linear_mixed": "Linear Mixed Model",
+    "logistic": "Logistic Regression",
+    "logistic_mixed": "Logistic Mixed Model",
+    "poisson": "Poisson Regression",
+    "poisson_mixed": "Poisson Mixed Model",
+    "negative_binomial": "Negative Binomial Regression",
+    "ordinal": "Ordinal Logistic Regression",
+    "multinomial": "Multinomial Logistic Regression",
+}
+
+
+def _resolve_results_title(results: Any) -> str:
+    """Resolve concise standardized title: [Model Type] — [Procedure]."""
+    family = getattr(results, "family", None)
+    fam_name = family.name if family is not None else "linear"
+    model_name = _FAMILY_DISPLAY_NAMES.get(fam_name, fam_name.replace("_", " ").title())
+
+    randomization = getattr(results, "randomization", None)
+    ctx = getattr(results, "context", None)
+    if ctx and randomization is None:
+        randomization = getattr(ctx, "randomization", None)
+
+    if randomization == "sign_flip":
+        return f"{model_name} \u2014 Fisher (1935) Sign-Flip Test"
+
+    method = getattr(results, "method", "")
+    method_titles = {
+        "ter_braak": "ter Braak (1992) Test",
+        "freedman_lane": "Freedman\u2013Lane (1983) Test",
+        "kennedy": "Kennedy (1995) Test",
+        "manly": "Manly (1997) Test",
+        "score": "Rao (1948) Score Test",
+        "score_exact": "Score Exact Test",
+    }
+    proc = method_titles.get(method, f"{method.replace('_', ' ').title()} Test")
+    return f"{model_name} \u2014 {proc}"
+
+
+def _resolve_joint_title(results: Any) -> str:
+    """Resolve concise standardized title for joint tests: [Model Type] — [Procedure] Joint Test."""
+    family = getattr(results, "family", None)
+    fam_name = family.name if family is not None else "linear"
+    model_name = _FAMILY_DISPLAY_NAMES.get(fam_name, fam_name.replace("_", " ").title())
+
+    method = getattr(results, "method", "")
+    method_titles = {
+        "freedman_lane_joint": "Freedman\u2013Lane (1983) Joint Test",
+        "kennedy_joint": "Kennedy (1995) Joint Test",
+        "manly_joint": "Manly (1997) Joint Test",
+        "score_joint": "Rao (1948) Score Joint Test",
+    }
+    proc = method_titles.get(method, f"{method.replace('_', ' ').title()} Joint Test")
+    return f"{model_name} \u2014 {proc}"
+
+
 def print_results_table(
     results: IndividualTestResult,
     *,
-    title: str = "Permutation Test Results",
+    title: str | None = None,
 ) -> None:
     """Print regression results in a formatted ASCII table similar to statsmodels.
 
@@ -289,11 +346,15 @@ def print_results_table(
     Args:
         results: Typed result object returned by
             :func:`~randomization_tests.randomization_test_regression`.
-        title: Title for the output table.
+        title: Title for the output table. If None, a standardized
+            title is generated from the model type and test method.
     """
     family: ModelFamily = results.family
     feature_names: list[str] = results.feature_names
     target_name: str | None = results.target_name
+
+    if title is None:
+        title = _resolve_results_title(results)
 
     print("=" * 80)
     for line in textwrap.wrap(title, width=78):
@@ -412,19 +473,6 @@ def print_results_table(
     # ── Notes ──────────────────────────────────────────────────── #
     notes: list[str] = []
 
-    # Kennedy / Freedman–Lane without confounders is valid but unusual —
-    # surface a note so the user knows ter Braak may be more appropriate.
-    method = getattr(results, "method", "")
-    confounders = getattr(results, "confounders", None)
-    if method in ("kennedy", "freedman_lane") and not confounders:
-        method_label = "Freedman\u2013Lane" if method == "freedman_lane" else "Kennedy"
-        notes.append(
-            f"{method_label} method called without confounders \u2014 each feature "
-            "is tested partialling out all remaining predictors (standard "
-            "multiple regression). If marginal (unconditional) associations "
-            "are desired, consider method='manly'."
-        )
-
     # Recommend larger n_randomizations for borderline cases.
     if borderline_features:
         ci_alpha = ci.get("confidence_level", 0.95)
@@ -445,10 +493,19 @@ def print_results_table(
         )
 
     # Append any warnings or context notes captured during the pipeline
+    method = getattr(results, "method", "")
+    confounders = getattr(results, "confounders", None)
     ctx = getattr(results, "context", None)
     if ctx is not None and getattr(ctx, "warnings_captured", None):
         for w_msg in ctx.warnings_captured:
             notes.append(w_msg)
+    elif not confounders and method in ("kennedy", "freedman_lane"):
+        method_label = "Freedman\u2013Lane" if method == "freedman_lane" else "Kennedy"
+        notes.append(
+            f"{method_label} method called without confounders \u2014 each feature "
+            "is tested partialling out all remaining predictors (standard "
+            "multiple regression)."
+        )
 
     if notes:
         print("-" * 80)
@@ -478,7 +535,7 @@ def print_results_table(
 def print_joint_results_table(
     results: JointTestResult,
     *,
-    title: str = "Joint Permutation Test Results",
+    title: str | None = None,
 ) -> None:
     """Print joint test results in a formatted ASCII table.
 
@@ -489,10 +546,14 @@ def print_joint_results_table(
         results: Typed result object returned by
             :func:`~randomization_tests.randomization_test_regression` with
             ``method='kennedy_joint'`` or ``method='freedman_lane_joint'``.
-        title: Title for the output table.
+        title: Title for the output table. If None, a standardized
+            title is generated from the model type and test method.
     """
     family: ModelFamily = results.family
     target_name: str | None = results.target_name
+
+    if title is None:
+        title = _resolve_joint_title(results)
 
     print("=" * 80)
     for line in textwrap.wrap(title, width=78):
@@ -538,23 +599,28 @@ def print_joint_results_table(
     print(f"{'Joint p-Value:':<30} {results.p_value_str:>12}")
 
     # ── Notes ──────────────────────────────────────────────────── #
+    notes: list[str] = []
     method = getattr(results, "method", "")
     confounders = getattr(results, "confounders", None)
-    if method in ("kennedy_joint", "freedman_lane_joint") and not confounders:
+    ctx = getattr(results, "context", None)
+    if ctx is not None and getattr(ctx, "warnings_captured", None):
+        for w_msg in ctx.warnings_captured:
+            notes.append(w_msg)
+    elif not confounders and method in ("kennedy_joint", "freedman_lane_joint"):
         method_label = (
             "Freedman\u2013Lane" if method == "freedman_lane_joint" else "Kennedy"
         )
+        notes.append(
+            f"{method_label} method called without confounders \u2014 all "
+            "features will be tested against the null model."
+        )
+
+    if notes:
         print("-" * 80)
         print("Notes")
         print("-" * 80)
-        print(
-            _wrap(
-                f"  [!] {method_label} method called without confounders \u2014 all "
-                "features will be tested against the null model.",
-                width=80,
-                indent=6,
-            )
-        )
+        for note in notes:
+            print(_wrap(f"  [!] {note}", width=80, indent=6))
 
     print("=" * 80)
     print(
@@ -578,7 +644,7 @@ def print_joint_results_table(
 def print_diagnostics_table(
     results: IndividualTestResult,
     *,
-    title: str = "Extended Diagnostics",
+    title: str = "Permutation Diagnostics",
 ) -> None:
     """Print extended model diagnostics in a formatted ASCII table.
 
@@ -848,6 +914,27 @@ def print_diagnostics_table(
         print(f"  {label:<{lw}}{stat:<{sw}}{detail}")
     notes.extend(diag_notes)
 
+    # Symmetry diagnostic (sign-flip tests)
+    sym = ext.get("symmetry")
+    if sym:
+        stat_val = sym.get("test_statistic", float("nan"))
+        p_val = sym.get("p_value", float("nan"))
+        is_sym = sym.get("is_symmetric", False)
+        stat_str = f"{stat_val:.2f}" if np.isfinite(stat_val) else "N/A"
+        sym_detail = f"p = {_fmt_p(p_val)} ({'Symmetric' if is_sym else 'Asymmetric'})"
+        print(f"  {'Wilcoxon Symmetry:':<{lw}}{stat_str:<{sw}}{sym_detail}")
+        if is_sym:
+            notes.append(
+                f"Wilcoxon signed-rank p = {p_val:.4f}: residuals are symmetric about "
+                "zero (Rademacher sign-flip assumption satisfied)."
+            )
+        else:
+            notes.append(
+                f"Wilcoxon signed-rank p = {p_val:.4f}: residuals may be asymmetric. "
+                "Sign-flip test may have inflated Type I error; consider permutation "
+                "testing instead."
+            )
+
     # Cook's distance
     cd = ext.get("cooks_distance", {})
     if cd:
@@ -931,97 +1018,10 @@ def print_diagnostics_table(
     print()
 
 
-def print_ar_comparison_table(
-    results: list[tuple[str, IndividualTestResult]],
-    *,
-    title: str = "P-Value Comparison Across AR Orders",
-) -> None:
-    """Print a side-by-side p-value comparison across multiple AR orders.
-
-    Accepts a list of ``(label, result)`` pairs — one per model
-    variant (e.g. no correction, AR(1), AR(2), …).  The table has
-    one row per feature and one column per variant, with an
-    interpretation column classifying each feature's behaviour.
-
-    This function is fully generalized: columns are determined by
-    the labels provided, so it works for any number of AR orders
-    or indeed any set of model variants worth comparing.
-
-    Args:
-        results: Sequence of ``(label, result)`` pairs.  *label* is a
-            short column header (e.g. ``"No AR"``, ``"AR(1)"``).
-            *result* is an :class:`IndividualTestResult`.
-        title: Title for the output table.
-    """
-    if not results:
-        return
-
-    W = 80
-
-    # Feature names from the first result.
-    feature_names: list[str] = results[0][1].feature_names
-    n_features = len(feature_names)
-
-    # ── Title ──────────────────────────────────────────────────── #
-    print("=" * W)
-    for line in textwrap.wrap(title, width=W - 2):
-        print(f"{line:^{W}}")
-    g_banner = "[ Guarantee: Asymptotically Exact (FGLS Autoregressive Whitening) ]"
-    print(f"{g_banner:^{W}}")
-    print("=" * W)
-
-    # ── Column widths ──────────────────────────────────────────── #
-    fc = 18  # feature column
-    cw = 12  # each p-value column
-    n_models = len(results)
-    interp_w = W - fc - (n_models * cw) - 2  # interpretation column
-    if interp_w < 10:
-        interp_w = 10
-
-    # Header
-    hdr = f"{'Feature':<{fc}}"
-    for label, _ in results:
-        hdr += f"{label:>{cw}}"
-    hdr += f"  {'Interpretation'}"
-    print(hdr)
-    print("-" * W)
-
-    # ── Rows ───────────────────────────────────────────────────── #
-    # Collect raw empirical p-values per model.
-    all_p: list[list[float]] = []
-    for _, res in results:
-        raw = res.raw_empirical_p
-        all_p.append([float(v) for v in raw[:n_features]])
-
-    for i, feat in enumerate(feature_names):
-        trunc = feat[:fc].ljust(fc)
-        row = trunc
-        for m in range(n_models):
-            p = all_p[m][i]
-            row += f"{p:>{cw}.4f}"
-
-        # Classify behaviour using first and last model p-values.
-        p_first = all_p[0][i]
-        p_last = all_p[-1][i]
-        if p_last < 0.05:
-            note = "Genuinely significant"
-        elif p_first < 0.05 and p_last >= 0.05:
-            note = "Autocorrelation artifact"
-        elif p_first >= 0.05:
-            note = "Not significant"
-        else:
-            note = "Marginal"
-        row += f"  {note}"
-        print(row)
-
-    print("=" * W)
-    print()
-
-
 def print_symmetry_table(
-    symmetry: dict[str, Any],
+    symmetry: dict[str, Any] | IndividualTestResult,
     *,
-    title: str = "Symmetry Diagnostic (Wilcoxon Signed-Rank Test)",
+    title: str = "Symmetry Diagnostic (Fisher 1935 / Wilcoxon Signed-Rank Test)",
 ) -> None:
     """Print residual symmetry diagnostic in a formatted ASCII table.
 
@@ -1029,15 +1029,35 @@ def print_symmetry_table(
     in a bordered 80-character table matching the visual style of other
     ``print_*`` display functions.
 
+    Accepts either a dictionary returned by ``validate_symmetry()`` or a
+    completed ``IndividualTestResult`` from a test run with
+    ``randomization='sign_flip'``.
+
     The sign-flip test assumes residuals are symmetric about zero under
     the null.  This table shows whether the Wilcoxon signed-rank test
     detects significant asymmetry at α = 0.05.
 
     Args:
-        symmetry: Dict returned by ``validate_symmetry()`` with keys
-            ``is_symmetric``, ``test_statistic``, and ``p_value``.
+        symmetry: Dict returned by ``validate_symmetry()`` or a completed
+            ``IndividualTestResult`` containing symmetry diagnostics.
         title: Title for the output table.
     """
+    if isinstance(symmetry, dict):
+        symmetry_data = symmetry
+    else:
+        ext = getattr(symmetry, "extended_diagnostics", {}) or {}
+        sym_dict = ext.get("symmetry")
+        if sym_dict is None:
+            ctx = getattr(symmetry, "context", None)
+            residuals = getattr(ctx, "residuals", None) if ctx else None
+            if residuals is not None:
+                from .sign_flips import validate_symmetry
+
+                sym_dict = validate_symmetry(residuals)
+            else:
+                sym_dict = {}
+        symmetry_data = sym_dict
+
     W = 80
     lw = 28
     sw = 14
@@ -1049,9 +1069,9 @@ def print_symmetry_table(
     print(f"{g_banner:^{W}}")
     print("=" * W)
 
-    stat = symmetry.get("test_statistic", float("nan"))
-    p = symmetry.get("p_value", float("nan"))
-    is_sym = symmetry.get("is_symmetric", False)
+    stat = symmetry_data.get("test_statistic", float("nan"))
+    p = symmetry_data.get("p_value", float("nan"))
+    is_sym = symmetry_data.get("is_symmetric", False)
 
     print(f"  {'Test statistic:':<{lw}}{stat:<{sw}.2f}")
     print(f"  {'p-value:':<{lw}}{p:<{sw}.4f}")
@@ -1080,82 +1100,131 @@ def print_symmetry_table(
 
 
 def print_comparison_table(
-    results: list[tuple[str, IndividualTestResult]],
+    results: list[tuple[str, IndividualTestResult] | IndividualTestResult],
     *,
-    title: str = "P-Value Comparison",
+    title: str | None = None,
     alpha: float = 0.05,
+    is_ar: bool = False,
 ) -> None:
-    """Print a side-by-side p-value comparison across model variants.
+    """Print a side-by-side p-value comparison across two model variants.
 
-    A general-purpose comparison table that accepts any set of
-    ``(label, result)`` pairs and shows empirical p-values with a
-    significance-agreement column.  Suitable for comparing different
-    methods (sign-flip vs. permutation), different families, or any
-    other model variants.
+    A pairwise comparison table (capped at k=2) that accepts a pair of
+    ``(label, result)`` tuples or result objects, cleanly spaced across the
+    full 80-character display grid.
 
-    For AR-specific comparisons with autocorrelation-artifact
-    interpretation, use :func:`print_ar_comparison_table` instead.
+    If labels are omitted or empty, they default to ``"A"`` and ``"B"``.
+
+    For AR-specific comparisons, the baseline (No AR) and highest AR order
+    are contrasted with AR artifact classification in the Verdict column.
 
     Args:
-        results: Sequence of ``(label, result)`` pairs.  *label* is a
-            short column header.  *result* is an
-            :class:`IndividualTestResult`.
-        title: Title for the output table.
-        alpha: Significance threshold for the agreement column.
+        results: Sequence of ``(label, result)`` pairs or result objects.
+            When more than 2 items are provided for AR comparisons, the first
+            (baseline) and last (highest order) models are compared.
+        title: Title for the output table. If None, generated automatically.
+        alpha: Significance threshold for the verdict column.
+        is_ar: Whether to enable autoregressive artifact classification.
     """
     if not results:
         return
 
     W = 80
+    fc, c1, c2, c3 = 16, 18, 22, 24
 
-    feature_names: list[str] = results[0][1].feature_names
+    # Auto-detect AR mode if not explicitly specified
+    if not is_ar:
+        for item in results:
+            lbl = item[0] if isinstance(item, tuple) and len(item) == 2 else ""
+            res = item[1] if isinstance(item, tuple) and len(item) == 2 else item
+            if "AR" in str(lbl):
+                is_ar = True
+                break
+            ctx = getattr(res, "context", None)
+            if ctx is not None and getattr(ctx, "ar_order", None) is not None:
+                is_ar = True
+                break
+
+    # Extract pairwise comparison: for AR, contrast first (baseline) vs last (highest order)
+    if is_ar and len(results) > 2:
+        pair = [results[0], results[-1]]
+    else:
+        pair = list(results[:2])
+
+    default_labels = ["A", "B"]
+    norm: list[tuple[str, IndividualTestResult]] = []
+    for idx, item in enumerate(pair):
+        if isinstance(item, tuple) and len(item) == 2:
+            lbl, res = item
+            lbl_str = (
+                str(lbl).strip()
+                if lbl is not None and str(lbl).strip()
+                else default_labels[idx]
+            )
+        else:
+            lbl_str = default_labels[idx]
+            res = item
+        norm.append((lbl_str, res))
+
+    if len(norm) < 2:
+        norm.append((default_labels[1], norm[0][1]))
+
+    lbl1, lbl2 = norm[0][0], norm[1][0]
+    res1, res2 = norm[0][1], norm[1][1]
+
+    feature_names: list[str] = res1.feature_names
     n_features = len(feature_names)
 
     # ── Title ──────────────────────────────────────────────────── #
+    if title is None:
+        if is_ar:
+            title = f"P-Value Comparison: {lbl1} vs. {lbl2}"
+        else:
+            title = f"{lbl1} vs. {lbl2} P-Value Comparison"
+
     print("=" * W)
     for line in textwrap.wrap(title, width=W - 2):
         print(f"{line:^{W}}")
+    if is_ar:
+        g_banner = "[ Guarantee: Asymptotically Exact (FGLS Autoregressive Whitening) ]"
+        print(f"{g_banner:^{W}}")
     print("=" * W)
 
-    # ── Column widths ──────────────────────────────────────────── #
-    fc = 18  # feature column
-    cw = 12  # each p-value column
-    n_models = len(results)
-    agree_w = W - fc - (n_models * cw) - 2
-    if agree_w < 10:
-        agree_w = 10
-
-    # Header
-    hdr = f"{'Feature':<{fc}}"
-    for label, _ in results:
-        hdr += f"{label:>{cw}}"
-    hdr += f"  {'Agreement'}"
+    # ── Column widths (W = 80: fc=16, c1=18, c2=22, c3=24) ────── #
+    hdr = f"{'Feature':<{fc}}{lbl1:>{c1}}{lbl2:>{c2}}{'Verdict':>{c3}}"
     print(hdr)
     print("-" * W)
 
     # ── Rows ───────────────────────────────────────────────────── #
-    all_p: list[list[float]] = []
-    for _, res in results:
-        raw = res.raw_empirical_p
-        all_p.append([float(v) for v in raw[:n_features]])
+    p1_vals = [float(v) for v in res1.raw_empirical_p[:n_features]]
+    p2_vals = [float(v) for v in res2.raw_empirical_p[:n_features]]
 
     for i, feat in enumerate(feature_names):
-        trunc = feat[:fc].ljust(fc)
-        row = trunc
-        for m in range(n_models):
-            p = all_p[m][i]
-            row += f"{p:>{cw}.4f}"
+        trunc = _truncate(feat, fc - 1)
+        p1 = p1_vals[i]
+        p2 = p2_vals[i]
 
-        # Agreement: check whether all models agree on significance.
-        sigs = [all_p[m][i] < alpha for m in range(n_models)]
-        if all(sigs):
-            agree = "All sig."
-        elif not any(sigs):
-            agree = "All n.s."
+        sig1 = p1 < alpha if not np.isnan(p1) else False
+        sig2 = p2 < alpha if not np.isnan(p2) else False
+
+        if np.isnan(p1) or np.isnan(p2):
+            p1_str = f"{'—':>{c1}}" if np.isnan(p1) else f"{p1:>{c1}.4f}"
+            p2_str = f"{'—':>{c2}}" if np.isnan(p2) else f"{p2:>{c2}.4f}"
+            verdict = "Confounder"
         else:
-            agree = "Disagree"
-        row += f"  {agree}"
-        print(row)
+            p1_str = f"{p1:>{c1}.4f}"
+            p2_str = f"{p2:>{c2}.4f}"
+            if sig1 and sig2:
+                verdict = "Both sig."
+            elif not sig1 and not sig2:
+                verdict = "Both (ns)"
+            elif is_ar and sig1 and not sig2:
+                verdict = "ARTIFACT"
+            elif is_ar and not sig1 and sig2:
+                verdict = "EMERGENT"
+            else:
+                verdict = "DIVERGENT"
+
+        print(f"{trunc:<{fc}}{p1_str}{p2_str}{verdict:>{c3}}")
 
     print("=" * W)
     print()
@@ -1163,7 +1232,7 @@ def print_comparison_table(
 
 def print_confounder_table(
     confounder_results: dict[str, Any] | object,
-    title: str = "Confounder Identification Results",
+    title: str = "Confounder Identification",
     correlation_threshold: float = 0.1,
     p_value_threshold: float = 0.05,
     n_bootstrap: int = 1000,
@@ -1400,6 +1469,13 @@ def print_confounder_table(
             "Moderator variables remain in the confounder list."
         )
 
+    if hasattr(confounder_results, "advisories") and getattr(
+        confounder_results, "advisories", None
+    ):
+        for adv in confounder_results.advisories:
+            if adv not in notes:
+                notes.append(adv)
+
     if notes:
         print("-" * W)
         print("Notes")
@@ -1414,12 +1490,14 @@ def print_confounder_table(
 def print_dataset_info_table(
     *,
     name: str,
-    n_observations: int,
-    n_features: int,
+    X: Any | None = None,
+    y: Any | None = None,
+    n_observations: int | None = None,
+    n_features: int | None = None,
     feature_names: list[str] | None = None,
     target_name: str | None = None,
     target_description: str | None = None,
-    y_range: tuple[float, float] | None = None,
+    y_range: tuple[float, float] | tuple[int, int] | None = None,
     y_mean: float | None = None,
     y_var: float | None = None,
     extra_stats: dict[str, str] | None = None,
@@ -1431,15 +1509,18 @@ def print_dataset_info_table(
     information, and optional outcome statistics in a bordered table
     matching the visual style of other ``print_*`` functions.
 
+    If *X* and *y* are provided, metadata and outcome statistics are
+    computed automatically from the data containers.
+
     Args:
         name: Dataset name (e.g., ``'Abalone'``).
-        n_observations: Number of observations (rows).
-        n_features: Number of features (columns in X).
-        feature_names: Optional list of feature names. If provided,
-            they are displayed as a comma-separated list, truncated
-            if too long.
-        target_name: Optional name of the target variable (e.g.,
-            ``'Rings'``).
+        X: Optional feature matrix (DataFrame or array).
+        y: Optional target vector/DataFrame.
+        n_observations: Number of observations (rows). Computed from X/y if omitted.
+        n_features: Number of features (columns in X). Computed from X if omitted.
+        feature_names: Optional list of feature names. If provided or extracted
+            from X, displayed as a comma-separated list, truncated if too long.
+        target_name: Optional name of the target variable (e.g., ``'Rings'``).
         target_description: Optional description of the target (e.g.,
             ``'growth-ring count'``).
         y_range: Optional tuple ``(min, max)`` of outcome values.
@@ -1449,6 +1530,45 @@ def print_dataset_info_table(
             as ``{label: value}`` pairs (e.g., ``{'Var/Mean': '1.05'}``).
         title: Title for the output table.
     """
+    if X is not None:
+        if n_observations is None:
+            n_observations = len(X)
+        if n_features is None:
+            n_features = X.shape[1] if hasattr(X, "shape") else len(X.columns)
+        if feature_names is None and hasattr(X, "columns"):
+            feature_names = [str(c) for c in X.columns]
+
+    if y is not None:
+        if target_name is None:
+            if hasattr(y, "columns") and len(y.columns) > 0:
+                target_name = str(y.columns[0])
+            elif hasattr(y, "name") and y.name:
+                target_name = str(y.name)
+            else:
+                target_name = "y"
+
+        try:
+            y_arr = np.asarray(y, dtype=float).ravel()
+            if len(y_arr) > 0 and not np.all(np.isnan(y_arr)):
+                if y_range is None:
+                    y_min = float(np.nanmin(y_arr))
+                    y_max = float(np.nanmax(y_arr))
+                    if np.all(np.equal(np.mod(y_arr, 1), 0)):
+                        y_range = (int(y_min), int(y_max))
+                    else:
+                        y_range = (y_min, y_max)
+                if y_mean is None:
+                    y_mean = float(np.nanmean(y_arr))
+                if y_var is None:
+                    y_var = float(np.nanvar(y_arr))
+        except (ValueError, TypeError):
+            pass
+
+    if n_observations is None:
+        n_observations = 0
+    if n_features is None:
+        n_features = 0
+
     W = 80
     lw = 20  # label column width
 
@@ -1488,7 +1608,10 @@ def print_dataset_info_table(
         print("-" * W)
 
     if y_range is not None:
-        print(f"  {'Y Range:':<{lw}}[{y_range[0]}, {y_range[1]}]")
+        if isinstance(y_range[0], int) and isinstance(y_range[1], int):
+            print(f"  {'Y Range:':<{lw}}[{y_range[0]}, {y_range[1]}]")
+        else:
+            print(f"  {'Y Range:':<{lw}}[{y_range[0]:.4g}, {y_range[1]:.4g}]")
 
     if y_mean is not None:
         print(f"  {'Y Mean:':<{lw}}{y_mean:.4f}")
@@ -1514,6 +1637,7 @@ def print_family_info_table(
     *,
     auto_family: ModelFamily | None = None,
     explicit_family: ModelFamily | None = None,
+    y: Any | None = None,
     advisory: list[str] | None = None,
     title: str = "Family Resolution",
 ) -> None:
@@ -1527,14 +1651,28 @@ def print_family_info_table(
     Args:
         auto_family: Family instance returned by
             ``resolve_family("auto", y)``.  Omit if auto-detection
-            was not tested.
+            was not tested or if *y* is passed.
         explicit_family: Family instance actually used for analysis
             (e.g. ``resolve_family("poisson", y)``).  Omit if only
             auto-detection is shown.
+        y: Optional outcome vector/array. When provided, automatically resolves
+            auto-detection and captures any count or data-type advisories into the
+            table's Notes section.
         advisory: Optional list of advisory strings (e.g. captured
             warning messages) to display in the Notes section.
         title: Title for the output table.
     """
+    if y is not None:
+        y_arr = np.ravel(np.asarray(y))
+        res_ctx = FitContext()
+        if auto_family is None:
+            auto_family = resolve_family("auto", y_arr, ctx=res_ctx)
+        if res_ctx.warnings_captured:
+            advisory = list(advisory or [])
+            for w in res_ctx.warnings_captured:
+                if w not in advisory:
+                    advisory.append(w)
+
     W = 80
     lw = 22  # label column width
 
@@ -1572,6 +1710,117 @@ def print_family_info_table(
         print("-" * W)
         for note in advisory:
             print(_wrap(f"  [!] {note}", width=W, indent=6))
+
+    print("=" * W)
+    print()
+
+
+def print_compatibility_table(
+    family: str | ModelFamily,
+    *,
+    methods: list[str] | None = None,
+    title: str | None = None,
+) -> None:
+    """Print method compatibility matrix for a model family in a formatted ASCII table.
+
+    Displays which permutation methods are supported versus incompatible for the
+    specified family, explaining the mathematical or structural reason for any
+    incompatible combinations (e.g. why residual-based methods are rejected for
+    direct-permutation families).
+
+    Args:
+        family: ModelFamily instance or family name string (e.g. 'ordinal').
+        methods: Optional list of methods to check. Defaults to standard methods.
+        title: Title for the output table. If None, generated automatically.
+    """
+    from ._validation import validate_compatibility
+
+    if isinstance(family, str):
+        fam_name = family
+        fam = resolve_family(family)
+    else:
+        fam_name = family.name
+        fam = family
+
+    model_name = _FAMILY_DISPLAY_NAMES.get(fam_name, fam_name.replace("_", " ").title())
+
+    W = 80
+    mc_w = 23
+    sc_w = 16
+
+    if title is None:
+        title = f"Method Compatibility \u2014 {model_name}"
+
+    print("=" * W)
+    for line in textwrap.wrap(title, width=W - 2):
+        print(f"{line:^{W}}")
+    g_banner = "[ Permutation Method \u00d7 Model Family Compatibility Matrix ]"
+    print(f"{g_banner:^{W}}")
+    print("=" * W)
+
+    hdr = f"{'Method':<{mc_w}}{'Status':<{sc_w}}{'Details'}"
+    print(hdr)
+    print("-" * W)
+
+    if methods is None:
+        methods = [
+            "manly",
+            "manly_joint",
+            "kennedy",
+            "kennedy_joint",
+            "score",
+            "score_joint",
+            "freedman_lane",
+            "freedman_lane_joint",
+            "ter_braak",
+        ]
+        if fam_name.endswith("_mixed"):
+            methods.append("score_exact")
+
+    _METHOD_DETAILS = {
+        "manly": "Direct Y permutation (exact)",
+        "manly_joint": "Direct Y joint deviance test",
+        "kennedy": "Exposure-residual permutation",
+        "kennedy_joint": "Exposure-residual joint test",
+        "score": "Rao score projection (Fisher info)",
+        "score_joint": "Score joint deviance test",
+        "freedman_lane": "Reduced-model residual permutation",
+        "freedman_lane_joint": "Reduced-model residual joint test",
+        "ter_braak": "Full-model residual permutation",
+        "score_exact": "PQL-fixed IRLS refits",
+    }
+
+    is_glmm = fam_name.endswith("_mixed") and fam_name != "linear_mixed"
+
+    for m in methods:
+        issues = validate_compatibility(
+            m,
+            fam_name,
+            direct_permutation=fam.direct_permutation,
+            is_glmm=is_glmm,
+        )
+        errors = [i for i in issues if i.level == "error"]
+        if errors:
+            status = "Incompatible"
+            if fam.direct_permutation and m in (
+                "freedman_lane",
+                "freedman_lane_joint",
+                "ter_braak",
+            ):
+                detail = "Requires residuals (discrete Y has none)"
+            elif is_glmm:
+                detail = "Iterative GLMM refit unsupported"
+            else:
+                detail = errors[0].message
+        else:
+            status = "Supported"
+            detail = _METHOD_DETAILS.get(m, "Supported")
+
+        row_prefix = f"{m:<{mc_w}}{status:<{sc_w}}"
+        detail_w = W - mc_w - sc_w
+        if len(detail) > detail_w:
+            detail = detail[: detail_w - 3] + "..."
+        print(f"{row_prefix}{detail}")
 
     print("=" * W)
     print()
@@ -1699,7 +1948,7 @@ def print_protocol_usage_table(
             elif isinstance(val, dict):
                 print(f"  {display_key + ':'}")
                 for sub_k, sub_v in val.items():
-                    sub_label = sub_k.replace("_", " ").title() + ":"
+                    sub_label = str(sub_k).replace("_", " ").title() + ":"
                     if isinstance(sub_v, float):
                         print(f"    {sub_label:<{lw_sub}}{sub_v:.4f}")
                     else:

@@ -86,7 +86,7 @@ class PermutationEngine:
         self.ctx.target_name = str(X.columns[0]) if hasattr(X, "columns") else None
 
         # ---- Family resolution ------------------------------------
-        self.family: ModelFamily = resolve_family(family, y_values)
+        self.family: ModelFamily = resolve_family(family, y_values, ctx=self.ctx)
 
         # Calibrate nuisance parameters (protocol method, no-op default).
         calibrate_kw: dict[str, Any] = {}

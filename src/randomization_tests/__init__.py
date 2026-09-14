@@ -16,8 +16,8 @@ Public API:
         screen_potential_confounders
         compute_e_value
         rosenbaum_bounds
-        print_ar_comparison_table
         print_comparison_table
+        print_compatibility_table
         print_confounder_table
         print_dataset_info_table
         print_diagnostics_table
@@ -49,13 +49,19 @@ Public API:
         PermutationEngine
         FitContext
         ConfounderAnalysisResult
+        ConfounderAnalysisResultSet
         IndividualTestResult
         JointTestResult
 """
 
 from ._config import get_backend, set_backend
 from ._context import FitContext
-from ._results import ConfounderAnalysisResult, IndividualTestResult, JointTestResult
+from ._results import (
+    ConfounderAnalysisResult,
+    ConfounderAnalysisResultSet,
+    IndividualTestResult,
+    JointTestResult,
+)
 from .confounders import (
     identify_confounders,
     mediation_analysis,
@@ -65,8 +71,8 @@ from .confounders import (
 from .core import randomization_test_regression
 from .diagnostics import compute_e_value, rosenbaum_bounds
 from .display import (
-    print_ar_comparison_table,
     print_comparison_table,
+    print_compatibility_table,
     print_confounder_table,
     print_dataset_info_table,
     print_diagnostics_table,
@@ -96,6 +102,7 @@ from .sign_flips import generate_sign_flips, validate_symmetry
 
 __all__ = [
     "ConfounderAnalysisResult",
+    "ConfounderAnalysisResultSet",
     "IndividualTestResult",
     "JointTestResult",
     "FitContext",
@@ -106,8 +113,8 @@ __all__ = [
     "moderation_analysis",
     "rosenbaum_bounds",
     "screen_potential_confounders",
-    "print_ar_comparison_table",
     "print_comparison_table",
+    "print_compatibility_table",
     "print_confounder_table",
     "print_dataset_info_table",
     "print_diagnostics_table",

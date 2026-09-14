@@ -108,15 +108,18 @@ class TestTerBraakLogistic:
 class TestKennedyIndividual:
     def test_linear_no_confounders(self):
         X, y = _make_linear_data()
-        with pytest.warns(UserWarning, match="without confounders"):
-            result = randomization_test_regression(
-                X,
-                y,
-                n_randomizations=50,
-                method="kennedy",
-                confounders=[],
-                random_state=42,
-            )
+        result = randomization_test_regression(
+            X,
+            y,
+            n_randomizations=50,
+            method="kennedy",
+            confounders=[],
+            random_state=42,
+        )
+        assert result.context is not None
+        assert any(
+            "without confounders" in msg for msg in result.context.warnings_captured
+        )
         assert result["method"] == "kennedy"
         assert len(result["model_coefs"]) == 3
 
@@ -136,30 +139,36 @@ class TestKennedyIndividual:
 
     def test_logistic_no_confounders(self):
         X, y = _make_binary_data()
-        with pytest.warns(UserWarning, match="without confounders"):
-            result = randomization_test_regression(
-                X,
-                y,
-                n_randomizations=50,
-                method="kennedy",
-                confounders=[],
-                random_state=42,
-            )
+        result = randomization_test_regression(
+            X,
+            y,
+            n_randomizations=50,
+            method="kennedy",
+            confounders=[],
+            random_state=42,
+        )
+        assert result.context is not None
+        assert any(
+            "without confounders" in msg for msg in result.context.warnings_captured
+        )
         assert result.family.name == "logistic"
 
 
 class TestKennedyJoint:
     def test_linear_returns_expected_keys(self):
         X, y = _make_linear_data()
-        with pytest.warns(UserWarning, match="without confounders"):
-            result = randomization_test_regression(
-                X,
-                y,
-                n_randomizations=50,
-                method="kennedy_joint",
-                confounders=[],
-                random_state=42,
-            )
+        result = randomization_test_regression(
+            X,
+            y,
+            n_randomizations=50,
+            method="kennedy_joint",
+            confounders=[],
+            random_state=42,
+        )
+        assert result.context is not None
+        assert any(
+            "without confounders" in msg for msg in result.context.warnings_captured
+        )
         assert "observed_improvement" in result
         assert "p_value" in result
         assert "p_value_str" in result
@@ -167,29 +176,35 @@ class TestKennedyJoint:
 
     def test_logistic_returns_expected_keys(self):
         X, y = _make_binary_data()
-        with pytest.warns(UserWarning, match="without confounders"):
-            result = randomization_test_regression(
-                X,
-                y,
-                n_randomizations=50,
-                method="kennedy_joint",
-                confounders=[],
-                random_state=42,
-            )
+        result = randomization_test_regression(
+            X,
+            y,
+            n_randomizations=50,
+            method="kennedy_joint",
+            confounders=[],
+            random_state=42,
+        )
+        assert result.context is not None
+        assert any(
+            "without confounders" in msg for msg in result.context.warnings_captured
+        )
         assert "observed_improvement" in result
         assert result.family.name == "logistic"
 
     def test_p_value_in_valid_range(self):
         X, y = _make_linear_data()
-        with pytest.warns(UserWarning, match="without confounders"):
-            result = randomization_test_regression(
-                X,
-                y,
-                n_randomizations=50,
-                method="kennedy_joint",
-                confounders=[],
-                random_state=42,
-            )
+        result = randomization_test_regression(
+            X,
+            y,
+            n_randomizations=50,
+            method="kennedy_joint",
+            confounders=[],
+            random_state=42,
+        )
+        assert result.context is not None
+        assert any(
+            "without confounders" in msg for msg in result.context.warnings_captured
+        )
         assert 0 < result["p_value"] <= 1.0
 
 
@@ -278,45 +293,54 @@ class TestFitInterceptFalse:
 
     def test_kennedy_logistic_no_intercept(self):
         X, y = _make_binary_data()
-        with pytest.warns(UserWarning, match="without confounders"):
-            result = randomization_test_regression(
-                X,
-                y,
-                n_randomizations=50,
-                method="kennedy",
-                confounders=[],
-                random_state=42,
-                fit_intercept=False,
-            )
+        result = randomization_test_regression(
+            X,
+            y,
+            n_randomizations=50,
+            method="kennedy",
+            confounders=[],
+            random_state=42,
+            fit_intercept=False,
+        )
+        assert result.context is not None
+        assert any(
+            "without confounders" in msg for msg in result.context.warnings_captured
+        )
         assert result.family.name == "logistic"
 
     def test_kennedy_joint_linear_no_intercept(self):
         X, y = _make_linear_data()
-        with pytest.warns(UserWarning, match="without confounders"):
-            result = randomization_test_regression(
-                X,
-                y,
-                n_randomizations=50,
-                method="kennedy_joint",
-                confounders=[],
-                random_state=42,
-                fit_intercept=False,
-            )
+        result = randomization_test_regression(
+            X,
+            y,
+            n_randomizations=50,
+            method="kennedy_joint",
+            confounders=[],
+            random_state=42,
+            fit_intercept=False,
+        )
+        assert result.context is not None
+        assert any(
+            "without confounders" in msg for msg in result.context.warnings_captured
+        )
         assert "observed_improvement" in result
         assert 0 < result["p_value"] <= 1.0
 
     def test_kennedy_joint_logistic_no_intercept(self):
         X, y = _make_binary_data()
-        with pytest.warns(UserWarning, match="without confounders"):
-            result = randomization_test_regression(
-                X,
-                y,
-                n_randomizations=50,
-                method="kennedy_joint",
-                confounders=[],
-                random_state=42,
-                fit_intercept=False,
-            )
+        result = randomization_test_regression(
+            X,
+            y,
+            n_randomizations=50,
+            method="kennedy_joint",
+            confounders=[],
+            random_state=42,
+            fit_intercept=False,
+        )
+        assert result.context is not None
+        assert any(
+            "without confounders" in msg for msg in result.context.warnings_captured
+        )
         assert result.family.name == "logistic"
         assert "p_value" in result
 
@@ -521,15 +545,18 @@ class TestFamilyParameter:
     def test_kennedy_joint_with_explicit_family(self):
         """Kennedy joint method should work with an explicit family."""
         X, y = _make_binary_data()
-        with pytest.warns(UserWarning, match="without confounders"):
-            result = randomization_test_regression(
-                X,
-                y,
-                n_randomizations=50,
-                method="kennedy_joint",
-                random_state=42,
-                family="logistic",
-            )
+        result = randomization_test_regression(
+            X,
+            y,
+            n_randomizations=50,
+            method="kennedy_joint",
+            random_state=42,
+            family="logistic",
+        )
+        assert result.context is not None
+        assert any(
+            "without confounders" in msg for msg in result.context.warnings_captured
+        )
         assert result.family.name == "logistic"
         assert "observed_improvement" in result
 
@@ -769,17 +796,20 @@ class TestFreedmanLaneIndividual:
         assert np.isnan(result["raw_empirical_p"][2])
 
     def test_linear_no_confounders_warns(self):
-        """Freedman–Lane without confounders issues a UserWarning."""
+        """Freedman–Lane without confounders records advisory on context."""
         X, y = _make_linear_data()
-        with pytest.warns(UserWarning, match="without confounders"):
-            result = randomization_test_regression(
-                X,
-                y,
-                n_randomizations=50,
-                method="freedman_lane",
-                confounders=[],
-                random_state=42,
-            )
+        result = randomization_test_regression(
+            X,
+            y,
+            n_randomizations=50,
+            method="freedman_lane",
+            confounders=[],
+            random_state=42,
+        )
+        assert result.context is not None
+        assert any(
+            "without confounders" in msg for msg in result.context.warnings_captured
+        )
         assert result["method"] == "freedman_lane"
         assert len(result["model_coefs"]) == 3
 
@@ -805,17 +835,20 @@ class TestFreedmanLaneIndividual:
         assert result["permuted_p_values"][z1_idx] == "(confounder)"
 
     def test_logistic_no_confounders_warns(self):
-        """Freedman–Lane logistic without confounders warns."""
+        """Freedman–Lane logistic without confounders records advisory."""
         X, y = _make_binary_data()
-        with pytest.warns(UserWarning, match="without confounders"):
-            result = randomization_test_regression(
-                X,
-                y,
-                n_randomizations=50,
-                method="freedman_lane",
-                confounders=[],
-                random_state=42,
-            )
+        result = randomization_test_regression(
+            X,
+            y,
+            n_randomizations=50,
+            method="freedman_lane",
+            confounders=[],
+            random_state=42,
+        )
+        assert result.context is not None
+        assert any(
+            "without confounders" in msg for msg in result.context.warnings_captured
+        )
         assert result.family.name == "logistic"
 
     def test_p_values_in_valid_range(self):
@@ -952,17 +985,20 @@ class TestFreedmanLaneJoint:
         assert 0 < result["p_value"] <= 1.0
 
     def test_no_confounders_warns(self):
-        """Freedman–Lane joint without confounders warns."""
+        """Freedman–Lane joint without confounders records advisory on context."""
         X, y = _make_linear_data()
-        with pytest.warns(UserWarning, match="without confounders"):
-            result = randomization_test_regression(
-                X,
-                y,
-                n_randomizations=50,
-                method="freedman_lane_joint",
-                confounders=[],
-                random_state=42,
-            )
+        result = randomization_test_regression(
+            X,
+            y,
+            n_randomizations=50,
+            method="freedman_lane_joint",
+            confounders=[],
+            random_state=42,
+        )
+        assert result.context is not None
+        assert any(
+            "without confounders" in msg for msg in result.context.warnings_captured
+        )
         assert result["method"] == "freedman_lane_joint"
 
     def test_features_tested(self):

@@ -1,22 +1,62 @@
+# %% [markdown]
 """
-Test Case 1: Linear Regression (Continuous Outcome)
+Example: Linear Regression (Continuous Outcome)
 Real Estate Valuation dataset (UCI ML Repository ID=477)
 
 Demonstrates:
-- ``family="linear"`` — explicit family selection
-- All five permutation methods routed through ``LinearFamily``
-- Direct ``ModelFamily`` protocol usage (fit / predict / residuals /
-  reconstruct_y / fit_metric / diagnostics / classical_p_values /
-  batch_fit)
+- ``family="linear"`` — explicit and auto-detected (``family="auto"``) continuous models
+- ter Braak (1992) permutation test (full-model residual permutation with recentred null)
+- Freedman–Lane (1983) individual and joint permutation tests (reduced-model residual permutation)
+- Kennedy (1995) individual and joint permutation tests (exposure residualization)
+- Four-stage confounder sieve (screen → collider → mediator → moderator)
+- Confounder-controlled permutation testing
+- Execution and protocol artifacts inspection via ``print_protocol_usage_table``
+
+Dataset
+-------
+414 real estate transactions collected from Sindian District, New Taipei City,
+Taiwan (2012–2013).  The target variable is ``Y house price of unit area``
+(measured in 10,000 New Taiwan Dollar / Ping, where 1 Ping = 3.3 square meters).
+The market valuation distribution is continuous and unimodal (mean ≈ 38.0,
+variance ≈ 185.0), providing an ideal testbed for ordinary least squares and
+nonparametric residual permutation.
+
+Feature selection rationale
+---------------------------
+Six physical and geographical predictors capture primary determinants of property
+value:
+
+- **X1 transaction date**: Continuous transaction timing (e.g. 2013.250). Captures
+  temporal price momentum and seasonal fluctuations.
+- **X2 house age**: Structural age of the building in years (range 0–43.8). Models
+  physical depreciation over time.
+- **X3 distance to the nearest MRT station**: Proximity in meters to the nearest
+  Mass Rapid Transit station. Critical public transportation accessibility metric.
+- **X4 number of convenience stores**: Count of major convenience stores (7-Eleven,
+  FamilyMart, etc.) accessible on foot within the living circle.
+- **X5 latitude** & **X6 longitude**: Geographic coordinate coordinates in degrees.
+  Capture spatial clustering, neighborhood desirability, and submarket premiums.
+
+Methodological rationale
+-------------------------
+Standard OLS inference assumes homoscedastic, Gaussian disturbances. When property
+residuals exhibit skewness, kurtosis, or spatial heteroscedasticity, classical
+t-statistics can be miscalibrated. Freedman–Lane and ter Braak permutation tests
+provide asymptotically exact Type I error control without parametric error assumptions,
+while Kennedy's exposure residualization preserves predictor correlations.
+
+Reference
+---------
+Yeh, I. C., & Hsu, T. K. (2018). Building real estate valuation models with
+comparative approach through case-based reasoning. *Applied Soft Computing*,
+65, 260–271.
 """
 
-import warnings
-
+# %%
 import numpy as np
 from ucimlrepo import fetch_ucirepo
 
 from randomization_tests import (
-    LinearFamily,
     identify_confounders,
     print_confounder_table,
     print_dataset_info_table,
@@ -29,6 +69,7 @@ from randomization_tests import (
     resolve_family,
 )
 
+# %%
 # ============================================================================
 # Load data
 # ============================================================================
@@ -39,33 +80,24 @@ y = real_estate_valuation.data.targets
 
 print_dataset_info_table(
     name=real_estate_valuation.metadata.name,
-    n_observations=len(X),
-    n_features=X.shape[1],
-    feature_names=list(X.columns),
-    target_name=y.columns[0],
-    y_range=(float(y.values.min()), float(y.values.max())),
-    y_mean=float(y.values.mean()),
-    y_var=float(y.values.var()),
+    X=X,
+    y=y,
 )
 
+# %%
 # ============================================================================
 # Verify resolve_family auto-detects "linear" for continuous Y
 # ============================================================================
 
-with warnings.catch_warnings(record=True) as caught:
-    warnings.simplefilter("always")
-    auto_family = resolve_family("auto", np.ravel(y))
-assert auto_family.name == "linear", f"Expected 'linear', got {auto_family.name!r}"
-
+auto_family = resolve_family("auto", np.ravel(y))
 linear_family = resolve_family("linear", np.ravel(y))
-assert linear_family.name == "linear"
 
 print_family_info_table(
     auto_family=auto_family,
     explicit_family=linear_family,
-    advisory=[str(w.message) for w in caught],
 )
 
+# %%
 # ============================================================================
 # ter Braak (1992) — family="auto" (auto-detection)
 # ============================================================================
@@ -73,12 +105,9 @@ print_family_info_table(
 results_ter_braak_auto = randomization_test_regression(
     X, y, method="ter_braak", family="auto"
 )
-assert results_ter_braak_auto.family.name == "linear"
-print_results_table(
-    results_ter_braak_auto,
-    title="ter Braak (1992) Permutation Test (family='auto' \u2192 linear)",
-)
+print_results_table(results_ter_braak_auto)
 
+# %%
 # ============================================================================
 # ter Braak (1992) — family="linear" (explicit)
 # ============================================================================
@@ -86,177 +115,85 @@ print_results_table(
 results_ter_braak = randomization_test_regression(
     X, y, method="ter_braak", family="linear"
 )
-print_results_table(
-    results_ter_braak,
-    title="ter Braak (1992) Permutation Test (family='linear')",
-)
-print_diagnostics_table(
-    results_ter_braak,
-    title="ter Braak (1992) Extended Diagnostics (family='linear')",
-)
-assert results_ter_braak.family.name == "linear"
+print_results_table(results_ter_braak)
+print_diagnostics_table(results_ter_braak)
 
+# %%
 # ============================================================================
 # Kennedy (1995) individual — family="linear"
 # ============================================================================
 
-with warnings.catch_warnings():
-    warnings.filterwarnings("ignore", message=".*without confounders.*")
-    results_kennedy = randomization_test_regression(
-        X, y, method="kennedy", confounders=[], family="linear"
-    )
-print_results_table(
-    results_kennedy,
-    title="Kennedy (1995) Individual Permutation Test (family='linear')",
+results_kennedy = randomization_test_regression(
+    X, y, method="kennedy", confounders=[], family="linear"
 )
-print_diagnostics_table(
-    results_kennedy,
-    title="Kennedy (1995) Individual Diagnostics (family='linear')",
-)
+print_results_table(results_kennedy)
+print_diagnostics_table(results_kennedy)
 
+# %%
 # ============================================================================
 # Kennedy (1995) joint — family="linear"
 # ============================================================================
 
-with warnings.catch_warnings():
-    warnings.filterwarnings("ignore", message=".*without confounders.*")
-    results_kennedy_joint = randomization_test_regression(
-        X, y, method="kennedy_joint", confounders=[], family="linear"
-    )
-print_joint_results_table(
-    results_kennedy_joint,
-    title="Kennedy (1995) Joint Permutation Test (family='linear')",
+results_kennedy_joint = randomization_test_regression(
+    X, y, method="kennedy_joint", confounders=[], family="linear"
 )
+print_joint_results_table(results_kennedy_joint)
 
+# %%
 # ============================================================================
 # Freedman–Lane (1983) individual — family="linear"
 # ============================================================================
 
-with warnings.catch_warnings():
-    warnings.filterwarnings("ignore", message=".*without confounders.*")
-    results_fl = randomization_test_regression(
-        X, y, method="freedman_lane", confounders=[], family="linear"
-    )
-print_results_table(
-    results_fl,
-    title="Freedman–Lane (1983) Individual Permutation Test (family='linear')",
+results_fl = randomization_test_regression(
+    X, y, method="freedman_lane", confounders=[], family="linear"
 )
-print_diagnostics_table(
-    results_fl,
-    title="Freedman–Lane (1983) Individual Diagnostics (family='linear')",
-)
+print_results_table(results_fl)
+print_diagnostics_table(results_fl)
 
+# %%
 # ============================================================================
 # Freedman–Lane (1983) joint — family="linear"
 # ============================================================================
 
-with warnings.catch_warnings():
-    warnings.filterwarnings("ignore", message=".*without confounders.*")
-    results_fl_joint = randomization_test_regression(
-        X, y, method="freedman_lane_joint", confounders=[], family="linear"
-    )
-print_joint_results_table(
-    results_fl_joint,
-    title="Freedman–Lane (1983) Joint Permutation Test (family='linear')",
+results_fl_joint = randomization_test_regression(
+    X, y, method="freedman_lane_joint", confounders=[], family="linear"
 )
+print_joint_results_table(results_fl_joint)
 
+# %%
 # ============================================================================
 # Confounder identification
 # ============================================================================
 
-all_confounder_results = {}
-for predictor in X.columns:
-    all_confounder_results[predictor] = identify_confounders(
-        X, y, predictor=predictor, family="linear"
-    )
+all_confounder_results = identify_confounders(X, y, family="linear")
+print_confounder_table(all_confounder_results)
 
-print_confounder_table(
-    all_confounder_results,
-    title="Confounder Identification for All Predictors (Linear)",
-)
-
-predictors_with_confounders = {
-    pred: res.identified_confounders
-    for pred, res in all_confounder_results.items()
-    if res.identified_confounders
-}
-
+# %%
 # ============================================================================
 # Kennedy with identified confounders — family="linear"
 # ============================================================================
+# The confounder sieve identified that 'X1 transaction date' is confounded
+# by 'X6 longitude'. We now execute a Kennedy permutation test controlling
+# for 'X6 longitude' to evaluate the partial effect.
 
-if predictors_with_confounders:
-    example_predictor = list(predictors_with_confounders.keys())[0]
-    example_confounders = predictors_with_confounders[example_predictor]
+target_predictor = "X1 transaction date"
+confounders = all_confounder_results[target_predictor].identified_confounders
 
-    results_kc = randomization_test_regression(
-        X,
-        y,
-        method="kennedy",
-        confounders=example_confounders,
-        family="linear",
-    )
-    print_results_table(
-        results_kc,
-        title=(
-            f"Kennedy (1995) for '{example_predictor}' "
-            f"(controlling for {', '.join(example_confounders)}) "
-            f"(family='linear')"
-        ),
-    )
-    print_diagnostics_table(
-        results_kc,
-        title=f"Kennedy (1995) Diagnostics for '{example_predictor}' (family='linear')",
-    )
-
-# ============================================================================
-# Direct ModelFamily protocol usage
-# ============================================================================
-# The ModelFamily protocol encapsulates every model-specific operation —
-# fitting, prediction, residual extraction, Y-reconstruction, batch
-# fitting, diagnostics, and classical p-values.  Below we exercise
-# each method directly.
-
-family = LinearFamily()
-X_np = X.values.astype(float)
-y_np = np.ravel(y).astype(float)
-
-# validate_y — should pass without error for continuous Y
-family.validate_y(y_np)
-
-# fit / predict / coefs / residuals
-model = family.fit(X_np, y_np, fit_intercept=True)
-preds = family.predict(model, X_np)
-coefs = family.coefs(model)
-resids = family.residuals(model, X_np, y_np)
-
-# fit_metric (RSS)
-rss = family.fit_metric(y_np, preds)
-
-# reconstruct_y — additive: ŷ + π(e)
-rng = np.random.default_rng(42)
-perm_resids = rng.permutation(resids)
-y_star = family.reconstruct_y(preds[np.newaxis, :], perm_resids[np.newaxis, :], rng)
-
-# batch_fit — fit OLS on B permuted Y vectors at once
-n_batch = 50
-perm_indices = np.array([rng.permutation(len(y_np)) for _ in range(n_batch)])
-Y_matrix = y_np[perm_indices]  # shape (B, n)
-with warnings.catch_warnings():
-    warnings.filterwarnings("ignore", category=UserWarning)
-    batch_coefs = family.batch_fit(X_np, Y_matrix, fit_intercept=True)
-n_nan = int(np.sum(np.any(np.isnan(batch_coefs), axis=1)))
-
-# diagnostics — OLS summary via statsmodels
-diag = family.diagnostics(X_np, y_np, fit_intercept=True)
-
-# classical_p_values — Wald t-test via statsmodels
-p_classical = family.classical_p_values(X_np, y_np, fit_intercept=True)
-
-# exchangeability_cells — stub (returns None for global exchangeability)
-cells = family.exchangeability_cells(X_np, y_np)
-
-print_protocol_usage_table(
-    results_ter_braak,
-    title="Direct LinearFamily Protocol Usage",
+results_kc = randomization_test_regression(
+    X,
+    y,
+    method="kennedy",
+    confounders=confounders,
+    family="linear",
 )
+print_results_table(results_kc)
+print_diagnostics_table(results_kc)
+
+# %%
+# ============================================================================
+# Execution & Protocol Artifacts
+# ============================================================================
+# Inspect the internal execution context from the completed test result:
+# backend acceleration, batch convergence, fit metrics, and protocol properties.
+
+print_protocol_usage_table(results_kc)

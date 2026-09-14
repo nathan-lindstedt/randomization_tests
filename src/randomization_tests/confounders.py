@@ -69,22 +69,20 @@ from __future__ import annotations
 
 import logging
 import warnings
-from typing import TYPE_CHECKING
+from typing import overload
 
 import numpy as np
 from scipy import stats
 from sklearn.linear_model import LinearRegression
 
 from ._compat import DataFrameLike, _ensure_pandas_df
+from ._results import ConfounderAnalysisResult, ConfounderAnalysisResultSet
 from .families import (
     ModelFamily,
     _augment_intercept,
     _suppress_sm_warnings,
     resolve_family,
 )
-
-if TYPE_CHECKING:
-    from ._results import ConfounderAnalysisResult
 
 logger = logging.getLogger(__name__)
 
@@ -1078,7 +1076,8 @@ def mediation_analysis(
                 xm_b = np.column_stack([x_vals[idx].ravel(), m_vals[idx].ravel()])
                 y_b = y_values[idx].astype(float)
                 try:
-                    model_b = fam.fit(xm_b, y_b, fit_intercept=True)
+                    with _suppress_sm_warnings(hessian=True):
+                        model_b = fam.fit(xm_b, y_b, fit_intercept=True)
                     b_star = float(fam.coefs(model_b)[1])
                 except Exception:
                     b_star = np.nan
@@ -1263,7 +1262,8 @@ def _bca_ci(
                 xm_j = np.column_stack([x_vals[jidx].ravel(), m_vals[jidx].ravel()])
                 y_j = y_values[jidx].astype(float)
                 try:
-                    model_j = family.fit(xm_j, y_j, fit_intercept=True)
+                    with _suppress_sm_warnings(hessian=True):
+                        model_j = family.fit(xm_j, y_j, fit_intercept=True)
                     b_j = float(family.coefs(model_j)[1])
                 except Exception:
                     b_j = np.nan
@@ -1473,7 +1473,8 @@ def moderation_analysis(
                 design_b = np.column_stack([xb_c, zb_c, xzb])
                 y_b = y_values[idx].astype(float)
                 try:
-                    model_b = fam.fit(design_b, y_b, fit_intercept=True)
+                    with _suppress_sm_warnings(hessian=True):
+                        model_b = fam.fit(design_b, y_b, fit_intercept=True)
                     coef_int = float(fam.coefs(model_b)[2])
                     # Quasi-separation guard.
                     if np.isnan(coef_int) or abs(coef_int) > 100:
@@ -1577,7 +1578,8 @@ def moderation_analysis(
                 design_j = np.column_stack([xj_c, zj_c, xzj])
                 y_j = y_values[jidx].astype(float)
                 try:
-                    model_j = fam.fit(design_j, y_j, fit_intercept=True)
+                    with _suppress_sm_warnings(hessian=True):
+                        model_j = fam.fit(design_j, y_j, fit_intercept=True)
                     jack_interaction[j] = float(fam.coefs(model_j)[2])
                 except Exception:
                     jack_interaction[j] = np.nan
@@ -1670,10 +1672,48 @@ def moderation_analysis(
 # because those are repeated tests of the same type.
 
 
+@overload
 def identify_confounders(
     X: DataFrameLike,
     y: DataFrameLike,
     predictor: str,
+    correlation_threshold: float = ...,
+    p_value_threshold: float = ...,
+    n_bootstrap_mediation: int = ...,
+    n_bootstrap_moderation: int = ...,
+    confidence_level: float = ...,
+    random_state: int | None = ...,
+    family: str | ModelFamily = ...,
+    correlation_method: str = ...,
+    correction_method: str | None = ...,
+    groups: np.ndarray | None = ...,
+    _suppress_multinomial_warn: bool = ...,
+) -> ConfounderAnalysisResult: ...
+
+
+@overload
+def identify_confounders(
+    X: DataFrameLike,
+    y: DataFrameLike,
+    predictor: None = ...,
+    correlation_threshold: float = ...,
+    p_value_threshold: float = ...,
+    n_bootstrap_mediation: int = ...,
+    n_bootstrap_moderation: int = ...,
+    confidence_level: float = ...,
+    random_state: int | None = ...,
+    family: str | ModelFamily = ...,
+    correlation_method: str = ...,
+    correction_method: str | None = ...,
+    groups: np.ndarray | None = ...,
+    _suppress_multinomial_warn: bool = ...,
+) -> ConfounderAnalysisResultSet: ...
+
+
+def identify_confounders(
+    X: DataFrameLike,
+    y: DataFrameLike,
+    predictor: str | None = None,
     correlation_threshold: float = 0.1,
     p_value_threshold: float = 0.05,
     n_bootstrap_mediation: int = 1000,
@@ -1684,7 +1724,8 @@ def identify_confounders(
     correlation_method: str = "pearson",
     correction_method: str | None = None,
     groups: np.ndarray | None = None,
-) -> ConfounderAnalysisResult:
+    _suppress_multinomial_warn: bool = False,
+) -> ConfounderAnalysisResult | ConfounderAnalysisResultSet:
     """Four-stage confounder sieve.
 
     Classifies candidate variables as colliders, mediators, moderators,
@@ -1696,6 +1737,10 @@ def identify_confounders(
     4. **Moderator test** — labels moderators (informational; stays
        in confounder pool).
 
+    If ``predictor`` is omitted or ``None``, the sieve is executed across
+    all predictors in ``X``, returning a :class:`ConfounderAnalysisResultSet`
+    mapping each predictor name to its :class:`ConfounderAnalysisResult`.
+
     The sieve is an **exploratory** tool for data-driven confounder
     selection.  For guaranteed Type I error control, specify
     ``confounders=`` based on domain knowledge or a pre-registered
@@ -1705,7 +1750,7 @@ def identify_confounders(
     Args:
         X: Feature matrix.  Accepts pandas or Polars DataFrames.
         y: Target variable.  Accepts pandas or Polars DataFrames.
-        predictor: Predictor of interest.
+        predictor: Predictor of interest, or ``None`` to analyze all features.
         correlation_threshold: Minimum absolute correlation to flag.
         p_value_threshold: Significance cutoff for screening.
         n_bootstrap_mediation: Bootstrap iterations for mediation.
@@ -1721,13 +1766,47 @@ def identify_confounders(
             (passed to mediation/moderation).
 
     Returns:
-        :class:`ConfounderAnalysisResult` with classified candidates,
-        screening results, and per-candidate analysis details.
+        :class:`ConfounderAnalysisResult` when a single predictor is
+        tested, or :class:`ConfounderAnalysisResultSet` when all features
+        are tested.
     """
-    from ._results import ConfounderAnalysisResult
-
     X = _ensure_pandas_df(X, name="X")
     y = _ensure_pandas_df(y, name="y")
+
+    # Multi-predictor sieve across all features when predictor is omitted
+    if predictor is None:
+        y_values = np.ravel(y)
+        resolved_family = resolve_family(family, y_values)
+        resolved_family, _was_mixed = _resolve_base_family(resolved_family)
+
+        all_results = ConfounderAnalysisResultSet()
+        if resolved_family.name == "multinomial":
+            all_results.advisories.append(
+                "Multinomial outcomes produce multi-class Wald χ² statistics, "
+                "not scalar coefficient slopes. Mediation, moderation, and "
+                "collider analysis are not supported for multinomial families; "
+                "all screened candidates are reported as confounders."
+            )
+
+        for col in X.columns:
+            all_results[str(col)] = identify_confounders(
+                X,
+                y,
+                predictor=str(col),
+                correlation_threshold=correlation_threshold,
+                p_value_threshold=p_value_threshold,
+                n_bootstrap_mediation=n_bootstrap_mediation,
+                n_bootstrap_moderation=n_bootstrap_moderation,
+                confidence_level=confidence_level,
+                random_state=random_state,
+                family=family,
+                correlation_method=correlation_method,
+                correction_method=correction_method,
+                groups=groups,
+                _suppress_multinomial_warn=(resolved_family.name == "multinomial"),
+            )
+        return all_results
+
     y_values = np.ravel(y)
 
     # Resolve family once (mixed → base).
@@ -1748,15 +1827,16 @@ def identify_confounders(
 
     # --- Multinomial early exit ---
     if resolved_family.name == "multinomial":
-        warnings.warn(
-            "Multinomial outcomes produce multi-class Wald χ² statistics, "
-            "not scalar coefficient slopes. Mediation, moderation, and "
-            "collider analysis require directional scalar effects and are "
-            "not supported for multinomial families. All screened candidates "
-            "are reported as confounders.",
-            UserWarning,
-            stacklevel=2,
-        )
+        if not _suppress_multinomial_warn:
+            warnings.warn(
+                "Multinomial outcomes produce multi-class Wald χ² statistics, "
+                "not scalar coefficient slopes. Mediation, moderation, and "
+                "collider analysis require directional scalar effects and are "
+                "not supported for multinomial families. All screened candidates "
+                "are reported as confounders.",
+                UserWarning,
+                stacklevel=2,
+            )
         return ConfounderAnalysisResult(
             predictor=predictor,
             identified_confounders=candidates,

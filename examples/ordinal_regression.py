@@ -1,39 +1,93 @@
+# %% [markdown]
 """
-Test Case 5: Ordinal Regression (Ordered Categorical Outcome)
-Wine Quality dataset (UCI ML Repository ID=186)
+Example: Ordinal Logistic Regression (Proportional Odds Model)
+Dataset: Wine Quality (UCI Machine Learning Repository ID=186)
+
+Dataset Context & Theoretical Background:
+    The Wine Quality dataset (Cortez et al., 2009) comprises physicochemical
+    laboratory measurements and sensory quality evaluations of red and white
+    variants of Portuguese "Vinho Verde". Quality was graded on an ordered
+    integer sensory scale from 0 (very bad) to 10 (very excellent) by certified
+    wine assessors following double-blind sensory protocols.
+
+    In statistical modeling, an ordered categorical response violates the
+    assumptions of both metric linear regression (which assumes equal spacing
+    between adjacent scale increments) and multinomial logistic regression
+    (which ignores ordinal ordering and unnecessarily inflates parameter
+    dimensionality). The proportional odds cumulative logit model (McCullagh,
+    1980) addresses this by parameterizing cumulative category probabilities:
+
+        logit(P(Y <= k | X)) = alpha_k - X * beta,   for k = 1, ..., K - 1
+
+    where alpha_1 <= alpha_2 <= ... <= alpha_{K-1} are strictly monotonic
+    threshold intercepts (cutpoints) partitioning the latent continuous quality
+    continuum, and beta is an invariant vector of regression slopes shared
+    across all ordinal transitions (the proportional odds assumption).
+
+Features Selected for Modeling:
+    - alcohol: Alcohol percent volume (% vol). Higher alcohol levels are
+      strongly associated with perceived body, warmth, and flavor extraction,
+      consistently receiving higher preference ratings from expert tasters.
+    - volatile_acidity: Acetic acid content (g/dm^3). Elevated volatile
+      acidity imparts an unpleasant vinegar aroma and sensory sharpness,
+      constituting a major sensory defect.
+    - sulphates: Potassium sulphate additive (g/dm^3). Contributes to free
+      and bound sulfur dioxide (SO2) equilibrium, serving as an essential
+      antioxidant and antimicrobial preservative that protects fruit freshness.
+    - citric_acid: Citric acid concentration (g/dm^3). Adds tartness, sensory
+      freshness, and structural crispness to the palate profile.
+    - residual_sugar: Remaining fermentable hexose sugars after fermentation
+      ceases (g/dm^3), balancing perceived acidity and dry mouthfeel.
+
+Methodological Rationale for Resampling Tests:
+    1. Direct Y Permutation vs. Residual Permutation:
+       Unlike continuous regression models, ordinal logistic regression yields
+       discrete cumulative class probabilities rather than continuous additive
+       errors. Well-defined continuous residuals do not exist. Consequently,
+       residual-based resampling methods such as Freedman-Lane (1983) and
+       ter Braak (1992) are theoretically and mechanically invalid for ordinal
+       outcomes, and are explicitly rejected with informative error messages.
+    2. Manly (1997) Direct Permutation:
+       The canonical exact permutation test for ordinal regression permutes the
+       discrete response vector Y directly across observational units (Manly,
+       1997). Under the global null hypothesis H_0: beta = 0, the joint
+       distribution of Y is invariant under the symmetric group S_n.
+    3. Kennedy (1995) Exposure-Residual Permutation:
+       When partial regression effects must be tested while controlling for
+       confounding covariates Z, Kennedy's (1995) method permutes the residuals
+       e_X = (I - H_Z) X obtained from regressing exposure X on Z. Because e_X
+       is continuous and derived from an ordinary least squares projection, it
+       remains fully defined regardless of whether the outcome Y is metric,
+       binary, count, or ordinal.
 
 Demonstrates:
-- ``family="ordinal"`` — proportional-odds logistic regression via
-  ``OrdinalFamily``
-- Three supported permutation methods: ``ter_braak``, ``kennedy``,
-  ``kennedy_joint``
-- Freedman-Lane rejection with informative error message
-- Direct ``ModelFamily`` protocol usage (fit / predict / coefs /
-  diagnostics / classical_p_values / batch_fit)
-- ``score`` / ``null_score`` for joint-test deviance
+    - family="ordinal" -- proportional-odds cumulative logit regression
+      via OrdinalFamily
+    - Manly (1997) direct permutation testing (individual and joint deviance)
+    - Kennedy (1995) exposure-residual permutation testing
+    - Expected rejection of Freedman-Lane and ter Braak on ordinal models
+    - Automated confounder identification and partial permutation testing
+    - Execution and protocol artifacts inspection via print_protocol_usage_table
 
-**Why only three methods?**
-
-Ordinal residuals are not well-defined because the proportional-odds
-model produces K-class probability vectors rather than scalar
-residuals.  The Freedman-Lane method requires residuals for the
-partial regression approach (residuals → permute → reconstruct Y*),
-so it is incompatible with ordinal outcomes.
-
-The ter Braak path uses direct Y permutation (Manly 1997), which is
-valid under H₀ without residuals.  The Kennedy methods permute
-exposure-model residuals, which are always from a linear OLS model
-regardless of the outcome family.
+References:
+    - Cortez, P., Cerdeira, A., Almeida, F., Matos, T., & Reis, J. (2009).
+      Modeling wine preferences by data mining from physicochemical properties.
+      Decision Support Systems, 47(4), 547-553.
+    - McCullagh, P. (1980). Regression models for ordinal data. Journal of
+      the Royal Statistical Society: Series B (Methodological), 42(2), 109-127.
+    - Manly, B. F. J. (1997). Randomization, Bootstrap and Monte Carlo Methods
+      in Biology (2nd ed.). Chapman & Hall/CRC.
+    - Kennedy, P. E. (1995). Randomization tests in econometrics. Journal of
+      Business & Economic Statistics, 13(1), 85-94.
 """
 
-import warnings
-
+# %%
 import numpy as np
 from ucimlrepo import fetch_ucirepo
 
 from randomization_tests import (
-    OrdinalFamily,
     identify_confounders,
+    print_compatibility_table,
     print_confounder_table,
     print_dataset_info_table,
     print_diagnostics_table,
@@ -45,6 +99,7 @@ from randomization_tests import (
     resolve_family,
 )
 
+# %%
 # ============================================================================
 # Load data
 # ============================================================================
@@ -82,10 +137,8 @@ ordinal_levels = sorted(np.unique(y_vals).tolist())
 
 print_dataset_info_table(
     name=wine_quality.metadata.name,
-    n_observations=len(X),
-    n_features=X.shape[1],
-    feature_names=list(X.columns),
-    target_name="quality",
+    X=X,
+    y=y,
     target_description="wine quality score (ordinal)",
     extra_stats={
         "Outcome Levels": str(ordinal_levels),
@@ -93,215 +146,112 @@ print_dataset_info_table(
     },
 )
 
+# %%
 # ============================================================================
 # Family resolution
 # ============================================================================
 
 ordinal_family = resolve_family("ordinal", np.ravel(y))
-assert ordinal_family.name == "ordinal"
-assert isinstance(ordinal_family, OrdinalFamily)
 
 print_family_info_table(
     explicit_family=ordinal_family,
 )
 
+# %%
 # ============================================================================
-# ter Braak (1992) — direct Y permutation (Manly 1997)
+# Manly (1997) individual — direct Y permutation (family="ordinal")
 # ============================================================================
 
-with warnings.catch_warnings():
-    warnings.filterwarnings("ignore", message="Inverting hessian")
-    results_ter_braak = randomization_test_regression(
-        X, y, method="ter_braak", family="ordinal", n_randomizations=999
-    )
-print_results_table(
-    results_ter_braak,
-    title="ter Braak (1992) Permutation Test (family='ordinal')",
+results_manly = randomization_test_regression(
+    X, y, method="manly", family="ordinal", n_randomizations=999
 )
-print_diagnostics_table(
-    results_ter_braak,
-    title="ter Braak (1992) Extended Diagnostics (family='ordinal')",
-)
+print_results_table(results_manly)
+print_diagnostics_table(results_manly)
 
+# %%
+# ============================================================================
+# Manly (1997) joint — direct Y permutation (family="ordinal")
+# ============================================================================
+
+results_manly_joint = randomization_test_regression(
+    X, y, method="manly_joint", family="ordinal", n_randomizations=999
+)
+print_joint_results_table(results_manly_joint)
+
+# %%
 # ============================================================================
 # Kennedy (1995) individual — family="ordinal"
 # ============================================================================
 
-with warnings.catch_warnings():
-    warnings.filterwarnings("ignore", message=".*without confounders.*")
-    warnings.filterwarnings("ignore", message="Inverting hessian")
-    results_kennedy = randomization_test_regression(
-        X,
-        y,
-        method="kennedy",
-        confounders=[],
-        family="ordinal",
-        n_randomizations=999,
-    )
-print_results_table(
-    results_kennedy,
-    title="Kennedy (1995) Individual Permutation Test (family='ordinal')",
+results_kennedy = randomization_test_regression(
+    X,
+    y,
+    method="kennedy",
+    confounders=[],
+    family="ordinal",
+    n_randomizations=999,
 )
-print_diagnostics_table(
-    results_kennedy,
-    title="Kennedy (1995) Individual Diagnostics (family='ordinal')",
-)
+print_results_table(results_kennedy)
+print_diagnostics_table(results_kennedy)
 
+# %%
 # ============================================================================
 # Kennedy (1995) joint — family="ordinal"
 # ============================================================================
 
-with warnings.catch_warnings():
-    warnings.filterwarnings("ignore", message=".*without confounders.*")
-    warnings.filterwarnings("ignore", message="Inverting hessian")
-    results_kennedy_joint = randomization_test_regression(
-        X,
-        y,
-        method="kennedy_joint",
-        confounders=[],
-        family="ordinal",
-        n_randomizations=999,
-    )
-print_joint_results_table(
-    results_kennedy_joint,
-    title="Kennedy (1995) Joint Permutation Test (family='ordinal')",
+results_kennedy_joint = randomization_test_regression(
+    X,
+    y,
+    method="kennedy_joint",
+    confounders=[],
+    family="ordinal",
+    n_randomizations=999,
 )
+print_joint_results_table(results_kennedy_joint)
 
+# %%
 # ============================================================================
-# Freedman-Lane rejection (expected ValueError)
+# Method compatibility
 # ============================================================================
+# Ordinal models have discrete cumulative probability distributions rather than
+# scalar continuous errors. Residual-based methods like Freedman-Lane and
+# ter Braak are incompatible and rejected with ValueError. We inspect the
+# structured compatibility matrix for the ordinal family.
 
-print("\n" + "=" * 80)
-print("Freedman-Lane rejection (expected)")
-print("=" * 80)
+print_compatibility_table("ordinal")
 
-for fl_method in ("freedman_lane", "freedman_lane_joint"):
-    try:
-        randomization_test_regression(
-            X,
-            y,
-            method=fl_method,
-            family="ordinal",
-            confounders=[],
-            n_randomizations=999,
-        )
-        print(f"ERROR: {fl_method} should have raised ValueError!")
-    except ValueError as e:
-        print(f"✓ {fl_method} correctly rejected: {str(e)[:80]}...")
-
+# %%
 # ============================================================================
 # Confounder identification
 # ============================================================================
 
-all_confounder_results = {}
-for predictor in X.columns:
-    all_confounder_results[predictor] = identify_confounders(
-        X, y, predictor=predictor, family="ordinal"
-    )
+all_confounder_results = identify_confounders(X, y, family="ordinal")
+print_confounder_table(all_confounder_results)
 
-print_confounder_table(
-    all_confounder_results,
-    title="Confounder Identification for All Predictors (Ordinal)",
+# %%
+# ============================================================================
+# Kennedy with covariate control — family="ordinal"
+# ============================================================================
+# Enological research often evaluates the sensory penalty of volatile acidity
+# while adjusting for alcohol content (which masks sensory acidity). We execute
+# a Kennedy permutation test for 'volatile_acidity' controlling for 'alcohol'.
+
+results_kc = randomization_test_regression(
+    X,
+    y,
+    method="kennedy",
+    confounders=["alcohol"],
+    family="ordinal",
+    n_randomizations=999,
 )
+print_results_table(results_kc)
+print_diagnostics_table(results_kc)
 
-predictors_with_confounders = {
-    pred: res.identified_confounders
-    for pred, res in all_confounder_results.items()
-    if res.identified_confounders
-}
-
+# %%
 # ============================================================================
-# Kennedy with identified confounders — family="ordinal"
+# Execution & Protocol Artifacts
 # ============================================================================
+# Inspect the internal execution context from the completed test result:
+# backend acceleration, batch convergence, fit metrics, and protocol properties.
 
-if predictors_with_confounders:
-    example_predictor = list(predictors_with_confounders.keys())[0]
-    example_confounders = predictors_with_confounders[example_predictor]
-
-    with warnings.catch_warnings():
-        warnings.filterwarnings("ignore", message="Inverting hessian")
-        results_kc = randomization_test_regression(
-            X,
-            y,
-            method="kennedy",
-            family="ordinal",
-            confounders=example_confounders,
-            n_randomizations=999,
-        )
-    print_results_table(
-        results_kc,
-        title=(
-            f"Kennedy (1995) for '{example_predictor}' "
-            f"(controlling for {', '.join(example_confounders)}) "
-            f"(family='ordinal')"
-        ),
-    )
-    print_diagnostics_table(
-        results_kc,
-        title=(
-            f"Kennedy (1995) Diagnostics for '{example_predictor}' (family='ordinal')"
-        ),
-    )
-
-# ============================================================================
-# Direct ModelFamily protocol usage
-# ============================================================================
-# The ModelFamily protocol encapsulates every model-specific operation —
-# fitting, prediction, residual extraction, Y-reconstruction, batch
-# fitting, diagnostics, and classical p-values.  Below we exercise
-# each method directly for OrdinalFamily.
-
-family = OrdinalFamily()
-X_np = X.values.astype(float)
-y_np = np.ravel(y.values).astype(float)
-
-# validate_y
-family.validate_y(y_np)
-
-# fit / predict / coefs
-model = family.fit(X_np, y_np, fit_intercept=True)
-preds = family.predict(model, X_np)
-coefs = family.coefs(model)
-
-# score / null_score — deviance
-deviance = family.score(model, X_np, y_np)
-null_deviance = family.null_score(y_np)
-
-# NotImplementedError checks — ordinal does not support residuals,
-# reconstruct_y, or fit_metric (the engine uses direct Y permutation).
-for method_name in ("residuals", "reconstruct_y", "fit_metric"):
-    try:
-        if method_name == "residuals":
-            family.residuals(model, X_np, y_np)
-        elif method_name == "reconstruct_y":
-            rng = np.random.default_rng(0)
-            family.reconstruct_y(np.zeros((1, 5)), np.zeros((1, 5)), rng)
-        elif method_name == "fit_metric":
-            family.fit_metric(y_np, preds)
-    except NotImplementedError:
-        pass  # Expected: ordinal does not support these methods
-
-# batch_fit — fit ordinal on B permuted Y vectors at once
-rng = np.random.default_rng(42)
-n_batch = 50
-perm_indices = np.array([rng.permutation(len(y_np)) for _ in range(n_batch)])
-Y_matrix = y_np[perm_indices]  # shape (B, n)
-with warnings.catch_warnings():
-    warnings.filterwarnings("ignore", category=UserWarning)
-    warnings.filterwarnings("ignore", message="Inverting hessian")
-    batch_coefs = family.batch_fit(X_np, Y_matrix, fit_intercept=True)
-n_nan = int(np.sum(np.any(np.isnan(batch_coefs), axis=1)))
-
-# diagnostics — proportional-odds summary
-diag = family.diagnostics(X_np, y_np, fit_intercept=True)
-
-# classical_p_values — Wald z-test via statsmodels
-p_classical = family.classical_p_values(X_np, y_np, fit_intercept=True)
-
-# exchangeability_cells — stub (returns None for global exchangeability)
-cells = family.exchangeability_cells(X_np, y_np)
-
-print_protocol_usage_table(
-    results_ter_braak,
-    title="Direct OrdinalFamily Protocol Usage",
-)
+print_protocol_usage_table(results_kc)

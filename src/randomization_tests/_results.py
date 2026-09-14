@@ -371,6 +371,36 @@ class ConfounderAnalysisResult(_DictAccessMixin):
     """Per-candidate collider test results."""
 
 
+class ConfounderAnalysisResultSet(dict[str, ConfounderAnalysisResult]):
+    """Container mapping predictor names to :class:`ConfounderAnalysisResult`.
+
+    Provides convenient properties for extracting predictors with identified
+    confounders and clean predictors across all analysed features.
+    """
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.advisories: list[str] = []
+
+    @property
+    def predictors_with_confounders(self) -> dict[str, list[str]]:
+        """Return dict of {predictor: [confounders]} for predictors with confounders."""
+        return {
+            pred: res.identified_confounders
+            for pred, res in self.items()
+            if res.identified_confounders
+        }
+
+    @property
+    def clean_predictors(self) -> list[str]:
+        """Return list of predictors with no identified confounders or mediators."""
+        return [
+            pred
+            for pred, res in self.items()
+            if not res.identified_confounders and not res.identified_mediators
+        ]
+
+
 # ------------------------------------------------------------------ #
 # KernelTestResult  (L3 — Kernel / Distribution Testing)
 # ------------------------------------------------------------------ #

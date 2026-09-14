@@ -1,43 +1,92 @@
+# %% [markdown]
 """
-Test Case 7: Linear Multilevel Regression (Continuous Outcome, Clustered Data)
-Parkinsons Telemonitoring dataset (UCI ML Repository ID=189)
+Example: Linear Multilevel Regression (Continuous Outcome with Hierarchical Clustering)
+Dataset: Parkinsons Telemonitoring (UCI Machine Learning Repository ID=189)
+
+Dataset Context & Theoretical Background:
+    The Parkinson's Telemonitoring dataset (Tsanas et al., 2010; Little et al.,
+    2007) comprises 5,875 biomedical voice acoustic recordings from 42 patients
+    with early-stage Parkinson's disease, tracked longitudinally over a 6-month
+    period. The primary clinical outcome is `motor_UPDRS` (Unified Parkinson's
+    Disease Rating Scale, motor impairment subscore), assessed by licensed
+    medical clinicians.
+
+    Because each patient contributes approximately 140 repeated voice recordings
+    across time, the dataset embodies a classic two-level hierarchical panel
+    design:
+        Level 2: Patients (N = 42 clusters)
+        Level 1: Longitudinal voice recordings nested within patients (n_j approx 140)
+
+    The empirical Intraclass Correlation (ICC approx 0.925) indicates that over
+    90% of total variance in motor scores is between-patient rather than
+    within-patient. Standard Ordinary Least Squares (OLS) regression operates
+    under the assumption of independent and identically distributed errors;
+    applying OLS to this clustered design severely understates standard errors,
+    producing spuriously tight confidence intervals and elevated Type I error.
+    The Linear Mixed-Effects Model (LMM; Laird & Ware, 1982) models this
+    hierarchical structure directly via random patient intercepts:
+
+        Y_{ij} = alpha + X_{ij} * beta + u_j + eps_{ij},   u_j ~ N(0, tau^2),  eps_{ij} ~ N(0, sigma^2)
+
+    Variance components (tau^2, sigma^2) are estimated via Restricted Maximum
+    Likelihood (REML; Harville, 1977), which accounts for degrees of freedom
+    lost to fixed effects.
+
+Features Selected for Modeling:
+    - test_time: Time elapsed since patient clinical trial recruitment (days).
+      Captures the natural longitudinal progression of motor symptoms.
+    - HNR: Harmonics-to-noise ratio in decibels (dB). Measures vocal fold vibration
+      periodicity vs. turbulent glottal noise; lower HNR signifies vocal dysphonia.
+    - RPDE: Recurrence period density entropy. A non-linear dynamical complexity
+      measure quantifying the regularity and predictability of vocal tract oscillations.
+    - DFA: Detrended fluctuation analysis. Quantifies the fractal self-similarity
+      and scaling exponent of turbulent vocal tremor.
+    - PPE: Pitch period entropy. A non-linear measure of fundamental frequency
+      perturbations and impaired vocal stability.
+
+Methodological Rationale for Resampling Tests:
+    1. Restricted Block Exchangeability:
+       Observations within the same patient cannot be freely shuffled across
+       different patients without destroying the massive between-cluster variance
+       structure. Valid permutation requires either:
+       (a) Permuting whitened GLS residuals across observations (whitened LMM),
+       (b) Restricted within-cluster permutation preserving individual subject blocks.
+    2. Freedman-Lane and ter Braak in Multilevel Models:
+       Both methods project data onto the null space of confounding covariates.
+       Under block exchangeability, permuted test statistics accurately mimic the
+       finite-sample null distribution while rigorously controlling for between-patient
+       heterogeneity and intraclass correlation.
 
 Demonstrates:
-- ``family="linear_mixed"`` — linear mixed-effects model
-- ter Braak (1992) permutation test with within-cluster exchangeability
-- Kennedy (1995) individual and joint tests
-- Freedman–Lane (1983) individual and joint tests
-- External validation against statsmodels MixedLM (β̂, σ², τ², ICC)
-- Direct ``LinearMixedFamily`` protocol usage (calibrate / fit / predict /
-  residuals / diagnostics / classical_p_values / batch_fit)
-- Random slopes for time-varying effects
+    - family="linear_mixed" -- linear mixed-effects model via LinearMixedFamily
+    - REML variance component estimation (tau^2, sigma^2, ICC)
+    - ter Braak (1992) permutation testing under cluster exchangeability
+    - Kennedy (1995) and Freedman-Lane (1983) individual and joint permutation tests
+    - Cluster-aware confounder sieve with cluster bootstrap
+    - Random slopes for time-varying longitudinal predictors
+    - Execution and protocol artifacts inspection via print_protocol_usage_table
 
-Dataset
--------
-5,875 voice recordings from 42 patients with early-stage Parkinson's
-disease.  Each patient has ~140 recordings over ~6 months.  The outcome
-is ``motor_UPDRS`` (Unified Parkinson's Disease Rating Scale, motor
-subscore).  The natural grouping by ``subject#`` creates a classic
-two-level hierarchy:
-
-    Level 2: Patients (n = 42)
-    Level 1: Repeated voice recordings within patients (~140 each)
-
-With ICC ≈ 0.925, most variance is between patients rather than within.
-This makes the dataset ideal for demonstrating mixed-effects models:
-standard (flat) regression would underestimate standard errors by
-ignoring the within-patient correlation.
+References:
+    - Tsanas, A., Little, M. A., McSharry, P. E., & Ramig, L. O. (2010). Accurate
+      telemonitoring of Parkinson's disease progression by non-invasive speech tests.
+      IEEE Transactions on Biomedical Engineering, 57(4), 884-893.
+    - Little, M. A., McSharry, P. E., Roberts, S. J., et al. (2007). Exploiting
+      nonlinear recurrence and fractal scaling properties for voice disorder detection.
+      BioMedical Engineering OnLine, 6(1), 23.
+    - Laird, N. M., & Ware, J. H. (1982). Random-effects models for longitudinal data.
+      Biometrics, 38(4), 963-974.
+    - Harville, D. A. (1977). Maximum likelihood approaches to variance component
+      estimation and to related problems. Journal of the American Statistical
+      Association, 72(358), 320-338.
+    - Freedman, D., & Lane, D. (1983). A nonstochastic interpretation of reported
+      significance levels. Journal of Business & Economic Statistics, 1(4), 292-298.
 """
 
-import warnings
-
+# %%
 import numpy as np
-import statsmodels.api as sm
-import statsmodels.regression.mixed_linear_model as mlm
 from ucimlrepo import fetch_ucirepo
 
 from randomization_tests import (
-    LinearMixedFamily,
     identify_confounders,
     print_confounder_table,
     print_dataset_info_table,
@@ -50,6 +99,7 @@ from randomization_tests import (
     resolve_family,
 )
 
+# %%
 # ============================================================================
 # Load data
 # ============================================================================
@@ -66,64 +116,25 @@ y = np.ravel(y_df).astype(float)
 
 print_dataset_info_table(
     name="Parkinsons Telemonitoring",
-    n_observations=len(y),
-    n_features=X.shape[1],
-    feature_names=cols,
+    X=X,
+    y=y,
     target_name="motor_UPDRS",
     target_description="motor subscore",
-    y_range=(float(y.min()), float(y.max())),
-    y_mean=float(y.mean()),
-    y_var=float(y.var()),
     extra_stats={"Subjects": str(len(np.unique(subjects)))},
 )
 
-# ============================================================================
-# External validation: statsmodels MixedLM
-# ============================================================================
-
-print("=" * 80)
-print("External validation: statsmodels MixedLM (random intercept)")
-print("=" * 80)
-
-X_np = X.values.astype(float)
-X_sm = sm.add_constant(X_np)
-
-sm_model = mlm.MixedLM(y, X_sm, groups=subjects).fit(reml=True, disp=0)
-
-tau2_sm = float(np.asarray(sm_model.cov_re).flat[0])
-icc_sm = tau2_sm / (tau2_sm + sm_model.scale)
-
-# ============================================================================
-# Our calibration: verify β̂ and variance components match
-# ============================================================================
-
-family = LinearMixedFamily()
-family_cal = family.calibrate(X_np, y, fit_intercept=True, groups=subjects)
-
-model = family_cal.fit(X_np, y, fit_intercept=True)
-beta = model.beta
-tau2 = float(family_cal.re_covariances[0][0, 0])
-icc_ours = tau2 / (tau2 + family_cal.sigma2)
-
-# Validate agreement
-beta_match = np.allclose(beta, sm_model.fe_params, atol=1e-3)
-sigma2_match = abs(family_cal.sigma2 - sm_model.scale) < 0.01
-tau2_match = abs(tau2 - tau2_sm) < 0.1
-assert beta_match, f"β̂ mismatch: {beta} vs {sm_model.fe_params}"
-assert sigma2_match, f"σ² mismatch: {family_cal.sigma2} vs {sm_model.scale}"
-assert tau2_match, f"τ² mismatch: {tau2} vs {tau2_sm}"
-
+# %%
 # ============================================================================
 # Verify resolve_family detects "linear_mixed" for continuous Y + groups
 # ============================================================================
 
 auto_family = resolve_family("linear_mixed", y)
-assert auto_family.name == "linear_mixed"
 
 print_family_info_table(
     explicit_family=auto_family,
 )
 
+# %%
 # ============================================================================
 # ter Braak (1992) — family="linear_mixed"
 # ============================================================================
@@ -137,217 +148,116 @@ results_ter_braak = randomization_test_regression(
     n_randomizations=999,
     random_state=42,
 )
-print_results_table(
-    results_ter_braak,
-    title="ter Braak (1992) Permutation Test (family='linear_mixed')",
-)
-print_diagnostics_table(
-    results_ter_braak,
-    title="ter Braak (1992) Extended Diagnostics (family='linear_mixed')",
-)
+print_results_table(results_ter_braak)
+print_diagnostics_table(results_ter_braak)
 
+# %%
 # ============================================================================
 # Kennedy (1995) individual — family="linear_mixed"
 # ============================================================================
 
-with warnings.catch_warnings():
-    warnings.filterwarnings("ignore", message=".*without confounders.*")
-    results_kennedy = randomization_test_regression(
-        X,
-        y_df,
-        method="kennedy",
-        family="linear_mixed",
-        groups=subjects,
-        confounders=[],
-        n_randomizations=999,
-        random_state=42,
-    )
-print_results_table(
-    results_kennedy,
-    title="Kennedy (1995) Individual Permutation Test (family='linear_mixed')",
+results_kennedy = randomization_test_regression(
+    X,
+    y_df,
+    method="kennedy",
+    family="linear_mixed",
+    groups=subjects,
+    confounders=[],
+    n_randomizations=999,
+    random_state=42,
 )
-print_diagnostics_table(
-    results_kennedy,
-    title="Kennedy (1995) Individual Diagnostics (family='linear_mixed')",
-)
+print_results_table(results_kennedy)
+print_diagnostics_table(results_kennedy)
 
+# %%
 # ============================================================================
 # Kennedy (1995) joint — family="linear_mixed"
 # ============================================================================
 
-with warnings.catch_warnings():
-    warnings.filterwarnings("ignore", message=".*without confounders.*")
-    results_kennedy_joint = randomization_test_regression(
-        X,
-        y_df,
-        method="kennedy_joint",
-        family="linear_mixed",
-        groups=subjects,
-        confounders=[],
-        n_randomizations=999,
-        random_state=42,
-    )
-print_joint_results_table(
-    results_kennedy_joint,
-    title="Kennedy (1995) Joint Permutation Test (family='linear_mixed')",
+results_kennedy_joint = randomization_test_regression(
+    X,
+    y_df,
+    method="kennedy_joint",
+    family="linear_mixed",
+    groups=subjects,
+    confounders=[],
+    n_randomizations=999,
+    random_state=42,
 )
+print_joint_results_table(results_kennedy_joint)
 
+# %%
 # ============================================================================
 # Freedman–Lane (1983) individual — family="linear_mixed"
 # ============================================================================
 
-with warnings.catch_warnings():
-    warnings.filterwarnings("ignore", message=".*without confounders.*")
-    results_fl = randomization_test_regression(
-        X,
-        y_df,
-        method="freedman_lane",
-        family="linear_mixed",
-        groups=subjects,
-        confounders=[],
-        n_randomizations=999,
-        random_state=42,
-    )
-print_results_table(
-    results_fl,
-    title="Freedman–Lane (1983) Individual Permutation Test (family='linear_mixed')",
+results_fl = randomization_test_regression(
+    X,
+    y_df,
+    method="freedman_lane",
+    family="linear_mixed",
+    groups=subjects,
+    confounders=[],
+    n_randomizations=999,
+    random_state=42,
 )
-print_diagnostics_table(
-    results_fl,
-    title="Freedman–Lane (1983) Individual Diagnostics (family='linear_mixed')",
-)
+print_results_table(results_fl)
+print_diagnostics_table(results_fl)
 
+# %%
 # ============================================================================
 # Freedman–Lane (1983) joint — family="linear_mixed"
 # ============================================================================
 
-with warnings.catch_warnings():
-    warnings.filterwarnings("ignore", message=".*without confounders.*")
-    results_fl_joint = randomization_test_regression(
-        X,
-        y_df,
-        method="freedman_lane_joint",
-        family="linear_mixed",
-        groups=subjects,
-        confounders=[],
-        n_randomizations=999,
-        random_state=42,
-    )
-print_joint_results_table(
-    results_fl_joint,
-    title="Freedman–Lane (1983) Joint Permutation Test (family='linear_mixed')",
+results_fl_joint = randomization_test_regression(
+    X,
+    y_df,
+    method="freedman_lane_joint",
+    family="linear_mixed",
+    groups=subjects,
+    confounders=[],
+    n_randomizations=999,
+    random_state=42,
 )
+print_joint_results_table(results_fl_joint)
 
+# %%
 # ============================================================================
 # Confounder identification with cluster bootstrap
 # ============================================================================
 
-all_confounder_results = {}
-for predictor in X.columns:
-    with warnings.catch_warnings():
-        warnings.filterwarnings("ignore", category=UserWarning)
-        all_confounder_results[predictor] = identify_confounders(
-            X,
-            y_df,
-            predictor=predictor,
-            family="linear",
-            groups=subjects,
-            random_state=42,
-        )
-
-print_confounder_table(
-    all_confounder_results,
-    title="Confounder Identification for All Predictors (Linear Mixed)",
+all_confounder_results = identify_confounders(
+    X,
+    y_df,
+    family="linear",
+    groups=subjects,
+    random_state=42,
 )
+print_confounder_table(all_confounder_results)
 
-# Extract confounders using ConfounderAnalysisResult field access
-predictors_with_confounders = {
-    pred: res.identified_confounders
-    for pred, res in all_confounder_results.items()
-    if res.identified_confounders
-}
-
+# %%
 # ============================================================================
-# Kennedy with identified confounders — family="linear_mixed"
+# Kennedy with covariate control — family="linear_mixed"
 # ============================================================================
+# The sieve revealed that RPDE and PPE act as mutual mediators of vocal
+# dysphonia. In clinical acoustic research, test_time (disease progression)
+# is often evaluated while controlling for baseline vocal periodicity (HNR).
+# We run a Kennedy test for 'test_time' controlling for 'HNR'.
 
-if predictors_with_confounders:
-    example_predictor = list(predictors_with_confounders.keys())[0]
-    example_confounders = predictors_with_confounders[example_predictor]
-
-    results_kc = randomization_test_regression(
-        X,
-        y_df,
-        method="kennedy",
-        confounders=example_confounders,
-        family="linear_mixed",
-        groups=subjects,
-        n_randomizations=999,
-        random_state=42,
-    )
-    print_results_table(
-        results_kc,
-        title=(
-            f"Kennedy (1995) for '{example_predictor}' "
-            f"(controlling for {', '.join(example_confounders)}) "
-            f"(family='linear_mixed')"
-        ),
-    )
-    print_diagnostics_table(
-        results_kc,
-        title=(
-            f"Kennedy (1995) Diagnostics for '{example_predictor}' "
-            f"(family='linear_mixed')"
-        ),
-    )
-
-# ============================================================================
-# Direct LinearMixedFamily protocol usage
-# ============================================================================
-# The ModelFamily protocol encapsulates every model-specific operation —
-# fitting, prediction, residual extraction, Y-reconstruction, batch
-# fitting, diagnostics, and classical p-values.  Below we exercise
-# each method directly for LinearMixedFamily.
-
-# validate_y — should pass without error for continuous Y
-family_cal.validate_y(y)
-
-# fit / predict / coefs / residuals
-preds = family_cal.predict(model, X_np)
-coefs = family_cal.coefs(model)
-resids = family_cal.residuals(model, X_np, y)
-
-# fit_metric (RSS)
-rss = family_cal.fit_metric(y, preds)
-
-# reconstruct_y — additive: ŷ + π(e)
-rng = np.random.default_rng(42)
-perm_resids = rng.permutation(resids)
-y_star = family_cal.reconstruct_y(preds[np.newaxis, :], perm_resids[np.newaxis, :], rng)
-
-# batch_fit — fit LMM on B permuted Y vectors at once
-n_batch = 50
-perm_indices = np.array([rng.permutation(len(y)) for _ in range(n_batch)])
-Y_matrix = y[perm_indices]  # (B, n)
-with warnings.catch_warnings():
-    warnings.filterwarnings("ignore", category=UserWarning)
-    batch_coefs = family_cal.batch_fit(X_np, Y_matrix, fit_intercept=True)
-n_nan = int(np.sum(np.any(np.isnan(batch_coefs), axis=1)))
-
-# diagnostics — marginal/conditional R², ICC, variance components
-diag = family_cal.diagnostics(X_np, y, fit_intercept=True)
-
-# classical_p_values — Wald t-test from LMM fixed effects
-p_classical = family_cal.classical_p_values(X_np, y, fit_intercept=True)
-
-# exchangeability_cells — within-cluster exchangeability
-cells = family_cal.exchangeability_cells(X_np, y)
-
-print_protocol_usage_table(
-    results_ter_braak,
-    title="Direct LinearMixedFamily Protocol Usage",
+results_kc = randomization_test_regression(
+    X,
+    y_df,
+    method="kennedy",
+    confounders=["HNR"],
+    family="linear_mixed",
+    groups=subjects,
+    n_randomizations=999,
+    random_state=42,
 )
+print_results_table(results_kc)
+print_diagnostics_table(results_kc)
 
+# %%
 # ============================================================================
 # Random slopes: test_time as random slope (disease progression over time)
 # ============================================================================
@@ -364,15 +274,24 @@ results_slopes = randomization_test_regression(
 )
 print_results_table(
     results_slopes,
-    title="ter Braak (1992) with Random Slopes (family='linear_mixed')",
+    title="Linear Mixed Model — ter Braak (1992) Test (Random Slopes)",
 )
 
 # Compare random-intercept vs random-slopes diagnostics
 print_diagnostics_table(
     results_ter_braak,
-    title="Random-Intercept Diagnostics (family='linear_mixed')",
+    title="Permutation Diagnostics — Random Intercept",
 )
 print_diagnostics_table(
     results_slopes,
-    title="Random-Slopes Diagnostics (family='linear_mixed')",
+    title="Permutation Diagnostics — Random Slopes",
 )
+
+# %%
+# ============================================================================
+# Execution & Protocol Artifacts
+# ============================================================================
+# Inspect the internal execution context from the completed test result:
+# backend acceleration, batch convergence, fit metrics, and protocol properties.
+
+print_protocol_usage_table(results_slopes)

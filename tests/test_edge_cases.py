@@ -73,29 +73,32 @@ class TestSingleFeature:
 
     def test_kennedy_linear(self) -> None:
         X, y = _linear_data()
-        with pytest.warns(UserWarning, match="without confounders"):
-            result = randomization_test_regression(
-                X, y, n_randomizations=50, method="kennedy", random_state=0
-            )
+        result = randomization_test_regression(
+            X, y, n_randomizations=50, method="kennedy", random_state=0
+        )
+        assert result.context is not None
+        assert any(
+            "without confounders" in msg for msg in result.context.warnings_captured
+        )
         assert len(result["model_coefs"]) == 1
 
     def test_kennedy_joint_linear(self) -> None:
         X, y = _linear_data()
-        with pytest.warns(UserWarning, match="without confounders"):
-            result = randomization_test_regression(
-                X, y, n_randomizations=50, method="kennedy_joint", random_state=0
-            )
+        result = randomization_test_regression(
+            X, y, n_randomizations=50, method="kennedy_joint", random_state=0
+        )
+        assert result.context is not None
+        assert any(
+            "without confounders" in msg for msg in result.context.warnings_captured
+        )
         assert "p_value" in result
         assert 0 <= result["p_value"] <= 1
 
     def test_freedman_lane_logistic_single_feature_rejected(self) -> None:
         """FL + logistic + 1 feature is degenerate (0-predictor reduced model)."""
         X, y = _binary_data()
-        with (
-            pytest.raises(
-                ValueError, match="Freedman-Lane.*logistic.*at least 2 features"
-            ),
-            pytest.warns(UserWarning, match="without confounders"),
+        with pytest.raises(
+            ValueError, match="Freedman-Lane.*logistic.*at least 2 features"
         ):
             randomization_test_regression(
                 X, y, n_randomizations=50, method="freedman_lane", random_state=0
@@ -112,18 +115,24 @@ class TestSingleFeature:
 
     def test_kennedy_logistic(self) -> None:
         X, y = _binary_data()
-        with pytest.warns(UserWarning, match="without confounders"):
-            result = randomization_test_regression(
-                X, y, n_randomizations=50, method="kennedy", random_state=0
-            )
+        result = randomization_test_regression(
+            X, y, n_randomizations=50, method="kennedy", random_state=0
+        )
+        assert result.context is not None
+        assert any(
+            "without confounders" in msg for msg in result.context.warnings_captured
+        )
         assert len(result["model_coefs"]) == 1
 
     def test_kennedy_joint_logistic(self) -> None:
         X, y = _binary_data()
-        with pytest.warns(UserWarning, match="without confounders"):
-            result = randomization_test_regression(
-                X, y, n_randomizations=50, method="kennedy_joint", random_state=0
-            )
+        result = randomization_test_regression(
+            X, y, n_randomizations=50, method="kennedy_joint", random_state=0
+        )
+        assert result.context is not None
+        assert any(
+            "without confounders" in msg for msg in result.context.warnings_captured
+        )
         assert "p_value" in result
 
 
@@ -188,20 +197,26 @@ class TestPerfectSeparation:
 
     def test_kennedy(self, separated_data: tuple[pd.DataFrame, pd.DataFrame]) -> None:
         X, y = separated_data
-        with pytest.warns(UserWarning, match="without confounders"):
-            result = randomization_test_regression(
-                X, y, n_randomizations=50, method="kennedy", random_state=0
-            )
+        result = randomization_test_regression(
+            X, y, n_randomizations=50, method="kennedy", random_state=0
+        )
+        assert result.context is not None
+        assert any(
+            "without confounders" in msg for msg in result.context.warnings_captured
+        )
         assert all(np.isfinite(result["raw_empirical_p"]))
 
     def test_kennedy_joint(
         self, separated_data: tuple[pd.DataFrame, pd.DataFrame]
     ) -> None:
         X, y = separated_data
-        with pytest.warns(UserWarning, match="without confounders"):
-            result = randomization_test_regression(
-                X, y, n_randomizations=50, method="kennedy_joint", random_state=0
-            )
+        result = randomization_test_regression(
+            X, y, n_randomizations=50, method="kennedy_joint", random_state=0
+        )
+        assert result.context is not None
+        assert any(
+            "without confounders" in msg for msg in result.context.warnings_captured
+        )
         assert np.isfinite(result["p_value"])
 
 
@@ -368,14 +383,20 @@ class TestConfounderValidation:
 
     def test_kennedy_without_confounders_warns(self) -> None:
         X, y = _linear_data()
-        with pytest.warns(UserWarning, match="without confounders"):
-            randomization_test_regression(
-                X, y, n_randomizations=50, method="kennedy", random_state=0
-            )
+        result = randomization_test_regression(
+            X, y, n_randomizations=50, method="kennedy", random_state=0
+        )
+        assert result.context is not None
+        assert any(
+            "without confounders" in msg for msg in result.context.warnings_captured
+        )
 
     def test_kennedy_joint_without_confounders_warns(self) -> None:
         X, y = _linear_data()
-        with pytest.warns(UserWarning, match="without confounders"):
-            randomization_test_regression(
-                X, y, n_randomizations=50, method="kennedy_joint", random_state=0
-            )
+        result = randomization_test_regression(
+            X, y, n_randomizations=50, method="kennedy_joint", random_state=0
+        )
+        assert result.context is not None
+        assert any(
+            "without confounders" in msg for msg in result.context.warnings_captured
+        )

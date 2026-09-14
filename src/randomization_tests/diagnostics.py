@@ -2145,6 +2145,14 @@ def compute_all_diagnostics(
             fit_intercept,
         )
 
+    # ---- Symmetry diagnostics (sign-flip only) ----------
+    if ctx is not None and getattr(ctx, "randomization", None) == "sign_flip":
+        residuals = getattr(ctx, "residuals", None)
+        if residuals is not None:
+            from .sign_flips import validate_symmetry
+
+            result["symmetry"] = validate_symmetry(residuals)
+
     # ---- Panel diagnostics ------------------------------
     if panel_id is not None:
         _, panel_counts = np.unique(panel_id, return_counts=True)
