@@ -8,9 +8,6 @@ Thank you for your interest in contributing to **randomization_tests**.
 | ----------------------------- | ------------------------------------------------------------------------------------------------------ |
 | `main`                      | Main branch — actively developed.                                                        |
 
-All CI runs against `experimental`.  `main` remains a simple,
-self-contained reference implementation.
-
 ## Development setup
 
 ```bash
