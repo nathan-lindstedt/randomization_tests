@@ -62,11 +62,11 @@ Dong, Z., C. Mundo-Levano, W. Qian, D. Lau, and G. R. Arce. 2026. "A Framework f
 
 Edgington, E. S. 1980. *Randomization tests.* 2nd Ed. New York, NY: Marcel Dekker, Inc.
 
-Freedman, D. and D. Lane. 1983. "A nonstochastic interpretation of reported significance levels." *Journal of Business & Economic Statistics*, 1(4):292-298.
-
 Freedman, D. A. 1991. "Statistical models and shoe leather." *Sociological Methodology*, 21:291-313.
 
 Freedman, D. A. 2008. "On regression adjustments in randomized experiments." *Biometrika*, 95(1):137-150.
+
+Freedman, D. and D. Lane. 1983. "A nonstochastic interpretation of reported significance levels." *Journal of Business & Economic Statistics*, 1(4):292-298.
 
 Hubert, L. J. and J. Schultz. 1976. "Quadratic assignment as a general data analysis strategy." *British Journal of Mathematical and Statistical Psychology*, 29:190-241.
 
