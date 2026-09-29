@@ -25,7 +25,7 @@ Adding a new strategy
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 import numpy as np
 import pandas as pd
@@ -69,6 +69,7 @@ class PermutationStrategy(Protocol):
         fit_intercept: bool = True,
         n_jobs: int = 1,
         randomization: str = "permute",
+        **kwargs: Any,
     ) -> np.ndarray | tuple[float, np.ndarray, str, list[str]]:
         """Run the permutation algorithm.
 
@@ -115,7 +116,7 @@ def _ensure_registry() -> None:
     from .freedman_lane import FreedmanLaneIndividualStrategy, FreedmanLaneJointStrategy
     from .kennedy import KennedyIndividualStrategy, KennedyJointStrategy
     from .manly import ManlyJointStrategy, ManlyStrategy
-    from .score import ScoreExactStrategy, ScoreIndividualStrategy, ScoreJointStrategy
+    from .score import ScoreIndividualStrategy, ScoreJointStrategy
     from .ter_braak import TerBraakStrategy
 
     _STRATEGY_REGISTRY.update(
@@ -129,7 +130,6 @@ def _ensure_registry() -> None:
             "manly_joint": ManlyJointStrategy,
             "score": ScoreIndividualStrategy,
             "score_joint": ScoreJointStrategy,
-            "score_exact": ScoreExactStrategy,
         }
     )
 
@@ -142,7 +142,7 @@ def resolve_strategy(method: str) -> PermutationStrategy:
             ``"kennedy_joint"``, ``"freedman_lane"``,
             ``"freedman_lane_joint"``, ``"manly"``,
             ``"manly_joint"``, ``"score"``,
-            ``"score_joint"``, ``"score_exact"``.
+            ``"score_joint"``.
 
     Raises:
         ValueError: If *method* is not recognised.

@@ -41,6 +41,7 @@ randomization_test_regression(
     time_id: np.ndarray | list[int] | pd.Series | str | None = None,
     ar_order: int | None = None,
     randomization: str = "permute",
+    reduced_model: Any | None = None,
 ) -> IndividualTestResult | JointTestResult
 ```
 
@@ -61,7 +62,7 @@ to override auto‑detection.
 | `p_value_threshold_one` | First significance level (marked `*`). |
 | `p_value_threshold_two` | Second significance level (marked `**`). |
 | `p_value_threshold_three` | Third significance level (marked `***`). |
-| `method` | `"ter_braak"`, `"kennedy"`, `"kennedy_joint"`, `"freedman_lane"`, `"freedman_lane_joint"`, `"manly"`, `"manly_joint"`, `"score"`, `"score_joint"`, or `"score_exact"`. |
+| `method` | `"ter_braak"`, `"kennedy"`, `"kennedy_joint"`, `"freedman_lane"`, `"freedman_lane_joint"`, `"manly"`, `"manly_joint"`, `"score"`, or `"score_joint"`. |
 | `confounders` | Column names excluded from the tested hypotheses. For Kennedy and Freedman–Lane methods, omitting them is valid but produces a structured advisory explaining that all features are tested conditionally. |
 | `random_state` | Seed for reproducibility. |
 | `fit_intercept` | Whether to include an intercept in the regression model. Set to `False` for through‑origin regression. |
@@ -76,7 +77,8 @@ to override auto‑detection.
 | `panel_id` | Panel (subject/unit) identifier for longitudinal data. When provided, automatically sets `groups=panel_id` and `permutation_strategy="within"`. Accepts a 1‑D array‑like of labels or a column name (string) in `X`. Cannot be used together with an explicit `groups=` argument. |
 | `time_id` | Time‑period identifier for longitudinal data. Only meaningful when `panel_id` is also provided. Used for validation checks: warns if data is not sorted by `(panel_id, time_id)` or if panels are unbalanced. |
 | `ar_order` | Order of the autoregressive working-correlation correction for longitudinal panel data. Requires `panel_id`, `time_id`, and a score-based method. The AR comparison display contrasts the uncorrected baseline with the highest supplied AR order. |
-| `randomization` | `"permute"` (default) or `"sign_flip"`. With `"sign_flip"`, residuals are randomised by random sign reversal (±1) rather than permutation, requiring only that errors are symmetrically distributed — a weaker assumption than exchangeability. Not valid for `"ordinal"` or `"multinomial"` families (no well‑defined residuals) or for `"manly"`, `"manly_joint"`, and `"score_exact"` methods (which permute Y directly). |
+| `randomization` | `"permute"` (default) or `"sign_flip"`. With `"sign_flip"`, residuals are randomised by random sign reversal (±1) rather than permutation, requiring only that errors are symmetrically distributed — a weaker assumption than exchangeability. Not valid for `"ordinal"` or `"multinomial"` families (no well‑defined residuals) or for `"manly"` and `"manly_joint"` methods (which permute Y directly). |
+| `reduced_model` | Optional flexible machine learning estimator (or 2-tuple `(model_y, model_x)`) implementing scikit-learn's `fit`/`predict` (or `predict_proba`) interface for Double/Debiased Machine Learning (DML; Chernozhukov et al. 2018). Supported with `method="freedman_lane"` and `method="freedman_lane_joint"`. When using binary classification outcomes $Y$ with continuous predictors $X$, supply a 2-tuple `(classifier, regressor)`. Cross-fits nuisance functions out-of-fold, achieving Neyman orthogonality and eliminating bias and false positives from nonlinear confounding. |
 
 **Returns:** An immutable `IndividualTestResult` or `JointTestResult` with
 attribute access, dict-style access, `to_dict()` serialization, and an
@@ -94,27 +96,36 @@ blanket-suppress them.
 
 **Method × family compatibility:**
 
-✓ = Supported · V = Guarded (`ValueError` with explanation) · ⚠ = Works with `UserWarning`
+✓ = Supported · V = Guarded (`ValueError` with explanation) · ⚠ = Permitted with substantive `UserWarning`
 
 | Method | `linear` / `logistic` / `poisson` / `negative_binomial` | `ordinal` / `multinomial` | `linear_mixed` | `logistic_mixed` / `poisson_mixed` |
 |---|---|---|---|---|
 | `ter_braak` | ✓ | V | ✓ | V |
-| `kennedy` | ✓ | ✓ | ✓ | V |
-| `kennedy_joint` | ✓ | ✓ | ✓ | V |
+| `kennedy` | ✓ | ✓ | ✓ | ✓ |
+| `kennedy_joint` | ✓ | ✓ | ✓ | ✓ |
 | `freedman_lane` | ✓ | V | ✓ | V |
 | `freedman_lane_joint` | ✓ | V | ✓ | V |
-| `manly` | ⚠ | ✓ | ⚠ | V |
-| `manly_joint` | ⚠ | ✓ | ⚠ | V |
+| `manly` | ⚠¹ | ✓ | ⚠² | V |
+| `manly_joint` | ⚠¹ | ✓ | ⚠² | V |
 | `score` | ✓ | ✓ | ✓ | ✓ |
-| `score_joint` | ✓ | ✓ | ✓ | V |
-| `score_exact` | ⚠† | V‡ | ✓ | ✓ |
+| `score_joint` | ✓ | ✓ | ✓ | ✓ |
 
-† `score_exact` on non‑mixed families: emits `UserWarning` then raises
-`ValueError` (requires calibrated GLMM variance components).
+**Substantive Warning & Guard Interpretations:**
 
-‡ `score_exact` on ordinal/multinomial: raises `ValueError` — score‑exact
-uses vmap'd IRLS refitting designed for GLMM null distributions, not
-direct‑permutation categorical families.
+- **⚠¹ (Manly on Residual Families)**: Manly (1997) permutes the raw outcome
+  $Y$ directly across all units without residualization. In multiple regression
+  with correlated predictors, this tests *marginal* independence ($Y \perp X_j$)
+  rather than the *partial* conditional association ($Y \perp X_j \mid X_{-j}$).
+  Covariance among predictors leaks into the test statistic, distorting partial
+  inference. For families that support well-defined residuals, partial tests
+  (`freedman_lane`, `ter_braak`, `score`, or `kennedy`) should be used to isolate
+  direct partial associations.
+- **⚠² (Manly on Linear Mixed Models)**: Shuffling $Y$ globally across all
+  observations disregards hierarchical cluster boundaries, destroying the panel's
+  random-effects covariance structure and inflating false-positive rates
+  (Type I error). Cluster-aware within-group permutation (`groups=...`,
+  `permutation_strategy="within"`) or whitened residual testing (`freedman_lane`,
+  `ter_braak`, `score`) must be used instead.
 
 **References:**
 
@@ -142,9 +153,9 @@ dataclasses:
 
 Both support attribute access (`result.p_value`), dict-style access
 (`result["p_value"]`), membership checks for data fields, and
-`result.to_dict()` serialization. Each result carries a `context` field with
-the observed fit, diagnostics, permutation metadata, and captured expected
-advisories.
+`result.to_dict()` serialization. Each result carries:
+- `guarantee_tier`: Formal mathematical inferential guarantee string (e.g. `"Finite-Sample Exact"`, `"Asymptotically Exact (Canonical Freedman–Lane)"`, or `"Asymptotically Exact (DML)"`).
+- `context`: An attached `FitContext` carrying the observed fit, diagnostics, permutation metadata, and captured expected advisories.
 
 ### `ConfounderAnalysisResult`
 
@@ -461,14 +472,14 @@ approximation.
 - Diagnostics: AUC, deviance, variance components, ICC,
   random‑effect covariance recovery.
 
-**Supported methods:** `score`, `score_exact`.
+**Supported methods:** `score`, `score_joint`, `kennedy`, `kennedy_joint`.
 
-**Rejected methods:** `ter_braak`, `kennedy`, `kennedy_joint`,
-`freedman_lane`, `freedman_lane_joint`, `manly`, `manly_joint`,
-`score_joint` raise `ValueError` — GLMM families require score‑based
-permutation.  Re‑estimating variance components per permutation is
-computationally prohibitive and statistically incorrect (the null
-hypothesis holds the random‑effects structure fixed).
+**Rejected methods:** `ter_braak`, `freedman_lane`,
+`freedman_lane_joint`, `manly`, `manly_joint` raise `ValueError` —
+GLMM families require score-based or exposure-based permutation.
+Re‑estimating variance components per permutation is computationally
+prohibitive and statistically incorrect (the null hypothesis holds the
+random‑effects structure fixed).
 
 Requires `groups=` keyword.
 
@@ -488,12 +499,11 @@ Laplace approximation.
 - Diagnostics: pseudo‑R², deviance, Pearson overdispersion (χ²/df),
   variance components, ICC.
 
-**Supported methods:** `score`, `score_exact`.
+**Supported methods:** `score`, `score_joint`, `kennedy`, `kennedy_joint`.
 
-**Rejected methods:** `ter_braak`, `kennedy`, `kennedy_joint`,
-`freedman_lane`, `freedman_lane_joint`, `manly`, `manly_joint`,
-`score_joint` raise `ValueError` — same rationale as
-`LogisticMixedFamily`.
+**Rejected methods:** `ter_braak`, `freedman_lane`,
+`freedman_lane_joint`, `manly`, `manly_joint` raise `ValueError` —
+same rationale as `LogisticMixedFamily`.
 
 Requires `groups=` keyword.
 
@@ -922,12 +932,12 @@ the result object.
 | Parameter | Description |
 |---|---|
 | `results` | `IndividualTestResult` from `randomization_test_regression`. |
-| `title` | Optional title override. If omitted, the display layer generates `[Model Type] — [Procedure]`, for example `Linear Regression — Kennedy (1995) Test`. |
+| `title` | Optional title override. If omitted, the display layer generates `[Model Type] — [Procedure]` (for example `Linear Regression — Kennedy (1995) Test`), or `[Model Type] — Double/Debiased Machine Learning (DML) Test` when `reduced_model` is active. |
 
-The table prints a centered guarantee banner, method metadata, empirical and
-classical p-values, Monte Carlo resolution information, and wrapped advisories
-from `result.context.warnings_captured`. Custom titles are supported, but
-example scripts normally rely on the generated title.
+The table prints a centered guarantee banner (such as `[ Guarantee: Asymptotically Exact (DML) ]`),
+method metadata, empirical and classical p-values, Monte Carlo resolution
+information, and wrapped advisories from `result.context.warnings_captured`.
+Custom titles are supported, but example scripts normally rely on the generated title.
 
 ---
 
@@ -949,7 +959,7 @@ Target name and model family are read directly from the result object.
 | Parameter | Description |
 |---|---|
 | `results` | `JointTestResult` from `randomization_test_regression` (joint methods). |
-| `title` | Optional title override. If omitted, the display layer generates a concise model-and-procedure title such as `Linear Regression — Freedman–Lane (1983) Joint Test`. |
+| `title` | Optional title override. If omitted, the display layer generates a concise model-and-procedure title such as `Linear Regression — Freedman–Lane (1983) Joint Test`, or `[Model Type] — Double/Debiased Machine Learning (DML) Joint Test` when `reduced_model` is active. |
 
 ---
 

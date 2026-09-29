@@ -2119,7 +2119,7 @@ class _GLMMBatchStubMixin:
     """Mixin providing ``batch_*`` stubs for unsupported methods.
 
     GLMM families do not support outcome-permutation batch refitting
-    methods (ter_braak, freedman_lane) because re-estimating variance
+    methods (ter_braak, freedman_lane, manly) because re-estimating variance
     components per permutation is prohibitively expensive.
     """
 
@@ -2131,8 +2131,9 @@ class _GLMMBatchStubMixin:
         **kwargs: Any,
     ) -> np.ndarray:
         raise NotImplementedError(
-            "GLMM families require method='score'. "
-            "Use randomization_test_regression(..., method='score')."
+            "GLMM families do not support outcome-permutation batch refitting "
+            "(ter_braak, freedman_lane, manly). Use method='score', "
+            "method='score_joint', or method='kennedy'."
         )
 
     def batch_fit_and_score(
@@ -2143,8 +2144,9 @@ class _GLMMBatchStubMixin:
         **kwargs: Any,
     ) -> tuple[np.ndarray, np.ndarray]:
         raise NotImplementedError(
-            "GLMM families require method='score'. "
-            "Use randomization_test_regression(..., method='score')."
+            "GLMM families do not support outcome-permutation batch refitting "
+            "(ter_braak, freedman_lane, manly). Use method='score', "
+            "method='score_joint', or method='kennedy'."
         )
 
     def batch_fit_paired(
@@ -2155,8 +2157,9 @@ class _GLMMBatchStubMixin:
         **kwargs: Any,
     ) -> np.ndarray:
         raise NotImplementedError(
-            "GLMM families require method='score'. "
-            "Use randomization_test_regression(..., method='score')."
+            "GLMM families do not support outcome-permutation batch refitting "
+            "(ter_braak, freedman_lane, manly). Use method='score', "
+            "method='score_joint', or method='kennedy'."
         )
 
 
@@ -2599,7 +2602,7 @@ class LogisticMixedFamily(_GLMMBatchStubMixin):
         self,
         X_batch: np.ndarray,
         y: np.ndarray,  # noqa: ARG002
-        fit_intercept: bool = True,
+        fit_intercept: bool,
         **kwargs: Any,
     ) -> np.ndarray:
         """Batch GLMM fitting with per-permutation design matrices (Kennedy path).
@@ -2643,7 +2646,7 @@ class LogisticMixedFamily(_GLMMBatchStubMixin):
         self,
         X_batch: np.ndarray,
         y: np.ndarray,
-        fit_intercept: bool = True,
+        fit_intercept: bool,
         **kwargs: Any,
     ) -> tuple[np.ndarray, np.ndarray]:
         """Batch GLMM fitting and deviance scoring with varying X (Kennedy joint path).
@@ -3234,7 +3237,7 @@ class PoissonMixedFamily(_GLMMBatchStubMixin):
         self,
         X_batch: np.ndarray,
         y: np.ndarray,  # noqa: ARG002
-        fit_intercept: bool = True,
+        fit_intercept: bool,
         **kwargs: Any,
     ) -> np.ndarray:
         """Batch Poisson GLMM fitting with per-permutation design matrices (Kennedy path).
@@ -3278,7 +3281,7 @@ class PoissonMixedFamily(_GLMMBatchStubMixin):
         self,
         X_batch: np.ndarray,
         y: np.ndarray,
-        fit_intercept: bool = True,
+        fit_intercept: bool,
         **kwargs: Any,
     ) -> tuple[np.ndarray, np.ndarray]:
         """Batch Poisson GLMM fitting and deviance scoring with varying X (Kennedy joint path).

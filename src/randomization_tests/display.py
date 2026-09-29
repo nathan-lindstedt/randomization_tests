@@ -255,9 +255,6 @@ def _resolve_guarantee_tier(results: Any) -> str:
     if method in ("manly", "manly_joint"):
         return "Finite-Sample Exact (Unconditional Y-Permutation)"
 
-    if method == "score_exact":
-        return "Asymptotically Exact (PQL-Fixed IRLS)"
-
     if fam_name.endswith("_mixed"):
         return "Asymptotically Exact (Whitened Mixed Model)"
 
@@ -303,6 +300,12 @@ def _resolve_results_title(results: Any) -> str:
     if randomization == "sign_flip":
         return f"{model_name} \u2014 Fisher (1935) Sign-Flip Test"
 
+    tier = getattr(results, "guarantee_tier", None)
+    if not tier and ctx:
+        tier = getattr(ctx, "guarantee_tier", None)
+    if tier == "Asymptotically Exact (DML)":
+        return f"{model_name} \u2014 Double/Debiased Machine Learning (DML) Test"
+
     method = getattr(results, "method", "")
     method_titles = {
         "ter_braak": "ter Braak (1992) Test",
@@ -310,7 +313,6 @@ def _resolve_results_title(results: Any) -> str:
         "kennedy": "Kennedy (1995) Test",
         "manly": "Manly (1997) Test",
         "score": "Rao (1948) Score Test",
-        "score_exact": "Score Exact Test",
     }
     proc = method_titles.get(method, f"{method.replace('_', ' ').title()} Test")
     return f"{model_name} \u2014 {proc}"
@@ -321,6 +323,13 @@ def _resolve_joint_title(results: Any) -> str:
     family = getattr(results, "family", None)
     fam_name = family.name if family is not None else "linear"
     model_name = _FAMILY_DISPLAY_NAMES.get(fam_name, fam_name.replace("_", " ").title())
+
+    ctx = getattr(results, "context", None)
+    tier = getattr(results, "guarantee_tier", None)
+    if not tier and ctx:
+        tier = getattr(ctx, "guarantee_tier", None)
+    if tier == "Asymptotically Exact (DML)":
+        return f"{model_name} \u2014 Double/Debiased Machine Learning (DML) Joint Test"
 
     method = getattr(results, "method", "")
     method_titles = {
@@ -1774,8 +1783,6 @@ def print_compatibility_table(
             "freedman_lane_joint",
             "ter_braak",
         ]
-        if fam_name.endswith("_mixed"):
-            methods.append("score_exact")
 
     _METHOD_DETAILS = {
         "manly": "Direct Y permutation (exact)",
@@ -1787,7 +1794,6 @@ def print_compatibility_table(
         "freedman_lane": "Reduced-model residual permutation",
         "freedman_lane_joint": "Reduced-model residual joint test",
         "ter_braak": "Full-model residual permutation",
-        "score_exact": "PQL-fixed IRLS refits",
     }
 
     is_glmm = fam_name.endswith("_mixed") and fam_name != "linear_mixed"
@@ -1814,7 +1820,10 @@ def print_compatibility_table(
                 detail = errors[0].message
         else:
             status = "Supported"
-            detail = _METHOD_DETAILS.get(m, "Supported")
+            if is_glmm and m == "score_joint":
+                detail = "Rao score joint test (tangent space)"
+            else:
+                detail = _METHOD_DETAILS.get(m, "Supported")
 
         row_prefix = f"{m:<{mc_w}}{status:<{sc_w}}"
         detail_w = W - mc_w - sc_w

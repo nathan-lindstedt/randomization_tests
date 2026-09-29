@@ -34,14 +34,16 @@ from __future__ import annotations
 
 import warnings
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from typing import Any, ClassVar, Protocol, final, runtime_checkable
 
 import numpy as np
 import statsmodels.api as sm
+from sklearn.base import clone
 from sklearn.linear_model import LinearRegression, LogisticRegression
 from sklearn.metrics import log_loss, mean_squared_error
+from sklearn.model_selection import GroupKFold, KFold
 from statsmodels.tools.sm_exceptions import (
     ConvergenceWarning as SmConvergenceWarning,
 )
@@ -5969,27 +5971,240 @@ def _default_residual_permutation_refit(
     return np.asarray(coefs), np.asarray(rss)
 
 
+@dataclass(frozen=True)
+class _DMLReducedModel:
+    """Polymorphic container wrapping cross-fitted DML out-of-fold predictions.
+
+    Provides a uniform interface compatible with all ModelFamily.residuals()
+    implementations across linear, GLM, and mixed model families without
+    requiring model-family-specific branching.
+
+    Attributes:
+        predictions: Cross-fitted out-of-fold predicted values of shape ``(n,)``.
+    """
+
+    predictions: np.ndarray
+
+    def predict(self, X: np.ndarray) -> np.ndarray:
+        """Return pre-computed out-of-fold predictions."""
+        return self.predictions
+
+    def predict_proba(self, X: np.ndarray) -> np.ndarray:
+        """Return 2-column class probabilities for binary classification."""
+        p = np.clip(self.predictions, 1e-15, 1.0 - 1e-15)
+        return np.column_stack([1.0 - p, p])
+
+
+def _cross_fit_residualize(
+    confounders: np.ndarray,
+    y: np.ndarray,
+    X: np.ndarray | None = None,
+    *,
+    reduced_model: Any,
+    n_folds: int = 5,
+    groups: np.ndarray | None = None,
+    random_state: int | None = None,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Cross-fit nuisance predictions and compute out-of-fold residuals for DML.
+
+    Under Double/Debiased Machine Learning (Robinson 1988; Chernozhukov et al.
+    2018), fitting a flexible machine learning estimator in-sample introduces
+    own-observation overfitting bias: the fitted values track idiosyncratic noise
+    in the sample, shrinking residual variance and corrupting asymptotic
+    exchangeability across units.
+
+    Cross-fitting partitions the observation indices {1, ..., n} into K folds
+    {I_k}_{k=1}^K. For each evaluation fold I_k, nuisance models are fit strictly
+    on the complementary training set I_k^c = {1, ..., n} \\ I_k:
+        y_tilde_i = y_i - g_hat_{-k}(Z_i),     for i in I_k
+        X_tilde_ij = X_ij - m_hat_{-k}(Z_i),   for i in I_k, j in {1, ..., d_x}
+
+    Because g_hat_{-k} and m_hat_{-k} are statistically independent of (y_i, X_i, Z_i)
+    for all i in I_k, own-observation overfitting bias is completely eliminated.
+    Under Neyman orthogonality, the product error (g_hat - g)(m_hat - m) converges
+    at rate o_p(n^{-1/2}), establishing asymptotic exactness for the resulting
+    permutation test.
+
+    Validity Statement:
+        Cross-fitted residuals are NOT exchangeable in finite samples because each
+        fold's residuals depend on nuisance functions estimated from different subsets
+        of data. The permutation test on cross-fitted residuals is asymptotically
+        valid: Neyman orthogonality makes the nuisance estimation error second-order,
+        and cross-fitting eliminates own-observation overfitting (Chernozhukov et al.
+        2018, Theorem 3.1). No finite-sample exactness claim may be made for the DML
+        path — this is reported explicitly as:
+            Guarantee: Asymptotically Exact (DML).
+
+    Exact-Tier Dispatch Guidance (Axiom D26):
+        DML is designed for continuous or high-dimensional confounders at moderate to
+        large sample sizes. When ALL confounders are discrete or naturally coarse,
+        within-stratum permutation via exchangeability cells (groups=... with
+        permutation_strategy='within') provides FINITE-SAMPLE EXACT inference with zero
+        nuisance estimation error. Small-n discrete-confounder problems should be
+        routed to exchangeability cells rather than DML.
+
+    Args:
+        confounders: Confounder design matrix Z of shape (n, q) with q >= 1.
+        y: Response vector of shape (n,).
+        X: Optional feature matrix to residualize of shape (n, d_x) or (n,).
+            When supplied, each column of X is residualized on Z using cloned
+            estimators across the exact same CV fold splits.
+        reduced_model: Scikit-learn-compatible estimator implementing fit() and
+            predict() (or predict_proba() for binary classification), or a 2-tuple
+            (model_y, model_x) specifying distinct estimators for outcome Y and
+            predictors X.
+        n_folds: Number of cross-fitting folds (default 5). Clamped to the number
+            of observations (or clusters when groups is provided).
+        groups: Cluster labels of shape (n,). When supplied, GroupKFold is used
+            to ensure that all observations from a cluster fall into the same fold,
+            preventing cross-cluster information leakage.
+        random_state: Seed for reproducible K-fold splitting and estimator cloning.
+
+    Returns:
+        If X is None:
+            (y_resid, y_pred) — shape (n,) each.
+        If X is not None:
+            (y_resid, X_resid) — y_resid has shape (n,), X_resid has shape
+            (n, d_x) or (n,) matching the input dimensionality of X.
+
+    Raises:
+        ValueError: If fewer than 2 observations (or fewer than 2 groups) exist.
+    """
+    Z = np.asarray(confounders, dtype=float)
+    if Z.ndim == 1:
+        Z = Z.reshape(-1, 1)
+    y_arr = np.asarray(y, dtype=float).ravel()
+    n = len(y_arr)
+
+    if n < 2:
+        raise ValueError(f"Cross-fitting requires at least 2 observations, got {n}.")
+
+    if groups is not None:
+        groups_arr = np.asarray(groups)
+        unique_groups = np.unique(groups_arr)
+        n_groups = len(unique_groups)
+        if n_groups < 2:
+            raise ValueError(
+                f"Cross-fitting with groups requires at least 2 distinct groups, "
+                f"got {n_groups}."
+            )
+        k = max(2, min(n_folds, n_groups))
+        cv = GroupKFold(n_splits=k)
+        splits = list(cv.split(Z, y_arr, groups=groups_arr))
+    else:
+        k = max(2, min(n_folds, n))
+        cv = KFold(n_splits=k, shuffle=True, random_state=random_state)
+        splits = list(cv.split(Z, y_arr))
+
+    y_pred = np.zeros(n, dtype=float)
+
+    has_X = X is not None
+    if has_X:
+        X_arr = np.asarray(X, dtype=float)
+        X_is_1d = X_arr.ndim == 1
+        X_2d = X_arr.reshape(-1, 1) if X_is_1d else X_arr
+        d_x = X_2d.shape[1]
+        X_pred = np.zeros_like(X_2d, dtype=float)
+    else:
+        X_is_1d = False
+        X_2d = None
+        d_x = 0
+        X_pred = None
+
+    # Resolve nuisance estimator templates for y and X
+    if isinstance(reduced_model, tuple) and len(reduced_model) == 2:
+        model_y_template, model_x_template = reduced_model
+    else:
+        model_y_template = reduced_model
+        is_classifier = getattr(
+            reduced_model, "_estimator_type", None
+        ) == "classifier" or hasattr(reduced_model, "predict_proba")
+        if has_X and is_classifier:
+            raise ValueError(
+                "When using a classifier for binary Y in DML, specify reduced_model as a "
+                "tuple (model_y, model_x) containing both the outcome classifier and the continuous "
+                "predictor regressor (e.g. reduced_model=(RandomForestClassifier(), RandomForestRegressor()))."
+            )
+        model_x_template = reduced_model
+
+    for fold_idx, (train_idx, test_idx) in enumerate(splits):
+        Z_train, y_train = Z[train_idx], y_arr[train_idx]
+        Z_test = Z[test_idx]
+
+        # 1. Fit y on Z
+        est_y = clone(model_y_template)
+        if hasattr(est_y, "random_state"):
+            seed_y = ((random_state or 42) + fold_idx * 101) & 0x7FFFFFFF
+            with suppress(Exception):
+                est_y.random_state = seed_y
+
+        est_y.fit(Z_train, y_train)
+
+        if hasattr(est_y, "predict_proba"):
+            probs = est_y.predict_proba(Z_test)
+            if probs.ndim == 2 and probs.shape[1] >= 2:
+                y_pred[test_idx] = probs[:, 1]
+            else:
+                y_pred[test_idx] = probs.ravel()
+        else:
+            y_pred[test_idx] = np.asarray(est_y.predict(Z_test), dtype=float).ravel()
+
+        # 2. Fit each column of X on Z across identical fold partitions
+        if has_X and X_2d is not None and X_pred is not None:
+            for col in range(d_x):
+                est_x = clone(model_x_template)
+                if hasattr(est_x, "random_state"):
+                    seed_x = (
+                        (random_state or 42) + fold_idx * 101 + col + 1
+                    ) & 0x7FFFFFFF
+                    with suppress(Exception):
+                        est_x.random_state = seed_x
+                est_x.fit(Z_train, X_2d[train_idx, col])
+                X_pred[test_idx, col] = np.asarray(
+                    est_x.predict(Z_test), dtype=float
+                ).ravel()
+
+    y_resid = y_arr - y_pred
+
+    if has_X and X_2d is not None and X_pred is not None:
+        X_resid = X_2d - X_pred
+        if X_is_1d:
+            X_resid = X_resid.ravel()
+        return y_resid, X_resid
+
+    return y_resid, y_pred
+
+
 def fit_reduced(
     family: ModelFamily,
     Z: np.ndarray,
     y: np.ndarray,
     fit_intercept: bool,
+    *,
+    reduced_model: Any | None = None,
+    groups: np.ndarray | None = None,
+    random_state: int | None = None,
 ) -> tuple[Any | None, np.ndarray]:
     """Fit a reduced (confounders-only) model, with intercept-only fallback.
 
-    When *Z* has one or more columns the family's ``fit`` + ``predict``
-    are used.  When *Z* has zero columns (no confounders), predictions
-    fall back to ``mean(y)`` (if ``fit_intercept``) or zeros.
+    When *reduced_model* is supplied and *Z* has columns, delegates to
+    :func:`_cross_fit_residualize` to perform out-of-fold DML nuisance estimation,
+    returning a polymorphic :class:`_DMLReducedModel` container and the
+    out-of-fold predictions.
 
-    This centralises the "fit reduced or fall back" logic that was
-    previously duplicated in four places across three strategy files
-    (ter Braak, Kennedy joint, Freedman-Lane individual and joint).
+    When *reduced_model* is ``None``, the family's standard ``fit`` +
+    ``predict`` are used. When *Z* has zero columns (no confounders),
+    predictions fall back to ``mean(y)`` (if ``fit_intercept``) or zeros.
 
     Args:
         family: A resolved ``ModelFamily`` instance.
         Z: Confounder matrix of shape ``(n, q)`` where *q* may be 0.
         y: Response vector of shape ``(n,)``.
         fit_intercept: Whether the model includes an intercept.
+        reduced_model: Optional flexible machine learning estimator (or 2-tuple
+            ``(model_y, model_x)``) for DML nuisance regression.
+        groups: Optional cluster labels for GroupKFold cross-fitting.
+        random_state: Optional seed for reproducible cross-fitting.
 
     Returns:
         ``(model, predictions)`` — *model* is ``None`` when *Z* has
@@ -5997,6 +6212,16 @@ def fit_reduced(
     """
     n = len(y)
     if Z.shape[1] > 0:
+        if reduced_model is not None:
+            _, preds = _cross_fit_residualize(
+                Z,
+                y,
+                reduced_model=reduced_model,
+                groups=groups,
+                random_state=random_state,
+            )
+            return _DMLReducedModel(preds), preds
+
         # Confounders present: fit the family's model on Z and predict.
         model = family.fit(Z, y, fit_intercept)
         preds = family.predict(model, Z)

@@ -42,7 +42,7 @@ Methodological Rationale for Score-Based AR(p) Correction:
        directly into the score test statistic, ensuring that permutation inference
        remains asymptotically exact and robust to serial correlation.
 
-Features Selected for Demonstration:
+Features Selected for Modeling:
     - temp: Normalized ambient temperature (deg C). Exhibits true within-day
       exogenous variation (cooler mornings, warmer afternoons) driving bike
       demand; remains statistically significant across all AR orders.

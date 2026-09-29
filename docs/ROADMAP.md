@@ -130,12 +130,12 @@ prediction, and invariance testing.
 
 ### Double/Debiased Machine Learning (DML)
 
-- [ ] Cross-fitting implementation (`_cross_fit_residualize`) with
+- [X] Cross-fitting implementation (`_cross_fit_residualize`) with
   $K$-fold and `GroupKFold` support, estimator cloning, and deterministic
   seed propagation.
-- [ ] Polymorphic `_DMLReducedModel` container satisfying `predict()` and
+- [X] Polymorphic `_DMLReducedModel` container satisfying `predict()` and
   `predict_proba()` across all model families.
-- [ ] Freedman–Lane integration with `reduced_model=` parameter on
+- [X] Freedman–Lane integration with `reduced_model=` parameter on
   `randomization_test_regression` and `kernel_regression_test`.
 
 ### Conformal prediction

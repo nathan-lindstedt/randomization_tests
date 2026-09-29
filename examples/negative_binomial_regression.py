@@ -1,55 +1,84 @@
 # %% [markdown]
 """
 Example: Negative Binomial Regression (Overdispersed Count Outcome)
-Bike Sharing dataset (UCI ML Repository ID=275)
+Dataset: Bike Sharing (UCI Machine Learning Repository ID=275)
+
+Dataset Context & Theoretical Background:
+    The Bike Sharing dataset (Fanaee-T & Gama, 2014) comprises 17,379 hourly
+    records of rental bike counts from the Capital Bikeshare system in Washington,
+    D.C. (2011–2012), subsampled here to 300 observations for rapid interactive
+    execution. The response variable is `cnt`, the total number of bicycles
+    rented per hour by registered and casual commuters.
+
+    While count outcomes are discrete and non-negative, empirical social and
+    behavioral processes frequently violate the equi-dispersion property of the
+    Poisson distribution (where Var(Y) = E[Y]). In this hourly transit dataset,
+    the marginal variance-to-mean ratio exceeds 170 (sample variance ≈ 32,800 vs.
+    sample mean ≈ 189), representing extreme overdispersion driven by peak-hour
+    clustering, unobserved commuter preferences, and sudden weather fluctuations.
+
+    Fitting a standard Poisson GLM to severely overdispersed data severely
+    understates standard errors, producing spuriously narrow confidence intervals
+    and catastrophic false discovery rates. The Negative Binomial type-2 model
+    (NB2; Cameron & Trivedi, 2013) resolves this by compounding the Poisson rate
+    parameter with a gamma-distributed latent heterogeneity shock, yielding a
+    quadratic variance function:
+
+        Var(Y | X) = mu + alpha * mu^2,    mu = exp(alpha_0 + X * beta)
+
+    where alpha > 0 represents the unobserved heterogeneity dispersion parameter.
+
+Features Selected for Modeling:
+    - temp: Normalized ambient temperature in degrees Celsius (scaled by 41 deg C max).
+      Warmer temperatures strongly increase commuter willingness to cycle.
+    - hum: Normalized relative humidity (scaled by 100 max). Oppressive humidity
+      dampens outdoor exertion and suppresses cycling demand.
+    - windspeed: Normalized wind speed (scaled by 67 max). Strong aerodynamic drag
+      and head-winds impede cycling adoption.
+    - workingday: Binary calendar indicator (1 = workday, 0 = weekend or holiday).
+      Distinguishes structured bi-modal commuter peaks from leisure weekend trips.
+    - weathersit: Categorical weather severity scale (1: Clear/Few clouds, 2: Mist/Cloudy,
+      3: Light Rain/Snow, 4: Heavy Rain/Thunderstorm). Severe precipitation directly
+      suppresses open-air transit demand.
+
+Methodological Rationale for Resampling Tests:
+    1. Fixed Dispersion Calibration:
+       The dispersion parameter alpha is estimated once on the unpermuted observed
+       data during the calibration phase (calibrate()) via maximum likelihood.
+       Holding alpha fixed across all B permutations prevents numerical convergence
+       failures on extreme permuted realizations, while correctly conditioning
+       the null hypothesis on the observed overdispersion structure.
+    2. Overdispersed Stochastic Negative Binomial Reconstruction:
+       Permuted response-scale residuals e = y - mu_hat are reconstructed on the rate
+       scale mu* = clip(mu_hat + pi(e), 1e-10, 1e8) and transformed into NB2
+       parameters: size n = 1 / alpha, probability p = 1 / (1 + alpha * mu*).
+       Drawing permuted outcomes stochastically via Y* ~ NegBin(n, p) preserves
+       both the discrete count support and the overdispersed variance structure.
+    3. Freedman–Lane and Kennedy Conditioning:
+       Freedman–Lane (1983) and Kennedy (1995) condition on primary meteorological
+       confounders (such as ambient temperature), isolating the partial contributions
+       of humidity, wind, and calendar classification.
 
 Demonstrates:
-- ``family="negative_binomial"`` — explicit family selection for overdispersed counts
-- ``calibrate()`` nuisance-parameter estimation: estimation of dispersion parameter :math:`\alpha`
-- ter Braak (1992) permutation test with negative binomial deviance residuals
-- Freedman–Lane (1983) individual and joint permutation tests
-- Kennedy (1995) individual and joint permutation tests
-- Negative-binomial-specific diagnostics (deviance, Pearson χ², dispersion ratio, alpha estimate)
-- Stochastic reconstruction for overdispersed counts: :math:`Y^* \\sim \\mathrm{NegBin}(\\mu^*, \alpha)`
-- Four-stage confounder sieve with negative binomial regression
-- Execution and protocol artifacts inspection via ``print_protocol_usage_table``
+    - family="negative_binomial" -- explicit family selection for overdispersed counts
+    - calibrate() nuisance-parameter estimation: estimation of dispersion parameter alpha
+    - ter Braak (1992) permutation test with negative binomial deviance residuals
+    - Freedman–Lane (1983) individual and joint permutation tests
+    - Kennedy (1995) individual and joint permutation tests
+    - Negative-binomial-specific diagnostics (deviance, Pearson χ², dispersion ratio, alpha estimate)
+    - Stochastic reconstruction for overdispersed counts: Y* ~ NegBin(mu*, alpha)
+    - Four-stage confounder sieve with negative binomial regression
+    - Execution and protocol artifacts inspection via print_protocol_usage_table
 
-Dataset
--------
-17,379 hourly records of bike rental counts from the Capital Bikeshare system in
-Washington, D.C. (2011–2012), subsampled to 300 observations for demo runtime.
-The target variable is ``cnt`` (total count of rental bikes per hour).
-
-The count distribution is severely overdispersed, with a marginal variance-to-mean
-ratio of ≈ 174.4 (:math:`\\mathrm{Var} \\gg \\mathbb{E}`). Fitting a standard Poisson model
-would severely understate standard errors and generate anticonservative inference.
-The NB2 parameterisation (:math:`\\mathrm{Var}(Y \\mid X) = \\mu + \alpha\\mu^2`) incorporates
-gamma-distributed unobserved heterogeneity to restore proper likelihood calibration.
-
-Feature selection rationale
----------------------------
-Five environmental and calendar predictors capture hourly commuter demand:
-
-- **temp**: Normalized temperature in Celsius (divided by 41 max). Warmer weather
-  increases cycling propensity.
-- **hum**: Normalized relative humidity (divided by 100). High humidity dampens outdoor activity.
-- **windspeed**: Normalized wind speed (divided by 67). Strong headwinds impede cycling.
-- **workingday**: Indicator (1 = workday, 0 = weekend or holiday). Distinguishes commuter
-  peaks from leisure cycling.
-- **weathersit**: Categorical weather severity index (1: Clear, 2: Mist/Cloudy,
-  3: Light Rain/Snow, 4: Heavy Precipitation). Adverse weather suppresses demand.
-
-Methodological rationale
--------------------------
-Negative binomial regression estimates the dispersion parameter :math:`\alpha` once on the
-observed data during calibration and holds it fixed across the permutation loop. This
-ensures the null hypothesis conditions on the calibrated nuisance variance structure,
-avoiding unstable numerical optimization during permutation refitting.
-
-Reference
----------
-Fanaee-T, H., & Gama, J. (2014). Event labeling combining ensemble detectors
-and background knowledge. *Progress in Artificial Intelligence*, 2(2–3), 113–127.
+References:
+    - Fanaee-T, H., & Gama, J. (2014). Event labeling combining ensemble detectors
+      and background knowledge. Progress in Artificial Intelligence, 2(2-3), 113-127.
+    - Cameron, A. C., & Trivedi, P. K. (2013). Regression Analysis of Count Data
+      (2nd ed.). Cambridge University Press.
+    - Freedman, D., & Lane, D. (1983). A nonstochastic interpretation of reported
+      significance levels. Journal of Business & Economic Statistics, 1(4), 292-298.
+    - ter Braak, C. J. F. (1992). Permutation versus bootstrap significance tests in
+      multiple regression and ANOVA. Handbook of Statistics, 9, 79-104.
 """
 
 # %%

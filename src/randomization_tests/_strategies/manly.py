@@ -47,7 +47,7 @@ Reference:
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import pandas as pd
@@ -80,6 +80,7 @@ class ManlyStrategy:
         fit_intercept: bool = True,
         n_jobs: int = 1,
         randomization: str = "permute",
+        **kwargs: Any,
     ) -> np.ndarray:
         """Run the Manly direct Y permutation algorithm.
 
@@ -155,6 +156,7 @@ class ManlyJointStrategy:
         fit_intercept: bool = True,
         n_jobs: int = 1,
         randomization: str = "permute",
+        **kwargs: Any,
     ) -> tuple[float, np.ndarray, str, list[str]]:
         """Run the Manly joint permutation algorithm.
 

@@ -57,7 +57,7 @@ References:
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import pandas as pd
@@ -87,6 +87,7 @@ class TerBraakStrategy:
         fit_intercept: bool = True,
         n_jobs: int = 1,
         randomization: str = "permute",
+        **kwargs: Any,
     ) -> np.ndarray:
         """Run the ter Braak permutation algorithm.
 

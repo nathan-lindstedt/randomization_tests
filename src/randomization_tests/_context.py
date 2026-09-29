@@ -38,9 +38,12 @@ Lifecycle::
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
+
+if TYPE_CHECKING:
+    from .exchangeability import ExchangeabilityTree
 
 
 @dataclass
@@ -154,7 +157,7 @@ class FitContext:
     n_randomizations: int | None = None
     """Number of randomizations (permutations or sign-flips) actually used."""
 
-    groups: np.ndarray | None = None
+    groups: np.ndarray | ExchangeabilityTree | None = None
     """User-supplied group labels, or ``None``."""
 
     permutation_strategy: str | None = None
@@ -229,6 +232,13 @@ class FitContext:
     # ---- Warnings ------------------------------------------------
     warnings_captured: list[str] = field(default_factory=list)
     """Warning messages captured during the pipeline."""
+
+    # ---- Inferential guarantee -----------------------------------
+    guarantee_tier: str | None = None
+    """Inferential guarantee tier (e.g. 'Asymptotically Exact (DML)')."""
+
+    guarantee_detail: str | None = None
+    """Detailed justification for the guarantee tier."""
 
 
 __all__ = ["FitContext"]

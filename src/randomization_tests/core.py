@@ -84,6 +84,7 @@ def randomization_test_regression(
     time_id: np.ndarray | list[int] | pd.Series | str | None = None,
     ar_order: int | None = None,
     randomization: str = "permute",
+    reduced_model: Any | tuple[Any, Any] | None = None,
 ) -> IndividualTestResult | JointTestResult:
     """Run a permutation test for regression coefficients.
 
@@ -107,8 +108,8 @@ def randomization_test_regression(
         method: One of ``'ter_braak'``, ``'kennedy'``,
             ``'kennedy_joint'``, ``'freedman_lane'``,
             ``'freedman_lane_joint'``, ``'manly'``,
-            ``'manly_joint'``, ``'score'``,
-            ``'score_joint'``, or ``'score_exact'``.
+            ``'manly_joint'``, ``'score'``, or
+            ``'score_joint'``.
         confounders: Column names of confounders (required for Kennedy
             and Freedman–Lane methods).
         random_state: Seed for reproducibility.
@@ -206,6 +207,17 @@ def randomization_test_regression(
             **exchangeability**.  Sign-flipping is not supported for
             families that use direct Y permutation (ordinal,
             multinomial) or for Manly / score-exact methods.
+        reduced_model: Optional flexible machine learning estimator (or 2-tuple
+            ``(model_y, model_x)``) implementing scikit-learn's fit/predict
+            (or predict_proba) interface for Double/Debiased Machine Learning
+            (DML; Chernozhukov et al. 2018). Supported only with
+            ``method='freedman_lane'`` and ``method='freedman_lane_joint'``.
+            For binary classification where outcome Y requires a classifier while
+            continuous predictors X require regression, supply a tuple such as
+            ``(RandomForestClassifier(), RandomForestRegressor())``.
+            Cross-fits nuisance regressions out-of-fold to achieve
+            Neyman orthogonality, eliminating bias and false positives
+            from nonlinear confounding.
 
     Returns:
         Typed result object containing coefficients, p-values,
@@ -262,11 +274,11 @@ def randomization_test_regression(
                 "Categorical responses cannot have meaningful AR "
                 "residual structure."
             )
-        _SCORE_METHODS = {"score", "score_joint", "score_exact"}
+        _SCORE_METHODS = {"score", "score_joint"}
         if method not in _SCORE_METHODS:
             raise ValueError(
-                f"ar_order= requires method='score' (or 'score_joint', "
-                f"'score_exact'). Got method={method!r}."
+                f"ar_order= requires method='score' (or 'score_joint'). "
+                f"Got method={method!r}."
             )
 
     # ---- Panel-only score guard ----------------------------------
@@ -278,7 +290,7 @@ def randomization_test_regression(
     # Set the permutation strategy to unrestricted so the null
     # distribution is valid while preserving groups for family
     # calibration and cluster-robust comparisons.
-    _SCORE_METHODS_SET = {"score", "score_joint", "score_exact"}
+    _SCORE_METHODS_SET = {"score", "score_joint"}
     if panel_id is not None and ar_order is None and method in _SCORE_METHODS_SET:
         permutation_strategy = "unrestricted"
 
@@ -333,6 +345,20 @@ def randomization_test_regression(
         ar_kwargs["panel_lengths"] = panel_counts
 
         ctx.ar_order = ar_order
+
+    # ---- DML early validation ------------------------------------
+    if reduced_model is not None:
+        if method not in ("freedman_lane", "freedman_lane_joint"):
+            raise ValueError(
+                f"reduced_model is supported only with method='freedman_lane' or "
+                f"method='freedman_lane_joint', got method={method!r}. "
+                "Freedman–Lane is the canonical strategy for nuisance residualization."
+            )
+        if not confounders:
+            raise ValueError(
+                "reduced_model requires confounders to be specified for Double/Debiased "
+                "Machine Learning (DML) cross-fitting."
+            )
 
     # ---- Engine (family + backend + observed model + perm indices) -
     engine = PermutationEngine(
@@ -399,6 +425,38 @@ def randomization_test_regression(
             "method='kennedy' with confounders, or add additional features."
         )
 
+    # ---- DML Axiom D26 diagnostic --------------------------------
+    if reduced_model is not None:
+        # Axiom D26 diagnostic: check if all confounders are discrete/low-cardinality
+        all_discrete = True
+        for c in confounders:
+            col_vals = X[c].values
+            unique_count = len(np.unique(col_vals))
+            is_disc = np.issubdtype(col_vals.dtype, np.integer) or unique_count <= max(
+                5, int(0.05 * len(col_vals))
+            )
+            if not is_disc:
+                all_discrete = False
+                break
+        if all_discrete:
+            adv_d26 = (
+                "All specified confounders appear discrete or low-cardinality. "
+                "Per Axiom D26 (permutation-first dispatch), within-stratum permutation "
+                "via exchangeability cells (groups=... with permutation_strategy='within') "
+                "provides finite-sample exact inference without nuisance estimation error, "
+                "and is preferred over DML."
+            )
+            if ctx is not None:
+                ctx.warnings_captured.append(adv_d26)
+            else:
+                warnings.warn(adv_d26, UserWarning, stacklevel=2)
+
+        if ctx is not None:
+            ctx.guarantee_tier = "Asymptotically Exact (DML)"
+            ctx.guarantee_detail = (
+                "Asymptotically Exact (Neyman-orthogonal cross-fitted Freedman–Lane)"
+            )
+
     strategy = resolve_strategy(method)
 
     # ---- Sign-flip guards ----------------------------------------
@@ -408,11 +466,6 @@ def randomization_test_regression(
                 f"Sign-flip is incompatible with method={method!r}.  "
                 f"Manly uses direct Y randomization — there are no "
                 f"residuals to sign-flip."
-            )
-        if method == "score_exact":
-            raise ValueError(
-                "Sign-flip is incompatible with method='score_exact'.  "
-                "PQL-fixed permutation permutes Y directly."
             )
         if engine.family.direct_permutation:
             raise ValueError(
@@ -447,16 +500,24 @@ def randomization_test_regression(
         actual_n = randomization_matrix.shape[0]
 
     # ---- Execute strategy ----------------------------------------
+    exec_kwargs: dict[str, Any] = {
+        "confounders": confounders,
+        "model_coefs": engine.model_coefs,
+        "fit_intercept": fit_intercept,
+        "n_jobs": engine._n_jobs,
+        "randomization": randomization,
+    }
+    if reduced_model is not None:
+        exec_kwargs["reduced_model"] = reduced_model
+        exec_kwargs["groups"] = engine.ctx.groups
+        exec_kwargs["random_state"] = random_state
+
     result = strategy.execute(
         X,
         y_values,
         engine.family,
         randomization_matrix,
-        confounders=confounders,
-        model_coefs=engine.model_coefs,
-        fit_intercept=fit_intercept,
-        n_jobs=engine._n_jobs,
-        randomization=randomization,
+        **exec_kwargs,
     )
 
     # ---- Package results -----------------------------------------
@@ -1075,7 +1136,7 @@ def _package_joint_result(
         feature_names=list(X.columns),
         target_name=str(y.columns[0]),
         n_randomizations=n_randomizations,
-        groups=engine.groups,  # type: ignore[arg-type]
+        groups=engine.groups,
         permutation_strategy=engine.permutation_strategy,
         p_value_threshold_one=p_value_threshold_one,
         p_value_threshold_two=p_value_threshold_two,
@@ -1083,6 +1144,7 @@ def _package_joint_result(
         method=method,
         diagnostics=engine.diagnostics,
         context=engine.ctx,
+        guarantee_tier=getattr(engine.ctx, "guarantee_tier", None),
     )
     return result
 
@@ -1226,11 +1288,12 @@ def _package_individual_result(
         feature_names=feature_names_list,
         target_name=str(y.columns[0]),
         n_randomizations=n_randomizations,
-        groups=engine.groups,  # type: ignore[arg-type]
+        groups=engine.groups,
         permutation_strategy=engine.permutation_strategy,
         diagnostics=engine.diagnostics,
         extended_diagnostics=extended_diagnostics,
         confidence_intervals=ci_dict,
         context=engine.ctx,
+        guarantee_tier=getattr(engine.ctx, "guarantee_tier", None),
     )
     return result

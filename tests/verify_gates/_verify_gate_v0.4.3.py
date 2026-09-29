@@ -26,7 +26,6 @@ METHODS = [
     "manly_joint",
     "score",
     "score_joint",
-    "score_exact",
 ]
 
 FAMILIES = [

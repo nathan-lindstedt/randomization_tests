@@ -135,7 +135,7 @@ class PermutationEngine:
             self.family.validate_y(y_values)
 
         # Reject residual-based methods for direct-permutation families.
-        # score / score_joint / score_exact are excluded here because Guard 3
+        # score / score_joint are excluded here because Guard 3
         # (the score_project() probe below) independently checks their
         # compatibility: once score_project() is implemented for a family,
         # those methods become valid even for direct-permutation families.
@@ -160,8 +160,7 @@ class PermutationEngine:
         # is computationally prohibitive AND statistically incorrect — the
         # null hypothesis holds the random-effects structure fixed exactly
         # as calibrated.  Only score-based methods (which hold θ̂ fixed) are
-        # valid.  score_joint is also blocked: it uses batch_fit_and_score
-        # which hits the GLMMBatchStubMixin NotImplementedError.
+        # valid.
         #
         # This guard comes before the Manly UserWarning so that GLMM
         # families get a clean ValueError rather than a warning-then-error.
@@ -172,7 +171,6 @@ class PermutationEngine:
                 "freedman_lane_joint",
                 "manly",
                 "manly_joint",
-                "score_joint",
             }
         )
         _is_glmm = self.family.name in ("logistic_mixed", "poisson_mixed")
@@ -183,7 +181,7 @@ class PermutationEngine:
                 "Re-estimating variance components per permutation is "
                 "computationally prohibitive and statistically incorrect — "
                 "the null hypothesis holds the random-effects structure fixed. "
-                "Use method='score', method='score_exact', or method='kennedy' instead."
+                "Use method='score', method='score_joint', or method='kennedy' instead."
             )
 
         # Warn when Manly is used on a family that supports residuals.
@@ -199,20 +197,6 @@ class PermutationEngine:
                 stacklevel=3,
             )
 
-        # Warn when score_exact is used on a non-mixed family.
-        # score_exact holds variance components fixed and runs full IRLS
-        # per permutation via JAX vmap — designed for GLMM; wasteful for
-        # standard GLMs where method='score' is exact and much faster.
-        if method == "score_exact" and not self.family.name.endswith("_mixed"):
-            warnings.warn(
-                f"method='score_exact' is designed for GLMM families but "
-                f"family={self.family.name!r} is not a mixed-effects model. "
-                "score_exact refits the full model per permutation (expensive). "
-                "Consider method='score' for non-mixed families.",
-                UserWarning,
-                stacklevel=3,
-            )
-
         # Reject score methods for families without score_project().
         #
         # Duck-typing probe: we call score_project() with synthetic
@@ -221,7 +205,7 @@ class PermutationEngine:
         # (e.g. "not calibrated") is benign — it means the method
         # exists but can't run yet, which is fine at construction
         # time (calibration happens later in core.py).
-        if method in ("score", "score_joint", "score_exact"):
+        if method in ("score", "score_joint"):
             try:
                 self.family.score_project(
                     np.zeros((2, 1)),
@@ -334,7 +318,7 @@ class PermutationEngine:
 
         # Populate permutation metadata on context.
         self.ctx.backend = self.backend_name
-        self.ctx.groups = groups  # type: ignore[assignment]
+        self.ctx.groups = groups
         self.ctx.permutation_strategy = permutation_strategy
 
         self.perm_indices: np.ndarray = self.permute_indices(

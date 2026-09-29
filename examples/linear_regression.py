@@ -1,55 +1,78 @@
 # %% [markdown]
 """
 Example: Linear Regression (Continuous Outcome)
-Real Estate Valuation dataset (UCI ML Repository ID=477)
+Dataset: Real Estate Valuation (UCI Machine Learning Repository ID=477)
+
+Dataset Context & Theoretical Background:
+    The Real Estate Valuation dataset (Yeh & Hsu, 2018) comprises 414 residential
+    property transactions from Sindian District, New Taipei City, Taiwan (2012–2013).
+    The response variable is `Y house price of unit area` (measured in 10,000 New
+    Taiwan Dollar per Ping, where 1 Ping ≈ 3.3 square meters).
+
+    The market price distribution is continuous, unimodal, and approximately
+    symmetric (mean ≈ 37.98, variance ≈ 184.69), providing an ideal empirical
+    testbed for Ordinary Least Squares (OLS) regression and non-parametric
+    resampling methods. Standard OLS inference relies on the Gauss–Markov theorem
+    and normal-theory assumptions (homoscedastic, normally distributed disturbances).
+    In applied real estate economics, residential sale residuals often exhibit
+    moderate skewness, kurtosis, spatial heteroscedasticity, and localized market
+    clustering. Under such departures, asymptotic t-statistics and Wald confidence
+    intervals can be miscalibrated.
+
+    Permutation testing replaces normality assumptions with exact, finite-sample
+    or asymptotically exact exchangeability properties, deriving reference null
+    distributions directly from data permutations without parametric distribution
+    commitments.
+
+Features Selected for Modeling:
+    - X1 transaction date: Continuous transaction timing (2012.667 to 2013.583).
+      Captures macroeconomic price appreciation and seasonal housing cycles.
+    - X2 house age: Age of the residential structure in years (0 to 43.8 years).
+      Models physical structural depreciation over time.
+    - X3 distance to the nearest MRT station: Metric distance to the nearest Mass
+      Rapid Transit station. Primary spatial accessibility and transportation metric.
+    - X4 number of convenience stores: Count of major convenience stores (7-Eleven,
+      FamilyMart, etc.) accessible on foot within the living radius. Measures local
+      commercial density and pedestrian amenity access.
+    - X5 latitude & X6 longitude: Geographic coordinates in decimal degrees.
+      Capture neighborhood desirability, elevation premiums, and spatial location.
+
+Methodological Rationale for Resampling Tests:
+    1. Full-Model vs. Reduced-Model Residual Permutation:
+       - ter Braak (1992): Computes residuals from the single full OLS model,
+         shuffles them about the full fit, and centers the permutation distribution
+         at beta* - beta_hat. Highly efficient single-fit procedure.
+       - Freedman & Lane (1983): Fits a separate reduced model omitting predictor j,
+         shuffles the reduced residuals, and refits the full design matrix. Canonical
+         gold standard for conditioning on nuisance covariates.
+    2. Exposure Residualization (Kennedy 1995):
+       Partials out confounders Z from the exposure X_j to produce clean exposure
+       residuals, and permutes the exposure rather than the outcome. Preserves
+       exact design correlations and avoids outcome reconstruction entirely.
+    3. Four-Stage Confounder Sieve:
+       Before hypothesis testing, the automated causal sieve partitions candidate
+       covariates into true confounders (to control), colliders (do not control),
+       mediators (transmit causal effect; do not control), and moderators (informational).
 
 Demonstrates:
-- ``family="linear"`` — explicit and auto-detected (``family="auto"``) continuous models
-- ter Braak (1992) permutation test (full-model residual permutation with recentred null)
-- Freedman–Lane (1983) individual and joint permutation tests (reduced-model residual permutation)
-- Kennedy (1995) individual and joint permutation tests (exposure residualization)
-- Four-stage confounder sieve (screen → collider → mediator → moderator)
-- Confounder-controlled permutation testing
-- Execution and protocol artifacts inspection via ``print_protocol_usage_table``
+    - family="linear" -- explicit and auto-detected (family="auto") continuous models
+    - ter Braak (1992) permutation test with recentered null distribution
+    - Freedman–Lane (1983) individual and joint permutation tests
+    - Kennedy (1995) individual and joint permutation tests
+    - Four-stage confounder sieve (screen -> collider -> mediator -> moderator)
+    - Confounder-controlled permutation testing with side-by-side tables
+    - Execution and protocol artifacts inspection via print_protocol_usage_table
 
-Dataset
--------
-414 real estate transactions collected from Sindian District, New Taipei City,
-Taiwan (2012–2013).  The target variable is ``Y house price of unit area``
-(measured in 10,000 New Taiwan Dollar / Ping, where 1 Ping = 3.3 square meters).
-The market valuation distribution is continuous and unimodal (mean ≈ 38.0,
-variance ≈ 185.0), providing an ideal testbed for ordinary least squares and
-nonparametric residual permutation.
-
-Feature selection rationale
----------------------------
-Six physical and geographical predictors capture primary determinants of property
-value:
-
-- **X1 transaction date**: Continuous transaction timing (e.g. 2013.250). Captures
-  temporal price momentum and seasonal fluctuations.
-- **X2 house age**: Structural age of the building in years (range 0–43.8). Models
-  physical depreciation over time.
-- **X3 distance to the nearest MRT station**: Proximity in meters to the nearest
-  Mass Rapid Transit station. Critical public transportation accessibility metric.
-- **X4 number of convenience stores**: Count of major convenience stores (7-Eleven,
-  FamilyMart, etc.) accessible on foot within the living circle.
-- **X5 latitude** & **X6 longitude**: Geographic coordinate coordinates in degrees.
-  Capture spatial clustering, neighborhood desirability, and submarket premiums.
-
-Methodological rationale
--------------------------
-Standard OLS inference assumes homoscedastic, Gaussian disturbances. When property
-residuals exhibit skewness, kurtosis, or spatial heteroscedasticity, classical
-t-statistics can be miscalibrated. Freedman–Lane and ter Braak permutation tests
-provide asymptotically exact Type I error control without parametric error assumptions,
-while Kennedy's exposure residualization preserves predictor correlations.
-
-Reference
----------
-Yeh, I. C., & Hsu, T. K. (2018). Building real estate valuation models with
-comparative approach through case-based reasoning. *Applied Soft Computing*,
-65, 260–271.
+References:
+    - Yeh, I. C., & Hsu, T. K. (2018). Building real estate valuation models with
+      comparative approach through case-based reasoning. Applied Soft Computing,
+      65, 260-271.
+    - Freedman, D., & Lane, D. (1983). A nonstochastic interpretation of reported
+      significance levels. Journal of Business & Economic Statistics, 1(4), 292-298.
+    - ter Braak, C. J. F. (1992). Permutation versus bootstrap significance tests
+      in multiple regression and ANOVA. Handbook of Statistics, 9, 79-104.
+    - Kennedy, P. E. (1995). Randomization tests in econometrics. Journal of
+      Business & Economic Statistics, 13(1), 85-94.
 """
 
 # %%

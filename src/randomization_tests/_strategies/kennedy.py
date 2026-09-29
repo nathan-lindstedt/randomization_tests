@@ -50,7 +50,7 @@ Reference:
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import pandas as pd
@@ -85,6 +85,7 @@ class KennedyIndividualStrategy:
         fit_intercept: bool = True,
         n_jobs: int = 1,
         randomization: str = "permute",
+        **kwargs: Any,
     ) -> np.ndarray:
         """Run the Kennedy individual permutation algorithm.
 
@@ -247,6 +248,7 @@ class KennedyJointStrategy:
         fit_intercept: bool = True,
         n_jobs: int = 1,
         randomization: str = "permute",
+        **kwargs: Any,
     ) -> tuple[float, np.ndarray, str, list[str]]:
         """Run the Kennedy joint permutation algorithm.
 

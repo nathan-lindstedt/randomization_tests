@@ -318,8 +318,8 @@ class TestValidateCompatibility:
         codes = [i.code for i in issues]
         assert "GLMM_BLOCKED_METHOD" not in codes
 
-    def test_score_exact_poisson_mixed_is_valid(self):
-        issues = validate_compatibility("score_exact", "poisson_mixed")
+    def test_score_joint_logistic_mixed_is_valid(self):
+        issues = validate_compatibility("score_joint", "logistic_mixed")
         codes = [i.code for i in issues]
         assert "GLMM_BLOCKED_METHOD" not in codes
 
@@ -367,17 +367,6 @@ class TestValidateCompatibility:
         issues = validate_compatibility("manly", "linear", direct_permutation=True)
         codes = [i.code for i in issues]
         assert "MANLY_RESIDUAL_FAMILY" not in codes
-
-    # ---- score_exact on non-mixed family ----
-
-    def test_score_exact_linear_warns(self):
-        issues = validate_compatibility("score_exact", "linear")
-        assert any(i.code == "SCORE_EXACT_NON_MIXED" for i in issues)
-
-    def test_score_exact_linear_mixed_no_warning(self):
-        issues = validate_compatibility("score_exact", "linear_mixed")
-        codes = [i.code for i in issues]
-        assert "SCORE_EXACT_NON_MIXED" not in codes
 
     # ---- Freedman-Lane + logistic + single feature ----
 
@@ -460,12 +449,6 @@ class TestValidateCompatibility:
         issues = validate_compatibility("manly", "ordinal", randomization="sign_flip")
         assert any(i.code == "SIGN_FLIP_MANLY" for i in issues)
 
-    def test_sign_flip_score_exact_is_error(self):
-        issues = validate_compatibility(
-            "score_exact", "linear_mixed", randomization="sign_flip"
-        )
-        assert any(i.code == "SIGN_FLIP_SCORE_EXACT" for i in issues)
-
     def test_sign_flip_direct_family_is_error(self):
         issues = validate_compatibility("kennedy", "ordinal", randomization="sign_flip")
         assert any(i.code == "SIGN_FLIP_DIRECT_FAMILY" for i in issues)
@@ -476,7 +459,6 @@ class TestValidateCompatibility:
         )
         sign_flip_codes = {
             "SIGN_FLIP_MANLY",
-            "SIGN_FLIP_SCORE_EXACT",
             "SIGN_FLIP_DIRECT_FAMILY",
         }
         assert not any(i.code in sign_flip_codes for i in issues)

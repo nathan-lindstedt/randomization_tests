@@ -58,7 +58,6 @@ print_diagnostics_table(results)
 | Manly (1997) joint | `"manly_joint"` | Joint version of Manly. |
 | Score individual | `"score"` | Score-test projection; supports all families including mixed-effects. |
 | Score joint | `"score_joint"` | Joint version of score test. |
-| Score exact | `"score_exact"` | Exact score test via PQL-fixed vmap IRLS; GLMM families only. |
 
 For Kennedy and Freedman–Lane methods, specifying `confounders=` isolates
 the partial effect of the remaining features; omitting confounders tests each
@@ -135,6 +134,92 @@ print_confounder_table(all_results)
 # Access filtered dictionary of predictors with confounders
 confounder_dict = all_results.predictors_with_confounders
 ```
+
+## Double/Debiased Machine Learning (DML)
+
+Double/Debiased Machine Learning (Chernozhukov et al. 2018; Robinson 1988)
+resolves **non-linear confounding** by cross-fitting flexible machine learning
+nuisance regressions out-of-fold.
+
+When true confounding relationships $g(Z) = \mathbb{E}[Y \mid Z]$ and
+$m(Z) = \mathbb{E}[X \mid Z]$ are non-linear (common with spatial coordinates,
+topography, transit curves, or allometric biological scaling), standard linear
+residualization leaves omitted non-linear signals in the residuals, causing
+severe false-positive inflation ($p < 0.05$ under $H_0$) or power collapse.
+
+Double-Residualized DML (DML-DR) cross-fits **both** $Y$ and $X$ on
+confounders $Z$ out-of-fold:
+$$\tilde Y = Y - \hat g_{\text{oof}}(Z), \quad \tilde X = X - \hat m_{\text{oof}}(Z)$$
+This achieves **Neyman orthogonality**, eliminating own-observation overfitting
+bias. Permuting the cross-fitted residuals evaluates the test statistic
+across $B$ permutations, providing asymptotically exact inference:
+`[ Guarantee: Asymptotically Exact (DML) ]`.
+
+### Continuous outcomes (Regression DML)
+
+Pass any scikit-learn regressor to `reduced_model=` with `method="freedman_lane"`
+or `method="freedman_lane_joint"`:
+
+```python
+from sklearn.ensemble import GradientBoostingRegressor
+from randomization_tests import (
+    randomization_test_regression,
+    print_results_table,
+    print_comparison_table,
+)
+
+# Define flexible machine learning regressor
+reduced_model = GradientBoostingRegressor(
+    n_estimators=50, max_depth=3, learning_rate=0.1, random_state=42
+)
+
+# Run Double-Residualized Freedman-Lane DML
+results_dml = randomization_test_regression(
+    X, y,
+    confounders=["latitude", "longitude", "distance_to_mrt"],
+    method="freedman_lane",
+    reduced_model=reduced_model,
+    n_randomizations=1_000,
+    random_state=42,
+)
+print_results_table(results_dml)
+```
+
+### Binary outcomes (Classification DML)
+
+When outcome $Y \in \{0, 1\}$ is binary, estimating $\mathbb{P}(Y=1 \mid Z)$
+requires a classifier (implementing `predict_proba`), while estimating
+$\mathbb{E}[X \mid Z]$ for continuous predictors requires a regressor.
+Supply an explicit 2-tuple `(model_y, model_x)`:
+
+```python
+from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
+
+reduced_model = (
+    RandomForestClassifier(n_estimators=50, max_depth=3, random_state=42),
+    RandomForestRegressor(n_estimators=50, max_depth=3, random_state=42),
+)
+
+results_logistic_dml = randomization_test_regression(
+    X, y_binary,
+    confounders=["cell_perimeter"],
+    family="logistic",
+    method="freedman_lane",
+    reduced_model=reduced_model,
+    n_randomizations=1_000,
+    random_state=42,
+)
+print_results_table(results_logistic_dml)
+```
+
+### Discrete confounders vs. DML (Axiom D26)
+
+> **Important (Axiom D26):** DML is designed for continuous or high-dimensional
+> confounders. When **all** confounders are discrete (e.g. sex, experimental site,
+> age brackets), the package provides a strictly stronger tool: within-stratum
+> permutation via exchangeability cells (`groups=...`, `permutation_strategy="within"`),
+> which is **finite-sample exact** with zero nuisance estimation error. Small-sample
+> discrete-confounder problems should use exchangeability cells rather than DML.
 
 ## Input formats
 

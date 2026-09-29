@@ -7,7 +7,6 @@ Covers:
 - Score ≡ Freedman–Lane equivalence (LMM, bit-for-bit)
 - Score ≡ Freedman–Lane equivalence (linear, no confounders)
 - Unsupported family rejection
-- score_exact non-GLMM rejection
 - Confounder masking
 - n_jobs warning for score path
 - Valid p-values (∈ [0, 1])
@@ -29,7 +28,6 @@ from randomization_tests._strategies import (
     resolve_strategy,
 )
 from randomization_tests._strategies.score import (
-    ScoreExactStrategy,
     ScoreIndividualStrategy,
     ScoreJointStrategy,
 )
@@ -93,17 +91,11 @@ class TestProtocolConformance:
     def test_joint_isinstance(self) -> None:
         assert isinstance(ScoreJointStrategy(), PermutationStrategy)
 
-    def test_exact_isinstance(self) -> None:
-        assert isinstance(ScoreExactStrategy(), PermutationStrategy)
-
     def test_individual_is_not_joint(self) -> None:
         assert ScoreIndividualStrategy.is_joint is False
 
     def test_joint_is_joint(self) -> None:
         assert ScoreJointStrategy.is_joint is True
-
-    def test_exact_is_not_joint(self) -> None:
-        assert ScoreExactStrategy.is_joint is False
 
 
 class TestRegistry:
@@ -116,10 +108,6 @@ class TestRegistry:
     def test_resolve_score_joint(self) -> None:
         s = resolve_strategy("score_joint")
         assert isinstance(s, ScoreJointStrategy)
-
-    def test_resolve_score_exact(self) -> None:
-        s = resolve_strategy("score_exact")
-        assert isinstance(s, ScoreExactStrategy)
 
 
 # ------------------------------------------------------------------ #
@@ -588,8 +576,7 @@ class TestUnsupportedFamily:
 
     LogisticFamily and PoissonFamily gained real ``score_project()``
     implementations, so ``score`` and ``score_joint``
-    should complete without raising.  ``score_exact`` remains GLMM-
-    only and is tested in ``TestScoreExactNonGLMM`` below.
+    complete without raising.
     """
 
     @pytest.mark.parametrize("method", ["score", "score_joint"])
@@ -624,41 +611,6 @@ class TestUnsupportedFamily:
             family="poisson",
         )
         assert result is not None
-
-
-# ------------------------------------------------------------------ #
-# score_exact non-GLMM rejection
-# ------------------------------------------------------------------ #
-
-
-class TestScoreExactNonGLMM:
-    """score_exact warns and then raises ValueError for non-GLMM families."""
-
-    def test_linear_raises(self) -> None:
-        """score_exact on linear: UserWarning from engine, ValueError from strategy."""
-        X, y = _linear_data()
-        with pytest.warns(UserWarning, match="score_exact"), pytest.raises(ValueError):
-            randomization_test_regression(
-                X,
-                y,
-                n_randomizations=50,
-                random_state=_SEED,
-                method="score_exact",
-            )
-
-    def test_lmm_raises(self) -> None:
-        """score_exact on linear_mixed rejects — REML, not Laplace."""
-        X, y, groups = _grouped_data()
-        with pytest.raises(ValueError, match="score_exact"):
-            randomization_test_regression(
-                X,
-                y,
-                n_randomizations=50,
-                random_state=_SEED,
-                method="score_exact",
-                family="linear_mixed",
-                groups=groups,
-            )
 
 
 # ------------------------------------------------------------------ #
@@ -984,3 +936,126 @@ class TestScoreOrdinalMultinomial:
         assert isinstance(result, IndividualTestResult)
         # Only x1 and x2 are tested; x3 keeps its observed coef.
         assert len(result["model_coefs"]) == 3
+
+
+# ------------------------------------------------------------------ #
+# GLMM score_joint (tangent-space Rao score omnibus test)
+# ------------------------------------------------------------------ #
+
+
+class TestScoreJointGLMM:
+    """score_joint works for logistic_mixed and poisson_mixed families.
+
+    Uses closed-form Rao score quadratic form on the whitened tangent space,
+    avoiding iterative per-permutation model refitting.
+    """
+
+    def test_score_joint_logistic_mixed(self) -> None:
+        rng = np.random.default_rng(123)
+        n_clusters = 10
+        cluster_size = 10
+        n = n_clusters * cluster_size
+        groups = np.repeat(np.arange(n_clusters), cluster_size)
+
+        X = pd.DataFrame(
+            {
+                "x1": rng.standard_normal(n),
+                "x2": rng.standard_normal(n),
+            }
+        )
+        u_g = rng.normal(0, 1.0, size=n_clusters)
+        u = np.repeat(u_g, cluster_size)
+        # Real signal on x1
+        p = 1.0 / (1.0 + np.exp(-(0.5 + 1.5 * X["x1"].values + u)))
+        y = pd.DataFrame({"y": rng.binomial(1, p)})
+        if len(np.unique(y["y"])) < 2:
+            y.iloc[0, 0] = 0
+            y.iloc[1, 0] = 1
+
+        result = randomization_test_regression(
+            X,
+            y,
+            family="logistic_mixed",
+            groups=groups,
+            method="score_joint",
+            n_randomizations=100,
+            random_state=42,
+        )
+
+        assert isinstance(result, JointTestResult)
+        assert result.observed_improvement > 0.0
+        assert len(result.permuted_improvements) == 100
+        assert 0 < result.p_value <= 0.05
+        assert result.features_tested == ["x1", "x2"]
+
+    def test_score_joint_poisson_mixed(self) -> None:
+        rng = np.random.default_rng(456)
+        n_clusters = 10
+        cluster_size = 10
+        n = n_clusters * cluster_size
+        groups = np.repeat(np.arange(n_clusters), cluster_size)
+
+        X = pd.DataFrame(
+            {
+                "x1": rng.standard_normal(n),
+                "x2": rng.standard_normal(n),
+            }
+        )
+        u_g = rng.normal(0, 0.5, size=n_clusters)
+        u = np.repeat(u_g, cluster_size)
+        mu = np.exp(0.5 + 1.0 * X["x1"].values + u)
+        y = pd.DataFrame({"y": rng.poisson(mu)})
+
+        result = randomization_test_regression(
+            X,
+            y,
+            family="poisson_mixed",
+            groups=groups,
+            method="score_joint",
+            n_randomizations=100,
+            random_state=42,
+        )
+
+        assert isinstance(result, JointTestResult)
+        assert result.observed_improvement > 0.0
+        assert len(result.permuted_improvements) == 100
+        assert 0 < result.p_value <= 0.05
+
+    def test_score_joint_logistic_mixed_with_confounders(self) -> None:
+        rng = np.random.default_rng(789)
+        n_clusters = 10
+        cluster_size = 10
+        n = n_clusters * cluster_size
+        groups = np.repeat(np.arange(n_clusters), cluster_size)
+
+        X = pd.DataFrame(
+            {
+                "x1": rng.standard_normal(n),
+                "z1": rng.standard_normal(n),
+            }
+        )
+        u_g = rng.normal(0, 1.0, size=n_clusters)
+        u = np.repeat(u_g, cluster_size)
+        p = 1.0 / (
+            1.0 + np.exp(-(0.5 + 1.2 * X["x1"].values + 0.8 * X["z1"].values + u))
+        )
+        y = pd.DataFrame({"y": rng.binomial(1, p)})
+        if len(np.unique(y["y"])) < 2:
+            y.iloc[0, 0] = 0
+            y.iloc[1, 0] = 1
+
+        result = randomization_test_regression(
+            X,
+            y,
+            family="logistic_mixed",
+            groups=groups,
+            confounders=["z1"],
+            method="score_joint",
+            n_randomizations=100,
+            random_state=42,
+        )
+
+        assert isinstance(result, JointTestResult)
+        assert result.features_tested == ["x1"]
+        assert result.confounders == ["z1"]
+        assert result.observed_improvement > 0.0

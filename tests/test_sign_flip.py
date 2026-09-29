@@ -230,24 +230,6 @@ class TestSignFlipRejection:
                 randomization="sign_flip",
             )
 
-    def test_score_exact_raises(self):
-        """score_exact permutes Y directly and is incompatible with sign_flip."""
-        import warnings as _w
-
-        X, y = _make_linear_data()
-        # score_exact on a non-mixed family emits UserWarning before the
-        # sign_flip ValueError — suppress it so the ValueError propagates.
-        with _w.catch_warnings():
-            _w.simplefilter("ignore", UserWarning)
-            with pytest.raises(ValueError, match="score_exact"):
-                randomization_test_regression(
-                    X,
-                    y,
-                    n_randomizations=50,
-                    method="score_exact",
-                    randomization="sign_flip",
-                )
-
     def test_manly_raises(self):
         """Manly uses direct Y randomization — no residuals to sign-flip."""
         import warnings as _w

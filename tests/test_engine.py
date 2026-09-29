@@ -841,7 +841,6 @@ _GLMM_BLOCKED = [
     "freedman_lane_joint",
     "manly",
     "manly_joint",
-    "score_joint",
 ]
 
 
@@ -878,8 +877,8 @@ class TestGLMMCompatGuards:
                 groups=_GLMM_GROUPS,
             )
 
-    @pytest.mark.parametrize("method", ["kennedy", "kennedy_joint"])
-    def test_glmm_kennedy_allowed(self, method):
+    @pytest.mark.parametrize("method", ["kennedy", "kennedy_joint", "score_joint"])
+    def test_glmm_methods_allowed(self, method):
         res = randomization_test_regression(
             _GLMM_X,
             _GLMM_Y_LOGISTIC,
@@ -890,22 +889,3 @@ class TestGLMMCompatGuards:
             confounders=["x2"],
         )
         assert res is not None
-
-    def test_score_exact_linear_warns(self):
-        """score_exact on a non-mixed family emits a UserWarning.
-
-        The warning fires from the engine constructor, followed by a ValueError
-        from ScoreExactStrategy which only supports GLMM families.
-        """
-        rng = np.random.default_rng(0)
-        n = 30
-        X = pd.DataFrame(rng.standard_normal((n, 2)), columns=["x1", "x2"])
-        y = pd.DataFrame({"y": X["x1"].to_numpy() + rng.standard_normal(n) * 0.5})
-        with pytest.warns(UserWarning, match="score_exact"), pytest.raises(ValueError):
-            randomization_test_regression(
-                X,
-                y,
-                n_randomizations=10,
-                method="score_exact",
-                family="linear",
-            )

@@ -35,7 +35,6 @@ _VALID_METHODS: frozenset[str] = frozenset(
         "manly_joint",
         "score",
         "score_joint",
-        "score_exact",
     }
 )
 
@@ -52,11 +51,10 @@ _GLMM_BLOCKED_METHODS: frozenset[str] = frozenset(
         "freedman_lane_joint",
         "manly",
         "manly_joint",
-        "score_joint",
     }
 )
 
-_SCORE_METHODS: frozenset[str] = frozenset({"score", "score_joint", "score_exact"})
+_SCORE_METHODS: frozenset[str] = frozenset({"score", "score_joint"})
 
 _DIRECT_PERMUTATION_FAMILIES: frozenset[str] = frozenset({"ordinal", "multinomial"})
 
@@ -514,7 +512,7 @@ def validate_compatibility(
                     "statistically incorrect."
                 ),
                 suggestion=(
-                    "Use method='score', method='score_exact', or method='kennedy'."
+                    "Use method='score', method='score_joint', or method='kennedy'."
                 ),
             )
         )
@@ -568,22 +566,6 @@ def validate_compatibility(
                     "Use 'ter_braak', 'freedman_lane', or 'score' for more "
                     "powerful partial tests."
                 ),
-            )
-        )
-
-    # ---- score_exact on non-mixed family: warning ----------------
-    if method == "score_exact" and not family_name.endswith("_mixed"):
-        issues.append(
-            ValidationIssue(
-                level="warning",
-                code="SCORE_EXACT_NON_MIXED",
-                message=(
-                    f"method='score_exact' is designed for GLMM families but "
-                    f"family={family_name!r} is not a mixed-effects model.  "
-                    "score_exact refits the full model per permutation "
-                    "(expensive)."
-                ),
-                suggestion="Consider method='score' for non-mixed families.",
             )
         )
 
@@ -666,8 +648,7 @@ def validate_compatibility(
                     code="AR_ORDER_NON_SCORE_METHOD",
                     message=(
                         f"ar_order= requires method='score' (or "
-                        f"'score_joint', 'score_exact').  Got "
-                        f"method={method!r}."
+                        f"'score_joint').  Got method={method!r}."
                     ),
                     suggestion="Set method='score' when using ar_order.",
                 )
@@ -686,19 +667,6 @@ def validate_compatibility(
                         "residuals to sign-flip."
                     ),
                     suggestion=("Use randomization='permute' with Manly methods."),
-                )
-            )
-
-        if method == "score_exact":
-            issues.append(
-                ValidationIssue(
-                    level="error",
-                    code="SIGN_FLIP_SCORE_EXACT",
-                    message=(
-                        "Sign-flip is incompatible with method='score_exact'."
-                        "  PQL-fixed permutation permutes Y directly."
-                    ),
-                    suggestion=("Use randomization='permute' with score_exact."),
                 )
             )
 

@@ -49,7 +49,7 @@ Features Selected for Modeling:
     exact deterministic linear combinations of X1 and X5; including them causes
     singular design matrices and infinite VIFs, and they are appropriately omitted.
 
-Methodological Highlights:
+Methodological Rationale for Resampling Tests:
     1. Pre-test Symmetry Verification:
        Before executing a sign-flip test, the conditional symmetry assumption must
        be empirically evaluated. The function `validate_symmetry()` performs a

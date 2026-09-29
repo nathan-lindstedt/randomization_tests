@@ -1,54 +1,83 @@
 # %% [markdown]
 """
 Example: Poisson Regression (Count Outcome)
-Abalone dataset (UCI ML Repository ID=1)
+Dataset: Abalone (UCI Machine Learning Repository ID=1)
+
+Dataset Context & Theoretical Background:
+    The Abalone dataset (Nash et al., 1994) comprises 4,177 biological and physical
+    measurements of Tasmanian blacklip abalone (*Haliotis rubra*) harvested from
+    the Bass Strait, subsampled here to 300 observations for rapid interactive
+    execution. The response variable is `Rings`, an integer count representing the
+    number of concentric growth rings counted under microscopic examination after
+    histological sectioning and staining. Chronological age in years corresponds
+    approximately to Rings + 1.5.
+
+    Count responses are naturally discrete, non-negative, and heteroscedastic,
+    violating standard Gaussian linear assumptions. The Poisson Generalized
+    Linear Model (GLM; Nelder & Wedderburn, 1972) models the expected count via
+    the canonical log link:
+
+        log(E[Y | X]) = log(mu) = alpha + X * beta  ==>  mu = exp(alpha + X * beta)
+
+    The standard Poisson likelihood imposes the equi-dispersion property:
+
+        Var(Y | X) = E[Y | X] = mu
+
+    In this subsample, the outcome exhibits mild underdispersion (sample variance /
+    sample mean ≈ 1.05; conditional Pearson dispersion ratio ≈ 0.60), satisfying
+    the equi-dispersion requirement without overdispersion.
+
+Features Selected for Modeling:
+    - Shell_weight: Dry shell weight in grams. Because shell accretion continues
+      unabated throughout the lifespan, shell mass represents the most reliable
+      continuous physical marker of biological age.
+    - Shucked_weight: Weight of abalone meat in grams. Soft tissue mass reflects
+      nutritional state but exhibits diminishing returns as metabolic senescence occurs.
+    - Height: Shell vertical thickness in millimeters (mm). Measures vertical
+      conical shell elevation and growth volume.
+    - is_female: Binary indicator for female specimens (male is the reference class).
+    - is_infant: Binary indicator for sexually immature juveniles lacking
+      differentiated gonad development.
+
+Methodological Rationale for Resampling Tests:
+    1. Exact Deviance Testing vs. Asymptotic Wald Inference:
+       Classical Poisson GLM inference relies on asymptotic Wald z-statistics derived
+       from the inverted Fisher information matrix. In finite samples or under
+       moderate skewness, Wald tests can be inaccurate. Permutation tests evaluate
+       exact likelihood-ratio deviance reductions directly from the data.
+    2. Response-Scale Stochastic Poisson Reconstruction:
+       Because count models require non-negative integer outcomes, residual
+       reconstruction must preserve the count data-generating process. The engine
+       permutes response-scale residuals e = y - mu_hat, reconstructs rate parameters
+       mu* = clip(mu_hat + pi(e), 1e-10, 1e8), and draws permuted responses
+       stochastically via Y* ~ Poisson(mu*).
+    3. Freedman–Lane and Kennedy Conditioning:
+       Freedman–Lane (1983) and Kennedy (1995) condition on allometric confounders
+       (such as total shell weight), isolating the partial contributions of soft
+       tissue mass and sexual dimorphism independently of overall body scale.
 
 Demonstrates:
-- ``family="poisson"`` — explicit family selection for count data
-- Conservative auto-detection behavior (``family="auto"`` selects ``"linear"`` for continuous compatibility)
-- ter Braak (1992) permutation test with Poisson deviance residuals
-- Freedman–Lane (1983) individual and joint permutation tests
-- Kennedy (1995) individual and joint permutation tests
-- Poisson-specific goodness-of-fit diagnostics (deviance, Pearson χ², dispersion ratio)
-- Stochastic reconstruction for count models: :math:`Y^* \\sim \\mathrm{Poisson}(\\mathrm{clip}(\\hat{\\mu} + \\pi(e)))`
-- Four-stage confounder sieve with Poisson regression
-- Execution and protocol artifacts inspection via ``print_protocol_usage_table``
+    - family="poisson" -- explicit family selection for count data
+    - Conservative auto-detection behavior (family="auto" selects "linear" for continuous compatibility)
+    - ter Braak (1992) permutation test with Poisson deviance residuals
+    - Freedman–Lane (1983) individual and joint permutation tests
+    - Kennedy (1995) individual and joint permutation tests
+    - Poisson-specific goodness-of-fit diagnostics (deviance, Pearson χ², dispersion ratio)
+    - Stochastic reconstruction for count models: Y* ~ Poisson(clip(mu_hat + pi(e)))
+    - Four-stage confounder sieve with Poisson regression
+    - Execution and protocol artifacts inspection via print_protocol_usage_table
 
-Dataset
--------
-4,177 physical measurements of Tasmanian blacklip abalone (*Haliotis rubra*),
-subsampled to 300 observations for demo runtime. The target variable is ``Rings``
-(an integer count representing concentric growth rings in the shell cone, where
-age in years is approximately :math:`\\mathrm{Rings} + 1.5`).
-
-With marginal variance-to-mean ratio ≈ 1.05 and conditional dispersion ratio ≈ 0.60,
-the outcome satisfies Poisson equi-dispersion assumptions without overdispersion.
-
-Feature selection rationale
----------------------------
-Five physical predictors capture developmental allometry:
-
-- **Shell_weight**: Dry shell weight in grams. Shell accretion continues throughout
-  life, making shell mass the single most reliable physical marker of age.
-- **Shucked_weight**: Weight of abalone meat in grams. Soft tissue mass exhibits
-  diminishing returns as metabolic senescence sets in.
-- **Height**: Shell vertical thickness in mm.
-- **is_female** & **is_infant**: Indicator variables for sex categories (male is the
-  reference category). Infantile abalones lack differentiated gonad development.
-
-Methodological rationale
--------------------------
-Poisson regression models expected counts as :math:`\\mathbb{E}[Y \\mid X] = \\exp(X\beta)`.
-Classical inference relies on Wald z-statistics that assume asymptotic normality of the
-maximum likelihood estimator. In finite samples, permutation testing provides exact
-likelihood-ratio deviance reduction tests under the null hypothesis of no association.
-
-Reference
----------
-Nash, W. J., Sellers, T. L., Talbot, S. R., Cawthorn, A. J., & Wesney, B. (1994).
-The Population Biology of Abalone (*Haliotis* species) in Tasmania. I. Blacklip
-Abalone (*H. rubra*) from the North Coast and Islands of Bass Strait. *Sea Fisheries
-Division, Technical Report No. 48*, ISSN 1034-3288.
+References:
+    - Nash, W. J., Sellers, T. L., Talbot, S. R., Cawthorn, A. J., & Wesney, B. (1994).
+      The Population Biology of Abalone (Haliotis species) in Tasmania. I. Blacklip
+      Abalone (H. rubra) from the North Coast and Islands of Bass Strait. Sea Fisheries
+      Division, Technical Report No. 48, ISSN 1034-3288.
+    - Nelder, J. A., & Wedderburn, R. W. (1972). Generalized linear models. Journal of
+      the Royal Statistical Society: Series A (General), 135(3), 370-384.
+    - Freedman, D., & Lane, D. (1983). A nonstochastic interpretation of reported
+      significance levels. Journal of Business & Economic Statistics, 1(4), 292-298.
+    - ter Braak, C. J. F. (1992). Permutation versus bootstrap significance tests in
+      multiple regression and ANOVA. Handbook of Statistics, 9, 79-104.
 """
 
 # %%

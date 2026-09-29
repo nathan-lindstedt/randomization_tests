@@ -9,6 +9,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`score_joint` unblocked for GLMMs (`logistic_mixed`, `poisson_mixed`)**:
+  Evaluates the Rao Score omnibus test statistic via closed-form orthogonal
+  projection on the whitened tangent space of the frozen working response
+  $\tilde z$, avoiding per-permutation iterative refitting while delivering
+  nominal Type I error control and high empirical power under sub-millisecond
+  execution. Supported in `ScoreJointStrategy`, `_validation.py`, and display.
+
+- **Double/Debiased Machine Learning (DML) integration (Phase 5)**:
+  Full Double-Residualized DML (Robinson 1988; Chernozhukov et al.
+  2018) via `reduced_model=` on `randomization_test_regression`
+  and `kernel_regression_test`.
+  - `_cross_fit_residualize()`: cross-fits nuisance regressions
+    $E[Y \mid Z]$ and $E[X \mid Z]$ out-of-fold with $K$-fold and
+    `GroupKFold` support, estimator cloning, and deterministic seeding.
+  - `_DMLReducedModel`: polymorphic dataclass container wrapping
+    out-of-fold predictions compatible with `predict()` and `predict_proba()`
+    across all model families.
+  - Neyman-orthogonal Freedman–Lane individual and joint permutation tests
+    evaluating debiased point estimates and zero-centered permutation nulls.
+  - Axiom D26 diagnostic: warns toward exact stratification when all
+    confounders are discrete/low-cardinality.
+  - Transparent guarantee reporting: `[ Guarantee: Asymptotically Exact (DML) ]`.
+  - Nonlinear confounder removal for `kernel_regression_test(..., reduced_model=...)`.
+  - 15 unit and integration tests in `tests/test_dml.py` and benchmark harness
+    in `benchmarks/profile_dml.py`.
+  - Interactive example tutorial in `examples/double_machine_learning.py`.
+
 - **`_validation.py` — structured validation layer**: five
   validator functions (`validate_compatibility`,
   `validate_confounders`, `validate_family_compatibility`,
@@ -60,9 +87,78 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   fitting cluster-correlated models while evaluating unconstrained
   permutations on whitened residuals.
 
+### Changed
 
+- **JAX backend mathematical hardening and vectorization**:
+  - `_newton_solve_static`: inner loop in `jax.lax.while_loop` now carries
+    `converged_prev` across iterations and masks parameter/NLL updates with
+    `jnp.where(converged_prev, beta, beta_step)`. This freezes parameter vectors
+    once convergence is reached, preventing machine-precision gradient noise
+    drift when iterated alongside slower-converging slices in `vmap`.
+  - Autodiff derivatives across all GLM families: `_logistic_hessian`,
+    `_poisson_grad`, and `_poisson_hessian` promoted to direct `jax.grad` and
+    `jax.hessian` automatic differentiation, unifying derivative calculation
+    with Negative Binomial, Ordinal, and Multinomial families.
+  - `batch_ols_fit_and_score`: vectorized residual sums of squares via single
+    BLAS-3 matrix product $\hat Y = \hat B X_{\text{mat}}^T$ and row-wise sum
+    $\text{RSS} = \sum (Y - \hat Y)^2$, eliminating elementwise `vmap` helper
+    loops with exact bit-level agreement.
+  - `batch_mixed_lm_varying_X`: precomputes invariant vector
+    $C_{22}^{-1} Z^T y \in \mathbb{R}^q$ once, evaluating $S_b^{-1} \text{rhs}_b$
+    directly per slice and eliminating per-permutation allocation of the $(p, n)$
+    projection matrix.
+  - Profile likelihood solver acceleration and separation safeguards:
+    `_profile_nll_at` now executes via `jax.lax.while_loop` with parameter
+    freezing upon convergence, and `_profile_ci_coefficients` pre-compiles
+    dedicated closures per feature index. This delivers a ~190× speedup over
+    the prior host-device Python loop. In addition, `_profile_ci_coefficients`
+    now verifies deviance finiteness during bracket expansion, cleanly returning
+    `NaN` for unidentifiable bounds under quasi-complete separation rather than
+    diverging into runaway values.
+
+### Removed
+
+- **`method="score_exact"` removed**: From first principles, score tests
+  evaluate likelihood gradients strictly under the restricted null model
+  without refitting under permutations. The legacy `score_exact` implementation
+  performed 20 unrolled Henderson IRLS refits per permutation on raw permuted
+  responses (a PQL-refitted Wald test under direct label permutation), which
+  destroyed partial conditioning in multiple regression and imposed massive
+  computational overhead. With the delivery of the unified tangent-space
+  linear model on frozen working response $\tilde z$, canonical `method="score"`
+  (individual) and `method="score_joint"` (omnibus) evaluate the exact Rao
+  Score test in closed form without iterative refitting, rendering `score_exact`
+  completely obsolete. All associated internal code (`_pql_fixed_irls_vmap`,
+  `ScoreExactStrategy`) has been pruned.
 
 ### Fixed
+
+- **Hierarchical `ExchangeabilityTree` cluster-robust variance calculation**:
+  `calculate_p_values()` in `pvalues.py` now collapses `ExchangeabilityTree`
+  instances to leaf-level cluster cells (`to_flat_cells()`) before delegating
+  to `family.classical_p_values()`, preventing a `TypeError: 'ExchangeabilityTree' object is not iterable`
+  crash when evaluating cluster-robust standard errors in multi-level nested designs.
+  Type annotations for `groups` across `FitContext`, `IndividualTestResult`, and
+  `JointTestResult` now explicitly include `ExchangeabilityTree`, eliminating
+  static type-ignore workarounds across `core.py` and `engine.py`.
+
+- **Strategy protocol parity and forward-compatible execution**:
+  Added `**kwargs: Any` to `PermutationStrategy.execute` and across all 9 strategy
+  implementations (`ter_braak`, `kennedy`, `kennedy_joint`, `manly`, `manly_joint`,
+  `score`, `score_joint`, `freedman_lane`, `freedman_lane_joint`). This ensures
+  consistent execution signatures and prevents `TypeError` when forwarding runtime
+  parameters across strategies.
+
+- **Model family varying-X signature parity**:
+  Standardized `batch_fit_varying_X` and `batch_fit_and_score_varying_X` on
+  `LogisticMixedFamily` and `PoissonMixedFamily` to `fit_intercept: bool`
+  (removing default `= True`), establishing 100% signature uniformity across all
+  9 concrete model families. Modernized `_GLMMBatchStubMixin` error messages
+  to reflect that GLMMs support `method='kennedy'`.
+
+- **Core pipeline deduplication**:
+  Eliminated a redundant duplicate DML validation block in `core.py` and added
+  comprehensive integration verification in `tests/test_architecture_gate.py`.
 
 - **JAX batch Poisson and Negative Binomial deviance calculation**:
   `batch_poisson_fit_and_score`, `batch_poisson_fit_and_score_varying_X`,

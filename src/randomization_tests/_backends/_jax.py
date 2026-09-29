@@ -223,27 +223,31 @@ if _CAN_IMPORT_JAX:
         def body(
             state: tuple[jax.Array, jax.Array, jax.Array, jax.Array],
         ) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
-            i, beta, nll_prev, _ = state
+            i, beta, nll_prev, converged_prev = state
 
             g = grad_fn(beta)
             H = hess_fn(beta)
             H_damped = H + damping_matrix
-            beta_new = beta - jnp.linalg.solve(H_damped, g)
+            step = jnp.linalg.solve(H_damped, g)
+            beta_step = beta - step
+            beta_new = jnp.where(converged_prev, beta, beta_step)
 
-            nll_new = nll_fn(beta_new)
+            nll_step = nll_fn(beta_new)
+            nll_new = jnp.where(converged_prev, nll_prev, nll_step)
 
             # Three convergence criteria (OR), gated on finite beta.
             grad_small = jnp.max(jnp.abs(g)) < tol
-            step_small = jnp.max(jnp.abs(beta_new - beta)) < tol
+            step_small = jnp.max(jnp.abs(step)) < tol
             nll_rel = jnp.abs(nll_new - nll_prev) / jnp.maximum(
                 jnp.maximum(jnp.abs(nll_prev), jnp.abs(nll_new)),
                 1.0,
             )
             func_small = nll_rel < tol
 
-            converged = (grad_small | step_small | func_small) & jnp.all(
+            converged_now = (grad_small | step_small | func_small) & jnp.all(
                 jnp.isfinite(beta_new)
             )
+            converged = converged_prev | converged_now
             return (i + 1, beta_new, nll_new, converged)
 
         _, beta_final, nll_final, converged = jax.lax.while_loop(cond, body, init_state)
@@ -554,7 +558,7 @@ if _CAN_IMPORT_JAX:
 
         Starts from β̂ with β_j replaced by *beta_j_star* and runs
         Newton–Raphson on the free parameters (everything except j)
-        until convergence.
+        until convergence via ``jax.lax.while_loop``.
 
         Args:
             nll_fn: ``(β, X, y) → scalar`` negative log-likelihood.
@@ -572,38 +576,53 @@ if _CAN_IMPORT_JAX:
             Scalar profile NLL (Python float).
         """
         p = beta_hat.shape[0]
-        beta = jnp.array(beta_hat).at[j].set(beta_j_star)
+        beta_init = jnp.array(beta_hat).at[j].set(beta_j_star)
 
         # Indices of the p-1 free (non-fixed) parameters.
         free = jnp.concatenate([jnp.arange(j), jnp.arange(j + 1, p)])
+        p_free = len(free)
+        damping = _MIN_DAMPING * jnp.eye(p_free, dtype=jnp.float64)
 
-        for _ in range(max_iter):
+        init_state = (
+            jnp.array(0),
+            beta_init,
+            jnp.array(jnp.inf, dtype=jnp.float64),
+            jnp.array(False),
+        )
+
+        def cond(
+            state: tuple[jax.Array, jax.Array, jax.Array, jax.Array],
+        ) -> jax.Array:
+            i, _, _, converged = state
+            return (i < max_iter) & (~converged)
+
+        def body(
+            state: tuple[jax.Array, jax.Array, jax.Array, jax.Array],
+        ) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
+            i, beta, nll_prev, converged_prev = state
+
             g = grad_fn(beta, X, y)
             H = hess_fn(beta, X, y)
 
-            # Reduce to the free sub-system.
             g_free = g[free]
-            H_free = H[free][:, free]
+            H_free = H[free][:, free] + damping
+            delta = jnp.linalg.solve(H_free, g_free)
 
-            # Newton step.  Use Cholesky for speed / stability.
-            try:
-                L = jnp.linalg.cholesky(H_free)
-                delta = jax.scipy.linalg.cho_solve((L, True), g_free)
-            except Exception:
-                # Fall back to direct solve if Cholesky fails
-                # (can happen near a boundary).
-                delta = jnp.linalg.solve(
-                    H_free + 1e-8 * jnp.eye(H_free.shape[0]),
-                    g_free,
-                )
+            beta_step = beta.at[free].add(-delta)
+            beta_new = jnp.where(converged_prev, beta, beta_step)
 
-            beta = beta.at[free].add(-delta)
-            beta = beta.at[j].set(beta_j_star)  # keep j fixed
+            nll_step = nll_fn(beta_new, X, y)
+            nll_new = jnp.where(converged_prev, nll_prev, nll_step)
 
-            if float(jnp.max(jnp.abs(delta))) < tol:
-                break
+            step_small = jnp.max(jnp.abs(delta)) < tol
+            grad_small = jnp.max(jnp.abs(g_free)) < tol
+            converged = converged_prev | (
+                (step_small | grad_small) & jnp.all(jnp.isfinite(beta_new))
+            )
+            return (i + 1, beta_new, nll_new, converged)
 
-        return float(nll_fn(beta, X, y))
+        _, _, nll_final, _ = jax.lax.while_loop(cond, body, init_state)
+        return float(nll_final)
 
     def _profile_ci_coefficients(
         nll_fn: Callable[..., jnp.ndarray],
@@ -664,20 +683,59 @@ if _CAN_IMPORT_JAX:
         H_full = _hess_fn(beta_hat, X, y)
         se_approx = jnp.sqrt(jnp.abs(jnp.diag(jnp.linalg.inv(H_full))))
 
+        p_total = beta_hat.shape[0]
+
+        def _make_solver_j(j_idx: int) -> Callable[[jnp.ndarray, float], jax.Array]:
+            free = jnp.concatenate([jnp.arange(j_idx), jnp.arange(j_idx + 1, p_total)])
+            p_free = len(free)
+            damping = _MIN_DAMPING * jnp.eye(p_free, dtype=jnp.float64)
+
+            @jit
+            def _solve(b_hat: jnp.ndarray, b_j_star: float) -> jax.Array:
+                b_init = b_hat.at[j_idx].set(b_j_star)
+                init_state = (
+                    jnp.array(0),
+                    b_init,
+                    jnp.array(jnp.inf, dtype=jnp.float64),
+                    jnp.array(False),
+                )
+
+                def cond(
+                    state: tuple[jax.Array, jax.Array, jax.Array, jax.Array],
+                ) -> jax.Array:
+                    it, _, _, converged = state
+                    return (it < max_newton) & (~converged)
+
+                def body(
+                    state: tuple[jax.Array, jax.Array, jax.Array, jax.Array],
+                ) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
+                    it, b, nll_prev, converged_prev = state
+                    g = _grad_fn(b, X, y)[free]
+                    H = _hess_fn(b, X, y)[free][:, free] + damping
+                    delta = jnp.linalg.solve(H, g)
+                    b_step = b.at[free].add(-delta)
+                    b_new = jnp.where(converged_prev, b, b_step)
+
+                    nll_step = nll_fn(b_new, X, y)
+                    nll_new = jnp.where(converged_prev, nll_prev, nll_step)
+
+                    step_small = jnp.max(jnp.abs(delta)) < 1e-8
+                    grad_small = jnp.max(jnp.abs(g)) < 1e-8
+                    converged = converged_prev | (
+                        (step_small | grad_small) & jnp.all(jnp.isfinite(b_new))
+                    )
+                    return (it + 1, b_new, nll_new, converged)
+
+                _, _, nll_fin, _ = jax.lax.while_loop(cond, body, init_state)
+                return nll_fin
+
+            return _solve
+
+        solvers = {j_idx: _make_solver_j(j_idx) for j_idx in feature_indices}
+
         def _deviance(j: int, beta_j_star: float) -> float:
             """Profile deviance at β_j = beta_j_star."""
-            nll_prof = _profile_nll_at(
-                nll_fn,
-                _grad_fn,
-                _hess_fn,
-                beta_hat,
-                j,
-                beta_j_star,
-                X,
-                y,
-                max_iter=max_newton,
-                tol=1e-8,
-            )
+            nll_prof = float(solvers[j](beta_hat, beta_j_star))
             return 2.0 * (nll_prof - nll_full)
 
         results = np.full((len(feature_indices), 2), np.nan)
@@ -691,41 +749,53 @@ if _CAN_IMPORT_JAX:
 
             # ── Lower bound ──────────────────────────────────── #
             lo = b_hat_j - 5.0 * se_j
-            # Expand bracket until deviance exceeds the critical
-            # value (max 5 doublings → 160 SE total).
+            found_lo = False
             for _ in range(5):
-                if _deviance(j, lo) >= chi2_crit:
+                dev_lo = _deviance(j, lo)
+                if not np.isfinite(dev_lo):
+                    break
+                if dev_lo >= chi2_crit:
+                    found_lo = True
                     break
                 lo = b_hat_j - 2.0 * (b_hat_j - lo)
 
-            hi = b_hat_j
-            for _ in range(max_bisect):
-                mid = 0.5 * (lo + hi)
-                if _deviance(j, mid) > chi2_crit:
-                    lo = mid
-                else:
-                    hi = mid
-                if abs(hi - lo) < tol * se_j:
-                    break
-            results[idx, 0] = 0.5 * (lo + hi)
+            if found_lo:
+                hi = b_hat_j
+                for _ in range(max_bisect):
+                    mid = 0.5 * (lo + hi)
+                    dev_mid = _deviance(j, mid)
+                    if dev_mid > chi2_crit:
+                        lo = mid
+                    else:
+                        hi = mid
+                    if abs(hi - lo) < tol * se_j:
+                        break
+                results[idx, 0] = 0.5 * (lo + hi)
 
             # ── Upper bound ──────────────────────────────────── #
             hi = b_hat_j + 5.0 * se_j
+            found_hi = False
             for _ in range(5):
-                if _deviance(j, hi) >= chi2_crit:
+                dev_hi = _deviance(j, hi)
+                if not np.isfinite(dev_hi):
+                    break
+                if dev_hi >= chi2_crit:
+                    found_hi = True
                     break
                 hi = b_hat_j + 2.0 * (hi - b_hat_j)
 
-            lo = b_hat_j
-            for _ in range(max_bisect):
-                mid = 0.5 * (lo + hi)
-                if _deviance(j, mid) > chi2_crit:
-                    hi = mid
-                else:
-                    lo = mid
-                if abs(hi - lo) < tol * se_j:
-                    break
-            results[idx, 1] = 0.5 * (lo + hi)
+            if found_hi:
+                lo = b_hat_j
+                for _ in range(max_bisect):
+                    mid = 0.5 * (lo + hi)
+                    dev_mid = _deviance(j, mid)
+                    if dev_mid > chi2_crit:
+                        hi = mid
+                    else:
+                        lo = mid
+                    if abs(hi - lo) < tol * se_j:
+                        break
+                results[idx, 1] = 0.5 * (lo + hi)
 
         return results
 
@@ -1018,17 +1088,7 @@ if _CAN_IMPORT_JAX:
         return jnp.sum(jnp.logaddexp(0.0, -logits * (2.0 * y - 1.0)))
 
     _logistic_grad = jit(grad(_logistic_nll))
-
-    @jit
-    def _logistic_hessian(
-        beta: jnp.ndarray,
-        X: jnp.ndarray,
-        y: jnp.ndarray,
-    ) -> jnp.ndarray:
-        """Full Hessian of the logistic NLL: H = X' diag(p*(1-p)) X."""
-        p = jax.nn.sigmoid(X @ beta)
-        W = p * (1.0 - p)
-        return (X.T * W[None, :]) @ X
+    _logistic_hessian = jit(hessian(_logistic_nll))
 
     def _make_newton_solver(
         X: jnp.ndarray,
@@ -1039,7 +1099,7 @@ if _CAN_IMPORT_JAX:
     ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
         """Newton–Raphson logistic solve with early stopping.
 
-        Delegates to :func:`_newton_solve_static` with analytical
+        Delegates to :func:`_newton_solve_static` with autodiff
         gradient and Hessian closures.  β₀ = 0 (safe for convex
         logistic NLL).
 
@@ -1098,28 +1158,8 @@ if _CAN_IMPORT_JAX:
         mu = jnp.exp(eta)
         return jnp.sum(mu - y * eta)
 
-    @jit
-    def _poisson_grad(
-        beta: jnp.ndarray,
-        X: jnp.ndarray,
-        y: jnp.ndarray,
-    ) -> jnp.ndarray:
-        """Gradient of Poisson NLL: X'(μ − y) where μ = exp(Xβ)."""
-        # Clip to prevent exp overflow; matches GLMM Poisson bound.
-        eta = jnp.clip(X @ beta, -20.0, 20.0)
-        mu = jnp.exp(eta)
-        return X.T @ (mu - y)
-
-    @jit
-    def _poisson_hessian(
-        beta: jnp.ndarray,
-        X: jnp.ndarray,
-        y: jnp.ndarray,  # noqa: ARG001
-    ) -> jnp.ndarray:
-        """Hessian of Poisson NLL: X' diag(μ) X where μ = exp(Xβ)."""
-        # Clip to prevent exp overflow; matches GLMM Poisson bound.
-        mu = jnp.exp(jnp.clip(X @ beta, -20.0, 20.0))
-        return (X.T * mu[None, :]) @ X
+    _poisson_grad = jit(grad(_poisson_nll))
+    _poisson_hessian = jit(hessian(_poisson_nll))
 
     def _make_poisson_solver(
         X: jnp.ndarray,
@@ -1130,7 +1170,7 @@ if _CAN_IMPORT_JAX:
     ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
         """Newton–Raphson Poisson solve with early stopping.
 
-        Delegates to :func:`_newton_solve_static` with analytical
+        Delegates to :func:`_newton_solve_static` with autodiff
         gradient and Hessian closures.  β₀ is OLS on the log-link
         working response ``log(y + 0.5)`` — the standard IRLS
         warm start to avoid overflow when the true intercept is
@@ -2484,95 +2524,6 @@ if _CAN_IMPORT_JAX:
         eta: np.ndarray  # (n,) linear predictor Xβ̂ + Zû at convergence
         z_tilde: np.ndarray  # (n,) working response at convergence
 
-    def _pql_fixed_irls_vmap(
-        X: np.ndarray,
-        Z: np.ndarray,
-        y_perm: np.ndarray,
-        Gamma_inv: np.ndarray,
-        beta_init: np.ndarray,
-        working_fn: Callable[
-            [jnp.ndarray, jnp.ndarray],
-            tuple[jnp.ndarray, jnp.ndarray],
-        ],
-        *,
-        max_inner: int = 20,
-    ) -> np.ndarray:
-        r"""PQL-fixed IRLS at fixed θ̂, vmapped across permutations.
-
-        For each permutation π, runs the full IRLS inner loop to
-        convergence on `y_π` while holding variance components
-        (Γ⁻¹) fixed from the null model.  Produces exact
-        β̂_π(θ̂_fixed) — not a one-step approximation.
-
-        The inner loop is the **same Henderson algebra** as
-        :func:`_build_laplace_nll` — pre-scale by √W, solve the
-        unweighted Henderson system, iterate.  Unrolled (not
-        ``lax.while_loop``) for ``jax.vmap`` compatibility.
-
-        Warm-start at ``beta_init`` (from the null-model GLM fit)
-        ensures convergence in 3–8 iterations.  η-clipping to
-        ``[-20, 20]`` and weight capping to ``[1e-10, 1e6]``
-        match the guards in :func:`_build_laplace_nll`.
-
-        Args:
-            X: Fixed-effect design ``(n, p)``, WITH intercept.
-            Z: Random-effect design ``(n, q)``.
-            y_perm: Permuted responses ``(B, n)``.
-            Gamma_inv: Block-diagonal RE precision ``(q, q)`` from
-                the null model (fixed).
-            beta_init: ``(p,)`` warm-start coefficients.
-            working_fn: Family-specific IRLS ``(y, eta) → (z̃, w)``.
-            max_inner: Unrolled IRLS iterations (default 20).
-
-        Returns:
-            ``(B, p)`` — full coefficient vectors per permutation.
-        """
-        X_j = jnp.array(X, dtype=jnp.float64)
-        Z_j = jnp.array(Z, dtype=jnp.float64)
-        Gamma_inv_j = jnp.array(Gamma_inv, dtype=jnp.float64)
-        beta_init_j = jnp.array(beta_init, dtype=jnp.float64)
-        q = Z_j.shape[1]
-
-        def _single_perm_irls(y_pi: jnp.ndarray) -> jnp.ndarray:
-            """IRLS at fixed Γ⁻¹ for one permuted y — pure JAX."""
-            beta = beta_init_j
-            u = jnp.zeros(q)
-
-            for _ in range(max_inner):
-                eta = jnp.clip(X_j @ beta + Z_j @ u, -20.0, 20.0)
-                z_tilde, w = working_fn(y_pi, eta)
-                w = jnp.clip(w, 1e-10, 1e6)
-
-                sqrt_w = jnp.sqrt(w)
-                X_t = X_j * sqrt_w[:, None]
-                Z_t = Z_j * sqrt_w[:, None]
-                y_star = z_tilde * sqrt_w
-
-                XtX = X_t.T @ X_t
-                XtZ = X_t.T @ Z_t
-                Xty = X_t.T @ y_star
-                ZtZ = Z_t.T @ Z_t
-                Zty = Z_t.T @ y_star
-
-                C22 = ZtZ + Gamma_inv_j
-                C22_chol = jnp.linalg.cholesky(C22)
-
-                C22_inv_ZtX = jax.scipy.linalg.cho_solve((C22_chol, True), XtZ.T)
-                S = XtX - XtZ @ C22_inv_ZtX
-
-                C22_inv_Zty = jax.scipy.linalg.cho_solve((C22_chol, True), Zty)
-                rhs_beta = Xty - XtZ @ C22_inv_Zty
-                beta = jnp.linalg.solve(S, rhs_beta)
-
-                rhs_u = Zty - XtZ.T @ beta
-                u = jax.scipy.linalg.cho_solve((C22_chol, True), rhs_u)
-
-            return beta
-
-        # vmap across the batch dimension (B permutations)
-        beta_perm_j = jax.vmap(_single_perm_irls)(jnp.array(y_perm, dtype=jnp.float64))
-        return np.asarray(beta_perm_j)  # (B, p)
-
     def _build_laplace_nll(
         X: jnp.ndarray,
         Z: jnp.ndarray,
@@ -3833,12 +3784,9 @@ class JaxBackend:
         ) -> tuple[jax.Array, jax.Array]:
             pinv = jnp.linalg.pinv(X_mat)
             coefs_all = (pinv @ Y_mat.T).T  # (B, p_aug)
-
-            def _rss_one(coefs: jax.Array, y_vec: jax.Array) -> jax.Array:
-                resid = y_vec - X_mat @ coefs
-                return jnp.sum(resid**2)
-
-            rss = vmap(_rss_one)(coefs_all, Y_mat)
+            Y_hat = coefs_all @ X_mat.T  # (B, n)
+            resid = Y_mat - Y_hat  # (B, n)
+            rss = jnp.sum(resid**2, axis=1)  # (B,)
             return coefs_all, rss
 
         all_coefs, all_rss = _batch_solve_with_rss(X_j, Y_j)
@@ -4456,16 +4404,17 @@ class JaxBackend:
         Z_j = jnp.array(Z, dtype=jnp.float64)
         C22_j = jnp.array(C22, dtype=jnp.float64)
 
-        # Pre-compute invariant: C₂₂⁻¹ Z'  (q, n)
+        # Pre-compute invariants across permutations: C₂₂⁻¹ Z' (q, n) and C₂₂⁻¹ Z' y (q,)
         C22_inv_Zt = jnp.linalg.solve(C22_j, Z_j.T)
+        C22_inv_Zty = C22_inv_Zt @ y_j
 
         def _solve_one(X_single: jax.Array) -> jax.Array:
             XtZ = X_single.T @ Z_j  # (p, q)
             C22_inv_ZtX = C22_inv_Zt @ X_single  # (q, p)
             S = X_single.T @ X_single - XtZ @ C22_inv_ZtX  # (p, p)
-            Xt_Vtilde_inv = X_single.T - XtZ @ C22_inv_Zt  # (p, n)
-            A = jnp.linalg.solve(S, Xt_Vtilde_inv)  # (p, n)
-            return jnp.asarray(A @ y_j)  # (p,)
+            Xty = X_single.T @ y_j  # (p,)
+            rhs = Xty - XtZ @ C22_inv_Zty  # (p,)
+            return jnp.asarray(jnp.linalg.solve(S, rhs))  # (p,)
 
         all_coefs: np.ndarray = np.asarray(jit(vmap(_solve_one))(X_j))  # (B, p)
         return _strip_intercept(all_coefs, fit_intercept)

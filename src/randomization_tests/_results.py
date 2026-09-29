@@ -29,6 +29,7 @@ import numpy as np
 
 if TYPE_CHECKING:
     from ._context import FitContext
+    from .exchangeability import ExchangeabilityTree
     from .families import ModelFamily
 
 # ------------------------------------------------------------------ #
@@ -150,6 +151,11 @@ class IndividualTestResult(_DictAccessMixin):
 
     _SERIALIZERS: ClassVar[dict[str, Any]] = {
         "family": lambda f: f.name,
+        "groups": lambda g: (
+            g.to_flat_cells().tolist()
+            if hasattr(g, "to_flat_cells")
+            else (g.tolist() if isinstance(g, np.ndarray) else g)
+        ),
     }
 
     # ---- Coefficients & null distribution --------------------------
@@ -204,7 +210,7 @@ class IndividualTestResult(_DictAccessMixin):
     n_randomizations: int
     """Actual number of randomizations used."""
 
-    groups: np.ndarray | None
+    groups: np.ndarray | ExchangeabilityTree | None
     """Exchangeability group labels, or ``None`` for global exchangeability."""
 
     permutation_strategy: str | None
@@ -227,6 +233,9 @@ class IndividualTestResult(_DictAccessMixin):
     (predictions, residuals, fit metric, etc.) for downstream display
     and debugging.  Excluded from ``to_dict()`` serialisation."""
 
+    guarantee_tier: str | None = None
+    """Inferential guarantee tier (e.g. 'Asymptotically Exact (DML)')."""
+
 
 # ------------------------------------------------------------------ #
 # JointTestResult
@@ -245,6 +254,11 @@ class JointTestResult(_DictAccessMixin):
 
     _SERIALIZERS: ClassVar[dict[str, Any]] = {
         "family": lambda f: f.name,
+        "groups": lambda g: (
+            g.to_flat_cells().tolist()
+            if hasattr(g, "to_flat_cells")
+            else (g.tolist() if isinstance(g, np.ndarray) else g)
+        ),
     }
 
     # ---- Test statistic & null distribution -------------------------
@@ -287,7 +301,7 @@ class JointTestResult(_DictAccessMixin):
     n_randomizations: int
     """Actual number of randomizations used."""
 
-    groups: np.ndarray | None
+    groups: np.ndarray | ExchangeabilityTree | None
     """Exchangeability group labels, or ``None`` for global exchangeability."""
 
     permutation_strategy: str | None
@@ -318,6 +332,9 @@ class JointTestResult(_DictAccessMixin):
     """Pipeline computation context.  Carries intermediate artifacts
     (predictions, residuals, fit metric, etc.) for downstream display
     and debugging.  Excluded from ``to_dict()`` serialisation."""
+
+    guarantee_tier: str | None = None
+    """Inferential guarantee tier (e.g. 'Asymptotically Exact (DML)')."""
 
 
 # ------------------------------------------------------------------ #

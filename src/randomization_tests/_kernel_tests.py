@@ -75,6 +75,8 @@ Phipson, B., & Smyth, G. K. (2010). Permutation p-values should never be
 
 from __future__ import annotations
 
+from typing import Any
+
 import numpy as np
 
 from ._kernels import (
@@ -87,6 +89,7 @@ from ._kernels import (
     gram_trace_product,
 )
 from ._results import KernelTestResult
+from .families import _cross_fit_residualize
 from .permutations import generate_unique_permutations
 
 # ------------------------------------------------------------------ #
@@ -351,19 +354,25 @@ def kernel_regression_test(
     *,
     kernel_y: Kernel | None = None,
     confounders: np.ndarray | None = None,
+    reduced_model: Any | None = None,
     n_permutations: int = 5000,
     max_landmarks: int | None = None,
     random_state: int | None = None,
 ) -> KernelTestResult:
-    """Kernel partial independence test after OLS residualisation.
+    """Kernel partial independence test after OLS or cross-fitted residualisation.
 
-    Tests H₀: X ⊥ Y | Z, where Z is a matrix of confounders.  The
-    procedure residualises both X and Y on Z using ordinary least
-    squares, then applies :func:`hsic_test` on the residuals with a
-    linear kernel for e_X.
+    Tests H₀: X ⊥ Y | Z, where Z is a matrix of confounders.  When
+    *reduced_model* is ``None`` (default), the procedure residualises both X
+    and Y on Z using ordinary least squares (OLS), then applies :func:`hsic_test`
+    on the residuals with a linear kernel for e_X.
 
-    When *confounders* is ``None``, this reduces to an HSIC test with
-    a linear kernel on X.
+    When *reduced_model* is provided, nonlinear confounding is purged by
+    cross-fitting nuisance regressions E[Y|Z] and E[X|Z] out-of-fold via
+    :func:`~randomization_tests.families._cross_fit_residualize` (Double Machine
+    Learning), eliminating bias from nonlinear confounding.
+
+    When *confounders* is ``None``, this reduces to an unconditional HSIC test
+    with a linear kernel on X.
 
     Parameters
     ----------
@@ -375,9 +384,14 @@ def kernel_regression_test(
         Kernel for the outcome residuals.  Defaults to
         :class:`~._kernels.GaussianKernel`.
     confounders:
-        Confounder matrix.  Shape ``(n, q)``.  When supplied, both X
-        and Y are residualised on Z via the OLS hat matrix
-        H_Z = Z(ZᵀZ)⁻¹Zᵀ.
+        Confounder matrix.  Shape ``(n, q)``.  When supplied without
+        *reduced_model*, both X and Y are residualised on Z via the OLS hat
+        matrix H_Z = Z(ZᵀZ)⁻¹Zᵀ.
+    reduced_model:
+        Optional flexible machine learning estimator implementing scikit-learn's
+        fit/predict interface. When supplied with *confounders*, both X and Y
+        are cross-fit residualised out-of-fold against Z, preventing nonlinear
+        confounder leakage.
     n_permutations:
         Number of permutations.  Default 5000.
     max_landmarks:
@@ -394,16 +408,12 @@ def kernel_regression_test(
 
     Notes
     -----
-    Guarantee: this is a residual-based test.  OLS
-    residuals are correlated through the hat matrix and only
-    approximately exchangeable, so Type I control is **asymptotically
-    exact**, not finite-sample exact.  Moreover, OLS residualisation
-    removes only the LINEAR component of confounding: nonlinear
-    confounding leaks into the residuals and can produce false
-    positives — residual independence e_X ⊥ e_Y is a proxy for
-    X ⊥ Y | Z that is exact only under additive linear confounding.
-    For nonlinear confounders, use a flexible cross-fitted reduced
-    model (``reduced_model=``) or a fully kernelised conditional test.
+    Guarantee: this is a residual-based test.  Residual-based kernel conditional
+    independence testing is **asymptotically valid** under consistent estimation
+    of E[X|Z] and E[Y|Z]; it is not finite-sample exact.  OLS residualisation
+    removes only the linear component of confounding; for nonlinear confounders,
+    pass a flexible ``reduced_model`` (e.g. a gradient-boosting or kernel-ridge
+    regressor with scikit-learn API) or use a fully kernelised conditional test.
     """
     X_arr = np.asarray(X, dtype=float)
     Y_arr = np.asarray(Y, dtype=float)
@@ -417,11 +427,23 @@ def kernel_regression_test(
         Z = np.atleast_2d(np.asarray(confounders, dtype=float))
         if Z.shape[0] == 1 and confounders.ndim == 1:
             Z = Z.T
-        # OLS hat projection: H_Z = Z pinv(Z); residuals = (I - H_Z) @ A
-        Z_pinv = np.linalg.pinv(Z)  # (q, n)
-        hat = Z @ Z_pinv  # (n, n)
-        e_X = X_2d - hat @ X_2d
-        e_Y = Y_2d - hat @ Y_2d
+        if reduced_model is not None:
+            # Cross-fitted DML residualization (Double-Residualized)
+            e_Y, e_X = _cross_fit_residualize(
+                Z,
+                Y_2d,
+                X=X_2d,
+                reduced_model=reduced_model,
+                random_state=random_state,
+            )
+            e_X = e_X.reshape(-1, 1) if e_X.ndim == 1 else e_X
+            e_Y = e_Y.reshape(-1, 1) if e_Y.ndim == 1 else e_Y
+        else:
+            # OLS hat projection: H_Z = Z pinv(Z); residuals = (I - H_Z) @ A
+            Z_pinv = np.linalg.pinv(Z)  # (q, n)
+            hat = Z @ Z_pinv  # (n, n)
+            e_X = X_2d - hat @ X_2d
+            e_Y = Y_2d - hat @ Y_2d
     else:
         e_X = X_2d
         e_Y = Y_2d

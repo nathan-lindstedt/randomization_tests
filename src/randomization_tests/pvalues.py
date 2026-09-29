@@ -47,6 +47,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from ._compat import DataFrameLike, _ensure_pandas_df
+from .exchangeability import ExchangeabilityTree
 
 if TYPE_CHECKING:
     from .families import ModelFamily
@@ -64,7 +65,7 @@ def calculate_p_values(
     fit_intercept: bool = True,
     *,
     family: ModelFamily,
-    groups: np.ndarray | None = None,
+    groups: np.ndarray | ExchangeabilityTree | None = None,
 ) -> tuple[list[str], list[str], np.ndarray, np.ndarray, np.ndarray]:
     """Calculate empirical (permutation) and classical (asymptotic) p-values.
 
@@ -119,9 +120,13 @@ def calculate_p_values(
     # encapsulates the correct statsmodels model and warning suppression.
     # When groups are provided, pass them through so the family can
     # compute cluster-robust SEs matching the permutation test's
-    # within-group structure.
+    # within-group structure. If groups is an ExchangeabilityTree,
+    # collapse to leaf-level cluster labels for statsmodels covariance estimation.
+    cluster_groups = (
+        groups.to_flat_cells() if isinstance(groups, ExchangeabilityTree) else groups
+    )
     raw_classic_p = family.classical_p_values(
-        np.asarray(X), y_values, fit_intercept, groups=groups
+        np.asarray(X), y_values, fit_intercept, groups=cluster_groups
     )
 
     # --- Vectorised empirical p-values (Phipson & Smyth correction) ---

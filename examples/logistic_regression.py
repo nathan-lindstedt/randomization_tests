@@ -1,53 +1,83 @@
 # %% [markdown]
-"""
+r"""
 Example: Logistic Regression (Binary Outcome)
-Breast Cancer Wisconsin (Diagnostic) dataset (UCI ML Repository ID=17)
+Dataset: Breast Cancer Wisconsin Diagnostic (UCI Machine Learning Repository ID=17)
+
+Dataset Context & Theoretical Background:
+    The Breast Cancer Wisconsin Diagnostic dataset (Street, Wolberg, & Mangasarian,
+    1993) comprises 569 digitized cell nuclear measurements derived from fine needle
+    aspirates (FNA) of human breast masses collected at the University of Wisconsin
+    Hospitals. The diagnostic response is `Diagnosis`, encoded as binary: malignant
+    (1, n = 212, 37.26% prevalence) versus benign (0, n = 357, 62.74%).
+
+    Binary regression models the conditional probability of malignancy via the
+    canonical logit link:
+
+        logit(P(Y = 1 | X)) = log(P / (1 - P)) = alpha + X * beta
+
+    Classical parametric inference relies on maximum likelihood estimation (MLE)
+    and the inverted Fisher information matrix:
+
+        Var(beta_hat) = (X^T W X)^{-1},    W = diag(mu_hat * (1 - mu_hat))
+
+    In finite samples or when covariates strongly predict separation between benign
+    and malignant cell clusters, Wald z-tests suffer from the Hauck–Donner effect
+    (Hauck & Donner, 1977): as the true parameter magnitude increases, the estimated
+    standard error grows faster than the coefficient itself, causing Wald test
+    statistics to paradoxically plunge toward zero and falsely failing to reject
+    the null.
+
+    Permutation testing bypasses Fisher information asymptotics entirely by
+    evaluating empirical likelihood-ratio deviance reductions directly under the
+    exact permutation null distribution.
+
+Features Selected for Modeling:
+    - radius1: Mean distance from the nuclear center to perimeter points. Primary
+      marker of nuclear enlargement in neoplastic cytology.
+    - texture1: Standard deviation of gray-scale pixel values. Quantifies chromatin
+      clumping, texture granularity, and nuclear heterogeneity.
+    - perimeter1: Mean nuclear perimeter length. Core geometric proxy for total tumor
+      nuclear cross-sectional dimension.
+    - smoothness1: Local variation in radius lengths, quantifying structural
+      irregularity and indentations in the nuclear envelope.
+    - compactness1: Dimensionless shape metric computed as perimeter^2 / area - 1.0.
+      Measures contour complexity and pleomorphic irregularity.
+
+Methodological Rationale for Resampling Tests:
+    1. Immunity to the Hauck–Donner Effect:
+       Permutation test statistics evaluate deviance reductions or score projections
+       rather than inverted Hessian standard errors, preserving power even when
+       morphological features near-perfectly separate malignant from benign biopsies.
+    2. Stochastic Bernoulli Reconstruction:
+       Because binary residuals e_i = y_i - p_hat_i lie on the probability scale
+       (-1, 1), adding permuted residuals p* = clip(p_hat + pi(e), 0.001, 0.999)
+       followed by Bernoulli sampling Y* ~ Bernoulli(p*) converts continuous permuted
+       probabilities into valid binary outcomes, preserving the binomial likelihood.
+    3. Freedman–Lane and Kennedy Conditioning:
+       Freedman–Lane (1983) and Kennedy (1995) condition on cytological confounders,
+       distinguishing direct nuclear shape predictors from indirect correlates
+       transmitted through overall nuclear perimeter or volume.
 
 Demonstrates:
-- ``family="logistic"`` — explicit and auto-detected (``family="auto"``) binary logistic models
-- ter Braak (1992) permutation test with deviance residuals and recentred null
-- Freedman–Lane (1983) individual and joint permutation tests
-- Kennedy (1995) individual and joint permutation tests
-- Stochastic reconstruction in binary models: :math:`Y^* \sim \mathrm{Bernoulli}(\mathrm{clip}(\hat{\mu} + \pi(e)))`
-- Four-stage confounder sieve (screen → collider → mediator → moderator) for binary classification
-- Confounder-controlled permutation testing
-- Execution and protocol artifacts inspection via ``print_protocol_usage_table``
+    - family="logistic" -- explicit and auto-detected (family="auto") binary logistic models
+    - ter Braak (1992) permutation test with deviance residuals and recentred null
+    - Freedman–Lane (1983) individual and joint permutation tests
+    - Kennedy (1995) individual and joint permutation tests
+    - Stochastic reconstruction in binary models: Y* ~ Bernoulli(clip(mu_hat + pi(e)))
+    - Four-stage confounder sieve (screen -> collider -> mediator -> moderator)
+    - Confounder-controlled permutation testing
+    - Execution and protocol artifacts inspection via print_protocol_usage_table
 
-Dataset
--------
-569 digitized cell nuclear measurements from fine needle aspirates (FNA) of
-breast masses, collected at the University of Wisconsin Hospitals.  The target
-variable is ``Diagnosis``, recoded as binary: malignant (1, n = 212, 37.3% prevalence)
-versus benign (0, n = 357, 62.7%).
-
-Feature selection rationale
----------------------------
-Five nuclear morphology features describe cell geometry and texture:
-
-- **radius1**: Mean of distances from the center to points on the perimeter.
-  Core indicator of nuclear enlargement in malignant cells.
-- **texture1**: Standard deviation of gray-scale pixel values. Quantifies chromatin
-  granularity and nuclear heterogeneity.
-- **perimeter1**: Nuclear perimeter length. Strong geometric correlate of tumor mass.
-- **smoothness1**: Local variation in radius lengths, reflecting irregularity in the
-  nuclear envelope.
-- **compactness1**: Computed as :math:`\mathrm{perimeter}^2 / \mathrm{area} - 1.0`.
-  Measures nuclear contour complexity.
-
-Methodological rationale
--------------------------
-In logistic regression, classical inference relies on asymptotic Wald z-tests derived
-from the inverted Fisher information matrix. In moderate samples or when covariates
-exhibit near-separation, Wald tests suffer from the Hauck–Donner effect (where standard
-errors are wildly inflated, falsely dampening significance). Permutation tests bypass
-Fisher asymptotics entirely by evaluating exact likelihood-ratio deviance reductions
-under the null.
-
-Reference
----------
-Street, W. N., Wolberg, W. H., & Mangasarian, O. L. (1993). Nuclear feature
-extraction for breast tumor diagnosis. *IS&T/SPIE 1993 International Symposium
-on Electronic Imaging: Science and Technology*, 1905, 861–870.
+References:
+    - Street, W. N., Wolberg, W. H., & Mangasarian, O. L. (1993). Nuclear feature
+      extraction for breast tumor diagnosis. IS&T/SPIE 1993 International Symposium
+      on Electronic Imaging: Science and Technology, 1905, 861-870.
+    - Hauck, W. W., & Donner, A. (1977). Wald's test as applied to hypotheses in
+      logit analysis. Journal of the American Statistical Association, 72(360), 851-853.
+    - Freedman, D., & Lane, D. (1983). A nonstochastic interpretation of reported
+      significance levels. Journal of Business & Economic Statistics, 1(4), 292-298.
+    - ter Braak, C. J. F. (1992). Permutation versus bootstrap significance tests
+      in multiple regression and ANOVA. Handbook of Statistics, 9, 79-104.
 """
 
 # %%

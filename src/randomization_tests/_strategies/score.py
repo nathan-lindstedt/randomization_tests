@@ -40,12 +40,6 @@ Two strategies:
 * **ScoreIndividualStrategy** — per-coefficient test (``is_joint=False``).
 * **ScoreJointStrategy** — collective improvement test (``is_joint=True``).
 
-And:
-
-* **ScoreExactStrategy** — PQL-fixed vmap for GLMM families.  Holds
-  θ̂ fixed and runs full IRLS per permutation via ``jax.vmap``.
-  ~500× the one-step corrector but gives exact β̂(θ̂_fixed).
-
 References:
     Rao, C. R. (1948). Large sample tests of composite hypotheses.
     Sankhyā, 9(1), 44–56.
@@ -57,13 +51,13 @@ References:
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, final
+from typing import TYPE_CHECKING, Any, final
 
 import numpy as np
 import pandas as pd
 
 from ..families import _augment_intercept, fit_reduced
-from . import _residual_joint_statistic
+from . import _apply_randomization, _residual_joint_statistic
 
 if TYPE_CHECKING:
     from ..families import ModelFamily
@@ -99,6 +93,7 @@ class ScoreIndividualStrategy:
         fit_intercept: bool = True,
         n_jobs: int = 1,
         randomization: str = "permute",
+        **kwargs: Any,
     ) -> np.ndarray:
         """Run the score projection permutation algorithm.
 
@@ -225,6 +220,7 @@ class ScoreJointStrategy:
         fit_intercept: bool = True,
         n_jobs: int = 1,
         randomization: str = "permute",
+        **kwargs: Any,
     ) -> tuple[float, np.ndarray, str, list[str]]:
         """Run the joint permutation algorithm.
 
@@ -258,6 +254,57 @@ class ScoreJointStrategy:
             Z = X_np[:, conf_idx]  # (n, q_z)
         else:
             Z = np.zeros((n, 0))  # (n, 0)
+
+        # GLMM branch: closed-form Rao score quadratic form on the whitened
+        # tangent space (no iterative model refitting per permutation).
+        if family.name in ("logistic_mixed", "poisson_mixed"):
+            if not features_to_test:
+                return (0.0, np.zeros(perm_indices.shape[0]), metric_type, [])
+
+            assert hasattr(family, "z_tilde") and family.z_tilde is not None
+
+            X_full = _augment_intercept(X_np, fit_intercept)
+            conf_aug_idx = (
+                [0] + [X.columns.get_loc(c) + 1 for c in confounders]
+                if fit_intercept
+                else [X.columns.get_loc(c) for c in confounders]
+            )
+            test_aug_idx = (
+                [X.columns.get_loc(c) + 1 for c in features_to_test]
+                if fit_intercept
+                else [X.columns.get_loc(c) for c in features_to_test]
+            )
+
+            Z_aug = X_full[:, conf_aug_idx]
+            X_test = X_full[:, test_aug_idx]
+
+            Z_w = family.whiten(Z_aug)
+            z_tilde_w = family.whiten(family.z_tilde)
+            X_test_w = family.whiten(X_test)
+
+            if Z_aug.shape[1] > 0:
+                Z_pinv = np.linalg.pinv(Z_w)
+                beta_red = Z_pinv @ z_tilde_w
+                r_w = z_tilde_w - Z_w @ beta_red
+                P_Z = Z_w @ Z_pinv
+                X_test_w_star = X_test_w - P_Z @ X_test_w
+            else:
+                r_w = z_tilde_w
+                X_test_w_star = X_test_w
+
+            Q, _ = np.linalg.qr(X_test_w_star, mode="reduced")
+            obs_improvement = float(np.sum((Q.T @ r_w) ** 2))
+
+            E_pi = _apply_randomization(r_w, perm_indices, randomization)
+            A = E_pi @ Q
+            perm_improvements = np.sum(A**2, axis=1)
+
+            return (
+                obs_improvement,
+                perm_improvements,
+                "Score Reduction",
+                features_to_test,
+            )
 
         if not family.direct_permutation:
             obs_improvement, perm_improvements = _residual_joint_statistic(
@@ -299,207 +346,3 @@ class ScoreJointStrategy:
             metric_type,
             features_to_test,
         )
-
-
-# ------------------------------------------------------------------ #
-# Score exact (PQL-fixed) — GLMM per-permutation IRLS
-# ------------------------------------------------------------------ #
-
-
-@final
-class ScoreExactStrategy:
-    """PQL-fixed exact permutation for GLMM families.
-
-    Holds θ̂ (variance components) from the null model fixed and
-    runs the full IRLS inner loop per permutation, vectorized via
-    ``jax.vmap``.  Each vmap lane converges in 3–8 iterations from
-    warm start; cost is ~500× the one-step corrector but gives
-    exact β̂(θ̂_fixed) per permutation.
-
-    Only supported for GLMM families (``LogisticMixedFamily``,
-    ``PoissonMixedFamily``).  Non-GLMM families raise ValueError.
-    """
-
-    is_joint: bool = False
-
-    def execute(
-        self,
-        X: pd.DataFrame,
-        y_values: np.ndarray,
-        family: ModelFamily,
-        perm_indices: np.ndarray,
-        *,
-        confounders: list[str] | None = None,
-        model_coefs: np.ndarray | None = None,
-        fit_intercept: bool = True,
-        n_jobs: int = 1,
-        randomization: str = "permute",
-    ) -> np.ndarray:
-        """PQL-fixed exact permutation via vmapped IRLS.
-
-        Fits the full model on each permuted y_π at fixed Γ⁻¹ via
-        a single ``jax.vmap`` call, then extracts per-feature β̂.
-        Returns ``(B, p)`` on the coefficient scale, matching
-        ``ScoreIndividualStrategy``.
-
-        Args:
-            X: Feature matrix as a pandas DataFrame.
-            y_values: Response vector ``(n,)``.
-            family: Calibrated GLMM ``ModelFamily`` instance.
-            perm_indices: Pre-generated permutation indices ``(B, n)``.
-            confounders: Confounder column names.
-            model_coefs: Observed coefficients ``(p,)``.
-            fit_intercept: Whether to include an intercept.
-            n_jobs: Unused (vmap handles vectorisation).
-            randomization: ``"permute"`` only — sign-flip is not
-                supported (PQL-fixed permutes Y directly).
-
-        Returns:
-            ``(B, n_features)`` with permuted coefficients.
-
-        Raises:
-            ValueError: If the family is not a GLMM (no ``log_chol``)
-                or if ``randomization="sign_flip"``.
-        """
-        # ---- Guard: sign-flip not supported ----------------------
-        if randomization == "sign_flip":
-            raise ValueError(
-                "method='score_exact' does not support sign-flip "
-                "randomization.  score_exact permutes Y directly via "
-                "PQL-fixed IRLS — there are no residuals to flip.  "
-                "Use method='score' for sign-flip score projection."
-            )
-
-        # ---- Guard: GLMM only ------------------------------------
-        if not hasattr(family, "log_chol") or family.log_chol is None:
-            raise ValueError(
-                f"method='score_exact' requires a calibrated GLMM family "
-                f"(LogisticMixedFamily or PoissonMixedFamily).  "
-                f"Got family='{family.name}'.  Use method='score' for "
-                f"one-step corrector or method='ter_braak' for non-GLMM."
-            )
-
-        if confounders is None:
-            confounders = []
-        if model_coefs is None:
-            raise ValueError("model_coefs is required for score_exact.")
-
-        # ---- Resolve family-specific IRLS function ---------------
-        from ..families_mixed import LogisticMixedFamily, PoissonMixedFamily
-
-        if isinstance(family, LogisticMixedFamily):
-            from .._backends._jax import (
-                _logistic_nll_np,
-            )
-            from .._backends._jax import (
-                _logistic_working_response_and_weights as wfn,
-            )
-
-            nll_np = _logistic_nll_np
-            glm_family = "logistic"
-        elif isinstance(family, PoissonMixedFamily):
-            from .._backends._jax import (
-                _poisson_nll_np,
-            )
-            from .._backends._jax import (
-                _poisson_working_response_and_weights as wfn,
-            )
-
-            nll_np = _poisson_nll_np
-            glm_family = "poisson"
-        else:
-            raise ValueError(
-                f"method='score_exact' is not supported for family='{family.name}'."
-            )
-
-        from .._backends._jax import (
-            _fill_lower_triangular_np,
-            _fit_glm_irls,
-            _pql_fixed_irls_vmap,
-        )
-
-        # ---- Build Γ⁻¹ from stored log-Cholesky params ----------
-        #
-        # θ is a packed 1-D vector of log-Cholesky parameters
-        # produced by the JAX REML solver.  For each random-effects
-        # factor k (with G_k groups, each d_k-dimensional):
-        #
-        #   1. Extract the d_k(d_k+1)/2 elements for factor k.
-        #   2. Unpack into L_k — a lower-triangular matrix whose
-        #      diagonal entries are exp(θ_diag) (log-Cholesky
-        #      parameterisation ensures positive definiteness).
-        #   3. Σ_k = L_k L_k'  — the d_k × d_k random-effects
-        #      covariance for one group in factor k.
-        #   4. Σ_k⁻¹ — the per-group precision matrix.
-        #   5. Kronecker-replicate across G_k groups:
-        #      block_k = I_{G_k} ⊗ Σ_k⁻¹   (block-diagonal).
-        #   6. Insert block_k into the global q × q precision
-        #      matrix Γ⁻¹ at the rows/cols for factor k.
-        #
-        assert family.re_struct is not None
-        assert family.Z is not None
-        re_struct = family.re_struct
-        log_chol = family.log_chol
-        q = family.Z.shape[1]
-
-        Gamma_inv = np.zeros((q, q))
-        factor_offset = 0
-        theta_offset = 0
-        for k in range(len(re_struct)):
-            G_k, d_k = re_struct[k]
-            n_chol_k = d_k * (d_k + 1) // 2  # vech length for L_k
-            theta_k = log_chol[theta_offset : theta_offset + n_chol_k]
-            L_k = _fill_lower_triangular_np(theta_k, d_k)  # θ → L_k
-            Sigma_k = L_k @ L_k.T  # L_k L_k' = Σ_k
-            # Σ_k can be singular when REML estimates variance at the
-            # boundary (τ² = 0); regularise for stable inversion.
-            Sigma_k += 1e-10 * np.eye(d_k)
-            Sigma_k_inv = np.linalg.solve(Sigma_k, np.eye(d_k))  # Σ_k⁻¹
-            block_k = np.kron(np.eye(G_k), Sigma_k_inv)  # I_G ⊗ Σ_k⁻¹
-            size_k = G_k * d_k
-            Gamma_inv[
-                factor_offset : factor_offset + size_k,
-                factor_offset : factor_offset + size_k,
-            ] = block_k
-            factor_offset += size_k
-            theta_offset += n_chol_k
-
-        # ---- Full-model PQL-fixed IRLS via vmap ------------------
-        X_np = X.values.astype(float)
-        Z_np = family.Z
-        n_features = X_np.shape[1]
-
-        if fit_intercept:
-            X_aug = _augment_intercept(X_np)
-        else:
-            X_aug = np.asarray(X_np)
-
-        # GLM warm-start for the full model
-        glm_res = _fit_glm_irls(X_aug, y_values, wfn, nll_np, family=glm_family)
-
-        # Permuted y — all permutations at once
-        y_perm = y_values[perm_indices]  # (B, n)
-
-        # Single vmap call: fit full model on each permuted y
-        beta_perm = _pql_fixed_irls_vmap(
-            X_aug,
-            Z_np,
-            y_perm,
-            Gamma_inv,
-            glm_res.beta,
-            wfn,
-        )  # (B, p_aug)
-
-        # Extract slope coefficients (skip intercept if present)
-        if fit_intercept:
-            beta_slopes = beta_perm[:, 1:]  # (B, n_features)
-        else:
-            beta_slopes = beta_perm  # (B, n_features)
-
-        # Mask confounders with observed coefficients
-        for j in range(n_features):
-            col_name = X.columns[j]
-            if col_name in confounders:
-                beta_slopes[:, j] = model_coefs[j]
-
-        return beta_slopes

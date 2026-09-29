@@ -54,13 +54,13 @@ References:
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import pandas as pd
 
-from ..families import fit_reduced
-from . import _residual_joint_statistic
+from ..families import _cross_fit_residualize, fit_reduced
+from . import _apply_randomization, _residual_joint_statistic
 
 if TYPE_CHECKING:
     from ..families import ModelFamily
@@ -88,6 +88,10 @@ class FreedmanLaneIndividualStrategy:
         fit_intercept: bool = True,
         n_jobs: int = 1,
         randomization: str = "permute",
+        reduced_model: Any | None = None,
+        groups: np.ndarray | None = None,
+        random_state: int | None = None,
+        **kwargs: Any,
     ) -> np.ndarray:
         """Run the Freedman–Lane individual permutation algorithm.
 
@@ -103,6 +107,12 @@ class FreedmanLaneIndividualStrategy:
             fit_intercept: Whether to include an intercept.
             n_jobs: Parallelism level for the batch-fit step.
             randomization: ``"permute"`` (default) or ``"sign_flip"``.
+            reduced_model: Optional flexible machine learning estimator
+                implementing scikit-learn's fit/predict interface for
+                Double/Debiased Machine Learning (DML).
+            groups: Optional cluster group labels for GroupKFold cross-fitting.
+            random_state: Optional seed for reproducible cross-fitting.
+            **kwargs: Additional keyword arguments for protocol parity.
 
         Returns:
             Array of shape ``(B, n_features)`` with permuted
@@ -119,6 +129,98 @@ class FreedmanLaneIndividualStrategy:
         n_features = X_np.shape[1]  # p = number of predictors
 
         result = np.zeros((n_perm, n_features))  # (B, p) permuted coefficients
+
+        if reduced_model is not None:
+            # ---------------------------------------------------------- #
+            # Double/Debiased Machine Learning (DML-DR) Pathway
+            # (Chernozhukov et al. 2018; Robinson 1988)
+            # ---------------------------------------------------------- #
+            # When true confounding is nonlinear, single-residualized
+            # Freedman–Lane suffers severe omitted variable bias because
+            # linear projection cannot absorb nonlinear confounder signals
+            # present in X_test. Double-Residualized DML cross-fits both Y
+            # and X_test against confounders Z out-of-fold, achieving Neyman
+            # orthogonality and restoring nominal Type I control and unbiased
+            # coefficient estimation.
+            test_cols = [c for c in X.columns if c not in confounders]
+            if not test_cols:
+                for c in confounders:
+                    c_idx = X.columns.get_loc(c)
+                    result[:, c_idx] = model_coefs[c_idx]
+                return result
+
+            test_idx = [X.columns.get_loc(c) for c in test_cols]
+            conf_idx = [X.columns.get_loc(c) for c in confounders]
+            Z = X_np[:, conf_idx]  # (n, q) confounder design
+            X_test = X_np[:, test_idx]  # (n, p_t) tested features
+
+            # Step 1: Out-of-fold double cross-fitting
+            # Purges nonlinear nuisance functions g(Z) = E[Y|Z] and
+            # m(Z) = E[X|Z] to obtain out-of-fold residuals:
+            # y_tilde = Y - g_hat(Z), X_test_tilde = X_test - m_hat(Z).
+            y_tilde, X_test_tilde = _cross_fit_residualize(
+                Z,
+                y_values,
+                X=X_test,
+                reduced_model=reduced_model,
+                groups=groups,
+                random_state=random_state,
+            )
+            if X_test_tilde.ndim == 1:
+                X_test_tilde = X_test_tilde.reshape(-1, 1)
+
+            p_t = len(test_cols)
+            # Step 2: Loop over tested features. Under Frisch–Waugh–Lovell (FWL),
+            # partial out other tested features in the double-residualized space.
+            for k in range(p_t):
+                full_col = test_idx[k]
+                x_k = X_test_tilde[:, k]  # (n,) target tested predictor
+
+                if p_t > 1:
+                    # Other tested features to partial out linearly
+                    other_k = np.delete(X_test_tilde, k, axis=1)  # (n, p_t - 1)
+                    if fit_intercept:
+                        W = np.column_stack([np.ones(n), other_k])  # (n, p_t)
+                    else:
+                        W = other_k  # (n, p_t - 1)
+                    # FWL projection matrix M = I - W (W^T W)^(-1) W^T
+                    W_pinv = np.linalg.pinv(W)
+                    v_k = x_k - W @ (W_pinv @ x_k)  # residualized tested feature
+                    e_k = y_tilde - W @ (
+                        W_pinv @ y_tilde
+                    )  # residualized response under H0(k)
+                else:
+                    if fit_intercept:
+                        v_k = x_k - np.mean(x_k)
+                        e_k = y_tilde - np.mean(y_tilde)
+                    else:
+                        v_k = x_k
+                        e_k = y_tilde
+
+                denom = float(np.dot(v_k, v_k))
+                if denom > 1e-14:
+                    beta_dml = float(np.dot(v_k, e_k) / denom)
+                    w_k = v_k / denom  # (n,) projection vector
+                else:
+                    beta_dml = 0.0
+                    w_k = np.zeros_like(v_k)
+
+                # Overwrite observed coefficient for tested feature with debiased DML point estimate
+                model_coefs[full_col] = beta_dml
+
+                # Step 3: Permute reduced residuals under H0(k)
+                # By orthogonality of v_k to W, the refit on Y* = W*beta + pi(e_k)
+                # simplifies to: beta*_b = w_k^T pi_b(e_k). Evaluated across all B
+                # permutations in a single vectorised BLAS matrix multiplication.
+                E_pi = _apply_randomization(e_k, perm_indices, randomization)  # (B, n)
+                result[:, full_col] = np.asarray(E_pi @ w_k)
+
+            # Confounder columns keep observed coefficients
+            for c in confounders:
+                c_idx = X.columns.get_loc(c)
+                result[:, c_idx] = model_coefs[c_idx]
+
+            return result
 
         # Loop over tested features j.  Each iteration tests
         # H₀(j): β_j = 0 with nuisance block X_{−j} (all other
@@ -213,6 +315,10 @@ class FreedmanLaneJointStrategy:
         fit_intercept: bool = True,
         n_jobs: int = 1,
         randomization: str = "permute",
+        reduced_model: Any | None = None,
+        groups: np.ndarray | None = None,
+        random_state: int | None = None,
+        **kwargs: Any,
     ) -> tuple[float, np.ndarray, str, list[str]]:
         """Run the Freedman–Lane joint permutation algorithm.
 
@@ -228,6 +334,59 @@ class FreedmanLaneJointStrategy:
 
         X_np = X.values.astype(float)  # (n, p) full design matrix
         n = perm_indices.shape[1]  # n observations
+
+        if reduced_model is not None:
+            # ---------------------------------------------------------- #
+            # Double-Residualized DML Joint Improvement Test
+            # ---------------------------------------------------------- #
+            if not features_to_test:
+                return 0.0, np.zeros(perm_indices.shape[0]), metric_type, []
+
+            test_idx = [X.columns.get_loc(c) for c in features_to_test]
+            conf_idx = [X.columns.get_loc(c) for c in confounders]
+            Z = X_np[:, conf_idx]  # (n, q)
+            X_test = X_np[:, test_idx]  # (n, p_t)
+
+            # Step 1: Out-of-fold double cross-fitting
+            y_tilde, X_test_tilde = _cross_fit_residualize(
+                Z,
+                y_values,
+                X=X_test,
+                reduced_model=reduced_model,
+                groups=groups,
+                random_state=random_state,
+            )
+            if X_test_tilde.ndim == 1:
+                X_test_tilde = X_test_tilde.reshape(-1, 1)
+
+            if fit_intercept:
+                y_tilde_c = y_tilde - np.mean(y_tilde)
+                X_test_tilde_c = X_test_tilde - np.mean(X_test_tilde, axis=0)
+            else:
+                y_tilde_c = y_tilde
+                X_test_tilde_c = X_test_tilde
+
+            # Step 2: Orthonormal basis for tested subspace via thin QR:
+            # P_X = Q Q^T where Q has orthonormal columns (n, p_t).
+            Q, _ = np.linalg.qr(X_test_tilde_c, mode="reduced")
+
+            # Step 3: Observed improvement = ||P_X y_tilde||^2 = ||Q^T y_tilde||^2
+            obs_proj = Q.T @ y_tilde_c  # (p_t,)
+            obs_improvement = float(np.sum(obs_proj**2))
+
+            # Step 4: Permuted improvements = ||Q^T pi(y_tilde)||^2
+            E_pi = _apply_randomization(
+                y_tilde_c, perm_indices, randomization
+            )  # (B, n)
+            A = E_pi @ Q  # (B, p_t)
+            perm_improvements = np.sum(A**2, axis=1)  # (B,)
+
+            return (
+                obs_improvement,
+                perm_improvements,
+                metric_type,
+                features_to_test,
+            )
 
         # Z = confounder design matrix (n, q_z).
         if confounders:
