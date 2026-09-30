@@ -164,6 +164,69 @@ include `predictor`, `identified_confounders`, `identified_mediators`,
 `identified_moderators`, `identified_colliders`, and the corresponding stage
 results. It supports attribute access, dict-style access, and `to_dict()`.
 
+### `ConformalResult`
+
+Result object returned by :func:`conformal_prediction`.
+For regression families, `prediction_interval` is populated as a `(lower, upper)`
+tuple for single queries (or an overall envelope), `intervals` is an `(n_queries, 2)`
+NumPy array of prediction intervals, and `point_predictions` provides the base model
+point estimates $\hat{y}(X_{\text{new}})$. For classification families (`"logistic"`,
+`"ordinal"`, `"multinomial"`), `prediction_set` is populated for single queries,
+`prediction_sets` provides the list of class label arrays across all queries, and
+`probabilities` provides the `(n_queries, n_classes)` array of predicted class probabilities.
+Also provides `nonconformity_scores`, `confidence_level`, `method`,
+`coverage_guarantee` (`"finite_sample_exact"` or `"worst_case_1_minus_2alpha"`),
+`groups`, and calibration `diagnostics`.
+
+Provides the method:
+- `.evaluate(y_true, groups=None) -> ConformalEvaluationResult`: evaluates out-of-sample
+  empirical coverage, sharpness, and Feature-Stratified Coverage (FSC).
+
+### `ConformalEvaluationResult`
+
+Result object returned by :func:`evaluate_conformal` or :meth:`ConformalResult.evaluate`.
+Contains out-of-sample empirical coverage verification metrics:
+- `empirical_coverage`: Observed marginal coverage rate $\frac{1}{n} \sum \mathbb{I}(y_i \in \mathcal{C}(x_i))$.
+- `nominal_coverage`: Nominal confidence target $1 - \alpha$.
+- `n_eval`: Count of evaluated test observations.
+- `covered`: Boolean NumPy array of length $n$ indicating per-observation coverage.
+- `mean_interval_width` / `median_interval_width`: Sharpness metrics for continuous regression.
+- `singleton_rate` / `ambiguous_rate` / `empty_rate` / `set_size_distribution`: Set cardinality metrics for classification.
+- `group_coverage` / `group_counts` / `group_mean_width` / `fsc_metric`: Feature-Stratified Coverage (FSC) metrics when `groups` is supplied.
+
+### `InvarianceResult`
+
+Result object returned by :func:`invariance_test`.
+Represents the outcome of testing whether the conditional distribution $P(Y \mid X)$
+is invariant across environments $E$, formalized as $H_0: Y \perp\!\!\perp E \mid X$.
+Provides:
+- `is_invariant`: Boolean flag indicating whether the test fails to reject $H_0$ at the chosen significance level.
+- `p_value`: Permutation p-value for the omnibus joint invariance test.
+- `environment_coefficients`: Dictionary of estimated slopes $\hat\beta_e$ for each environment.
+- `pooled_coefficient`: Slope estimate from the pooled (full-data) model.
+- `max_deviation`: Maximum observed slope deviation across environments $\max_e |\hat\beta_e - \hat\beta_{\text{pool}}|$.
+- `null_distribution`: Permuted test statistics under $H_0$.
+- `tier`: Exactness tier (`"tier_0_stratified"`, `"tier_1_residualized"`, or `"tier_2_cpt"`).
+- `guarantee_tier`: Theoretical guarantee level (`"finite_sample_exact"`, `"asymptotically_exact"`, or `"exact_up_to_tv_error"`).
+- `method`: Permutation strategy used (`"stratified"`, `"freedman_lane"`, `"kennedy"`, `"score"`, or `"conditional"`).
+- `interpretation`: Formatted string summarizing the causal invariance conclusion.
+- `diagnostics`: Dictionary containing environment counts, test statistics, and conditional model diagnostics.
+
+### `KnockoffResult`
+
+Result object returned by :func:`knockoff_test`.
+Provides False Discovery Rate (FDR) controlled feature selection via the knockoff+
+threshold (Barber & Candès, 2015; Candès et al., 2018).
+Provides:
+- `selected_features`: List of feature names passing the knockoff+ selection threshold.
+- `knockoff_statistics`: NumPy array of W-statistics $W_j = |\hat\beta_j| - |\hat{\tilde\beta}_j|$ for each feature.
+- `fdr_level`: Target FDR bound $q \in (0, 1)$.
+- `threshold`: Knockoff+ threshold $\tau_+$ such that estimated $\text{FDP} \le q$.
+- `feature_names`: Full list of evaluated feature names.
+- `method`: Construction method (`"fixed_x"`, `"equicorrelated"`, or `"sdp"`).
+- `guarantee_tier`: Theoretical guarantee level (`"finite_sample_exact"` or `"model_x_approximate"`).
+- `diagnostics`: Dictionary containing design condition number $\kappa(X)$, shrinkage intensity, and MMD swap-exchangeability p-values.
+
 ### `ConfounderAnalysisResultSet`
 
 Dict-like container returned by `identify_confounders(..., predictor=None)`.
@@ -1037,6 +1100,72 @@ The table accepts the multi-predictor result set returned when
 `identify_confounders(..., predictor=None)` is used. Its advisories are shown
 in the same wrapped `Notes` section as model-result tables.
 
+### `print_conformal_table`
+
+```python
+print_conformal_table(
+    result: ConformalResult,
+    *,
+    title: str | None = None,
+    index: int | None = None,
+) -> None
+```
+
+Print conformal prediction results in a formatted 80-column ASCII table,
+including the formal mathematical guarantee banner (`"Finite-Sample Exact"` or
+`"Distribution-Free Worst-Case"`), calibration sample size, quantile rank $k$,
+threshold score $\hat q$, and the resulting prediction interval (for regression)
+or prediction set (for classification). When $N > 1$ query points are present and
+`index=None`, renders batch summary diagnostics. When `index` is an integer,
+renders the detailed single-case prediction region, point prediction, and class
+probabilities for that specific query observation without re-calibrating.
+
+### `print_conformal_evaluation_table`
+
+```python
+print_conformal_evaluation_table(
+    eval_result: ConformalEvaluationResult,
+    *,
+    title: str | None = None,
+) -> None
+```
+
+Print out-of-sample conformal evaluation results in a formatted 80-column ASCII table,
+displaying nominal target, empirical coverage rate, verification status
+(`VALID` vs `UNDER-COVERING`), interval sharpness metrics, set cardinality distribution,
+and Feature-Stratified Coverage (FSC) tables when stratified groups were evaluated.
+
+### `print_invariance_table`
+
+```python
+print_invariance_table(
+    result: InvarianceResult,
+    *,
+    title: str | None = None,
+) -> None
+```
+
+Print causal invariance test results in a formatted 80-column ASCII table,
+displaying the formal guarantee banner (`"Finite-Sample Exact"`,
+`"Asymptotically Exact"`, or `"Exact up to Model TV Error"`), method, target
+predictor, invariance decision, p-value, pooled slope, maximum deviation, and
+a breakdown of per-environment sample sizes and slope estimates.
+
+### `print_knockoff_table`
+
+```python
+print_knockoff_table(
+    result: KnockoffResult,
+    *,
+    title: str | None = None,
+) -> None
+```
+
+Print knockoff filter feature selection results in a formatted 80-column ASCII table,
+displaying the formal guarantee banner (`"Finite-Sample Exact FDR (Barber & Candès 2015)"` vs
+`"Model-X Approximate FDR (Candès et al. 2018)"`), target FDR $q$, threshold $\tau_+$,
+selected features count, top feature W-statistics, and diagnostic checks (condition number, MMD swap status).
+
 ### `print_dataset_info_table`
 
 ```python
@@ -1159,6 +1288,155 @@ method, confounders, batch shape, and convergence count. The default title is
 `<FamilyName> Protocol Summary` with a centered `[ Execution & Protocol Artifacts ]`
 banner. Passing a result explicitly avoids ambiguity about which model run is
 being inspected.
+
+---
+
+## Conformal Prediction
+
+### `conformal_prediction`
+
+```python
+conformal_prediction(
+    X_train: DataFrameLike | np.ndarray,
+    y_train: DataFrameLike | np.ndarray,
+    X_new: DataFrameLike | np.ndarray,
+    family: str | ModelFamily = "auto",
+    kernel: Kernel | None = None,
+    groups: np.ndarray | ExchangeabilityTree | None = None,
+    confidence_level: float = 0.95,
+    method: str = "split",
+    cal_ratio: float = 0.5,
+    fit_intercept: bool = True,
+    random_state: int | None = None,
+) -> ConformalResult
+```
+
+Compute distribution-free conformal prediction regions with finite-sample guarantees.
+
+For continuous outcomes (regression), constructs a prediction interval `(lower, upper)`
+covering $Y_{\text{new}}$ with probability at least `confidence_level`. For categorical
+outcomes (classification), constructs a prediction set of plausible class labels.
+
+| Parameter | Description |
+|---|---|
+| `X_train` | Training feature matrix of shape `(n, p)`. |
+| `y_train` | Training response vector of shape `(n,)`. |
+| `X_new` | Query feature matrix `(n_new, p)` or single query point `(p,)`. |
+| `family` | Regression/classification family name or `ModelFamily` instance. `"auto"` detects binary vs continuous outcomes. |
+| `kernel` | Optional `Kernel` instance for locally-weighted adaptive conformal prediction (Papadopoulos et al. 2008). |
+| `groups` | Cluster labels `(n,)` or `ExchangeabilityTree` for clustered/hierarchical conformal prediction (Dunn, Wasserman & Ramdas 2022). |
+| `confidence_level` | Nominal coverage level $1 - \alpha$, default `0.95`. |
+| `method` | `"split"` (default, finite-sample exact) or `"jackknife_plus"` (leave-one-out, distribution-free $1 - 2\alpha$ theoretical guarantee). |
+| `cal_ratio` | Fraction of data allocated to the calibration set in split conformal (default `0.5`). |
+| `fit_intercept` | Whether to fit an intercept column (default `True`). |
+| `random_state` | Seed for reproducible calibration splitting. |
+
+**Returns:** `ConformalResult` with `prediction_interval` (regression), `prediction_set`
+(classification), `intervals`, `prediction_sets`, `nonconformity_scores`,
+`confidence_level`, `method`, `coverage_guarantee`, and calibration `diagnostics`.
+
+### `evaluate_conformal`
+
+```python
+evaluate_conformal(
+    result: ConformalResult,
+    y_true: DataFrameLike | np.ndarray,
+    groups: DataFrameLike | np.ndarray | None = None,
+) -> ConformalEvaluationResult
+```
+
+Evaluate out-of-sample empirical coverage and interval/set sharpness against ground-truth labels.
+
+| Parameter | Description |
+|---|---|
+| `result` | `ConformalResult` returned by `conformal_prediction`. |
+| `y_true` | True observed outcomes for the query observations. |
+| `groups` | Optional discrete group labels for evaluating Feature-Stratified Coverage (FSC). |
+
+**Returns:** `ConformalEvaluationResult` containing empirical coverage rate,
+nominal target, verification status, sharpness metrics, and stratified coverage breakdown.
+
+---
+
+## Invariance Testing
+
+### `invariance_test`
+
+```python
+invariance_test(
+    X: DataFrameLike,
+    y: DataFrameLike | pd.Series | np.ndarray,
+    predictor: str,
+    environments: np.ndarray | pd.Series | str,
+    family: str | ModelFamily = "auto",
+    method: str = "auto",
+    reduced_model: Any | None = None,
+    n_randomizations: int = 5000,
+    confidence_level: float = 0.95,
+    random_state: int | None = None,
+) -> InvarianceResult
+```
+
+Test conditional distribution invariance $P(Y \mid X)$ across heterogeneous environments $E$.
+
+Formalized as the conditional independence null hypothesis $H_0: Y \perp\!\!\perp E \mid X$,
+evaluating whether the mechanism relating predictor and conditioning covariates $X$ to response
+$Y$ remains constant across experimental or observational environments.
+
+| Parameter | Description |
+|---|---|
+| `X` | Covariate feature matrix as a pandas or Polars DataFrame. |
+| `y` | Response vector or single-column DataFrame/Series. |
+| `predictor` | Column name in `X` representing the primary predictor of interest. |
+| `environments` | 1D array/Series of environment labels, or the column name in `X` containing environment identifiers. |
+| `family` | Regression family name (`"auto"`, `"linear"`, `"logistic"`, etc.) or `ModelFamily` instance. |
+| `method` | Permutation strategy: `"auto"` (default, selects Tier 0 if `X` is discrete, else Tier 1), `"freedman_lane"`, `"kennedy"`, `"score"`, `"conditional"`, or `"stratified"`. |
+| `reduced_model` | Optional flexible machine learning estimator (e.g. `GradientBoostingRegressor`) for Double/Debiased Machine Learning (DML) non-linear confounding absorption. |
+| `n_randomizations` | Number of randomization draws (default `5000`). |
+| `confidence_level` | Confidence level $1 - \alpha$ for invariance decision (default `0.95`). |
+| `random_state` | Seed for reproducible permutations. |
+
+**Returns:** `InvarianceResult` containing decision, p-value, per-environment slopes, pooled slope,
+max deviation, guarantee tier, and diagnostics.
+
+---
+
+### `knockoff_test`
+
+```python
+knockoff_test(
+    X: DataFrameLike,
+    y: DataFrameLike | pd.Series | np.ndarray,
+    family: str | ModelFamily = "auto",
+    kernel: Kernel | None = None,
+    fdr_level: float = 0.1,
+    method: str = "equicorrelated",
+    estimator: str = "auto",
+    shrinkage: bool = True,
+    random_state: int | None = None,
+) -> KnockoffResult
+```
+
+Controlled variable selection with false discovery rate (FDR) control via knockoffs.
+
+Constructs synthetic "knockoff" features $\tilde{X}$ that preserve the covariance structure of $X$
+while being conditionally independent of $Y$ given $X$, achieving finite-sample FDR control via
+the Barber & Candès (2015) knockoff+ threshold.
+
+| Parameter | Description |
+|---|---|
+| `X` | Feature matrix as a pandas or Polars DataFrame, shape $(n, p)$. |
+| `y` | Response vector or single-column DataFrame/Series, shape $(n,)$. |
+| `family` | Model family (e.g. `"linear"`, `"logistic"`). For `method="fixed_x"`, must be linear. |
+| `kernel` | Optional `Kernel` instance for MMD swap-exchangeability diagnostic (default: `GaussianKernel`). |
+| `fdr_level` | Target False Discovery Rate bound $q \in (0, 1)$ (default `0.1`). |
+| `method` | Knockoff construction method: `"fixed_x"` (finite-sample exact FDR, requires $n \ge 2p$), `"equicorrelated"` (Model-X approximate FDR), or `"sdp"`. |
+| `estimator` | Feature importance estimator: `"auto"` (OLS when $n \ge 2p$, LassoCV when $n < 2p$), `"ols"`, or `"lasso_cv"`. |
+| `shrinkage` | Whether to apply Ledoit-Wolf covariance shrinkage for Model-X knockoffs (default `True`). |
+| `random_state` | Seed for reproducible knockoff generation and MMD permutation tests. |
+
+**Returns:** `KnockoffResult` containing selected features, W-statistics, threshold $\tau_+$,
+guarantee tier, and diagnostic checks.
 
 ---
 

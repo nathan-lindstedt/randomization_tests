@@ -26,7 +26,14 @@ from .families import ModelFamily, _fmt_p, resolve_family
 from .families_mixed import _format_variance_components
 
 if TYPE_CHECKING:
-    from ._results import IndividualTestResult, JointTestResult
+    from ._results import (
+        ConformalEvaluationResult,
+        ConformalResult,
+        IndividualTestResult,
+        InvarianceResult,
+        JointTestResult,
+        KnockoffResult,
+    )
 
 
 def _truncate(name: str, max_len: int) -> str:
@@ -59,6 +66,19 @@ def _fmt_diag_val(val: object) -> str:
     if isinstance(val, float) and (val != val):  # nan check
         return "N/A"
     return str(val)
+
+
+def _fmt_prob(p: float) -> str:
+    """Format a probability for display.
+
+    Displays '<0.0001' or '>0.9999' for extreme saturation near 0 or 1,
+    and 4 decimal places otherwise.
+    """
+    if p < 0.0001:
+        return "<0.0001"
+    if p > 0.9999:
+        return ">0.9999"
+    return f"{p:.4f}"
 
 
 def _wrap(text: str, width: int = 80, indent: int = 2) -> str:
@@ -206,30 +226,25 @@ def _resolve_guarantee_tier(results: Any) -> str:
        mixed models, Rao score projection, ter Braak, Kennedy.
     4. Distribution-Free Worst-Case (1-2α): Jackknife+ conformal prediction.
     """
-    tier = getattr(results, "guarantee_tier", None)
-    if tier:
-        return str(tier)
-    ctx = getattr(results, "context", None)
-    if ctx and getattr(ctx, "guarantee_tier", None):
-        return str(ctx.guarantee_tier)
+    # InvarianceResult
+    if hasattr(results, "is_invariant") and hasattr(
+        results, "environment_coefficients"
+    ):
+        method = getattr(results, "method", "freedman_lane")
+        tier = getattr(results, "tier", "")
+        if tier == "tier_0_stratified" or method == "stratified":
+            return "Finite-Sample Exact (Within-Stratum Permutation)"
+        elif tier == "tier_2_cpt" or method == "conditional":
+            return "Exact up to Model TV Error (CPT Resampling)"
+        method_label = method.replace("_", " ").title()
+        return f"Asymptotically Exact ({method_label} Environment Block)"
 
     # ConformalResult
     if hasattr(results, "prediction_interval") and hasattr(results, "prediction_set"):
         method = getattr(results, "method", "split")
         if method == "jackknife_plus":
-            return "Distribution-Free Worst-Case (Coverage \u2265 1-2\u03b1)"
-        return "Finite-Sample Exact (Marginal Coverage \u2265 1-\u03b1)"
-
-    # InvarianceResult
-    if hasattr(results, "is_invariant") and hasattr(
-        results, "environment_coefficients"
-    ):
-        method = getattr(results, "method", "kennedy")
-        if method == "stratified":
-            return "Finite-Sample Exact (Within-Stratum Permutation)"
-        elif method == "conditional":
-            return "Exact up to Model TV Error (CPT Resampling)"
-        return "Asymptotically Exact (Kennedy Environment Block)"
+            return "Distribution-Free Worst-Case (Coverage ≥ 1-2α)"
+        return "Finite-Sample Exact (Marginal Coverage ≥ 1-α)"
 
     # KnockoffResult
     if hasattr(results, "selected_features") and hasattr(
@@ -237,8 +252,15 @@ def _resolve_guarantee_tier(results: Any) -> str:
     ):
         method = getattr(results, "method", "equicorrelated")
         if method == "fixed_x":
-            return "Finite-Sample Exact FDR (Fixed-X)"
-        return "Model-X Approximate FDR (Gaussian Design / Estimated \u03a3)"
+            return "Finite-Sample Exact FDR (Barber & Candès 2015)"
+        return "Model-X Approximate FDR (Candès et al. 2018)"
+
+    tier = getattr(results, "guarantee_tier", None)
+    if tier:
+        return str(tier)
+    ctx = getattr(results, "context", None)
+    if ctx and getattr(ctx, "guarantee_tier", None):
+        return str(ctx.guarantee_tier)
 
     # Regression result (IndividualTestResult / JointTestResult)
     randomization = getattr(results, "randomization", None)
@@ -2015,6 +2037,491 @@ def print_protocol_usage_table(
         total = ctx.batch_shape[0]
         print(
             f"  {'Convergence:':<{lw_top}}{ctx.convergence_count}/{total} fits converged"
+        )
+
+    print("=" * W)
+    print()
+
+
+def print_conformal_table(
+    result: ConformalResult,
+    *,
+    title: str | None = None,
+    index: int | None = None,
+) -> None:
+    """Print conformal prediction results in a formatted ASCII table.
+
+    Displays the guarantee banner, method, coverage target, calibration
+    sample size, quantile rank, threshold, and the resulting prediction
+    interval (regression) or prediction set (classification).
+
+    When ``result`` contains batch predictions (N > 1), passing ``index=None``
+    displays a cohort summary table, while passing an explicit integer ``index``
+    displays the detailed prediction region, point prediction, and probabilities
+    for that specific observation without re-calibrating.
+
+    Args:
+        result: Result object returned by
+            :func:`~randomization_tests.conformal_prediction`.
+        title: Title for the output table. If None, a standardized
+            title is generated.
+        index: Optional 0-based query index to display a specific observation
+            from a batch prediction. If None and N > 1, prints a batch summary.
+    """
+    W = 80
+    is_regression = (
+        result.intervals is not None or result.prediction_interval is not None
+    )
+
+    n_queries = 0
+    if is_regression:
+        if result.intervals is not None:
+            n_queries = len(result.intervals)
+        elif result.prediction_interval is not None:
+            n_queries = 1
+    else:
+        if result.prediction_sets is not None:
+            n_queries = len(result.prediction_sets)
+        elif result.prediction_set is not None:
+            n_queries = 1
+
+    if index is not None and (index < 0 or index >= n_queries):
+        msg = f"index {index} is out of bounds for result with {n_queries} queries."
+        raise IndexError(msg)
+
+    if title is None:
+        if index is not None and n_queries > 1:
+            if is_regression:
+                title = f"Conformal Prediction — Prediction Interval (Query {index})"
+            else:
+                title = f"Conformal Prediction — Prediction Set (Query {index})"
+        elif is_regression:
+            title = "Conformal Prediction — Prediction Interval"
+        else:
+            title = "Conformal Prediction — Prediction Set"
+
+    print("=" * W)
+    for line in textwrap.wrap(title, width=78):
+        print(f"{line:^80}")
+    guarantee = _resolve_guarantee_tier(result)
+    if guarantee:
+        g_banner = f"[ Guarantee: {guarantee} ]"
+        print(f"{g_banner:^80}")
+    print("=" * W)
+
+    col1 = 40
+    col2 = 38
+    diag = getattr(result, "diagnostics", {})
+
+    print(
+        f"{'Method:':<18}{result.method:<{col1 - 18}}"
+        f"{'Confidence Level:':>{col2 - 12}} {f'{result.confidence_level * 100:.1f}%':>11}"
+    )
+
+    n_cal_str = str(diag.get("n_cal", len(result.nonconformity_scores)))
+    q_rank_str = str(diag.get("quantile_rank_k", diag.get("rank_hi", "N/A")))
+    print(
+        f"{'Calibration Size:':<18}{n_cal_str:<{col1 - 18}}"
+        f"{'Quantile Rank k:':>{col2 - 12}} {q_rank_str:>11}"
+    )
+
+    thresh_q = diag.get("threshold_q", diag.get("mean_interval_width", "N/A"))
+    thresh_q_str = f"{thresh_q:.4f}" if isinstance(thresh_q, float) else str(thresh_q)
+
+    metric_name = (
+        "Locally-Weighted"
+        if diag.get("adaptive_kernel")
+        else ("Absolute Residual" if is_regression else "1 - P(Y=y)")
+    )
+    print(
+        f"{'Nonconformity:':<18}{metric_name:<{col1 - 18}}"
+        f"{'Threshold q:':>{col2 - 12}} {thresh_q_str:>11}"
+    )
+
+    if diag.get("adaptive_kernel"):
+        kernel_name = str(diag.get("adaptive_kernel"))
+        print(f"{'Adaptive Kernel:':<18}{kernel_name:<{col1 - 18}}{'':<{col2}}")
+
+    if getattr(result, "groups", None) is not None:
+        n_eff = diag.get("n_cal_effective", "N/A")
+        print(
+            f"{'Cluster Units:':<18}{f'{n_eff} calibration clusters':<{col1 - 18}}{'':<{col2}}"
+        )
+
+    print("-" * W)
+
+    # Branch 1: Batch summary table (when index is None and n_queries > 1)
+    if index is None and n_queries > 1:
+        if is_regression and result.intervals is not None:
+            widths = result.intervals[:, 1] - result.intervals[:, 0]
+            print(f"  Batch Queries (N):       {n_queries}")
+            print(f"  Mean Interval Width:     {np.mean(widths):.4f}")
+            print(f"  Median Interval Width:   {np.median(widths):.4f}")
+            print(
+                f"  Width Range [Min, Max]:  [{np.min(widths):.4f}, {np.max(widths):.4f}]"
+            )
+        elif not is_regression and result.prediction_sets is not None:
+            set_sizes = np.array([len(s) for s in result.prediction_sets])
+            singletons = np.mean(set_sizes == 1) * 100.0
+            ambiguous = np.mean(set_sizes > 1) * 100.0
+            print(f"  Batch Queries (N):       {n_queries}")
+            print(f"  Mean Set Size:           {np.mean(set_sizes):.4f}")
+            print(f"  Singleton Sets (|C|=1):  {singletons:.1f}%")
+            print(f"  Ambiguous Sets (|C|>1):  {ambiguous:.1f}%")
+            p_thresh = diag.get("threshold_probability", None)
+            if p_thresh is not None:
+                print(f"  Min Inclusion Prob:      {p_thresh:.4f}")
+    else:
+        # Branch 2: Specific single query (index if provided, else 0)
+        idx = index if index is not None else 0
+        if is_regression:
+            if result.intervals is not None and len(result.intervals) > idx:
+                lo = float(result.intervals[idx, 0])
+                hi = float(result.intervals[idx, 1])
+            elif result.prediction_interval is not None:
+                lo, hi = result.prediction_interval
+            else:
+                lo, hi = 0.0, 0.0
+            width = hi - lo
+
+            pt_pred = None
+            if (
+                result.point_predictions is not None
+                and len(result.point_predictions) > idx
+            ):
+                pt_pred = float(result.point_predictions[idx])
+            elif "point_predictions" in diag and len(diag["point_predictions"]) > idx:
+                pt_pred = float(diag["point_predictions"][idx])
+
+            if pt_pred is not None:
+                print(f"  Point Prediction:        {pt_pred:.4f}")
+            print(f"  Prediction Interval:     [{lo:.4f}, {hi:.4f}]")
+            print(f"  Interval Width:          {width:.4f}")
+        else:
+            if result.prediction_sets is not None and len(result.prediction_sets) > idx:
+                pred_set = result.prediction_sets[idx]
+            elif result.prediction_set is not None:
+                pred_set = result.prediction_set
+            else:
+                pred_set = np.array([], dtype=int)
+            classes_str = ", ".join(str(c) for c in pred_set)
+
+            probs_row = None
+            if result.probabilities is not None and len(result.probabilities) > idx:
+                probs_row = np.asarray(result.probabilities[idx])
+            elif (
+                "query_probabilities" in diag and len(diag["query_probabilities"]) > idx
+            ):
+                probs_row = np.asarray(diag["query_probabilities"][idx])
+
+            cls_labels = (
+                diag.get("class_labels", list(range(len(probs_row))))
+                if probs_row is not None
+                else []
+            )
+
+            if probs_row is not None:
+                if len(probs_row) <= 4:
+                    probs_str = ", ".join(
+                        f"P(Y={cls_labels[k]}) = {_fmt_prob(float(probs_row[k]))}"
+                        for k in range(len(probs_row))
+                    )
+                else:
+                    top_k = np.argsort(probs_row)[::-1][:3]
+                    probs_str = (
+                        ", ".join(
+                            f"P(Y={cls_labels[k]}) = {_fmt_prob(float(probs_row[k]))}"
+                            for k in top_k
+                        )
+                        + "..."
+                    )
+                print(f"  Class Probabilities:     {probs_str}")
+
+            p_thresh = diag.get("threshold_probability", None)
+            if p_thresh is not None:
+                print(f"  Min Inclusion Prob:      {p_thresh:.4f}")
+
+            print(f"  Prediction Set:          {{{classes_str}}}")
+            print(f"  Set Size:                {len(pred_set)}")
+
+    print("=" * W)
+    print()
+
+
+def print_conformal_evaluation_table(
+    eval_result: ConformalEvaluationResult,
+    *,
+    title: str | None = None,
+) -> None:
+    """Print out-of-sample conformal evaluation results in a formatted ASCII table.
+
+    Displays empirical coverage compared against nominal coverage target,
+    verification status (VALID vs UNDER-COVERING), sample size, and sharpness diagnostics
+    (interval width for regression or set-size breakdown for classification).
+
+    Args:
+        eval_result: Evaluation result returned by :func:`evaluate_conformal` or
+            :meth:`ConformalResult.evaluate`.
+        title: Title for the output table. If None, a standardized title is generated.
+    """
+    W = 80
+    if title is None:
+        title = "Conformal Prediction — Out-of-Sample Evaluation"
+
+    print("=" * W)
+    for line in textwrap.wrap(title, width=78):
+        print(f"{line:^80}")
+    g_banner = "[ Guarantee: Empirical Out-of-Sample Verification ]"
+    print(f"{g_banner:^80}")
+    print("=" * W)
+
+    col1 = 40
+    col2 = 38
+
+    status_str = (
+        "VALID (Coverage >= Target)"
+        if eval_result.empirical_coverage >= eval_result.nominal_coverage
+        else "UNDER-COVERING"
+    )
+
+    print(
+        f"{'Evaluation Sample N:':<22}{eval_result.n_eval:<{col1 - 22}}"
+        f"{'Nominal Target (1-α):':>{col2 - 12}} {f'{eval_result.nominal_coverage * 100:.1f}%':>11}"
+    )
+    print(
+        f"{'Empirical Coverage:':<22}{f'{eval_result.empirical_coverage * 100:.2f}%':<{col1 - 22}}"
+        f"{'Verification Status:':>{col2 - 12}} {status_str:>11}"
+    )
+
+    print("-" * W)
+
+    if eval_result.mean_interval_width is not None:
+        # Continuous regression metrics
+        print(f"  Mean Interval Width:     {eval_result.mean_interval_width:.4f}")
+        if eval_result.median_interval_width is not None:
+            print(f"  Median Interval Width:   {eval_result.median_interval_width:.4f}")
+    elif eval_result.singleton_rate is not None:
+        # Categorical classification metrics
+        s_rate = eval_result.singleton_rate * 100.0
+        a_rate = (eval_result.ambiguous_rate or 0.0) * 100.0
+        e_rate = (eval_result.empty_rate or 0.0) * 100.0
+        print(f"  Singleton Sets (|C|=1):  {s_rate:.1f}% (Decisive predictions)")
+        print(f"  Ambiguous Sets (|C|>1):  {a_rate:.1f}% (Multi-class uncertainty)")
+        if e_rate > 0.0:
+            print(f"  Empty Sets (|C|=0):      {e_rate:.1f}% (Model abstentions)")
+        if eval_result.set_size_distribution:
+            dist_strs = [
+                f"|C|={k}: {v}"
+                for k, v in sorted(eval_result.set_size_distribution.items())
+            ]
+            print(f"  Set Size Breakdown:      {', '.join(dist_strs)}")
+
+    if eval_result.group_coverage is not None:
+        print("-" * W)
+        fsc_str = (
+            f"{eval_result.fsc_metric * 100:.2f}%"
+            if eval_result.fsc_metric is not None
+            else "N/A"
+        )
+        print(f"Feature-Stratified Coverage (FSC Metric = min_g Coverage_g): {fsc_str}")
+        print("-" * W)
+        print(
+            f"{'Stratum / Group':<26}{'Count':>10}{'Empirical Coverage':>24}{'Mean Width/Size':>20}"
+        )
+        print("-" * W)
+        for g, cov in sorted(
+            eval_result.group_coverage.items(), key=lambda kv: str(kv[0])
+        ):
+            cnt = (
+                eval_result.group_counts.get(g, "N/A")
+                if eval_result.group_counts
+                else "N/A"
+            )
+            mw = (
+                f"{eval_result.group_mean_width.get(g, 0.0):.4f}"
+                if eval_result.group_mean_width and g in eval_result.group_mean_width
+                else "N/A"
+            )
+            print(f"{str(g):<26}{str(cnt):>10}{f'{cov * 100:.2f}%':>24}{mw:>20}")
+
+    print("=" * W)
+    print()
+
+
+def print_invariance_table(
+    result: InvarianceResult,
+    *,
+    title: str | None = None,
+) -> None:
+    """Print multi-environment causal invariance test results in a formatted ASCII table.
+
+    Displays the formal guarantee banner, test method and tier, target predictor,
+    invariance decision, overall p-value, pooled coefficient, maximum deviation,
+    and a breakdown of per-environment sample sizes and slope estimates.
+
+    Args:
+        result: Result object returned by :func:`~randomization_tests.invariance_test`.
+        title: Optional custom title for the table.
+    """
+    W = 80
+    if title is None:
+        title = "Causal Invariance Test — Peters, Bühlmann & Meinshausen (2016)"
+
+    print("=" * W)
+    for line in textwrap.wrap(title, width=78):
+        print(f"{line:^80}")
+    guarantee = _resolve_guarantee_tier(result)
+    if guarantee:
+        g_banner = f"[ Guarantee: {guarantee} ]"
+        print(f"{g_banner:^80}")
+    print("=" * W)
+
+    col1 = 40
+    col2 = 38
+    diag = getattr(result, "diagnostics", {})
+
+    method_str = getattr(result, "method", "freedman_lane").replace("_", " ").title()
+    target_pred = str(diag.get("target_predictor", "N/A"))
+
+    print(
+        f"{'Method:':<18}{method_str:<{col1 - 18}}"
+        f"{'Target Predictor:':>{col2 - 12}} {target_pred:>11}"
+    )
+
+    decision_str = (
+        "INVARIANT (Fail to Reject H₀)"
+        if result.is_invariant
+        else "NON-INVARIANT (Reject H₀)"
+    )
+    p_val_str = _fmt_p(result.p_value)
+
+    print(
+        f"{'Decision:':<18}{decision_str:<{col1 - 18}}"
+        f"{'P-Value:':>{col2 - 12}} {p_val_str:>11}"
+    )
+
+    pooled_str = f"{result.pooled_coefficient:.4f}"
+    max_dev_str = f"{result.max_deviation:.4f}"
+
+    print(
+        f"{'Pooled Slope:':<18}{pooled_str:<{col1 - 18}}"
+        f"{'Max Deviation:':>{col2 - 12}} {max_dev_str:>11}"
+    )
+
+    if "reduced_model" in diag:
+        rm_str = str(diag["reduced_model"])
+        print(f"{'Reduced Model:':<18}{rm_str:<{col1 - 18}}{'':<{col2}}")
+
+    print("-" * W)
+    print(
+        f"{'Environment':<24}{'Sample Size (n)':>18}{'Estimated Slope (β̂_e)':>22}{'Deviation':>16}"
+    )
+    print("-" * W)
+
+    env_counts = diag.get("environment_counts", {})
+    for env, slope in result.environment_coefficients.items():
+        n_str = str(env_counts.get(env, "N/A"))
+        if np.isnan(slope):
+            slope_str = "N/A"
+            dev_str = "N/A"
+        else:
+            slope_str = f"{slope:.4f}"
+            dev_str = f"{abs(slope - result.pooled_coefficient):.4f}"
+        print(f"{str(env):<24}{n_str:>18}{slope_str:>22}{dev_str:>16}")
+
+    print("=" * W)
+    print()
+
+
+def print_knockoff_table(
+    result: KnockoffResult,
+    *,
+    title: str | None = None,
+) -> None:
+    """Print knockoff filter feature selection results in a formatted ASCII table.
+
+    Displays the formal guarantee banner (Finite-Sample Exact vs Model-X Approximate),
+    target FDR level, selection threshold, total and selected feature counts,
+    selected feature names, top feature statistics W_j, and diagnostic checks.
+
+    Args:
+        result: Result object returned by :func:`~randomization_tests.knockoff_test`.
+        title: Optional custom title for the table.
+    """
+    W = 80
+    if title is None:
+        title = "Knockoff Filter Feature Selection (FDR Control)"
+
+    print("=" * W)
+    for line in textwrap.wrap(title, width=78):
+        print(f"{line:^80}")
+    guarantee = _resolve_guarantee_tier(result)
+    if guarantee:
+        g_banner = f"[ Guarantee: {guarantee} ]"
+        print(f"{g_banner:^80}")
+    print("=" * W)
+
+    col1 = 40
+    col2 = 38
+    diag = getattr(result, "diagnostics", {})
+
+    method_str = getattr(result, "method", "equicorrelated").replace("_", " ").title()
+    fdr_str = f"{result.fdr_level:.2f}"
+    thresh_str = (
+        f"{result.threshold:.4f}" if np.isfinite(result.threshold) else "None (inf)"
+    )
+    p_total = len(result.feature_names)
+    n_sel = len(result.selected_features)
+
+    print(
+        f"{'Method:':<18}{method_str:<{col1 - 18}}"
+        f"{'Target FDR (q):':>{col2 - 12}} {fdr_str:>11}"
+    )
+    print(
+        f"{'Threshold (τ₊):':<18}{thresh_str:<{col1 - 18}}"
+        f"{'Selected Features:':>{col2 - 12}} {f'{n_sel} / {p_total}':>11}"
+    )
+
+    estimator_str = str(diag.get("estimator", "N/A")).replace("_", " ").upper()
+    cond_num = diag.get("condition_number")
+    cond_str = f"{cond_num:.2e}" if cond_num is not None else "N/A"
+    print(
+        f"{'Estimator:':<18}{estimator_str:<{col1 - 18}}"
+        f"{'Design κ(X):':>{col2 - 12}} {cond_str:>11}"
+    )
+
+    if "swap_violation" in diag:
+        violation = diag["swap_violation"]
+        swap_str = "WARNING (p <= 0.05)" if violation else "Passed (p > 0.05)"
+        print(f"{'Swap Exchangeability:':<24}{swap_str:<{col1 - 24}}{'':<{col2}}")
+
+    print("-" * W)
+    if result.selected_features:
+        sel_str = ", ".join(result.selected_features)
+        wrapped_sel = textwrap.wrap(f"Selected: {sel_str}", width=78)
+        for line in wrapped_sel:
+            print(f"  {line}")
+    else:
+        print("  No features passed the knockoff+ threshold.")
+
+    print("-" * W)
+    print(f"{'Rank':<8}{'Feature Name':<28}{'W-Statistic':>18}{'Selection Status':>24}")
+    print("-" * W)
+
+    w_stats = result.knockoff_statistics
+    sorted_indices = np.argsort(-w_stats)
+    display_count = min(p_total, 10)
+    for rank, idx in enumerate(sorted_indices[:display_count], 1):
+        name = result.feature_names[idx]
+        w_val = float(w_stats[idx])
+        is_selected = name in result.selected_features
+        status_str = "SELECTED (*)" if is_selected else "Not Selected"
+        print(f"{rank:<8}{_truncate(name, 26):<28}{w_val:>18.4f}{status_str:>24}")
+
+    if p_total > display_count:
+        rem = p_total - display_count
+        print(
+            f"  ... ({rem} additional features omitted; all available in result.knockoff_statistics)"
         )
 
     print("=" * W)

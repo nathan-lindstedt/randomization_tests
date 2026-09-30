@@ -405,7 +405,7 @@ def text_mmd_test(
     n_components: int | None = None,
     kernel: Kernel | None = None,
     preprocessor: Callable[[list[str]], np.ndarray] | None = None,
-    n_permutations: int = 5000,
+    n_randomizations: int = 5000,
     max_landmarks: int | None = None,
     random_state: int | None = None,
 ) -> KernelTestResult:
@@ -449,8 +449,8 @@ def text_mmd_test(
     preprocessor : Callable[[list[str]], np.ndarray] or None
         Custom embedding function.  Receives the full pooled document list
         ``docs_x + docs_y`` and must return an ``(n_x + n_y, d)`` array.
-    n_permutations : int
-        Number of MMD permutations.  Default 5000.
+    n_randomizations : int
+        Number of MMD randomizations.  Default 5000.
     max_landmarks : int or None
         Nyström approximation landmark count.
     random_state : int or None
@@ -487,7 +487,7 @@ def text_mmd_test(
         X_emb,
         Y_emb,
         kernel=kernel,
-        n_permutations=n_permutations,
+        n_randomizations=n_randomizations,
         max_landmarks=max_landmarks,
         random_state=random_state,
     )

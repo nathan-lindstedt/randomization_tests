@@ -175,7 +175,7 @@ def mmd_test(
     Y: np.ndarray,
     *,
     kernel: Kernel | None = None,
-    n_permutations: int = 5000,
+    n_randomizations: int = 5000,
     max_landmarks: int | None = None,
     random_state: int | None = None,
 ) -> KernelTestResult:
@@ -195,7 +195,7 @@ def mmd_test(
     kernel:
         Kernel to use.  Defaults to :class:`~._kernels.GaussianKernel`
         with the median bandwidth heuristic.
-    n_permutations:
+    n_randomizations:
         Number of random relabellings.  Default 5000.
     max_landmarks:
         If not ``None``, use Nyström approximation with this many
@@ -233,24 +233,24 @@ def mmd_test(
 
     # Null distribution via label permutation
     perm_indices = generate_unique_permutations(
-        n, n_permutations, random_state=random_state
+        n, n_randomizations, random_state=random_state
     )
 
-    null = np.empty(n_permutations, dtype=float)
+    null = np.empty(n_randomizations, dtype=float)
     for b, perm in enumerate(perm_indices):
         new_x = perm[:n_x]
         new_y = perm[n_x:]
         null[b] = _mmd2_unbiased(K, new_x, new_y)
 
     # Phipson–Smyth corrected p-value
-    p_value = float((np.sum(null >= observed) + 1) / (n_permutations + 1))
+    p_value = float((np.sum(null >= observed) + 1) / (n_randomizations + 1))
 
     return KernelTestResult(
         statistic=observed,
         p_value=p_value,
         null_distribution=null,
         kernel_name=kernel.name(),
-        n_permutations=n_permutations,
+        n_randomizations=n_randomizations,
         method="mmd",
     )
 
@@ -266,7 +266,7 @@ def hsic_test(
     *,
     kernel_x: Kernel | None = None,
     kernel_y: Kernel | None = None,
-    n_permutations: int = 5000,
+    n_randomizations: int = 5000,
     max_landmarks: int | None = None,
     random_state: int | None = None,
 ) -> KernelTestResult:
@@ -285,7 +285,7 @@ def hsic_test(
         Kernel for X.  Defaults to :class:`~._kernels.GaussianKernel`.
     kernel_y:
         Kernel for Y.  Defaults to :class:`~._kernels.GaussianKernel`.
-    n_permutations:
+    n_randomizations:
         Number of random row permutations of Y.  Default 5000.
     max_landmarks:
         Nyström approximation landmark count (applied to both kernels).
@@ -321,15 +321,15 @@ def hsic_test(
 
     # Null distribution: permute rows of Y (breaks pairing under H₀)
     perm_indices = generate_unique_permutations(
-        n, n_permutations, random_state=random_state
+        n, n_randomizations, random_state=random_state
     )
 
-    null = np.empty(n_permutations, dtype=float)
+    null = np.empty(n_randomizations, dtype=float)
     for b, perm in enumerate(perm_indices):
         L_perm = gram_permute(L_c, perm)
         null[b] = gram_trace_product(K_c, L_perm) / (n**2)
 
-    p_value = float((np.sum(null >= observed) + 1) / (n_permutations + 1))
+    p_value = float((np.sum(null >= observed) + 1) / (n_randomizations + 1))
 
     kernel_name = f"{kernel_x.name()},{kernel_y.name()}"
 
@@ -338,7 +338,7 @@ def hsic_test(
         p_value=p_value,
         null_distribution=null,
         kernel_name=kernel_name,
-        n_permutations=n_permutations,
+        n_randomizations=n_randomizations,
         method="hsic",
     )
 
@@ -355,7 +355,7 @@ def kernel_regression_test(
     kernel_y: Kernel | None = None,
     confounders: np.ndarray | None = None,
     reduced_model: Any | None = None,
-    n_permutations: int = 5000,
+    n_randomizations: int = 5000,
     max_landmarks: int | None = None,
     random_state: int | None = None,
 ) -> KernelTestResult:
@@ -392,8 +392,8 @@ def kernel_regression_test(
         fit/predict interface. When supplied with *confounders*, both X and Y
         are cross-fit residualised out-of-fold against Z, preventing nonlinear
         confounder leakage.
-    n_permutations:
-        Number of permutations.  Default 5000.
+    n_randomizations:
+        Number of randomizations.  Default 5000.
     max_landmarks:
         Nyström approximation landmark count.
     random_state:
@@ -453,7 +453,7 @@ def kernel_regression_test(
         e_Y,
         kernel_x=LinearKernel(),
         kernel_y=kernel_y,
-        n_permutations=n_permutations,
+        n_randomizations=n_randomizations,
         max_landmarks=max_landmarks,
         random_state=random_state,
     )
@@ -463,6 +463,6 @@ def kernel_regression_test(
         p_value=result.p_value,
         null_distribution=result.null_distribution,
         kernel_name=kernel_y.name(),
-        n_permutations=n_permutations,
+        n_randomizations=n_randomizations,
         method="kernel_regression",
     )

@@ -55,12 +55,19 @@ Public API:
 """
 
 from ._config import get_backend, set_backend
+from ._conformal import conformal_prediction, evaluate_conformal
 from ._context import FitContext
+from ._invariance import invariance_test
+from ._knockoffs import knockoff_test
 from ._results import (
+    ConformalEvaluationResult,
+    ConformalResult,
     ConfounderAnalysisResult,
     ConfounderAnalysisResultSet,
     IndividualTestResult,
+    InvarianceResult,
     JointTestResult,
+    KnockoffResult,
 )
 from .confounders import (
     identify_confounders,
@@ -73,11 +80,15 @@ from .diagnostics import compute_e_value, rosenbaum_bounds
 from .display import (
     print_comparison_table,
     print_compatibility_table,
+    print_conformal_evaluation_table,
+    print_conformal_table,
     print_confounder_table,
     print_dataset_info_table,
     print_diagnostics_table,
     print_family_info_table,
+    print_invariance_table,
     print_joint_results_table,
+    print_knockoff_table,
     print_protocol_usage_table,
     print_results_table,
     print_symmetry_table,
@@ -103,9 +114,17 @@ from .sign_flips import generate_sign_flips, validate_symmetry
 __all__ = [
     "ConfounderAnalysisResult",
     "ConfounderAnalysisResultSet",
+    "ConformalEvaluationResult",
+    "ConformalResult",
     "IndividualTestResult",
+    "InvarianceResult",
     "JointTestResult",
+    "KnockoffResult",
     "FitContext",
+    "conformal_prediction",
+    "evaluate_conformal",
+    "invariance_test",
+    "knockoff_test",
     "randomization_test_regression",
     "compute_e_value",
     "identify_confounders",
@@ -116,10 +135,14 @@ __all__ = [
     "print_comparison_table",
     "print_compatibility_table",
     "print_confounder_table",
+    "print_conformal_evaluation_table",
+    "print_conformal_table",
     "print_dataset_info_table",
     "print_diagnostics_table",
     "print_family_info_table",
+    "print_invariance_table",
     "print_joint_results_table",
+    "print_knockoff_table",
     "print_protocol_usage_table",
     "print_results_table",
     "print_symmetry_table",

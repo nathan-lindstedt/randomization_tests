@@ -221,6 +221,33 @@ print_results_table(results_logistic_dml)
 > which is **finite-sample exact** with zero nuisance estimation error. Small-sample
 > discrete-confounder problems should use exchangeability cells rather than DML.
 
+## Conformal prediction
+
+Compute distribution-free prediction intervals (regression) and prediction sets
+(classification) with mathematical finite-sample guarantees:
+
+```python
+from randomization_tests import conformal_prediction, print_conformal_table
+
+# 1. Exact split conformal prediction for continuous outcomes
+res_reg = conformal_prediction(
+    X_train, y_train, X_new,
+    confidence_level=0.95,
+    method="split",
+    random_state=42,
+)
+print_conformal_table(res_reg)
+
+# 2. Conformal prediction sets for binary/multiclass classification
+res_clf = conformal_prediction(
+    X_train, y_binary, X_new,
+    family="logistic",
+    confidence_level=0.95,
+    random_state=42,
+)
+print_conformal_table(res_clf)
+```
+
 ## Input formats
 
 All public functions accept both **pandas** and **Polars** DataFrames:

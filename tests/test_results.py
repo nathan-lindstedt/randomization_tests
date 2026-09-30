@@ -19,6 +19,7 @@ import numpy as np
 import pytest
 
 from randomization_tests._results import (
+    ConformalEvaluationResult,
     ConformalResult,
     IndividualTestResult,
     InvarianceResult,
@@ -40,7 +41,7 @@ def _kernel_result(**overrides) -> KernelTestResult:
         p_value=0.03,
         null_distribution=np.array([0.1, 0.2, 0.3]),
         kernel_name="gaussian",
-        n_permutations=3,
+        n_randomizations=3,
         method="mmd",
     )
     defaults.update(overrides)
@@ -179,11 +180,11 @@ class TestKernelTestResult:
         assert isinstance(d["null_distribution"], list)
 
     def test_to_dict_preserves_scalar_fields(self):
-        r = _kernel_result(statistic=0.5, p_value=0.02, n_permutations=100)
+        r = _kernel_result(statistic=0.5, p_value=0.02, n_randomizations=100)
         d = r.to_dict()
         assert d["statistic"] == 0.5
         assert d["p_value"] == 0.02
-        assert d["n_permutations"] == 100
+        assert d["n_randomizations"] == 100
 
     def test_to_dict_has_all_fields(self):
         r = _kernel_result()
@@ -193,7 +194,7 @@ class TestKernelTestResult:
             "p_value",
             "null_distribution",
             "kernel_name",
-            "n_permutations",
+            "n_randomizations",
             "method",
         ):
             assert fname in d
@@ -271,14 +272,92 @@ class TestConformalResult:
         assert "prediction_interval" in r
         assert "confidence_level" in r
         assert "method" in r
+        assert "coverage_guarantee" in r
+        assert "groups" in r
+        assert "diagnostics" in r
 
     def test_getitem(self):
         r = _conformal_result_regression()
         assert r["method"] == "split"
         assert r["confidence_level"] == 0.95
+        assert r["coverage_guarantee"] == "finite_sample_exact"
 
     def test_prediction_interval_serializer_registered(self):
         assert "prediction_interval" in ConformalResult._SERIALIZERS
+        assert "prediction_set" in ConformalResult._SERIALIZERS
+        assert "intervals" in ConformalResult._SERIALIZERS
+        assert "prediction_sets" in ConformalResult._SERIALIZERS
+        assert "point_predictions" in ConformalResult._SERIALIZERS
+        assert "probabilities" in ConformalResult._SERIALIZERS
+        assert "nonconformity_scores" in ConformalResult._SERIALIZERS
+        assert "groups" in ConformalResult._SERIALIZERS
+
+    def test_intervals_and_prediction_sets_serialization(self):
+        r = _conformal_result_regression(
+            intervals=np.array([[1.0, 2.0], [3.0, 4.0]]),
+            prediction_sets=[np.array([0, 1]), np.array([1])],
+            point_predictions=np.array([1.5, 3.5]),
+            probabilities=np.array([[0.8, 0.2], [0.1, 0.9]]),
+        )
+        d = r.to_dict()
+        assert isinstance(d["intervals"], list)
+        assert d["intervals"] == [[1.0, 2.0], [3.0, 4.0]]
+        assert isinstance(d["prediction_sets"], list)
+        assert d["prediction_sets"] == [[0, 1], [1]]
+        assert isinstance(d["point_predictions"], list)
+        assert d["point_predictions"] == [1.5, 3.5]
+        assert isinstance(d["probabilities"], list)
+        assert d["probabilities"] == [[0.8, 0.2], [0.1, 0.9]]
+        json.dumps(d)
+
+
+# ------------------------------------------------------------------ #
+# ConformalEvaluationResult
+# ------------------------------------------------------------------ #
+
+
+class TestConformalEvaluationResult:
+    def test_is_frozen(self):
+        r = ConformalEvaluationResult(
+            empirical_coverage=0.96,
+            nominal_coverage=0.95,
+            n_eval=100,
+            covered=np.ones(100, dtype=bool),
+            mean_interval_width=5.2,
+        )
+        with pytest.raises(FrozenInstanceError):
+            r.empirical_coverage = 0.90  # type: ignore[misc]
+
+    def test_to_dict_and_json(self):
+        r = ConformalEvaluationResult(
+            empirical_coverage=0.94,
+            nominal_coverage=0.95,
+            n_eval=50,
+            covered=np.ones(50, dtype=bool),
+            mean_interval_width=3.5,
+            median_interval_width=3.2,
+            set_size_distribution={1: 45, 2: 5},
+            singleton_rate=0.90,
+            ambiguous_rate=0.10,
+            empty_rate=0.0,
+        )
+        d = r.to_dict()
+        assert isinstance(d["covered"], list)
+        assert d["mean_interval_width"] == 3.5
+        assert d["singleton_rate"] == 0.90
+        json_str = json.dumps(d)
+        assert "empirical_coverage" in json_str
+
+    def test_dict_access_and_contains(self):
+        r = ConformalEvaluationResult(
+            empirical_coverage=0.95,
+            nominal_coverage=0.95,
+            n_eval=20,
+            covered=np.ones(20, dtype=bool),
+        )
+        assert r["empirical_coverage"] == 0.95
+        assert "nominal_coverage" in r
+        assert "n_eval" in r
 
 
 # ------------------------------------------------------------------ #
@@ -322,6 +401,10 @@ class TestInvarianceResult:
             "pooled_coefficient",
             "max_deviation",
             "null_distribution",
+            "tier",
+            "guarantee_tier",
+            "method",
+            "diagnostics",
         ):
             assert fname in d
 
@@ -329,14 +412,17 @@ class TestInvarianceResult:
         r = _invariance_result()
         assert "is_invariant" in r
         assert "max_deviation" in r
+        assert "tier" in r
+        assert "guarantee_tier" in r
+        assert "method" in r
 
     def test_getitem_environment_coefficients(self):
         r = _invariance_result()
         ec = r["environment_coefficients"]
         assert isinstance(ec, dict)
 
-    def test_empty_serializers(self):
-        assert InvarianceResult._SERIALIZERS == {}
+    def test_serializers_registered(self):
+        assert "null_distribution" in InvarianceResult._SERIALIZERS
 
 
 # ------------------------------------------------------------------ #
@@ -355,6 +441,9 @@ class TestKnockoffResult:
         assert r.fdr_level == 0.1
         assert r.threshold == 0.5
         assert r.selected_features == ["x1", "x3"]
+        assert r.method == "equicorrelated"
+        assert r.guarantee_tier == "model_x_approximate"
+        assert isinstance(r.diagnostics, dict)
 
     def test_to_dict_is_plain_dict(self):
         d = _knockoff_result().to_dict()
@@ -375,6 +464,9 @@ class TestKnockoffResult:
             "fdr_level",
             "threshold",
             "feature_names",
+            "method",
+            "guarantee_tier",
+            "diagnostics",
         ):
             assert fname in d
 

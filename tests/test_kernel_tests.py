@@ -4,9 +4,9 @@ Covers mmd_test, hsic_test, and kernel_regression_test.
 
 Test design principles:
 - Deterministic: all calls use random_state=42 for reproducibility.
-- Fast: n_permutations=499 (≤500) throughout; sample sizes ≤100.
+- Fast: n_randomizations=499 (≤500) throughout; sample sizes ≤100.
 - Signal tests: well-separated distributions / strong dependence
-  should yield p < 0.05 with high probability at n_permutations=499.
+  should yield p < 0.05 with high probability at n_randomizations=499.
 - Null tests: use p_value > 0.01 (not 0.05) to avoid false failures
   from valid Type I errors on a fixed seed.
 - Nyström paths: tested with max_landmarks well below n to exercise
@@ -46,16 +46,16 @@ class TestMMDTest:
         rng = _rng()
         X = rng.normal(size=(30, 2))
         Y = rng.normal(size=(30, 2))
-        result = mmd_test(X, Y, n_permutations=99, random_state=42)
+        result = mmd_test(X, Y, n_randomizations=99, random_state=42)
         assert isinstance(result, KernelTestResult)
 
     def test_result_fields(self) -> None:
         rng = _rng()
         X = rng.normal(size=(20, 1))
         Y = rng.normal(size=(20, 1))
-        result = mmd_test(X, Y, n_permutations=99, random_state=42)
+        result = mmd_test(X, Y, n_randomizations=99, random_state=42)
         assert result.method == "mmd"
-        assert result.n_permutations == 99
+        assert result.n_randomizations == 99
         assert result.null_distribution.shape == (99,)
         assert isinstance(result.statistic, float)
         assert 0.0 < result.p_value <= 1.0
@@ -65,7 +65,7 @@ class TestMMDTest:
         rng = _rng(7)
         X = rng.normal(0, 1, size=(50, 2))
         Y = rng.normal(0, 1, size=(50, 2))
-        result = mmd_test(X, Y, n_permutations=499, random_state=42)
+        result = mmd_test(X, Y, n_randomizations=499, random_state=42)
         # Valid Type I: p > 0.01 on this seed (not hard 0.05 to avoid flakiness)
         assert result.p_value > 0.01
 
@@ -74,7 +74,7 @@ class TestMMDTest:
         rng = _rng(1)
         X = rng.normal(0, 0.5, size=(60, 2))
         Y = rng.normal(5, 0.5, size=(60, 2))
-        result = mmd_test(X, Y, n_permutations=499, random_state=42)
+        result = mmd_test(X, Y, n_randomizations=499, random_state=42)
         assert result.p_value < 0.05
 
     def test_unequal_sample_sizes(self) -> None:
@@ -82,7 +82,7 @@ class TestMMDTest:
         rng = _rng(2)
         X = rng.normal(0, 1, size=(30, 3))
         Y = rng.normal(3, 1, size=(50, 3))
-        result = mmd_test(X, Y, n_permutations=199, random_state=42)
+        result = mmd_test(X, Y, n_randomizations=199, random_state=42)
         assert result.p_value < 0.05
 
     def test_1d_input(self) -> None:
@@ -90,7 +90,7 @@ class TestMMDTest:
         rng = _rng(3)
         X = rng.normal(0, 1, size=40)
         Y = rng.normal(2, 1, size=40)
-        result = mmd_test(X, Y, n_permutations=199, random_state=42)
+        result = mmd_test(X, Y, n_randomizations=199, random_state=42)
         assert result.p_value < 0.05
 
     def test_custom_kernel(self) -> None:
@@ -99,7 +99,7 @@ class TestMMDTest:
         X = rng.normal(0, 1, size=(30, 2))
         Y = rng.normal(3, 1, size=(30, 2))
         result = mmd_test(
-            X, Y, kernel=LaplacianKernel(), n_permutations=199, random_state=42
+            X, Y, kernel=LaplacianKernel(), n_randomizations=199, random_state=42
         )
         assert result.p_value < 0.05
         assert "Laplacian" in result.kernel_name
@@ -109,8 +109,8 @@ class TestMMDTest:
         rng = _rng(5)
         X = rng.normal(0, 1, size=(40, 2))
         Y = rng.normal(1, 1, size=(40, 2))
-        r1 = mmd_test(X, Y, n_permutations=199, random_state=7)
-        r2 = mmd_test(X, Y, n_permutations=199, random_state=7)
+        r1 = mmd_test(X, Y, n_randomizations=199, random_state=7)
+        r2 = mmd_test(X, Y, n_randomizations=199, random_state=7)
         assert r1.p_value == r2.p_value
         np.testing.assert_array_equal(r1.null_distribution, r2.null_distribution)
 
@@ -118,7 +118,7 @@ class TestMMDTest:
         rng = _rng(6)
         X = rng.normal(size=(20, 2))
         Y = rng.normal(size=(20, 2))
-        result = mmd_test(X, Y, n_permutations=123, random_state=42)
+        result = mmd_test(X, Y, n_randomizations=123, random_state=42)
         assert len(result.null_distribution) == 123
 
     def test_precomputed_kernel(self) -> None:
@@ -130,7 +130,7 @@ class TestMMDTest:
         # build a valid PSD kernel matrix on the pooled sample
         K_mat = GaussianKernel(sigma=1.0)(Z)
         kernel = PrecomputedKernel(K_mat)
-        result = mmd_test(X, Y, kernel=kernel, n_permutations=199, random_state=42)
+        result = mmd_test(X, Y, kernel=kernel, n_randomizations=199, random_state=42)
         assert isinstance(result, KernelTestResult)
         assert result.p_value < 0.05
 
@@ -139,7 +139,7 @@ class TestMMDTest:
         rng = _rng(9)
         X = rng.normal(0, 1, size=(60, 3))
         Y = rng.normal(3, 1, size=(60, 3))
-        result = mmd_test(X, Y, n_permutations=199, max_landmarks=20, random_state=42)
+        result = mmd_test(X, Y, n_randomizations=199, max_landmarks=20, random_state=42)
         assert isinstance(result, KernelTestResult)
         # Nyström should still detect a strong signal
         assert result.p_value < 0.05
@@ -149,8 +149,8 @@ class TestMMDTest:
         rng = _rng(10)
         X = rng.normal(0, 1, size=(50, 2))
         Y = rng.normal(2, 1, size=(50, 2))
-        r1 = mmd_test(X, Y, n_permutations=99, max_landmarks=15, random_state=13)
-        r2 = mmd_test(X, Y, n_permutations=99, max_landmarks=15, random_state=13)
+        r1 = mmd_test(X, Y, n_randomizations=99, max_landmarks=15, random_state=13)
+        r2 = mmd_test(X, Y, n_randomizations=99, max_landmarks=15, random_state=13)
         assert r1.p_value == r2.p_value
         np.testing.assert_array_equal(r1.null_distribution, r2.null_distribution)
 
@@ -162,16 +162,16 @@ class TestHSICTest:
         rng = _rng()
         X = rng.normal(size=(40, 2))
         Y = rng.normal(size=(40, 2))
-        result = hsic_test(X, Y, n_permutations=99, random_state=42)
+        result = hsic_test(X, Y, n_randomizations=99, random_state=42)
         assert isinstance(result, KernelTestResult)
 
     def test_result_fields(self) -> None:
         rng = _rng()
         X = rng.normal(size=(30, 1))
         Y = rng.normal(size=(30, 1))
-        result = hsic_test(X, Y, n_permutations=99, random_state=42)
+        result = hsic_test(X, Y, n_randomizations=99, random_state=42)
         assert result.method == "hsic"
-        assert result.n_permutations == 99
+        assert result.n_randomizations == 99
         assert result.null_distribution.shape == (99,)
         assert "," in result.kernel_name  # kernel_x,kernel_y format
 
@@ -180,7 +180,7 @@ class TestHSICTest:
         rng = _rng(11)
         X = rng.normal(size=(60,))
         Y = rng.normal(size=(60,))
-        result = hsic_test(X, Y, n_permutations=499, random_state=42)
+        result = hsic_test(X, Y, n_randomizations=499, random_state=42)
         assert result.p_value > 0.01
 
     def test_quadratic_dependence_signal(self) -> None:
@@ -188,7 +188,7 @@ class TestHSICTest:
         rng = _rng(12)
         X = rng.uniform(-2, 2, size=60)
         Y = X**2 + rng.normal(0, 0.3, size=60)
-        result = hsic_test(X, Y, n_permutations=499, random_state=42)
+        result = hsic_test(X, Y, n_randomizations=499, random_state=42)
         assert result.p_value < 0.05
 
     def test_linear_dependence_signal(self) -> None:
@@ -196,7 +196,7 @@ class TestHSICTest:
         rng = _rng(13)
         X = rng.normal(size=50)
         Y = 3 * X + rng.normal(0, 0.2, size=50)
-        result = hsic_test(X, Y, n_permutations=499, random_state=42)
+        result = hsic_test(X, Y, n_randomizations=499, random_state=42)
         assert result.p_value < 0.05
 
     def test_custom_kernels(self) -> None:
@@ -209,7 +209,7 @@ class TestHSICTest:
             Y,
             kernel_x=LinearKernel(),
             kernel_y=LinearKernel(),
-            n_permutations=199,
+            n_randomizations=199,
             random_state=42,
         )
         assert result.p_value < 0.05
@@ -218,8 +218,8 @@ class TestHSICTest:
         rng = _rng(15)
         X = rng.normal(size=50)
         Y = X + rng.normal(0, 0.5, size=50)
-        r1 = hsic_test(X, Y, n_permutations=199, random_state=9)
-        r2 = hsic_test(X, Y, n_permutations=199, random_state=9)
+        r1 = hsic_test(X, Y, n_randomizations=199, random_state=9)
+        r2 = hsic_test(X, Y, n_randomizations=199, random_state=9)
         assert r1.p_value == r2.p_value
         np.testing.assert_array_equal(r1.null_distribution, r2.null_distribution)
 
@@ -227,7 +227,9 @@ class TestHSICTest:
         rng = _rng(16)
         X = rng.normal(size=80)
         Y = X**2 + rng.normal(0, 0.3, size=80)
-        result = hsic_test(X, Y, n_permutations=199, max_landmarks=20, random_state=42)
+        result = hsic_test(
+            X, Y, n_randomizations=199, max_landmarks=20, random_state=42
+        )
         assert isinstance(result, KernelTestResult)
         assert result.p_value < 0.05
 
@@ -235,8 +237,8 @@ class TestHSICTest:
         rng = _rng(17)
         X = rng.normal(size=60)
         Y = X + rng.normal(0, 0.5, size=60)
-        r1 = hsic_test(X, Y, n_permutations=99, max_landmarks=15, random_state=17)
-        r2 = hsic_test(X, Y, n_permutations=99, max_landmarks=15, random_state=17)
+        r1 = hsic_test(X, Y, n_randomizations=99, max_landmarks=15, random_state=17)
+        r2 = hsic_test(X, Y, n_randomizations=99, max_landmarks=15, random_state=17)
         assert r1.p_value == r2.p_value
         np.testing.assert_array_equal(r1.null_distribution, r2.null_distribution)
 
@@ -244,7 +246,7 @@ class TestHSICTest:
         rng = _rng(18)
         X = rng.normal(size=(50, 3))
         Y = X @ rng.normal(size=(3, 2)) + rng.normal(0, 0.1, size=(50, 2))
-        result = hsic_test(X, Y, n_permutations=199, random_state=42)
+        result = hsic_test(X, Y, n_randomizations=199, random_state=42)
         assert result.p_value < 0.05
 
     def test_distance_kernel_detects_nonlinear_signal(self) -> None:
@@ -259,7 +261,7 @@ class TestHSICTest:
         X = rng.uniform(-2, 2, size=60)
         Y = np.sin(X) + rng.normal(0, 0.3, size=60)
 
-        result = hsic_test(X, Y, n_permutations=499, random_state=42)
+        result = hsic_test(X, Y, n_randomizations=499, random_state=42)
 
         # Spearman correlation as a sanity-check signal reference
         spear_r, _ = spearmanr(X, Y)
@@ -276,23 +278,23 @@ class TestKernelRegressionTest:
         rng = _rng()
         X = rng.normal(size=(40,))
         Y = X + rng.normal(0, 0.5, size=40)
-        result = kernel_regression_test(X, Y, n_permutations=99, random_state=42)
+        result = kernel_regression_test(X, Y, n_randomizations=99, random_state=42)
         assert isinstance(result, KernelTestResult)
 
     def test_result_fields(self) -> None:
         rng = _rng()
         X = rng.normal(size=30)
         Y = X + rng.normal(size=30)
-        result = kernel_regression_test(X, Y, n_permutations=99, random_state=42)
+        result = kernel_regression_test(X, Y, n_randomizations=99, random_state=42)
         assert result.method == "kernel_regression"
-        assert result.n_permutations == 99
+        assert result.n_randomizations == 99
         assert "," not in result.kernel_name  # only kernel_y name
 
     def test_no_confounders_detects_dependence(self) -> None:
         rng = _rng(20)
         X = rng.normal(size=60)
         Y = 2 * X + rng.normal(0, 0.3, size=60)
-        result = kernel_regression_test(X, Y, n_permutations=499, random_state=42)
+        result = kernel_regression_test(X, Y, n_randomizations=499, random_state=42)
         assert result.p_value < 0.05
 
     def test_no_confounders_null(self) -> None:
@@ -300,7 +302,7 @@ class TestKernelRegressionTest:
         rng = _rng(21)
         X = rng.normal(size=60)
         Y = rng.normal(size=60)
-        result = kernel_regression_test(X, Y, n_permutations=499, random_state=42)
+        result = kernel_regression_test(X, Y, n_randomizations=499, random_state=42)
         assert result.p_value > 0.01
 
     def test_confounders_residualised(self) -> None:
@@ -310,7 +312,7 @@ class TestKernelRegressionTest:
         X = Z @ rng.normal(size=2) + rng.normal(0, 0.5, size=60)
         Y = X + Z @ rng.normal(size=2) + rng.normal(0, 0.3, size=60)
         result = kernel_regression_test(
-            X, Y, confounders=Z, n_permutations=499, random_state=42
+            X, Y, confounders=Z, n_randomizations=499, random_state=42
         )
         assert result.p_value < 0.05
 
@@ -322,7 +324,7 @@ class TestKernelRegressionTest:
         X = 2 * Z + rng.normal(0, 0.1, size=60)
         Y = 3 * Z + rng.normal(0, 0.1, size=60)
         result = kernel_regression_test(
-            X, Y, confounders=Z, n_permutations=499, random_state=42
+            X, Y, confounders=Z, n_randomizations=499, random_state=42
         )
         # After removing Z, little signal should remain; p > 0.01 is a
         # conservative threshold — we're not guaranteed p > 0.05 with n=60.
@@ -338,7 +340,7 @@ class TestKernelRegressionTest:
             X,
             Y,
             kernel_y=GaussianKernel(sigma=1.0),
-            n_permutations=199,
+            n_randomizations=199,
             random_state=42,
         )
         assert result.p_value < 0.05
@@ -347,8 +349,8 @@ class TestKernelRegressionTest:
         rng = _rng(25)
         X = rng.normal(size=40)
         Y = X + rng.normal(0, 0.5, size=40)
-        r1 = kernel_regression_test(X, Y, n_permutations=199, random_state=11)
-        r2 = kernel_regression_test(X, Y, n_permutations=199, random_state=11)
+        r1 = kernel_regression_test(X, Y, n_randomizations=199, random_state=11)
+        r2 = kernel_regression_test(X, Y, n_randomizations=199, random_state=11)
         assert r1.p_value == r2.p_value
         np.testing.assert_array_equal(r1.null_distribution, r2.null_distribution)
 
@@ -356,7 +358,7 @@ class TestKernelRegressionTest:
         rng = _rng(26)
         X = rng.normal(size=(50, 2))
         Y = X @ rng.normal(size=(2, 2)) + rng.normal(0, 0.2, size=(50, 2))
-        result = kernel_regression_test(X, Y, n_permutations=199, random_state=42)
+        result = kernel_regression_test(X, Y, n_randomizations=199, random_state=42)
         assert result.p_value < 0.05
 
 
@@ -367,14 +369,16 @@ class TestNystromPaths:
         rng = _rng(30)
         X = rng.normal(0, 1, size=(80, 2))
         Y = rng.normal(4, 1, size=(80, 2))
-        result = mmd_test(X, Y, n_permutations=299, max_landmarks=25, random_state=42)
+        result = mmd_test(X, Y, n_randomizations=299, max_landmarks=25, random_state=42)
         assert result.p_value < 0.05
 
     def test_hsic_nystrom_signal(self) -> None:
         rng = _rng(31)
         X = rng.normal(size=80)
         Y = X**2 + rng.normal(0, 0.4, size=80)
-        result = hsic_test(X, Y, n_permutations=299, max_landmarks=25, random_state=42)
+        result = hsic_test(
+            X, Y, n_randomizations=299, max_landmarks=25, random_state=42
+        )
         assert result.p_value < 0.05
 
     def test_kernel_regression_nystrom(self) -> None:
@@ -382,7 +386,7 @@ class TestNystromPaths:
         X = rng.normal(size=80)
         Y = 2 * X + rng.normal(0, 0.5, size=80)
         result = kernel_regression_test(
-            X, Y, n_permutations=299, max_landmarks=25, random_state=42
+            X, Y, n_randomizations=299, max_landmarks=25, random_state=42
         )
         assert result.p_value < 0.05
 
@@ -390,10 +394,10 @@ class TestNystromPaths:
         rng = _rng(33)
         X = rng.normal(size=50)
         Y = rng.normal(size=50)
-        r_mmd = mmd_test(X, Y, n_permutations=99, max_landmarks=15, random_state=42)
-        r_hsic = hsic_test(X, Y, n_permutations=99, max_landmarks=15, random_state=42)
+        r_mmd = mmd_test(X, Y, n_randomizations=99, max_landmarks=15, random_state=42)
+        r_hsic = hsic_test(X, Y, n_randomizations=99, max_landmarks=15, random_state=42)
         r_kr = kernel_regression_test(
-            X, Y, n_permutations=99, max_landmarks=15, random_state=42
+            X, Y, n_randomizations=99, max_landmarks=15, random_state=42
         )
         assert r_mmd.method == "mmd"
         assert r_hsic.method == "hsic"
@@ -405,8 +409,10 @@ class TestNystromPaths:
         X = rng.normal(size=40)
         Y = X + rng.normal(0, 0.4, size=40)
         # max_landmarks >= n → exact path (no Nyström)
-        r_exact = hsic_test(X, Y, n_permutations=99, max_landmarks=999, random_state=5)
+        r_exact = hsic_test(
+            X, Y, n_randomizations=99, max_landmarks=999, random_state=5
+        )
         r_also_exact = hsic_test(
-            X, Y, n_permutations=99, max_landmarks=999, random_state=5
+            X, Y, n_randomizations=99, max_landmarks=999, random_state=5
         )
         assert r_exact.p_value == r_also_exact.p_value

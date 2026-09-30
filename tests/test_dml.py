@@ -458,7 +458,7 @@ def test_kernel_regression_nonlinear_confounder_leak() -> None:
         X,
         y,
         confounders=Z,
-        n_permutations=200,
+        n_randomizations=200,
         random_state=42,
     )
     # OLS path leaks nonlinear confounding (false positive under H0: p < 0.05)
@@ -471,7 +471,7 @@ def test_kernel_regression_nonlinear_confounder_leak() -> None:
         y,
         confounders=Z,
         reduced_model=gb,
-        n_permutations=200,
+        n_randomizations=200,
         random_state=42,
     )
 
@@ -493,7 +493,7 @@ def test_kernel_regression_reduced_model_deterministic() -> None:
         y,
         confounders=Z,
         reduced_model=gb1,
-        n_permutations=100,
+        n_randomizations=100,
         random_state=999,
     )
 
@@ -503,7 +503,7 @@ def test_kernel_regression_reduced_model_deterministic() -> None:
         y,
         confounders=Z,
         reduced_model=gb2,
-        n_permutations=100,
+        n_randomizations=100,
         random_state=999,
     )
 

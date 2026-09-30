@@ -5,7 +5,7 @@ select_n_components, and text_mmd_test.
 
 Test design principles:
 - Deterministic: all stochastic calls use random_state=42 for reproducibility.
-- Fast: n_permutations=199 throughout; small corpora (≤40 docs).
+- Fast: n_randomizations=199 throughout; small corpora (≤40 docs).
 - Signal tests: clearly distinct lexicons yield p < 0.05.
 - Null tests: shuffled-split corpora use p > 0.01 to avoid false failures.
 - Diagnostic tests: verify range properties and direction of effect, not
@@ -325,7 +325,7 @@ class TestTextMMDTest:
         result = text_mmd_test(
             _SPORTS_DOCS[:5],
             _POLITICS_DOCS[:5],
-            n_permutations=99,
+            n_randomizations=99,
             random_state=42,
         )
         assert isinstance(result, KernelTestResult)
@@ -336,7 +336,7 @@ class TestTextMMDTest:
         result = text_mmd_test(
             _SPORTS_DOCS,
             _POLITICS_DOCS,
-            n_permutations=199,
+            n_randomizations=199,
             random_state=42,
         )
         assert result.p_value < 0.05
@@ -349,7 +349,7 @@ class TestTextMMDTest:
         half = len(all_docs) // 2
         docs_a = [all_docs[i] for i in idx[:half]]
         docs_b = [all_docs[i] for i in idx[half:]]
-        result = text_mmd_test(docs_a, docs_b, n_permutations=199, random_state=42)
+        result = text_mmd_test(docs_a, docs_b, n_randomizations=199, random_state=42)
         assert result.p_value > 0.01
 
     def test_text_mmd_with_topics_signal(self) -> None:
@@ -358,7 +358,7 @@ class TestTextMMDTest:
             docs_a,
             docs_b,
             n_components=2,
-            n_permutations=199,
+            n_randomizations=199,
             random_state=42,
         )
         assert result.p_value < 0.05
@@ -376,7 +376,7 @@ class TestTextMMDTest:
             _SPORTS_DOCS[:5],
             _POLITICS_DOCS[:5],
             preprocessor=dummy_preprocessor,
-            n_permutations=99,
+            n_randomizations=99,
             random_state=42,
         )
         assert isinstance(result, KernelTestResult)
@@ -390,12 +390,14 @@ class TestTextMMDTest:
         rng = np.random.default_rng(7)
         random_emb = rng.standard_normal((n_total, 4))
 
-        result_tfidf = text_mmd_test(docs_x, docs_y, n_permutations=99, random_state=42)
+        result_tfidf = text_mmd_test(
+            docs_x, docs_y, n_randomizations=99, random_state=42
+        )
         result_custom = text_mmd_test(
             docs_x,
             docs_y,
             preprocessor=lambda _docs: random_emb,
-            n_permutations=99,
+            n_randomizations=99,
             random_state=42,
         )
         # Statistics come from different representations — they must differ
@@ -403,10 +405,10 @@ class TestTextMMDTest:
 
     def test_text_mmd_reproducible(self) -> None:
         r1 = text_mmd_test(
-            _SPORTS_DOCS, _POLITICS_DOCS, n_permutations=99, random_state=42
+            _SPORTS_DOCS, _POLITICS_DOCS, n_randomizations=99, random_state=42
         )
         r2 = text_mmd_test(
-            _SPORTS_DOCS, _POLITICS_DOCS, n_permutations=99, random_state=42
+            _SPORTS_DOCS, _POLITICS_DOCS, n_randomizations=99, random_state=42
         )
         assert r1.p_value == r2.p_value
         assert r1.statistic == r2.statistic

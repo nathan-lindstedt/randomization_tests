@@ -702,7 +702,7 @@ def run_scenario_6_kernel_hsic_leak(
                 X,
                 y,
                 confounders=Z,
-                n_permutations=n_perms,
+                n_randomizations=n_perms,
                 random_state=seed,
             )
         p_vals_ols.append(float(res_ols.p_value))
@@ -718,7 +718,7 @@ def run_scenario_6_kernel_hsic_leak(
             y_t.reshape(-1, 1),
             kernel_x=LinearKernel(),
             kernel_y=GaussianKernel(sigma="median"),
-            n_permutations=n_perms,
+            n_randomizations=n_perms,
             random_state=seed,
         )
         p_vals_dml.append(float(res_dml.p_value))

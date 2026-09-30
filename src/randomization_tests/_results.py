@@ -443,13 +443,13 @@ class KernelTestResult(_DictAccessMixin):
     """Phipson & Smyth corrected permutation p-value."""
 
     null_distribution: np.ndarray
-    """Permuted statistic values under H₀, shape ``(n_permutations,)``."""
+    """Permuted statistic values under H₀, shape ``(n_randomizations,)``."""
 
     kernel_name: str
     """Name of the kernel used (e.g. ``"gaussian"``, ``"cosine"``)."""
 
-    n_permutations: int
-    """Number of permutations used."""
+    n_randomizations: int
+    """Number of randomizations used."""
 
     method: str
     """Test method: ``"mmd"``, ``"hsic"``, or ``"kernel_regression"``."""
@@ -466,25 +466,43 @@ class ConformalResult(_DictAccessMixin):
 
     Returned by :func:`conformal_prediction`.
 
-    For regression families, ``prediction_interval`` is populated and
-    ``prediction_set`` is ``None``.  For classification families
-    (logistic, ordinal, multinomial), ``prediction_set`` is populated
-    and ``prediction_interval`` is ``None``.
+    For regression families, ``prediction_interval`` is populated (for single
+    queries or as an envelope) and ``intervals`` provides the ``(n_queries, 2)``
+    array of bounds. For classification families (logistic, ordinal, multinomial),
+    ``prediction_set`` is populated and ``prediction_sets`` provides the list of
+    per-query class label arrays.
     """
 
     _SERIALIZERS: ClassVar[dict[str, Any]] = {
         # Tuple is not JSON-serialisable as a tuple; emit list instead.
         "prediction_interval": lambda t: list(t) if t is not None else None,
+        "prediction_set": lambda s: s.tolist() if isinstance(s, np.ndarray) else s,
+        "intervals": lambda a: a.tolist() if isinstance(a, np.ndarray) else a,
+        "prediction_sets": lambda s: (
+            [x.tolist() if isinstance(x, np.ndarray) else x for x in s]
+            if s is not None
+            else None
+        ),
+        "point_predictions": lambda a: a.tolist() if isinstance(a, np.ndarray) else a,
+        "probabilities": lambda a: a.tolist() if isinstance(a, np.ndarray) else a,
+        "nonconformity_scores": lambda a: (
+            a.tolist() if isinstance(a, np.ndarray) else a
+        ),
+        "groups": lambda g: (
+            g.to_flat_cells().tolist()
+            if hasattr(g, "to_flat_cells")
+            else (g.tolist() if isinstance(g, np.ndarray) else g)
+        ),
     }
     _EXCLUDE_FROM_DICT: ClassVar[frozenset[str]] = frozenset()
 
     prediction_interval: tuple[float, float] | None
-    """``(lower, upper)`` prediction interval for regression; ``None`` for
-    classification."""
+    """``(lower, upper)`` prediction interval for single regression query;
+    ``None`` for classification."""
 
     prediction_set: np.ndarray | None
-    """Array of class labels included in the prediction set for
-    classification; ``None`` for regression."""
+    """Array of class labels included in the prediction set for single
+    classification query; ``None`` for regression."""
 
     nonconformity_scores: np.ndarray
     """Nonconformity scores from the calibration set, shape
@@ -494,7 +512,116 @@ class ConformalResult(_DictAccessMixin):
     """Nominal coverage level (e.g. ``0.95``)."""
 
     method: str
-    """Conformal method: ``"split"`` or ``"full"``."""
+    """Conformal method: ``"split"`` or ``"jackknife_plus"``."""
+
+    coverage_guarantee: str = "finite_sample_exact"
+    """Guaranteed coverage level description (e.g. ``"finite_sample_exact"`` or
+    ``"worst_case_1_minus_2alpha"``)."""
+
+    groups: np.ndarray | ExchangeabilityTree | None = None
+    """Cluster labels or ExchangeabilityTree if clustered conformal was evaluated."""
+
+    intervals: np.ndarray | None = None
+    """Array of shape ``(n_queries, 2)`` containing lower and upper bounds for regression;
+    ``None`` for classification."""
+
+    prediction_sets: list[np.ndarray] | None = None
+    """List of length ``n_queries`` containing class label arrays for classification;
+    ``None`` for regression."""
+
+    point_predictions: np.ndarray | None = None
+    """Array of shape ``(n_queries,)`` containing model point estimates for regression;
+    ``None`` for classification."""
+
+    probabilities: np.ndarray | None = None
+    """Array of shape ``(n_queries, n_classes)`` containing predicted class probabilities
+    for classification; ``None`` for regression."""
+
+    diagnostics: dict[str, Any] = field(default_factory=dict)
+    """Calibration nonconformity summary, empirical coverage bounds, and cluster counts."""
+
+    def evaluate(
+        self,
+        y_true: Any,
+        groups: Any = None,
+    ) -> ConformalEvaluationResult:
+        """Evaluate out-of-sample coverage and sharpness against ground-truth labels.
+
+        Args:
+            y_true: True observed outcomes for the query observations (vector or Series).
+            groups: Optional discrete group labels (e.g. spatial clusters or demographic bins)
+                for evaluating Feature-Stratified Coverage (FSC; Angelopoulos & Bates 2021).
+
+        Returns:
+            :class:`ConformalEvaluationResult` containing empirical coverage rate,
+            sharpness metrics, stratified coverage metrics, and per-observation coverage flags.
+        """
+        from ._conformal import evaluate_conformal
+
+        return evaluate_conformal(self, y_true, groups=groups)
+
+
+# ------------------------------------------------------------------ #
+# ConformalEvaluationResult
+# ------------------------------------------------------------------ #
+
+
+@dataclass(frozen=True)
+class ConformalEvaluationResult(_DictAccessMixin):
+    """Result of evaluating conformal predictions against ground-truth test labels.
+
+    Returned by :func:`evaluate_conformal` and :meth:`ConformalResult.evaluate`.
+    """
+
+    _SERIALIZERS: ClassVar[dict[str, Any]] = {
+        "covered": lambda c: c.tolist() if isinstance(c, np.ndarray) else c,
+    }
+    _EXCLUDE_FROM_DICT: ClassVar[frozenset[str]] = frozenset()
+
+    empirical_coverage: float
+    """Empirical marginal coverage rate on the evaluation sample (fraction in [0, 1])."""
+
+    nominal_coverage: float
+    """Nominal confidence level target 1 - alpha (e.g. 0.95)."""
+
+    n_eval: int
+    """Number of held-out test points evaluated."""
+
+    covered: np.ndarray
+    """Boolean array of shape ``(n_eval,)`` indicating whether each ground-truth label was covered."""
+
+    mean_interval_width: float | None = None
+    """Mean prediction interval width for regression; ``None`` for classification."""
+
+    median_interval_width: float | None = None
+    """Median prediction interval width for regression; ``None`` for classification."""
+
+    set_size_distribution: dict[int, int] | None = None
+    """Frequency counts of prediction set sizes for classification; ``None`` for regression."""
+
+    singleton_rate: float | None = None
+    """Fraction of test observations with prediction set cardinality equal to 1."""
+
+    ambiguous_rate: float | None = None
+    """Fraction of test observations with prediction set cardinality > 1."""
+
+    empty_rate: float | None = None
+    """Fraction of test observations with empty prediction sets (cardinality 0)."""
+
+    group_coverage: dict[Any, float] | None = None
+    """Empirical coverage rate stratified by group/cluster; ``None`` if groups omitted."""
+
+    group_counts: dict[Any, int] | None = None
+    """Sample counts per group/cluster stratum; ``None`` if groups omitted."""
+
+    group_mean_width: dict[Any, float] | None = None
+    """Mean interval width (or set size) per group stratum; ``None`` if groups omitted."""
+
+    fsc_metric: float | None = None
+    """Feature-Stratified Coverage metric (worst-stratum coverage: min_g coverage_g)."""
+
+    coverage_guarantee: str = "finite_sample_exact"
+    """Theoretical guarantee tier description."""
 
 
 # ------------------------------------------------------------------ #
@@ -508,18 +635,21 @@ class InvarianceResult(_DictAccessMixin):
 
     Returned by :func:`invariance_test`.
 
-    Tests H₀: the coefficient of the predictor of interest is identical
-    across all environments (Peters, Bühlmann & Meinshausen, 2016).
+    Tests H₀: the conditional distribution P(Y | X) is identical across
+    environments (Peters, Bühlmann & Meinshausen, 2016), formalized as the
+    conditional independence null H₀: Y ⟂ E | X.
     """
 
-    _SERIALIZERS: ClassVar[dict[str, Any]] = {}
+    _SERIALIZERS: ClassVar[dict[str, Any]] = {
+        "null_distribution": lambda a: a.tolist() if isinstance(a, np.ndarray) else a,
+    }
     _EXCLUDE_FROM_DICT: ClassVar[frozenset[str]] = frozenset()
 
     is_invariant: bool
     """``True`` when the test fails to reject H₀ (invariant effect)."""
 
     p_value: float
-    """Permutation p-value for the max-deviation test statistic."""
+    """Permutation p-value for the invariance test statistic."""
 
     environment_coefficients: dict[str, float]
     """Per-environment coefficient estimates, keyed by environment label."""
@@ -528,10 +658,41 @@ class InvarianceResult(_DictAccessMixin):
     """Coefficient estimate from the pooled (full-data) model."""
 
     max_deviation: float
-    """Observed max|β̂_e − β̂_pool| across environments."""
+    """Observed max|β̂_e − β̂_pool| across environments (or joint fit improvement)."""
 
     null_distribution: np.ndarray
-    """Permuted max-deviation values under H₀, shape ``(n_permutations,)``."""
+    """Permuted test statistics under H₀, shape ``(n_randomizations,)``."""
+
+    n_randomizations: int = 5000
+    """Number of randomizations used."""
+
+    tier: str = "tier_1_residualized"
+    """Exactness tier: ``"tier_0_stratified"``, ``"tier_1_residualized"``, or ``"tier_2_cpt"``."""
+
+    guarantee_tier: str = "asymptotically_exact"
+    """Theoretical guarantee tier description: ``"finite_sample_exact"``,
+    ``"asymptotically_exact"``, or ``"exact_up_to_tv_error"``."""
+
+    method: str = "freedman_lane"
+    """Permutation strategy used: ``"stratified"``, ``"freedman_lane"``, ``"kennedy"``,
+    ``"score"``, or ``"conditional"``."""
+
+    diagnostics: dict[str, Any] = field(default_factory=dict)
+    """Environment sample sizes, test statistics, and conditional model diagnostics."""
+
+    @property
+    def interpretation(self) -> str:
+        """Human-readable interpretation of the invariance test result."""
+        if self.is_invariant:
+            return (
+                f"Invariant effect: failed to reject H₀ (p = {self.p_value:.4f} >= 0.05). "
+                f"The conditional mechanism P(Y|X) is stable across environments."
+            )
+        return (
+            f"Non-invariant effect: rejected H₀ (p = {self.p_value:.4f} < 0.05). "
+            f"The conditional mechanism P(Y|X) varies across environments "
+            f"(max coefficient deviation = {self.max_deviation:.4f})."
+        )
 
 
 # ------------------------------------------------------------------ #
@@ -567,3 +728,12 @@ class KnockoffResult(_DictAccessMixin):
 
     feature_names: list[str]
     """All feature names in the order matching ``knockoff_statistics``."""
+
+    method: str = "equicorrelated"
+    """Knockoff construction method: ``"fixed_x"``, ``"equicorrelated"``, or ``"sdp"``."""
+
+    guarantee_tier: str = "model_x_approximate"
+    """Theoretical guarantee tier: ``"finite_sample_exact"`` or ``"model_x_approximate"``."""
+
+    diagnostics: dict[str, Any] = field(default_factory=dict)
+    """Diagnostic metrics: condition number κ(Σ̂), MMD swap p-values, and swap violation flags."""

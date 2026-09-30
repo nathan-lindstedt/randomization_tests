@@ -72,18 +72,18 @@ for centralisation without adding redundant runtime indirection.
 
 ## v0.5.0 — Graph Specification & Inference Abstraction Tower
 
-The architectural centrepiece: a typed hypergraph data structure that
-lets users declare multi-equation models and have the package
-automatically derive which equations to fit, which families to use,
-which permutation strategies to apply, and which null hypotheses to
-test.  A standard regression is a single-layer graph with all
-predictors pointing at one outcome; mediation, path models, and
-multi-equation systems are deeper graphs composed of the same
-node-level equation solvers built in v0.3.0, constrained by the
-exchangeability cells built in v0.4.0.  This milestone also builds out
-the inference abstraction tower, incorporating nonparametric kernel
-tests, text representations, debiased machine learning, conformal
-prediction, and invariance testing.
+The architectural centrepiece: a typed **Directed Acyclic Hypergraph (DAHG)**
+data structure based on Dong et al. (2026) that lets users declare
+multi-equation structural causal models with higher-order parental
+interactions and have the package automatically derive which equations to
+fit, which families to use, which permutation strategies to apply, and which
+null hypotheses to test.  A standard regression is a single-layer DAHG with
+parents pointing at one outcome; mediation, path models, and multi-equation
+systems are deeper DAHGs composed of the same node-level equation solvers
+built in v0.3.0, constrained by the exchangeability cells and trees built in
+v0.4.0.  This milestone also builds out the inference abstraction tower,
+incorporating nonparametric kernel tests, text representations, debiased
+machine learning, conformal prediction, and invariance testing.
 
 ### Kernel protocol & nonparametric tests
 
@@ -140,62 +140,75 @@ prediction, and invariance testing.
 
 ### Conformal prediction
 
-- [ ] Distribution-free split conformal prediction intervals and sets for
+- [X] Distribution-free split conformal prediction intervals and sets for
   regression and classification (`conformal_prediction`).
-- [ ] Jackknife+ conformal prediction with leave-one-out cross-validation.
+- [X] Jackknife+ conformal prediction with leave-one-out cross-validation.
+- [X] Out-of-sample empirical coverage and Feature-Stratified Coverage (FSC)
+  evaluation (`evaluate_conformal`, `ConformalEvaluationResult`).
 
 ### Invariance testing
 
-- [ ] Testing invariance of conditional distributions ($Y \perp E \mid X$)
-  across environments.
-- [ ] Multi-tier test dispatch: exact discrete stratification, Kennedy
-  joint tests on environment indicators, and conditional permutation tests.
+- [X] Testing invariance of conditional distributions ($Y \perp E \mid X$)
+  across environments (`invariance_test`, `InvarianceResult`).
+- [X] Multi-tier test dispatch: exact discrete stratification (`"stratified"`),
+  residualized joint regression testing (`"freedman_lane"`, `"kennedy"`, `"score"`),
+  and conditional permutation tests (`"conditional"` via CPT MCMC).
 
 ### Knockoff filters
 
-- [ ] False Discovery Rate (FDR) controlled variable selection via
-  knockoff filters (`knockoff_filters`).
-- [ ] Fixed-X knockoffs for linear regression ($n \ge 2p$) and Model-X
-  knockoffs for general designs.
-- [ ] MMD swap exchangeability diagnostic to verify knockoff construction
-  quality.
+- [X] False Discovery Rate (FDR) controlled variable selection via
+  knockoff filters (`knockoff_test`, `KnockoffResult`).
+- [X] Fixed-X knockoffs for linear regression ($n \ge 2p$, Barber & Candès 2015, finite-sample exact FDR)
+  and Model-X knockoffs for general designs (Candès et al. 2018, Ledoit-Wolf shrinkage).
+- [X] MMD swap exchangeability diagnostic to verify knockoff construction
+  quality (`mmd_test` on feature-knockoff pairs).
 
 ### Specification data structure
 
-- [ ] A `CausalGraph` class supporting:
+- [ ] A `CausalGraph` class implementing a **Directed Acyclic Hypergraph (DAHG)**
+  per Dong et al. (2026), supporting:
   - **Nodes** — observed variables, each optionally annotated with a
-    model family and role (exposure, outcome, mediator, confounder).
-  - **Directed edges** — pairwise causal claims (X → Y), each
+    model family, causal role (exposure, outcome, mediator, confounder), and
+    equation-specific exchangeability tree.
+  - **Directed edges** — pairwise causal claims ($|T(e)| = 1$, $X \to Y$), each
     testable individually via per-coefficient permutation tests.
-  - **Hyperedges** — group-level causal claims ({X₁, X₂} → Y as an
-    irreducible unit), testable via generalised joint tests.
-  - **Exchangeability cells** — optional per-node or global
-    permutation constraints inherited from the v0.4.0 cell system.
-- [ ] Validation: acyclicity check, connected-component analysis,
-  family compatibility per equation, identification of
-  under-determined nodes.
+  - **Directed hyperedges** — higher-order parental mechanisms ($|T(e)| \ge 2$,
+    $\{X_1, X_2\} \to Y$), representing irreducible multiplicative interactions
+    $\prod_{u \in T(e)} X_u$ in the Generalized SEM (Dong et al. 2026).
+  - **Exchangeability trees** — optional per-node or global
+    permutation constraints inherited from the `ExchangeabilityTree` system,
+    enabling different structural equations to carry different exchangeability
+    hierarchies (e.g. between-cluster for exposures, within-cluster for outcomes).
+- [ ] Validation: DAHG acyclicity verification via topological sorting on the
+  projected shadow dependency graph $\mathcal{E}_{\text{shadow}} = \bigcup_e \{(u, h(e)) : u \in T(e)\}$,
+  connected-component analysis, family compatibility per equation, and identification
+  of under-determined nodes.
 
 ### Graph compiler
 
-- [ ] Topological sort of the DAG to determine equation fitting order.
-- [ ] For each outcome node, derive the structural equation:
-  `(outcome, predictors, family, permutation_strategy, null_type)`.
+- [ ] DAHG topological sort via Kahn's algorithm on the shadow dependency graph
+  (formally grounded in the Fourier-slice nilpotency theorem of Dong et al. 2026).
+- [ ] For each outcome (head) node, derive exactly **one structural equation**:
+  `(outcome, predictors, confounders, family, method, exchangeability_tree)`.
 - [ ] Resolve families automatically (from outcome type) or from
   per-node annotation.
-- [ ] Map hyperedges to joint permutation tests; map simple edges to
-  Freedman–Lane or Kennedy individual tests based on the presence of
-  declared confounders.
+- [ ] Role-based confounder separation: incoming edges/hyperedges with `role="confounder"`
+  (or right of `|` in formulas) populate `confounders=`; non-confounder sources populate
+  `predictors=`.
+- [ ] Map pairwise edges to individual permutation tests (Freedman–Lane or Kennedy);
+  map interaction hyperedges to derived product columns (`X1:X2`).
 
 ### Multi-equation orchestrator
 
 - [ ] Execute permutation tests for each structural equation in
   topological order, dispatching to the `ModelFamily` protocol.
+- [ ] Dynamic interaction materialization: dynamically compute interaction columns
+  (`"A:B" = A * B`) in working copies during execution, preserving input DataFrame immutability.
 - [ ] Independent permutation per equation by default: each equation
   is tested in isolation, conditioning on observed values of upstream
   nodes.
-- [ ] Optional propagated mode: permute upstream, refit downstream,
-  enabling permutation-based indirect-effect testing through
-  multi-step paths.
+- [ ] Optional propagated mode: permute upstream residualized exposure, refit downstream,
+  enabling permutation-based indirect-effect testing through multi-step paths.
 - [ ] Collect per-equation results into a unified graph-level result
   object (`GraphTestResult`).
 
@@ -210,18 +223,22 @@ prediction, and invariance testing.
   from parameter estimation.
 - [ ] Support arbitrary-length causal chains ($X \to M_1 \to M_2 \to Y$)
   with product-of-coefficients test statistics.
+- [ ] Automated detection and reporting of inconsistent mediation (suppression),
+  flagging cases where direct ($c'$) and indirect ($a \times b$) paths have
+  statistically significant opposite signs.
 
-### Hyperedge testing
+### Hyperedges vs. Omnibus Joint Testing
 
-- [ ] Generalise joint tests to arbitrary hyperedges
-  declared in the specification.  A hyperedge {X₁, X₂, X₃} → Y
-  triggers joint row-wise permutation of exposure residuals for
-  X₁, X₂, X₃ simultaneously, with the test statistic being the
-  improvement in the family's fit metric.
-- [ ] Support hyperedges targeting different outcome nodes within the
-  same graph.
-- [ ] Support mixed-family hyperedges (e.g., Poisson outcome with
-  linear exposure models).
+- [ ] Strict category separation between structural mechanisms and inferential tests:
+  - **DAHG Hyperedge Mechanisms** (Dong et al. 2026): A structural non-linear synergy
+    $\{X_1, X_2\} \to Y$ contributing $\beta_{12} (X_1 \cdot X_2)$ to the SEM, tested
+    as a 1-df hypothesis ($H_0: \beta_{12} = 0$) via interaction column permutation.
+  - **Omnibus Joint Hypotheses** (Anderson & Robinson 2001): An inferential hypothesis
+    grouping over multiple linear predictors (e.g. categorical factor levels, `{X1, X2}`),
+    tested as a $k$-df subspace hypothesis ($H_0: \beta_1 = \beta_2 = 0$) via
+    `method="kennedy_joint"` or `method="freedman_lane_joint"` without multiplying variables.
+- [ ] Support mixed-family equations within the same DAHG (e.g., Poisson outcome with
+  logistic mediator).
 
 ### Model specification syntax
 
@@ -231,15 +248,21 @@ prediction, and invariance testing.
   `g.add_hyperedge(["X1", "X2"], "Y")`.
 - [ ] Convenience: arrow-style string parser —
   `"Y <- X1 + X2 [linear]; M <- X1 [linear]; Y <- M"` with equations
-  parsed and DAG inferred.
+  parsed and DAHG inferred.
+  - Supports Wilkinson–Rogers interaction syntax: `X1 * X2` (expands to main effects
+    and interaction hyperedge `X1:X2`).
+  - Supports inferential joint grouping braces: `{X1, X2}` (triggers omnibus joint test).
+  - Supports confounder partition: `Y <- Tested | Controlled :: Grouping`.
 - [ ] Convenience: dictionary specification for programmatic and
   configuration-file workflows.
 
 ### Markov compatibility testing
 
-- [ ] Test the Local Markov Condition for declared DAG structures
+- [ ] Test the Local Markov Condition for declared DAHG structures
   (`markov_compatibility_test`) via permutation conditional independence
   tests across parents and non-descendants.
+- [ ] Three-tier rigor ladder: Tier 1 (exact discrete stratification), Tier 2 (CPT resampling),
+  Tier 3 (residualized permutation fallback).
 - [ ] Westfall–Young stepdown resampling for family-wise error rate
   (FWER) control across graph constraints.
 - [ ] Return structured `MarkovCompatibilityResult` with per-node
@@ -256,8 +279,8 @@ prediction, and invariance testing.
 ### Interoperability (deferred to v0.5.1)
 
 - [ ] The `CausalGraph` internal representation should use a directed
-  incidence matrix as its canonical form (sparse, with +1/−1 entries
-  for head/tail of each hyperedge), enabling natural conversion to
+  incidence matrix as its canonical form (sparse, with $+1$ for head node,
+  $-1$ for tail nodes of each hyperedge), enabling natural conversion to
   and from external hypergraph libraries.
 - [ ] Node attribute and hyperedge attribute dictionaries for metadata
   (family, role, exchangeability cell, test results) that survive
@@ -269,8 +292,8 @@ prediction, and invariance testing.
     `CombinatorialComplex` objects.
   - `to_networkx()` / `from_networkx()` — NetworkX `DiGraph` objects
     (hyperedges expanded to bipartite auxiliary nodes).
-- [ ] This ensures the package can participate in broader hypergraph
-  analysis pipelines as a permutation-testing module.
+- [ ] Synergies with causal discovery libraries (`causal-learn`):
+  permute-based validation of discovered DAG/DAHG skeletons.
 
 ---
 

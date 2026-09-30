@@ -36,6 +36,86 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     in `benchmarks/profile_dml.py`.
   - Interactive example tutorial in `examples/double_machine_learning.py`.
 
+- **Conformal prediction module (`_conformal.py`, Phase 6)**:
+  Distribution-free uncertainty quantification with finite-sample coverage guarantees:
+  - `conformal_prediction()`: computes prediction intervals for regression and prediction
+    sets for classification (`"logistic"`, `"ordinal"`, `"multinomial"`).
+  - Exact order-statistic calibration constant: rank $\lceil (n_{\text{cal}} + 1)(1 - \alpha) \rceil$
+    delivers exact marginal coverage $\mathbb{P}(Y_{\text{new}} \in \mathcal{C}(X_{\text{new}})) \ge 1 - \alpha$.
+  - First-class batch prediction preservation: `intervals` array of shape $(N, 2)$ for regression,
+    `prediction_sets` list of class label arrays of length $N$ for classification, `point_predictions`
+    array of shape $(N,)$ for regression, and `probabilities` array of shape $(N, K)$ for classification
+    on `ConformalResult`.
+  - Out-of-sample empirical evaluation: `evaluate_conformal()` and `res.evaluate(y_true, groups=...)`
+    returning `ConformalEvaluationResult` with empirical coverage, sharpness, and Feature-Stratified Coverage (FSC).
+  - Jackknife+ (`method="jackknife_plus"`, Barber et al. 2021): leave-one-out intervals with
+    theoretical distribution-free $1 - 2\alpha$ worst-case coverage guarantee.
+  - Locally-weighted adaptive intervals (`kernel=...`, Papadopoulos et al. 2008): Nadaraya–Watson
+    kernel smoothing of squared residuals adapts interval width to local covariate density.
+  - Hierarchical clustered conformal (`groups=...`, Dunn, Wasserman & Ramdas 2022): cluster-level
+    maximum calibration preserves validity under intra-cluster dependence.
+  - Display formatting in `display.py`: `print_conformal_table()` renders 80-column ASCII tables
+    with guarantee tier banners, point predictions, and candidate class probabilities; supports
+    `index=...` for single-query inspection directly from batch results without re-calibrating,
+    with mathematically honest `<0.0001` / `>0.9999` boundary formatting; `print_conformal_evaluation_table()`
+    renders empirical verification and stratified FSC tables.
+  - 21 unit and Monte Carlo tests in `tests/test_conformal.py`.
+  - Interactive dual-paradigm tutorial in `examples/conformal_prediction.py`.
+
+- **Causal invariance testing module (`_invariance.py`, Phase 7)**:
+  Distribution-free testing of conditional independence $H_0: Y \perp\!\!\perp E \mid X$
+  across heterogeneous environments (Peters, Bühlmann & Meinshausen 2016; Berrett et al. 2020):
+  - Robust to environmental covariate shift: because observational environments frequently
+    exhibit distinct predictor distributions ($P(X \mid E=1) \ne P(X \mid E=2)$), conditioning
+    on $X$ ensures shifts in sample demographics or exposure levels across environments are not
+    falsely conflated with instability of the underlying causal mechanism $P(Y \mid X)$.
+  - Multi-tier permutation architecture:
+    * Tier 0 (`method="stratified"`): Exact discrete stratification via `ExchangeabilityTree`
+      cell permutation, delivering finite-sample exactness (Axiom D22/D26; Shah & Peters 2020).
+    * Tier 1 (`method="freedman_lane"`, `"kennedy"`, `"score"`): Continuous residualized
+      joint $E$-block testing. Evaluates environment dummy indicators and slope interactions
+      $\sum \gamma_k E_k + \sum \delta_k (E_k \cdot X_{\text{pred}})$ with $X$ as confounders.
+      Supports Double/Debiased Machine Learning via `reduced_model=` (Phase 5).
+    * Tier 2 (`method="conditional"`): Conditional Permutation Test (CPT) MCMC pairwise-swap
+      sampler (`_cpt.py`) targeting the conditional law $\mathbb{P}(\pi \mid X) \propto \prod \hat{P}(E_{\pi(i)} \mid X_i)$.
+  - `print_invariance_table()` in `display.py`: formatted 80-column ASCII table with guarantee
+    tier banners, environment sample sizes, slope estimates, and deviation statistics.
+  - Shared infrastructure `_cpt.py`: reusable pairwise-swap MCMC label sampler for Phase 7 and Phase 11.
+  - 11 unit and adversarial dual-harness tests in `tests/test_invariance.py`.
+
+- **Knockoff filter feature selection module (`_knockoffs.py`, Phase 8)**:
+  Controlled variable selection with false discovery rate (FDR) control:
+  - `knockoff_test()`: constructs synthetic knockoff features $\tilde{X}$ that preserve the
+    covariance structure of $X$ while conditionally independent of $Y \mid X$.
+  - Fixed-X Knockoffs (`method="fixed_x"`, Barber & Candès 2015): finite-sample exact FDR control
+    ($\mathbb{E}[\text{FDP}] \le q$) for linear Gaussian models with $n \ge 2p$. Treats $X$ as
+    fixed (distribution-free on $X$), constructing orthogonal null-space complement
+    $C \in \mathbb{R}^{n \times p}$ via full QR factorization, preserving $\tilde{X}^T \tilde{X} = X^T X$
+    and $X^T \tilde{X} = X^T X - \text{diag}(s)$ to $10^{-10}$.
+  - Model-X Knockoffs (`method="equicorrelated"`, Candès et al. 2018): model-X approximate FDR
+    control via conditional Gaussian sampling $\tilde{X} \mid X \sim \mathcal{N}(\mu, V)$ with
+    Ledoit-Wolf covariance shrinkage (`shrinkage=True`) to guarantee $\lambda_{\min}(\hat{\Sigma}) > 0$.
+  - High-dimensional regime ($n < 2p$): penalized estimation via `LassoCV` (`estimator="lasso_cv"`)
+    for joint $[X, \tilde{X}]$ feature selection.
+  - Knockoff+ threshold $\tau_+$: Barber & Candès (2015) conservative $+1$ threshold
+    $\tau_+ = \min \{t > 0 : \frac{1 + \#\{W_j \le -t\}}{\#\{W_j \ge t\} \vee 1} \le q\}$,
+    rigorously guaranteeing $\mathbb{E}[\text{FDP}] \le q$.
+  - MMD swap-exchangeability diagnostic: uses `mmd_test` on feature-knockoff pairs
+    $([X_j, \tilde{X}_j], [\tilde{X}_j, X_j])$ to audit the exchangeability assumption and flag non-Gaussian designs.
+  - `KnockoffResult` in `_results.py`: enriched with `method`, `guarantee_tier`, `diagnostics`,
+    `selected_features`, and `threshold`.
+  - `print_knockoff_table()` in `display.py`: formatted 80-column ASCII table with guarantee
+    tier banners (`Finite-Sample Exact FDR` vs `Model-X Approximate FDR`), target FDR $q$,
+    threshold $\tau_+$, selected features, and MMD swap diagnostic status.
+  - 14 dual-harness tests in `tests/test_knockoffs.py`.
+  - Interactive example tutorial in `examples/knockoff_filter.py`.
+
+- **Strict Zero-Debt SemVer 0.x Harmonization**:
+  Standardized parameter naming to `n_randomizations: int = 5000` across all resampling
+  methods (`mmd_test`, `hsic_test`, `kernel_regression_test`, `text_mmd_test`, `invariance_test`),
+  completely eliminating deprecated parameter aliases, fallback branching, and compatibility
+  properties without technical debt.
+
 - **`_validation.py` — structured validation layer**: five
   validator functions (`validate_compatibility`,
   `validate_confounders`, `validate_family_compatibility`,
