@@ -134,6 +134,74 @@ class _DictAccessMixin:
 
 
 # ------------------------------------------------------------------ #
+# FitResult
+# ------------------------------------------------------------------ #
+
+
+@dataclass(frozen=True)
+class FitResult(_DictAccessMixin):
+    """Container for single-model estimation results across backends.
+
+    Unifies the return type of ``family.fit()`` across all model families,
+    eliminating estimator drift, third-party object divergence, and leaky
+    ``Any`` type annotations.
+
+    Attributes:
+        params: Estimated parameter vector (including intercept if fit), shape ``(p_aug,)``.
+        predictions: Model predictions on the training data, shape ``(n,)``.
+        fitted_values: Linear or link-space predictor values, shape ``(n,)``.
+        residuals: Raw or model-scale residuals, shape ``(n,)``.
+        log_likelihood: Log-likelihood value at the solution.
+        fisher_info: Observed Fisher information matrix, shape ``(p_aug, p_aug)``.
+        se: Standard errors of parameters, shape ``(p_aug,)``.
+        p_values: Asymptotic two-sided Wald p-values, shape ``(p_aug,)``.
+        fit_intercept: Whether an intercept parameter was estimated.
+        converged: Whether the iterative solver converged.
+        df: Residual degrees of freedom for Student's t inference (None for asymptotic normal).
+    """
+
+    params: np.ndarray
+    predictions: np.ndarray
+    fitted_values: np.ndarray
+    residuals: np.ndarray
+    log_likelihood: float
+    fisher_info: np.ndarray
+    se: np.ndarray
+    p_values: np.ndarray
+    fit_intercept: bool = True
+    converged: bool = True
+    df: float | None = None
+
+    @property
+    def coef_(self) -> np.ndarray:
+        """Slope coefficients (intercept excluded), matching sklearn conventions."""
+        if self.fit_intercept and len(self.params) > 1:
+            return self.params[1:]
+        return self.params
+
+    @property
+    def intercept_(self) -> float:
+        """Estimated intercept term, matching sklearn conventions."""
+        if self.fit_intercept and len(self.params) > 0:
+            return float(self.params[0])
+        return 0.0
+
+    def conf_int(self, alpha: float = 0.05) -> np.ndarray:
+        """Confidence intervals: [params - crit*se, params + crit*se]."""
+        if self.df is not None:
+            from scipy.stats import t as t_dist
+
+            crit = float(t_dist.ppf(1.0 - alpha / 2.0, df=self.df))
+        else:
+            from scipy.stats import norm
+
+            crit = float(norm.ppf(1.0 - alpha / 2.0))
+        return np.column_stack(
+            [self.params - crit * self.se, self.params + crit * self.se]
+        )
+
+
+# ------------------------------------------------------------------ #
 # IndividualTestResult
 # ------------------------------------------------------------------ #
 

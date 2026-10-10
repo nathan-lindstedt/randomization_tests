@@ -213,6 +213,60 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Unified `FitResult` container with finite-sample degrees-of-freedom tracking**:
+  `FitResult` replaces heterogeneous third-party returns from `family.fit()` with a
+  frozen, typed value object (`params`, `predictions`, `fitted_values`, `residuals`,
+  `log_likelihood`, `fisher_info`, `se`, `p_values`, `converged`, `df`). In linear
+  models, `LinearFamily.fit` passes exact residual degrees of freedom ($df = n - p - 1$),
+  enabling `FitResult.conf_int()` to evaluate exact Student's $t$ critical values
+  ($t_{1-\alpha/2, \, df}$), guaranteeing exact test-inversion duality ($p < \alpha \iff 0 \notin \text{CI}$)
+  and machine-precision agreement with statsmodels OLS ($< 10^{-14}$).
+
+- **`LinearFamily` score test null shift under AR eliminated (M14 / CD-8)**:
+  `LinearFamily.fit()` and `fit_reduced()` now solve FGLS directly in the whitened
+  coordinate space ($L X, L y$) when `ar_coefs` is calibrated, conforming to Decision D28.
+  By the Frisch–Waugh–Lovell theorem on whitened data, $e_w \perp X_{\text{red}, w}$,
+  collapsing the unpermuted score offset to machine precision ($< 10^{-14}$) and centering
+  the AR score permutation null at zero ($|\text{mean}|/\text{sd} \le 0.15$).
+
+- **GLM AR score projection tangent-space orthogonality (M15 / CD-9)**:
+  `LogisticFamily`, `PoissonFamily`, and `NegativeBinomialFamily` now evaluate AR score
+  updates in the whitened working tangent space: $X_w = L (W^{1/2} X)$ and
+  $e_w = L (W^{-1/2}(y - \hat{\mu}))$, with $A = \text{pinv}(X_w)$. By FWL on the
+  whitened working tangent model, $X_{\text{red}, w}^T e_w \equiv \mathbf{0}$,
+  eliminating the unpermuted score offset and centering the GLM AR score null at zero.
+
+- **Discrete GLMM AR prohibition with exchangeability guidance (M16 / CD-10)**:
+  Additive residual whitening does not exist for discrete non-Gaussian data ($y \in \{0, 1\}$
+  or $\mathbb{N}$); $N$-dimensional latent AR processes break Laplace/PQL approximations.
+  Blocked `logistic_mixed` and `poisson_mixed` from `ar_order` in `_validation.py`, `core.py`,
+  and `families_mixed.py` with an informative `ValueError`, guiding users to cluster-level
+  permutation (`permutation_strategy="between"`).
+
+- **2D profile likelihood broadcasting fix in diagnostics (CD-1)**:
+  Sanitized response inputs via `.ravel()` in `compute_profile_ci()`, preventing 2D array
+  inputs from expanding into $(n, n)$ outer-product matrices and artificially collapsing
+  profile deviance boundaries.
+
+- **Strict Pandas index alignment and dimensional precedence validation (CD-2)**:
+  Enforced dimension validation (`len(X) != len(y)`) before label set checks, and
+  automatically realigned permuted index labels via `y.reindex(X.index)`.
+
+- **Fixed-X knockoff Gram preservation validation (CD-4)**:
+  Gated the MMD row-swap test to Model-X knockoffs and reported exact geometric Gram
+  preservation errors ($\|X^T \tilde X - (X^T X - \text{diag}(s))\|_\infty < 10^{-12}$)
+  for Fixed-X knockoffs, eliminating spurious swap violations on geometric designs.
+
+- **NPMI topic coherence exact probability calculation (CD-5)**:
+  Formulated joint and marginal empirical probabilities consistently in `_npmi_coherence`,
+  guaranteeing $P(w_i, w_j) \le \min(P(w_i), P(w_j))$ by definition and removing artificial
+  `np.clip` bounds.
+
+- **Warning stacklevel transparency across all call sites (CD-6)**:
+  Verified via AST parsing that 100% of the 37 `warnings.warn` calls across the entire
+  codebase specify `stacklevel=2` (or appropriately deep), ensuring diagnostics cite
+  the user's calling code rather than internal library utility lines.
+
 - **Hierarchical `ExchangeabilityTree` cluster-robust variance calculation**:
   `calculate_p_values()` in `pvalues.py` now collapses `ExchangeabilityTree`
   instances to leaf-level cluster cells (`to_flat_cells()`) before delegating

@@ -640,6 +640,22 @@ def validate_compatibility(
                     ),
                 )
             )
+        elif family_name in _GLMM_FAMILIES:
+            issues.append(
+                ValidationIssue(
+                    level="error",
+                    code="AR_ORDER_DISCRETE_GLMM",
+                    message=(
+                        f"ar_order= is not supported for discrete mixed model family={family_name!r}. "
+                        "Longitudinal serial correlation in discrete GLMMs cannot be whitened "
+                        "via linear residual transforms."
+                    ),
+                    suggestion=(
+                        "Use permutation_strategy='between' (cluster-level permutation) "
+                        "for exact finite-sample inference under arbitrary longitudinal correlation."
+                    ),
+                )
+            )
 
         if method not in _SCORE_METHODS:
             issues.append(

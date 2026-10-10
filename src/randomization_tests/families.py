@@ -36,12 +36,12 @@ import warnings
 from collections.abc import Iterator
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
-from typing import Any, ClassVar, Protocol, final, runtime_checkable
+from typing import TYPE_CHECKING, Any, ClassVar, Protocol, final, runtime_checkable
 
 import numpy as np
 import statsmodels.api as sm
 from sklearn.base import clone
-from sklearn.linear_model import LinearRegression, LogisticRegression
+from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import log_loss, mean_squared_error
 from sklearn.model_selection import GroupKFold, KFold
 from statsmodels.tools.sm_exceptions import (
@@ -52,6 +52,11 @@ from statsmodels.tools.sm_exceptions import (
     PerfectSeparationWarning,
 )
 from typing_extensions import Self
+
+from ._results import FitResult
+
+if TYPE_CHECKING:
+    from .exchangeability import ExchangeabilityTree
 
 # ------------------------------------------------------------------ #
 # Warning-suppression helper
@@ -803,7 +808,7 @@ class ModelFamily(Protocol):
         self,
         X: np.ndarray,
         y: np.ndarray,
-    ) -> np.ndarray | None:
+    ) -> np.ndarray | ExchangeabilityTree | None:
         """Return group labels defining exchangeability cells, or ``None``.
 
         The permutation engine restricts permutations to within-cell
@@ -1449,22 +1454,135 @@ class LinearFamily:
         X: np.ndarray,
         y: np.ndarray,
         fit_intercept: bool = True,
-    ) -> Any:
-        """Fit an OLS model via sklearn ``LinearRegression``.
+    ) -> FitResult:
+        """Fit an OLS model (or FGLS when AR is calibrated).
 
-        Returns the fitted estimator object, which stores
-        ``coef_`` (slopes) and ``intercept_`` internally.
+        Returns a frozen, typed ``FitResult`` container carrying
+        the estimated parameters, predictions, residuals, log-likelihood,
+        Fisher information, standard errors, and Wald p-values.
 
-        When *X* has zero columns (intercept-only model, arising from
-        the ter Braak reduced fit on a single-feature dataset), a
-        lightweight stub is returned instead, since sklearn rejects
-        zero-feature arrays.
+        When *X* has zero columns (intercept-only model), returns
+        the sample mean (or generalized mean under AR).
         """
+        from scipy.stats import t as t_dist
+
+        n_obs = len(y)
         if X.shape[1] == 0:
-            return _make_intercept_only_ols(y, fit_intercept)
-        model = LinearRegression(fit_intercept=fit_intercept)
-        model.fit(X, y)
-        return model
+            if self.ar_coefs is not None and self._panel_lengths is not None:
+                from ._ar import apply_ar_cholesky_transform
+
+                ones = np.ones((n_obs, 1)) if fit_intercept else np.zeros((n_obs, 0))
+                X_w = apply_ar_cholesky_transform(
+                    ones, self._panel_lengths, self.ar_coefs
+                )
+                y_w = apply_ar_cholesky_transform(y, self._panel_lengths, self.ar_coefs)
+                if fit_intercept and X_w.shape[1] > 0:
+                    b0 = float(np.linalg.lstsq(X_w, y_w, rcond=None)[0][0])
+                    params = np.array([b0], dtype=float)
+                    preds = np.full(n_obs, b0, dtype=float)
+                else:
+                    params = np.empty(0, dtype=float)
+                    preds = np.zeros(n_obs, dtype=float)
+                residuals = y - preds
+                return FitResult(
+                    params=params,
+                    predictions=preds,
+                    fitted_values=preds,
+                    residuals=residuals,
+                    log_likelihood=0.0,
+                    fisher_info=np.eye(len(params)),
+                    se=np.zeros(len(params)),
+                    p_values=np.zeros(len(params)),
+                    fit_intercept=fit_intercept,
+                    converged=True,
+                )
+
+            b0 = float(np.mean(y)) if fit_intercept else 0.0
+            params = (
+                np.array([b0], dtype=float)
+                if fit_intercept
+                else np.empty(0, dtype=float)
+            )
+            preds = (
+                np.full(n_obs, b0, dtype=float)
+                if fit_intercept
+                else np.zeros(n_obs, dtype=float)
+            )
+            residuals = y - preds
+            return FitResult(
+                params=params,
+                predictions=preds,
+                fitted_values=preds,
+                residuals=residuals,
+                log_likelihood=0.0,
+                fisher_info=np.eye(len(params)),
+                se=np.zeros(len(params)),
+                p_values=np.zeros(len(params)),
+                fit_intercept=fit_intercept,
+                converged=True,
+            )
+
+        X_aug = _augment_intercept(X, fit_intercept)
+        if self.ar_coefs is not None and self._panel_lengths is not None:
+            from ._ar import apply_ar_cholesky_transform
+
+            X_w = apply_ar_cholesky_transform(X_aug, self._panel_lengths, self.ar_coefs)
+            y_w = apply_ar_cholesky_transform(y, self._panel_lengths, self.ar_coefs)
+            params = np.linalg.lstsq(X_w, y_w, rcond=None)[0]
+            preds = X_aug @ params
+            residuals = y - preds
+            res_w = y_w - X_w @ params
+            p_aug = len(params)
+            sigma2 = float(np.sum(res_w**2) / max(n_obs - p_aug, 1))
+            XtX = X_w.T @ X_w
+            fisher_info = XtX / max(sigma2, 1e-12)
+            cov = np.linalg.pinv(fisher_info)
+            se = np.sqrt(np.maximum(np.diag(cov), 1e-16))
+            t_stat = params / se
+            df_resid = float(max(n_obs - p_aug, 1))
+            p_values = 2.0 * t_dist.sf(np.abs(t_stat), df=df_resid)
+            ll = -0.5 * n_obs * (np.log(2.0 * np.pi * max(sigma2, 1e-12)) + 1.0)
+            return FitResult(
+                params=params,
+                predictions=preds,
+                fitted_values=preds,
+                residuals=residuals,
+                log_likelihood=ll,
+                fisher_info=fisher_info,
+                se=se,
+                p_values=p_values,
+                fit_intercept=fit_intercept,
+                converged=True,
+                df=df_resid,
+            )
+
+        # Standard OLS
+        params = np.linalg.lstsq(X_aug, y, rcond=None)[0]
+        preds = X_aug @ params
+        residuals = y - preds
+        p_aug = len(params)
+        sigma2 = float(np.sum(residuals**2) / max(n_obs - p_aug, 1))
+        XtX = X_aug.T @ X_aug
+        fisher_info = XtX / max(sigma2, 1e-12)
+        cov = np.linalg.pinv(fisher_info)
+        se = np.sqrt(np.maximum(np.diag(cov), 1e-16))
+        t_stat = params / se
+        df_resid = float(max(n_obs - p_aug, 1))
+        p_values = 2.0 * t_dist.sf(np.abs(t_stat), df=df_resid)
+        ll = -0.5 * n_obs * (np.log(2.0 * np.pi * max(sigma2, 1e-12)) + 1.0)
+        return FitResult(
+            params=params,
+            predictions=preds,
+            fitted_values=preds,
+            residuals=residuals,
+            log_likelihood=ll,
+            fisher_info=fisher_info,
+            se=se,
+            p_values=p_values,
+            fit_intercept=fit_intercept,
+            converged=True,
+            df=df_resid,
+        )
 
     def predict(self, model: Any, X: np.ndarray) -> np.ndarray:
         """Return ``ŷ = Xβ + β₀``.
@@ -1472,6 +1590,14 @@ class LinearFamily:
         The prediction is deterministic — no link function inversion
         or rounding is needed for continuous outcomes.
         """
+        if isinstance(model, FitResult):
+            X_aug = _augment_intercept(X, model.fit_intercept)
+            if len(model.params) == X_aug.shape[1]:
+                return np.asarray(X_aug @ model.params).ravel()
+            if len(model.params) == 1 and model.fit_intercept:
+                return np.full(X.shape[0], model.params[0], dtype=float)
+            if len(model.params) == X.shape[1]:
+                return np.asarray(X @ model.params).ravel()
         return np.asarray(model.predict(X)).ravel()  # shape: (n,)
 
     def coefs(self, model: Any) -> np.ndarray:
@@ -1480,6 +1606,8 @@ class LinearFamily:
         ``model.coef_`` may be 1-D or 2-D depending on sklearn's
         internal representation; ``np.ravel`` normalises both cases.
         """
+        if isinstance(model, FitResult):
+            return model.coef_
         return np.ravel(model.coef_)  # shape: (p,)
 
     def residuals(self, model: Any, X: np.ndarray, y: np.ndarray) -> np.ndarray:
@@ -2264,27 +2392,37 @@ class LogisticFamily:
 
         # Step 2: Logistic working weights W = μ̂(1 − μ̂).
         W_diag = mu * (1.0 - mu)  # (n,)
+        W_half = np.sqrt(np.maximum(W_diag, 1e-10))
 
         # Step 3: Projection row from full X.
         X_full = _augment_intercept(X, fit_intercept)
         j_aug = feature_idx + 1 if fit_intercept else feature_idx
 
-        # When AR-calibrated, whiten both X and residuals (FGLS).
-        # Working weights W stay from the unwhitened reduced-model fit.
+        # When AR-calibrated, whiten in the tangent space (M15 resolution):
+        # X_w = L @ (W^1/2 X)
+        # residuals_w = L @ (W^-1/2 (y - mu))
         if self.ar_coefs is not None and self._panel_lengths is not None:
             from ._ar import apply_ar_cholesky_transform
 
-            X_full = apply_ar_cholesky_transform(
-                X_full, self._panel_lengths, self.ar_coefs
+            X_tangent = X_full * W_half[:, None]
+            X_w = apply_ar_cholesky_transform(
+                X_tangent, self._panel_lengths, self.ar_coefs
             )
-            residuals = apply_ar_cholesky_transform(
-                residuals, self._panel_lengths, self.ar_coefs
+            pearson_resid = residuals / W_half
+            residuals_w = apply_ar_cholesky_transform(
+                pearson_resid, self._panel_lengths, self.ar_coefs
             )
-
-        projection_row = _glm_score_projection_row(X_full, W_diag, j_aug)
+            A = np.linalg.pinv(X_w)
+            projection_row = A[j_aug]
+            residuals_to_permute = residuals_w
+        else:
+            projection_row = _glm_score_projection_row(X_full, W_diag, j_aug)
+            residuals_to_permute = residuals
 
         # Step 4: Resampled scores via single matmul.
-        E_pi = _apply_randomization(residuals, perm_indices, randomization)  # (B, n)
+        E_pi = _apply_randomization(
+            residuals_to_permute, perm_indices, randomization
+        )  # (B, n)
         return np.asarray(E_pi @ projection_row)  # (B,)
 
     def residual_permutation_refit(
@@ -3008,27 +3146,35 @@ class PoissonFamily:
 
         # Step 2: Poisson working weights W = μ̂ (canonical link).
         W_diag = mu  # (n,)
+        W_half = np.sqrt(np.maximum(W_diag, 1e-10))
 
         # Step 3: Projection row from full X.
         X_full = _augment_intercept(X, fit_intercept)
         j_aug = feature_idx + 1 if fit_intercept else feature_idx
 
-        # When AR-calibrated, whiten both X and residuals (FGLS).
-        # Working weights W stay from the unwhitened reduced-model fit.
+        # When AR-calibrated, whiten in the tangent space (M15 resolution):
         if self.ar_coefs is not None and self._panel_lengths is not None:
             from ._ar import apply_ar_cholesky_transform
 
-            X_full = apply_ar_cholesky_transform(
-                X_full, self._panel_lengths, self.ar_coefs
+            X_tangent = X_full * W_half[:, None]
+            X_w = apply_ar_cholesky_transform(
+                X_tangent, self._panel_lengths, self.ar_coefs
             )
-            residuals = apply_ar_cholesky_transform(
-                residuals, self._panel_lengths, self.ar_coefs
+            pearson_resid = residuals / W_half
+            residuals_w = apply_ar_cholesky_transform(
+                pearson_resid, self._panel_lengths, self.ar_coefs
             )
-
-        projection_row = _glm_score_projection_row(X_full, W_diag, j_aug)
+            A = np.linalg.pinv(X_w)
+            projection_row = A[j_aug]
+            residuals_to_permute = residuals_w
+        else:
+            projection_row = _glm_score_projection_row(X_full, W_diag, j_aug)
+            residuals_to_permute = residuals
 
         # Step 4: Randomized scores via single matmul.
-        E_pi = _apply_randomization(residuals, perm_indices, randomization)  # (B, n)
+        E_pi = _apply_randomization(
+            residuals_to_permute, perm_indices, randomization
+        )  # (B, n)
         return np.asarray(E_pi @ projection_row)  # (B,)
 
     def residual_permutation_refit(
@@ -3730,27 +3876,35 @@ class NegativeBinomialFamily:
         # From the NB2 log-likelihood with log link, the Fisher
         # information uses W_i = μ̂_i / (1 + α·μ̂_i).
         W_diag = mu / (1.0 + alpha * mu)  # (n,)
+        W_half = np.sqrt(np.maximum(W_diag, 1e-10))
 
         # Step 3: Projection row from full X.
         X_full = _augment_intercept(X, fit_intercept)
         j_aug = feature_idx + 1 if fit_intercept else feature_idx
 
-        # When AR-calibrated, whiten both X and residuals (FGLS).
-        # Working weights W stay from the unwhitened reduced-model fit.
+        # When AR-calibrated, whiten in the tangent space (M15 resolution):
         if self.ar_coefs is not None and self._panel_lengths is not None:
             from ._ar import apply_ar_cholesky_transform
 
-            X_full = apply_ar_cholesky_transform(
-                X_full, self._panel_lengths, self.ar_coefs
+            X_tangent = X_full * W_half[:, None]
+            X_w = apply_ar_cholesky_transform(
+                X_tangent, self._panel_lengths, self.ar_coefs
             )
-            residuals = apply_ar_cholesky_transform(
-                residuals, self._panel_lengths, self.ar_coefs
+            pearson_resid = residuals / W_half
+            residuals_w = apply_ar_cholesky_transform(
+                pearson_resid, self._panel_lengths, self.ar_coefs
             )
-
-        projection_row = _glm_score_projection_row(X_full, W_diag, j_aug)
+            A = np.linalg.pinv(X_w)
+            projection_row = A[j_aug]
+            residuals_to_permute = residuals_w
+        else:
+            projection_row = _glm_score_projection_row(X_full, W_diag, j_aug)
+            residuals_to_permute = residuals
 
         # Step 4: Randomized scores via single matmul.
-        E_pi = _apply_randomization(residuals, perm_indices, randomization)  # (B, n)
+        E_pi = _apply_randomization(
+            residuals_to_permute, perm_indices, randomization
+        )  # (B, n)
         return np.asarray(E_pi @ projection_row)  # (B,)
 
     def residual_permutation_refit(
@@ -6211,8 +6365,11 @@ def fit_reduced(
         zero columns; *predictions* always has shape ``(n,)``.
     """
     n = len(y)
-    if Z.shape[1] > 0:
-        if reduced_model is not None:
+    if Z.shape[1] > 0 or (
+        getattr(family, "name", "") == "linear"
+        and getattr(family, "ar_coefs", None) is not None
+    ):
+        if Z.shape[1] > 0 and reduced_model is not None:
             _, preds = _cross_fit_residualize(
                 Z,
                 y,
@@ -6222,7 +6379,7 @@ def fit_reduced(
             )
             return _DMLReducedModel(preds), preds
 
-        # Confounders present: fit the family's model on Z and predict.
+        # Confounders present (or AR-whitened model): fit the family's model on Z and predict.
         model = family.fit(Z, y, fit_intercept)
         preds = family.predict(model, Z)
         return model, preds

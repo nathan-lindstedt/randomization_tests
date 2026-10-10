@@ -54,7 +54,7 @@ Public API:
         JointTestResult
 """
 
-from ._config import get_backend, set_backend
+from ._config import backend, get_backend, set_backend
 from ._conformal import conformal_prediction, evaluate_conformal
 from ._context import FitContext
 from ._invariance import invariance_test
@@ -64,6 +64,7 @@ from ._results import (
     ConformalResult,
     ConfounderAnalysisResult,
     ConfounderAnalysisResultSet,
+    FitResult,
     IndividualTestResult,
     InvarianceResult,
     JointTestResult,
@@ -116,6 +117,7 @@ __all__ = [
     "ConfounderAnalysisResultSet",
     "ConformalEvaluationResult",
     "ConformalResult",
+    "FitResult",
     "IndividualTestResult",
     "InvarianceResult",
     "JointTestResult",
@@ -150,6 +152,7 @@ __all__ = [
     "generate_unique_permutations",
     "generate_sign_flips",
     "validate_symmetry",
+    "backend",
     "get_backend",
     "set_backend",
     "ModelFamily",

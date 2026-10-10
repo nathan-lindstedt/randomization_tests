@@ -281,6 +281,13 @@ def knockoff_test(
         # Rescale knockoffs back to match original feature variance scale
         X_tilde = X_tilde_norm * col_norms
 
+        gram_cross_err = float(
+            np.max(np.abs(X_norm.T @ X_tilde_norm - (G - np.diag(s))))
+        )
+        gram_knock_err = float(np.max(np.abs(X_tilde_norm.T @ X_tilde_norm - G)))
+        diag["gram_preservation_error"] = gram_cross_err
+        diag["knockoff_gram_error"] = gram_knock_err
+
     else:
         guarantee_tier = "model_x_approximate"
         if method == "sdp":
@@ -337,24 +344,32 @@ def knockoff_test(
         selected_features = []
 
     # ------------------------------------------------------------------ #
-    # MMD Swap-Exchangeability Diagnostic
+    # Diagnostic Auditing: MMD Swap (Model-X) vs Gram Preservation (Fixed-X)
     # ------------------------------------------------------------------ #
-    mmd_p_values: dict[str, float] = {}
-    n_diag = min(p, 5)
-    for j in range(n_diag):
-        pair_orig = np.column_stack([X_centered[:, j], X_tilde[:, j]])
-        pair_swap = np.column_stack([X_tilde[:, j], X_centered[:, j]])
-        m_res = mmd_test(
-            pair_orig,
-            pair_swap,
-            kernel=kernel,
-            n_randomizations=400,
-            random_state=random_state,
-        )
-        mmd_p_values[feature_names[j]] = float(m_res.p_value)
+    if method == "fixed_x":
+        # Fixed-X guarantees algebraic Gram matrix preservation:
+        # X_tilde^T X_tilde = X^T X and X^T X_tilde = X^T X - diag(s).
+        # Distributional row exchangeability does not apply to Fixed-X geometry.
+        diag["swap_violation"] = False
+    else:
+        mmd_p_values: dict[str, float] = {}
+        n_diag = min(p, 5)
+        for j in range(n_diag):
+            pair_orig = np.column_stack([X_centered[:, j], X_tilde[:, j]])
+            pair_swap = np.column_stack([X_tilde[:, j], X_centered[:, j]])
+            m_res = mmd_test(
+                pair_orig,
+                pair_swap,
+                kernel=kernel,
+                n_randomizations=400,
+                random_state=random_state,
+            )
+            mmd_p_values[feature_names[j]] = float(m_res.p_value)
 
-    diag["mmd_swap_p_values"] = mmd_p_values
-    diag["swap_violation"] = bool(any(pval <= 0.05 for pval in mmd_p_values.values()))
+        diag["mmd_swap_p_values"] = mmd_p_values
+        diag["swap_violation"] = bool(
+            any(pval <= 0.05 for pval in mmd_p_values.values())
+        )
 
     return KnockoffResult(
         selected_features=selected_features,

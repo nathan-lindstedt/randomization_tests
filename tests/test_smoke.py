@@ -72,6 +72,22 @@ class TestLinearSmoke:
         assert len(result["model_coefs"]) == P
         assert result.family.name == "linear"
 
+        # Statistical parameter recovery on n=10,000 (true beta = [2.0, -0.5, 0, 0, 0])
+        coefs = np.asarray(result["model_coefs"])
+        assert abs(coefs[0] - 2.0) < 0.05, f"x1 coef {coefs[0]} not recovered near 2.0"
+        assert abs(coefs[1] - (-0.5)) < 0.05, (
+            f"x2 coef {coefs[1]} not recovered near -0.5"
+        )
+        for j in range(2, P):
+            assert abs(coefs[j]) < 0.05, f"noise coef {coefs[j]} not recovered near 0.0"
+
+        # Statistical p-value calibration
+        pvals = np.asarray(result["raw_empirical_p"])
+        assert pvals[0] < 0.01, "x1 true signal should be significant"
+        assert pvals[1] < 0.01, "x2 true signal should be significant"
+        for j in range(2, P):
+            assert pvals[j] > 0.05, f"noise feature x{j + 1} falsely rejected at 0.05"
+
     def test_result_structure(self) -> None:
         X, y = _make_large_linear()
         result = randomization_test_regression(
@@ -97,6 +113,22 @@ class TestLogisticSmoke:
         assert elapsed < 120, f"Logistic smoke test took {elapsed:.1f}s (limit 120s)"
         assert len(result["model_coefs"]) == P
         assert result.family.name == "logistic"
+
+        # Statistical parameter recovery on n=10,000 (true logits = 1.5*x1 - 0.8*x2)
+        coefs = np.asarray(result["model_coefs"])
+        assert coefs[0] > 1.0, (
+            f"x1 log-odds slope {coefs[0]} should be positive and > 1.0"
+        )
+        assert coefs[1] < -0.5, (
+            f"x2 log-odds slope {coefs[1]} should be negative and < -0.5"
+        )
+        for j in range(2, P):
+            assert abs(coefs[j]) < 0.15, f"noise coef {coefs[j]} not recovered near 0.0"
+
+        # Statistical p-value calibration
+        pvals = np.asarray(result["raw_empirical_p"])
+        assert pvals[0] < 0.05, "x1 true signal should be significant"
+        assert pvals[1] < 0.05, "x2 true signal should be significant"
 
 
 @pytest.mark.slow
@@ -143,4 +175,6 @@ class TestKennedyJointSmoke:
         assert elapsed < 60, f"Kennedy joint smoke test took {elapsed:.1f}s (limit 60s)"
         assert result["method"] == "kennedy_joint"
         assert "p_value" in result
-        assert 0 < result["p_value"] <= 1.0
+        assert 0 < result["p_value"] < 0.05, (
+            f"Kennedy joint test should reject null for active features, got p={result['p_value']}"
+        )

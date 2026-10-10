@@ -145,13 +145,24 @@ def _npmi_coherence(bin_arr: np.ndarray, H: np.ndarray, top_n: int) -> float:
                 d_wi = doc_freq[wi]
                 d_wj = doc_freq[wj]
                 d_wiwj = cooc[wi, wj]
-                # +1 smoothing on the pair count; individual word counts use max(·,1)
-                log_joint = np.log((d_wiwj + 1.0) / n_docs)
-                log_pi = np.log(max(d_wi, 1.0) / n_docs)
-                log_pj = np.log(max(d_wj, 1.0) / n_docs)
-                denom = -log_joint
-                npmi = 1.0 if denom == 0.0 else (log_joint - log_pi - log_pj) / denom
-                pair_scores.append(npmi)
+                if d_wiwj == 0:
+                    pair_scores.append(-1.0)
+                else:
+                    p_joint = d_wiwj / n_docs
+                    if p_joint >= 1.0:
+                        pair_scores.append(1.0)
+                    else:
+                        p_i = d_wi / n_docs
+                        p_j = d_wj / n_docs
+                        log_joint = np.log(p_joint)
+                        log_pi = np.log(p_i)
+                        log_pj = np.log(p_j)
+                        denom = -log_joint
+                        # By construction, d_wiwj <= min(d_wi, d_wj), so
+                        # p_joint <= min(p_i, p_j) and npmi in [-1.0, 1.0]
+                        # holds mathematically without artificial clipping.
+                        npmi = (log_joint - log_pi - log_pj) / denom
+                        pair_scores.append(float(npmi))
         if pair_scores:
             topic_scores.append(float(np.mean(pair_scores)))
 

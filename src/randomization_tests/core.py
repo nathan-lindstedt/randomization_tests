@@ -242,6 +242,20 @@ def randomization_test_regression(
     X = _ensure_pandas_df(X, name="X")
     y = _ensure_pandas_df(y, name="y")
 
+    # ---- Dimension check -----------------------------------------
+    if X.shape[0] != y.shape[0]:
+        raise ValueError(f"X has {X.shape[0]} rows but y has {y.shape[0]} elements.")
+
+    # ---- Index alignment -----------------------------------------
+    if not X.index.equals(y.index):
+        if set(X.index) == set(y.index):
+            y = y.reindex(X.index)
+        else:
+            raise ValueError(
+                f"Index mismatch between X ({len(X)} rows) and y ({len(y)} rows). "
+                "Indices must share identical labels."
+            )
+
     if confounders is None:
         confounders = []
 
@@ -274,6 +288,14 @@ def randomization_test_regression(
                 "Categorical responses cannot have meaningful AR "
                 "residual structure."
             )
+        if family_name in ("logistic_mixed", "poisson_mixed"):
+            raise ValueError(
+                f"ar_order= is not supported for discrete mixed model family={family_name!r}. "
+                "Longitudinal serial correlation in discrete GLMMs cannot be whitened "
+                "via linear residual transforms. Use permutation_strategy='between' "
+                "(cluster-level permutation) for exact finite-sample inference under "
+                "arbitrary longitudinal correlation."
+            )
         _SCORE_METHODS = {"score", "score_joint"}
         if method not in _SCORE_METHODS:
             raise ValueError(
@@ -281,17 +303,20 @@ def randomization_test_regression(
                 f"Got method={method!r}."
             )
 
-    # ---- Panel-only score guard ----------------------------------
-    # When panel_id is provided without ar_order, the within-panel
-    # residuals are NOT exchangeable (serial correlation is
-    # unmodeled).  Within-panel permutation is invalid: between-
-    # panel features (constant within a day) cannot be broken by
-    # within-panel shuffles, producing spuriously small p-values.
-    # Set the permutation strategy to unrestricted so the null
-    # distribution is valid while preserving groups for family
-    # calibration and cluster-robust comparisons.
+    # ---- Panel score strategy dispatch (Decision D31 / Step 11f) -
+    # When panel_id is provided for score methods:
+    # 1. Without ar_order: within-panel residuals are serially correlated,
+    #    so within-panel permutation is invalid (M8). Unrestricted permutation
+    #    preserves valid null calibration while retaining groups for
+    #    cluster-robust comparisons.
+    # 2. With ar_order: residuals are whitened by the Prais–Winsten
+    #    Cholesky factor L, becoming temporally independent white noise.
+    #    Unrestricted permutation across all observations ensures the
+    #    permutation null centers at zero identically, eliminating the
+    #    non-zero panel mean inner product sum_k n_k X_bar_k e_bar_k
+    #    inherent to within-panel shuffles on pooled models.
     _SCORE_METHODS_SET = {"score", "score_joint"}
-    if panel_id is not None and ar_order is None and method in _SCORE_METHODS_SET:
+    if panel_id is not None and method in _SCORE_METHODS_SET:
         permutation_strategy = "unrestricted"
 
     # ---- Context accumulator -----------------------------------
@@ -876,15 +901,33 @@ def _validate_groups(
 
     # ---- Convert groups to integer cell labels -------------------
     if isinstance(groups, pd.DataFrame):
-        if groups.shape[1] == 1:
+        df_groups = groups
+        if not df_groups.index.equals(X.index):
+            if set(df_groups.index) == set(X.index):
+                df_groups = df_groups.reindex(X.index)
+            else:
+                raise ValueError(
+                    f"Index mismatch between X ({len(X)} rows) and groups ({len(df_groups)} rows). "
+                    "Indices must share identical labels."
+                )
+        if df_groups.shape[1] == 1:
             # Single blocking column → extract as 1-D.
-            cells_raw = groups.iloc[:, 0].values
+            cells_raw = df_groups.iloc[:, 0].values
         else:
             # Multi-column blocking → cross-classify into unique
             # integer cell labels (Cartesian product of levels).
-            cells_raw = _cross_classify(groups)
+            cells_raw = _cross_classify(df_groups)
     elif isinstance(groups, pd.Series):
-        cells_raw = groups.values
+        s_groups = groups
+        if not s_groups.index.equals(X.index):
+            if set(s_groups.index) == set(X.index):
+                s_groups = s_groups.reindex(X.index)
+            else:
+                raise ValueError(
+                    f"Index mismatch between X ({len(X)} rows) and groups ({len(s_groups)} rows). "
+                    "Indices must share identical labels."
+                )
+        cells_raw = s_groups.values
     else:
         cells_raw = np.asarray(groups)
 

@@ -1,5 +1,7 @@
 """Tests for the _ar autoregressive utilities module."""
 
+from __future__ import annotations
+
 import numpy as np
 import pytest
 import scipy.linalg
@@ -7,8 +9,10 @@ import scipy.linalg
 from randomization_tests._ar import (
     apply_ar_precision,
     ar_diagnostics,
+    build_ar_cholesky_factor,
     build_ar_precision_block,
     estimate_ar_coefficients,
+    validate_ar_stationarity,
 )
 
 
@@ -51,14 +55,14 @@ def _generate_ar2_panels(
 class TestEstimateArCoefficients:
     """Tests for Yule-Walker AR coefficient estimation."""
 
-    def test_yule_walker_ar1_known_rho(self):
+    def test_yule_walker_ar1_known_rho(self) -> None:
         rng = np.random.default_rng(42)
         panels = _generate_ar1_panels(0.7, n_panels=20, T=200, rng=rng)
         coefs = estimate_ar_coefficients(panels, order=1)
         assert coefs.shape == (1,)
         assert abs(coefs[0] - 0.7) < 0.1
 
-    def test_yule_walker_ar2_known(self):
+    def test_yule_walker_ar2_known(self) -> None:
         rng = np.random.default_rng(123)
         panels = _generate_ar2_panels(0.5, -0.3, n_panels=20, T=200, rng=rng)
         coefs = estimate_ar_coefficients(panels, order=2)
@@ -66,11 +70,11 @@ class TestEstimateArCoefficients:
         assert abs(coefs[0] - 0.5) < 0.15
         assert abs(coefs[1] - (-0.3)) < 0.15
 
-    def test_invalid_order_raises(self):
+    def test_invalid_order_raises(self) -> None:
         with pytest.raises(ValueError, match="order must be >= 1"):
             estimate_ar_coefficients([np.zeros(10)], order=0)
 
-    def test_short_panels_skipped(self):
+    def test_short_panels_skipped(self) -> None:
         """Panels shorter than order+1 are silently skipped."""
         rng = np.random.default_rng(7)
         long_panels = _generate_ar1_panels(0.5, n_panels=10, T=100, rng=rng)
@@ -78,7 +82,7 @@ class TestEstimateArCoefficients:
         coefs = estimate_ar_coefficients(long_panels + short_panels, order=3)
         assert coefs.shape == (3,)
 
-    def test_all_panels_too_short_raises(self):
+    def test_all_panels_too_short_raises(self) -> None:
         with pytest.raises(ValueError, match="No panels long enough"):
             estimate_ar_coefficients([np.array([1.0])], order=1)
 
@@ -86,7 +90,7 @@ class TestEstimateArCoefficients:
 class TestBuildArPrecisionBlock:
     """Tests for the AR precision matrix builder."""
 
-    def test_precision_block_ar1_matches_toeplitz_inverse(self):
+    def test_precision_block_ar1_matches_toeplitz_inverse(self) -> None:
         rho = 0.6
         T = 10
         # Build Toeplitz covariance for AR(1).
@@ -102,14 +106,14 @@ class TestBuildArPrecisionBlock:
         # uses γ(0) = 1/(1−ρ²), so the matrices should match directly.
         np.testing.assert_allclose(prec, expected, atol=1e-10)
 
-    def test_precision_block_ar2_positive_definite(self):
+    def test_precision_block_ar2_positive_definite(self) -> None:
         ar_coefs = np.array([0.5, -0.3])
         T = 8
         prec = build_ar_precision_block(ar_coefs, T)
         eigenvalues = np.linalg.eigvalsh(prec)
         assert np.all(eigenvalues > 0)
 
-    def test_precision_block_symmetry(self):
+    def test_precision_block_symmetry(self) -> None:
         prec = build_ar_precision_block(np.array([0.4]), T=12)
         np.testing.assert_allclose(prec, prec.T, atol=1e-14)
 
@@ -117,7 +121,7 @@ class TestBuildArPrecisionBlock:
 class TestApplyArPrecision:
     """Tests for block-diagonal Ω⁻¹v application."""
 
-    def test_apply_precision_matches_block_diagonal(self):
+    def test_apply_precision_matches_block_diagonal(self) -> None:
         rng = np.random.default_rng(99)
         ar_coefs = np.array([0.6])
         panel_lengths = np.array([5, 8, 5])
@@ -133,7 +137,7 @@ class TestApplyArPrecision:
         result = apply_ar_precision(v, panel_indices, panel_lengths, ar_coefs)
         np.testing.assert_allclose(result, expected, atol=1e-12)
 
-    def test_apply_precision_2d_input(self):
+    def test_apply_precision_2d_input(self) -> None:
         rng = np.random.default_rng(77)
         ar_coefs = np.array([0.5])
         panel_lengths = np.array([4, 6])
@@ -152,27 +156,27 @@ class TestApplyArPrecision:
 class TestArDiagnostics:
     """Tests for Durbin-Watson and Ljung-Box diagnostics."""
 
-    def test_durbin_watson_no_autocorrelation(self):
+    def test_durbin_watson_no_autocorrelation(self) -> None:
         rng = np.random.default_rng(1)
         panels = [rng.standard_normal(100) for _ in range(10)]
         diag = ar_diagnostics(panels)
         # DW ≈ 2.0 for iid residuals.
         assert 1.5 < diag["durbin_watson"] < 2.5
 
-    def test_durbin_watson_positive_autocorrelation(self):
+    def test_durbin_watson_positive_autocorrelation(self) -> None:
         rng = np.random.default_rng(2)
         panels = _generate_ar1_panels(0.7, n_panels=10, T=100, rng=rng)
         diag = ar_diagnostics(panels)
         # Positive autocorrelation → DW < 2.
         assert diag["durbin_watson"] < 1.0
 
-    def test_ljung_box_detects_ar(self):
+    def test_ljung_box_detects_ar(self) -> None:
         rng = np.random.default_rng(3)
         panels = _generate_ar1_panels(0.7, n_panels=10, T=100, rng=rng)
         diag = ar_diagnostics(panels)
         assert diag["ljung_box_p"] < 0.05
 
-    def test_diagnostics_keys(self):
+    def test_diagnostics_keys(self) -> None:
         rng = np.random.default_rng(4)
         panels = [rng.standard_normal(20) for _ in range(5)]
         diag = ar_diagnostics(panels)
@@ -186,7 +190,7 @@ class TestArDiagnostics:
 class TestEstimatePanelArCoefficients:
     """Tests for decontaminated panel AR estimation (Defect M11)."""
 
-    def test_recovers_known_rho_with_random_intercept(self):
+    def test_recovers_known_rho_with_random_intercept(self) -> None:
         """M11: Random intercept contamination is eliminated by within-panel demeaning."""
         from randomization_tests._ar import estimate_panel_ar_coefficients
 
@@ -215,7 +219,7 @@ class TestEstimatePanelArCoefficients:
         )
         assert abs(clean_rho[0] - true_rho) < 0.10
 
-    def test_invariant_across_icc_sweep(self):
+    def test_invariant_across_icc_sweep(self) -> None:
         """M11: Estimated rho must not scale upward with ICC."""
         from randomization_tests._ar import estimate_panel_ar_coefficients
 
@@ -250,7 +254,7 @@ class TestEstimatePanelArCoefficients:
         for est in estimates:
             assert abs(est - true_rho) < 0.12
 
-    def test_unbalanced_panels(self):
+    def test_unbalanced_panels(self) -> None:
         """Unbalanced panel lengths are handled correctly."""
         from randomization_tests._ar import estimate_panel_ar_coefficients
 
@@ -274,3 +278,70 @@ class TestEstimatePanelArCoefficients:
         rho_hat = estimate_panel_ar_coefficients(x, y, starts, lengths, order=1)
         assert len(rho_hat) == 1
         assert 0.3 < rho_hat[0] < 0.7
+
+
+class TestValidateArStationarity:
+    """Tests for AR lag polynomial root and stationarity validation."""
+
+    def test_valid_stationary_ar1_and_ar2(self) -> None:
+        """Stationary processes pass without raising."""
+        validate_ar_stationarity(np.array([0.7]))
+        validate_ar_stationarity(np.array([-0.6]))
+        validate_ar_stationarity(np.array([0.5, -0.3]))
+        validate_ar_stationarity(np.array([]))
+
+    def test_unit_root_ar1_raises(self) -> None:
+        """Unit root AR(1) rho = 1.0 or -1.0 raises informative ValueError."""
+        with pytest.raises(ValueError, match="violate weak stationarity"):
+            validate_ar_stationarity(np.array([1.0]))
+        with pytest.raises(ValueError, match="violate weak stationarity"):
+            validate_ar_stationarity(np.array([-1.0]))
+
+    def test_explosive_ar1_raises(self) -> None:
+        """Explosive AR(1) |rho| > 1 raises ValueError."""
+        with pytest.raises(ValueError, match="violate weak stationarity"):
+            validate_ar_stationarity(np.array([1.25]))
+
+    def test_explosive_ar2_complex_roots_raises(self) -> None:
+        """Explosive AR(2) with complex roots raises ValueError."""
+        # rho_1 = 0.5, rho_2 = 0.7 -> char roots outside unit circle
+        with pytest.raises(ValueError, match="violate weak stationarity"):
+            validate_ar_stationarity(np.array([0.5, 0.7]))
+
+    def test_build_blocks_reject_non_stationary(self) -> None:
+        """build_ar_precision_block and build_ar_cholesky_factor reject non-stationary AR."""
+        with pytest.raises(ValueError, match="violate weak stationarity"):
+            build_ar_precision_block(np.array([1.0]), T=5)
+
+        with pytest.raises(ValueError, match="violate weak stationarity"):
+            build_ar_cholesky_factor(np.array([1.1]), T=5)
+
+
+class TestPraisWinstenCholeskyFactor:
+    """Tests for Prais-Winsten vs Cochrane-Orcutt degrees-of-freedom preservation."""
+
+    def test_prais_winsten_first_row_scaled_degrees_of_freedom(self) -> None:
+        """Prais-Winsten preserves T observations by scaling t=0 by sqrt(1 - rho^2)."""
+        rho = 0.6
+        T = 6
+        L = build_ar_cholesky_factor(np.array([rho]), T)
+
+        # Dimension must be (T, T) preserving all T observations (zero observations dropped)
+        assert L.shape == (T, T)
+        # First observation scaled by sqrt(1 - rho^2)
+        expected_l00 = np.sqrt(1.0 - rho**2)
+        np.testing.assert_allclose(L[0, 0], expected_l00, atol=1e-12)
+        assert L[0, 1] == 0.0
+
+        # Sub-diagonal: L[t, t] = 1, L[t, t-1] = -rho for t >= 1
+        for t in range(1, T):
+            np.testing.assert_allclose(L[t, t], 1.0, atol=1e-12)
+            np.testing.assert_allclose(L[t, t - 1], -rho, atol=1e-12)
+
+    def test_cholesky_factor_inverts_to_precision(self) -> None:
+        """L.T @ L matches the exact precision matrix Omega^-1."""
+        rho = 0.45
+        T = 8
+        L = build_ar_cholesky_factor(np.array([rho]), T)
+        prec = build_ar_precision_block(np.array([rho]), T)
+        np.testing.assert_allclose(L.T @ L, prec, atol=1e-12)

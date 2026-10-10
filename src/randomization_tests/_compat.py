@@ -12,7 +12,7 @@ converter simply passes pandas objects through untouched.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, TypeAlias
+from typing import TYPE_CHECKING, Any, TypeAlias
 
 import pandas as pd
 
@@ -21,15 +21,7 @@ if TYPE_CHECKING:
 
     DataFrameLike: TypeAlias = pd.DataFrame | pl.DataFrame | pl.LazyFrame
 else:
-    DataFrameLike: TypeAlias = pd.DataFrame
-
-# Runtime detection — avoids a hard dependency on Polars.
-try:
-    import polars as pl
-
-    _HAS_POLARS = True
-except ImportError:
-    _HAS_POLARS = False
+    DataFrameLike: TypeAlias = Any
 
 
 def _ensure_pandas_df(obj: DataFrameLike, *, name: str = "input") -> pd.DataFrame:
@@ -53,14 +45,19 @@ def _ensure_pandas_df(obj: DataFrameLike, *, name: str = "input") -> pd.DataFram
     if isinstance(obj, pd.DataFrame):
         return obj
 
-    if _HAS_POLARS:
-        if isinstance(obj, pl.LazyFrame):
-            return obj.collect().to_pandas()
-        if isinstance(obj, pl.DataFrame):
-            return obj.to_pandas()
+    # Lazy detection for Polars without eager import at package load
+    type_mod = getattr(type(obj), "__module__", "")
+    if type_mod.startswith("polars"):
+        try:
+            import polars as pl
+
+            if isinstance(obj, pl.LazyFrame):
+                return obj.collect().to_pandas()
+            if isinstance(obj, pl.DataFrame):
+                return obj.to_pandas()
+        except ImportError:
+            pass
 
     raise TypeError(
-        f"'{name}' must be a pandas DataFrame"
-        + (" or Polars DataFrame/LazyFrame" if _HAS_POLARS else "")
-        + f", got {type(obj).__name__}."
+        f"'{name}' must be a pandas DataFrame or Polars DataFrame/LazyFrame, got {type(obj).__name__}."
     )

@@ -75,67 +75,43 @@ class TestValidateFamilyCompatibility:
         issues = validate_family_compatibility("auto")
         assert issues == []
 
-    def test_linear_no_y_is_valid(self):
-        assert validate_family_compatibility("linear") == []
+    @pytest.mark.parametrize(
+        ("family", "y"),
+        [
+            ("linear", None),
+            ("linear", np.array([1.0, 2.0, 3.0])),
+            ("logistic", np.array([0, 1, 0, 1])),
+            ("poisson", np.array([0, 1, 2, 5])),
+            ("negative_binomial", np.array([0, 1, 3, 10])),
+            ("ordinal", np.array([0, 1, 2, 0, 1, 2])),
+            ("multinomial", np.array([0, 1, 2, 0, 1, 2])),
+            ("linear_mixed", None),
+            ("logistic_mixed", np.array([0, 1, 0, 1])),
+            ("poisson_mixed", np.array([0, 1, 2, 5])),
+        ],
+    )
+    def test_valid_family_and_y(self, family, y):
+        assert validate_family_compatibility(family, y=y) == []
 
-    def test_linear_with_y_is_valid(self):
-        y = np.array([1.0, 2.0, 3.0])
-        assert validate_family_compatibility("linear", y=y) == []
-
-    def test_logistic_binary_y_is_valid(self):
-        y = np.array([0, 1, 0, 1])
-        assert validate_family_compatibility("logistic", y=y) == []
-
-    def test_logistic_non_binary_y_returns_error(self):
-        y = np.array([0, 1, 2, 3])
-        issues = validate_family_compatibility("logistic", y=y)
-        assert any(i.code == "BINARY_FAMILY_NON_BINARY_Y" for i in issues)
-
-    def test_logistic_mixed_non_binary_y_returns_error(self):
-        y = np.array([0.0, 0.5, 1.0])
-        issues = validate_family_compatibility("logistic_mixed", y=y)
-        assert any(i.code == "BINARY_FAMILY_NON_BINARY_Y" for i in issues)
-
-    def test_poisson_valid_y(self):
-        y = np.array([0, 1, 2, 5])
-        assert validate_family_compatibility("poisson", y=y) == []
-
-    def test_poisson_negative_y_returns_error(self):
-        y = np.array([-1, 0, 1])
-        issues = validate_family_compatibility("poisson", y=y)
-        assert any(i.code == "COUNT_FAMILY_NEGATIVE_Y" for i in issues)
-
-    def test_poisson_non_integer_y_returns_error(self):
-        y = np.array([0.5, 1.5, 2.5])
-        issues = validate_family_compatibility("poisson", y=y)
-        assert any(i.code == "COUNT_FAMILY_NON_INTEGER_Y" for i in issues)
-
-    def test_negative_binomial_valid_y(self):
-        y = np.array([0, 1, 3, 10])
-        assert validate_family_compatibility("negative_binomial", y=y) == []
-
-    def test_ordinal_valid_y(self):
-        y = np.array([0, 1, 2, 0, 1, 2])
-        assert validate_family_compatibility("ordinal", y=y) == []
-
-    def test_ordinal_too_few_levels(self):
-        y = np.array([0, 1, 0, 1])
-        issues = validate_family_compatibility("ordinal", y=y)
-        assert any(i.code == "CATEGORICAL_FAMILY_TOO_FEW_LEVELS" for i in issues)
-
-    def test_ordinal_non_integer_y(self):
-        y = np.array([0.0, 1.5, 2.0])
-        issues = validate_family_compatibility("ordinal", y=y)
-        assert any(i.code == "CATEGORICAL_FAMILY_NON_INTEGER_Y" for i in issues)
-
-    def test_multinomial_valid_y(self):
-        y = np.array([0, 1, 2, 0, 1, 2])
-        assert validate_family_compatibility("multinomial", y=y) == []
-
-    def test_multinomial_single_class(self):
-        y = np.array([1, 1, 1, 1])
-        issues = validate_family_compatibility("multinomial", y=y)
-        assert any(i.code == "CATEGORICAL_FAMILY_TOO_FEW_LEVELS" for i in issues)
+    @pytest.mark.parametrize(
+        ("family", "y", "expected_code"),
+        [
+            ("logistic", np.array([0, 1, 2, 3]), "BINARY_FAMILY_NON_BINARY_Y"),
+            ("logistic_mixed", np.array([0.0, 0.5, 1.0]), "BINARY_FAMILY_NON_BINARY_Y"),
+            ("poisson", np.array([-1, 0, 1]), "COUNT_FAMILY_NEGATIVE_Y"),
+            ("poisson", np.array([0.5, 1.5, 2.5]), "COUNT_FAMILY_NON_INTEGER_Y"),
+            ("ordinal", np.array([0, 1, 0, 1]), "CATEGORICAL_FAMILY_TOO_FEW_LEVELS"),
+            ("ordinal", np.array([0.0, 1.5, 2.0]), "CATEGORICAL_FAMILY_NON_INTEGER_Y"),
+            (
+                "multinomial",
+                np.array([1, 1, 1, 1]),
+                "CATEGORICAL_FAMILY_TOO_FEW_LEVELS",
+            ),
+        ],
+    )
+    def test_invalid_family_y_returns_error(self, family, y, expected_code):
+        issues = validate_family_compatibility(family, y=y)
+        assert any(i.code == expected_code for i in issues)
 
     def test_all_known_families_no_y_valid(self):
         families = [

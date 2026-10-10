@@ -2200,6 +2200,15 @@ def _calibrate_glmm(
     if instance.fisher_info is not None:
         return instance
 
+    if kwargs.get("ar_order") is not None:
+        raise ValueError(
+            f"ar_order= is not supported for discrete mixed model family={family_name!r}. "
+            "Longitudinal serial correlation in discrete GLMMs cannot be whitened "
+            "via linear residual transforms. Use permutation_strategy='between' "
+            "(cluster-level permutation) for exact finite-sample inference under "
+            "arbitrary longitudinal correlation."
+        )
+
     groups = kwargs.get("groups")
     if groups is None:
         msg = f"{cls.__name__}.calibrate() requires groups= for calibration."

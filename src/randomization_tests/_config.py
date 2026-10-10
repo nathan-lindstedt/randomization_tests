@@ -27,17 +27,17 @@ Examples:
 
 from __future__ import annotations
 
+import contextvars
 import os
+from collections.abc import Generator
+from contextlib import contextmanager
 
 _VALID_BACKENDS = {"jax", "numpy", "auto"}
 
-# Sentinel indicating "no programmatic override has been set".
-#
-# Thread-safety note: this module-level global is NOT thread-safe.
-# Concurrent calls to set_backend() from different threads could
-# race.  In practice this is fine — backend selection happens once
-# at program start-up (or in a notebook cell), never mid-loop.
-_backend_override: str | None = None
+# Context-isolated override — thread-safe and coroutine-safe across parallel workers.
+_backend_override: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "_backend_override", default=None
+)
 
 
 def _jax_is_available() -> bool:
@@ -55,16 +55,17 @@ def get_backend() -> str:
     """Return the active backend name (``"jax"`` or ``"numpy"``).
 
     Resolution order:
-        1. Value set by :func:`set_backend` (unless ``"auto"``).
+        1. ContextVar override set by :func:`set_backend` or :func:`backend` (unless ``"auto"`` or ``None``).
         2. ``RANDOMIZATION_TESTS_BACKEND`` environment variable.
         3. ``"jax"`` if importable, otherwise ``"numpy"``.
 
     Returns:
         ``"jax"`` or ``"numpy"``.
     """
-    # 1. Programmatic override
-    if _backend_override is not None and _backend_override != "auto":
-        return _backend_override
+    # 1. Programmatic override (context-isolated)
+    override = _backend_override.get()
+    if override is not None and override != "auto":
+        return override
 
     # 2. Environment variable
     env = os.environ.get("RANDOMIZATION_TESTS_BACKEND", "").strip().lower()
@@ -75,21 +76,50 @@ def get_backend() -> str:
     return "jax" if _jax_is_available() else "numpy"
 
 
-def set_backend(name: str) -> None:
-    """Override the backend selection.
+def set_backend(name: str | None) -> None:
+    """Override the backend selection in the current execution context.
 
     Args:
-        name: One of ``"jax"``, ``"numpy"``, or ``"auto"``
-            (case-insensitive).  ``"auto"`` restores the default
+        name: One of ``"jax"``, ``"numpy"``, ``"auto"``, or ``None``
+            (case-insensitive).  ``"auto"`` or ``None`` restores the default
             resolution order.
 
     Raises:
         ValueError: If *name* is not a recognised backend.
     """
-    global _backend_override
+    if name is None or (isinstance(name, str) and name.strip().lower() == "auto"):
+        _backend_override.set(None)
+        return
+
     normalised = name.strip().lower()
     if normalised not in _VALID_BACKENDS:
         raise ValueError(
             f"Unknown backend '{name}'. Choose from: {sorted(_VALID_BACKENDS)}"
         )
-    _backend_override = normalised
+    _backend_override.set(normalised)
+
+
+@contextmanager
+def backend(name: str) -> Generator[str, None, None]:
+    """Context manager for temporarily overriding the backend in the current context/thread.
+
+    Args:
+        name: One of ``"jax"``, ``"numpy"``, or ``"auto"`` (case-insensitive).
+
+    Yields:
+        The active backend name within the context block.
+    """
+    normalised = name.strip().lower()
+    if normalised not in _VALID_BACKENDS:
+        raise ValueError(
+            f"Unknown backend '{name}'. Choose from: {sorted(_VALID_BACKENDS)}"
+        )
+    val = None if normalised == "auto" else normalised
+    token = _backend_override.set(val)
+    try:
+        yield get_backend()
+    finally:
+        _backend_override.reset(token)
+
+
+__all__ = ["backend", "get_backend", "set_backend"]

@@ -18,6 +18,46 @@ import scipy.linalg
 import scipy.stats
 
 
+def validate_ar_stationarity(ar_coefs: np.ndarray) -> None:
+    r"""Validate that AR(p) coefficients define a weakly stationary process.
+
+    An AR(p) process with lag polynomial :math:`A(z) = 1 - \sum_{j=1}^p \rho_j z^j`
+    is stationary if and only if all roots of :math:`A(z) = 0` lie strictly
+    outside the unit circle in the complex plane (:math:`|z| > 1`), or
+    equivalently, all characteristic roots :math:`\lambda` satisfying
+    :math:`\lambda^p - \sum_{j=1}^p \rho_j \lambda^{p-j} = 0` lie strictly
+    inside the unit circle (:math:`|\lambda| < 1`).
+
+    Parameters
+    ----------
+    ar_coefs : np.ndarray
+        Shape ``(p,)`` — AR coefficients :math:`[\rho_1, \dots, \rho_p]`.
+
+    Raises
+    ------
+    ValueError
+        If the AR coefficients violate stationarity (unit-root or explosive).
+    """
+    if len(ar_coefs) == 0:
+        return
+
+    # Characteristic polynomial: lambda^p - rho_1 lambda^{p-1} - ... - rho_p = 0
+    # Coefficients: [1, -rho_1, -rho_2, ..., -rho_p]
+    poly_coeffs = np.r_[1.0, -ar_coefs]
+    char_roots = np.roots(poly_coeffs)
+    max_modulus = float(np.max(np.abs(char_roots)))
+
+    if max_modulus >= 1.0 - 1e-7:
+        min_lag_root = 1.0 / max_modulus if max_modulus > 0 else 0.0
+        msg = (
+            f"AR coefficients {ar_coefs.tolist()} violate weak stationarity: "
+            f"maximum characteristic root modulus is {max_modulus:.4f} >= 1.0 "
+            f"(minimum lag polynomial root |z| = {min_lag_root:.4f} <= 1.0). "
+            f"Autoregressive processes require all lag roots strictly outside the unit circle."
+        )
+        raise ValueError(msg)
+
+
 def estimate_ar_coefficients(
     residuals_by_panel: list[np.ndarray],
     order: int,
@@ -81,6 +121,7 @@ def estimate_ar_coefficients(
     ar_coefs: np.ndarray = scipy.linalg.solve_toeplitz(
         gamma[:order], gamma[1 : order + 1]
     )
+    validate_ar_stationarity(ar_coefs)
     return ar_coefs
 
 
@@ -233,6 +274,7 @@ def build_ar_precision_block(
     np.ndarray
         Shape ``(T, T)`` — precision matrix :math:`\Omega_T^{-1}`.
     """
+    validate_ar_stationarity(ar_coefs)
     p = len(ar_coefs)
 
     if p == 1:
@@ -282,6 +324,7 @@ def build_ar_cholesky_factor(
     np.ndarray
         Shape ``(T, T)`` — lower-triangular Cholesky factor *L*.
     """
+    validate_ar_stationarity(ar_coefs)
     # Build Toeplitz covariance → Cholesky → invert to get the
     # whitening factor.  Works for any AR order including AR(1).
     acov = _ar_autocovariance(ar_coefs, T)

@@ -13,6 +13,8 @@ Covers:
 
 from __future__ import annotations
 
+import warnings
+
 import numpy as np
 import pytest
 
@@ -305,6 +307,17 @@ class TestKernelEvalAndNystrom:
         assert ev.K_mm_inv.shape == (100, 100)
         # the full matrix is never created — verify K_nm is not square
         assert ev.K_nm.shape[0] != ev.K_nm.shape[1]
+
+    def test_check_gram_memory_budget_warns_on_large_n(self) -> None:
+        """_check_gram_memory_budget warns when n^2 * 8 exceeds 2 GiB."""
+        from randomization_tests._kernels import _check_gram_memory_budget
+
+        with pytest.warns(ResourceWarning, match="requires approximately"):
+            _check_gram_memory_budget(n=20_000, max_landmarks=None)
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", ResourceWarning)
+            _check_gram_memory_budget(n=20_000, max_landmarks=500)
 
     def test_cosine_evaluate_exact(self) -> None:
         """CosineKernel.evaluate() exact path returns full Gram."""

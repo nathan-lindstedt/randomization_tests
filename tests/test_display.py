@@ -3,6 +3,7 @@
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
 
 from randomization_tests.display import (
     _recommend_n_randomizations,
@@ -17,16 +18,16 @@ from randomization_tests.families import LinearFamily
 
 
 class TestTruncate:
-    def test_short_name_unchanged(self):
-        assert _truncate("abc", 10) == "abc"
-
-    def test_exact_length_unchanged(self):
-        assert _truncate("abcdefghij", 10) == "abcdefghij"
-
-    def test_long_name_truncated(self):
-        result = _truncate("abcdefghijk", 10)
-        assert len(result) == 10
-        assert result.endswith("...")
+    @pytest.mark.parametrize(
+        ("text", "max_len", "expected"),
+        [
+            ("abc", 10, "abc"),
+            ("abcdefghij", 10, "abcdefghij"),
+            ("abcdefghijk", 10, "abcdefg..."),
+        ],
+    )
+    def test_truncate(self, text, max_len, expected):
+        assert _truncate(text, max_len) == expected
 
 
 class TestPrintResultsTable:
@@ -137,63 +138,39 @@ class TestPrintResultsTable:
 class TestSignificanceMarker:
     """Tests for _significance_marker helper (Step 23)."""
 
-    def test_straddles_threshold(self):
-        """CI that straddles 0.05 returns [!] marker."""
-        assert _significance_marker(0.04, 0.06, [0.05]) == "  [!]"
-
-    def test_no_straddle(self):
-        """CI entirely below threshold returns empty string."""
-        assert _significance_marker(0.01, 0.03, [0.05]) == ""
-
-    def test_entirely_above(self):
-        """CI entirely above threshold returns empty string."""
-        assert _significance_marker(0.06, 0.08, [0.05]) == ""
-
-    def test_multiple_thresholds(self):
-        """CI straddling the 0.01 threshold (but not 0.05) still flags."""
-        marker = _significance_marker(0.008, 0.012, [0.05, 0.01, 0.001])
-        assert marker == "  [!]"
-
-    def test_ci_equals_threshold_boundary(self):
-        """CI boundary exactly equal to threshold is not straddled."""
-        # lo < t < hi must be strict; lo == t does not straddle
-        assert _significance_marker(0.05, 0.06, [0.05]) == ""
-        assert _significance_marker(0.04, 0.05, [0.05]) == ""
+    @pytest.mark.parametrize(
+        ("lo", "hi", "thresholds", "expected"),
+        [
+            (0.04, 0.06, [0.05], "  [!]"),
+            (0.01, 0.03, [0.05], ""),
+            (0.06, 0.08, [0.05], ""),
+            (0.008, 0.012, [0.05, 0.01, 0.001], "  [!]"),
+            (0.05, 0.06, [0.05], ""),
+            (0.04, 0.05, [0.05], ""),
+        ],
+    )
+    def test_significance_marker(self, lo, hi, thresholds, expected):
+        assert _significance_marker(lo, hi, thresholds) == expected
 
 
 class TestRecommendNPermutations:
     """Tests for _recommend_n_randomizations helper (Step 25)."""
 
-    def test_returns_positive_int(self):
-        b = _recommend_n_randomizations(0.048, 0.05, alpha=0.05)
+    @pytest.mark.parametrize(
+        ("p_hat", "thresh", "alpha", "kw", "check_fn"),
+        [
+            (0.048, 0.05, 0.05, {}, lambda b: b >= 100),
+            (0.0499, 0.05, 0.05, {}, lambda b: b > 10_000),
+            (0.001, 0.05, 0.05, {}, lambda b: b < 1000),
+            (0.05, 0.05, 0.05, {"n_randomizations": 1000}, lambda b: b == 10_000),
+            (0.001, 0.001, 0.05, {"n_randomizations": 999}, lambda b: b == 2995),
+            (0.5, 0.05, 0.05, {}, lambda b: b >= 100),
+        ],
+    )
+    def test_recommend_n_randomizations(self, p_hat, thresh, alpha, kw, check_fn):
+        b = _recommend_n_randomizations(p_hat, thresh, alpha=alpha, **kw)
         assert isinstance(b, int)
-        assert b >= 100
-
-    def test_small_gap_gives_large_b(self):
-        """When p_hat is close to threshold, need many permutations."""
-        b = _recommend_n_randomizations(0.0499, 0.05, alpha=0.05)
-        assert b > 10_000
-
-    def test_large_gap_gives_small_b(self):
-        """When p_hat is far from threshold, fewer permutations needed."""
-        b = _recommend_n_randomizations(0.001, 0.05, alpha=0.05)
-        assert b < 1000
-
-    def test_zero_gap_returns_max(self):
-        """When p_hat equals threshold with k > 0, B is increased to refine resolution."""
-        b = _recommend_n_randomizations(0.05, 0.05, alpha=0.05, n_randomizations=1000)
-        assert b == 10_000
-
-    def test_zero_exceedance_rule_of_three(self):
-        """When k=0 (p_hat == 1/(B+1) <= threshold), Rule of Three gives exact stopping bound."""
-        # For alpha = 0.05, threshold = 0.001, Rule of Three gives ceil(-ln(0.05)/0.001) - 1 = 2995
-        b = _recommend_n_randomizations(0.001, 0.001, alpha=0.05, n_randomizations=999)
-        assert b == 2995
-
-    def test_clamp_min(self):
-        """Result never goes below 100."""
-        b = _recommend_n_randomizations(0.5, 0.05, alpha=0.05)
-        assert b >= 100
+        assert check_fn(b)
 
 
 class TestPValueCIInResultsTable:

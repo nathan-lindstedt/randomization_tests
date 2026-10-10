@@ -215,6 +215,7 @@ _INDIVIDUAL_FIELDS = {
     "diagnostics",
     "extended_diagnostics",
     "confidence_intervals",
+    "guarantee_tier",
 }
 
 _JOINT_FIELDS = {
@@ -238,6 +239,7 @@ _JOINT_FIELDS = {
     "method",
     "diagnostics",
     "extended_diagnostics",
+    "guarantee_tier",
 }
 
 

@@ -43,6 +43,7 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 
 if TYPE_CHECKING:
+    from ._results import FitResult
     from .exchangeability import ExchangeabilityTree
 
 
@@ -107,8 +108,8 @@ class FitContext:
     """Fit-metric label (e.g. ``"Deviance"``)."""
 
     # ---- Observed fit --------------------------------------------
-    observed_model: Any = None
-    """Opaque fitted model object from ``family.fit()``."""
+    observed_model: FitResult | Any = None
+    """Fitted model object from ``family.fit()`` (typically a :class:`~_results.FitResult`)."""
 
     predictions: np.ndarray | None = None
     """Predicted values ``(n,)`` from the observed model."""

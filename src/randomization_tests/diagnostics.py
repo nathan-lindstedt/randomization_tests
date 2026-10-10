@@ -983,7 +983,7 @@ def _autodiff_profile_ci(
 
     X_aug = _augment_intercept(X, fit_intercept)
     X_j = jnp.array(X_aug, dtype=jnp.float64)
-    y_j = jnp.array(y_values, dtype=jnp.float64)
+    y_j = jnp.array(y_values, dtype=jnp.float64).ravel()
 
     # Intercept is column 0 when fit_intercept is True; slope
     # parameters start at index 1.
@@ -1106,7 +1106,7 @@ def compute_profile_ci(
     try:
         return _autodiff_profile_ci(
             np.asarray(X),
-            np.asarray(y_values),
+            np.asarray(y_values, dtype=float).ravel(),
             family,
             alpha,
             fit_intercept,
@@ -1168,7 +1168,7 @@ def _autodiff_cooks_distance(
     )
 
     X_j = jnp.array(X_aug, dtype=jnp.float64)
-    y_j = jnp.array(y_values, dtype=jnp.float64)
+    y_j = jnp.array(y_values, dtype=jnp.float64).ravel()
 
     name = family.name
 

@@ -44,11 +44,32 @@ the principled universal default.  Both are minimax optimal for MMD (Feb 2025).
 
 from __future__ import annotations
 
+import warnings
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
 import numpy as np
+
+_KERNEL_MEMORY_WARN_BYTES = (
+    2 * 1024**3
+)  # 2 GiB threshold (approx n = 16,384 in float64)
+
+
+def _check_gram_memory_budget(n: int, max_landmarks: int | None) -> None:
+    """Warn when materializing a full Gram matrix would exceed memory ceilings."""
+    if max_landmarks is None or max_landmarks >= n:
+        estimated_bytes = n * n * 8  # float64 = 8 bytes
+        if estimated_bytes > _KERNEL_MEMORY_WARN_BYTES:
+            gb = estimated_bytes / (1024**3)
+            warnings.warn(
+                f"Materializing a dense {n:,} × {n:,} Gram matrix requires approximately "
+                f"{gb:.1f} GiB of memory. Consider specifying max_landmarks "
+                "(e.g. max_landmarks=500) for low-rank Nyström evaluation.",
+                ResourceWarning,
+                stacklevel=3,
+            )
+
 
 # ------------------------------------------------------------------ #
 # KernelEval — unified exact / Nyström representation
@@ -274,6 +295,8 @@ class GaussianKernel:
         rng = np.random.default_rng(random_state)
         sigma = self._resolve_sigma(X, None, rng)
 
+        _check_gram_memory_budget(n, max_landmarks)
+
         if max_landmarks is None or max_landmarks >= n:
             K = self._gram(X, X, sigma)
             return KernelEval(K_nm=K, K_mm_inv=np.eye(n), is_exact=True, n=n, m=n)
@@ -347,6 +370,8 @@ class LaplacianKernel:
         rng = np.random.default_rng(random_state)
         sigma = self._resolve_sigma(X, None, rng)
 
+        _check_gram_memory_budget(n, max_landmarks)
+
         if max_landmarks is None or max_landmarks >= n:
             K = self._gram(X, X, sigma)
             return KernelEval(K_nm=K, K_mm_inv=np.eye(n), is_exact=True, n=n, m=n)
@@ -403,6 +428,8 @@ class CosineKernel:
         n = X.shape[0]
         rng = np.random.default_rng(random_state)
 
+        _check_gram_memory_budget(n, max_landmarks)
+
         if max_landmarks is None or max_landmarks >= n:
             K = self._gram(X, X)
             return KernelEval(K_nm=K, K_mm_inv=np.eye(n), is_exact=True, n=n, m=n)
@@ -447,6 +474,8 @@ class LinearKernel:
         X = np.atleast_2d(X) if X.ndim == 1 else X
         n = X.shape[0]
         rng = np.random.default_rng(random_state)
+
+        _check_gram_memory_budget(n, max_landmarks)
 
         if max_landmarks is None or max_landmarks >= n:
             K = self._gram(X, X)

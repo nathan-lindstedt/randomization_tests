@@ -141,6 +141,32 @@ blanket-suppress them.
 
 ## Results and Execution Objects
 
+### `FitResult`
+
+`FitResult` is the unified frozen dataclass container returned by `family.fit()` across all model families and compute backends:
+
+```python
+@dataclass(frozen=True)
+class FitResult:
+    params: np.ndarray
+    predictions: np.ndarray
+    fitted_values: np.ndarray
+    residuals: np.ndarray
+    log_likelihood: float
+    fisher_info: np.ndarray
+    se: np.ndarray
+    p_values: np.ndarray
+    fit_intercept: bool = True
+    converged: bool = True
+    df: float | None = None
+```
+
+Supports:
+- Attribute access: `result.params`, `result.se`, `result.p_values`, `result.fisher_info`.
+- Dict-style access: `result["params"]`, `result["predictions"]`.
+- `result.conf_int(alpha=0.05)`: Asymmetric or Wald confidence intervals directly from observed Fisher information $SE_j = \sqrt{[\mathcal{I}^{-1}]_{jj}}$.
+- Duck-typing properties: `result.coef_` (slopes only) and `result.intercept_` for compatibility with scikit-learn estimators.
+
 ### `IndividualTestResult` and `JointTestResult`
 
 `randomization_test_regression()` returns one of these immutable result
@@ -1541,6 +1567,28 @@ Resolution order (first match wins):
 1. Programmatic override set by `set_backend()`.
 2. The `RANDOMIZATION_TESTS_BACKEND` environment variable.
 3. Auto‑detection: `"jax"` if importable, else `"numpy"`.
+
+### `backend`
+
+```python
+backend(name: str) -> Generator[str, None, None]
+```
+
+Context manager for temporarily overriding backend selection in the current execution context/thread.
+
+| Parameter | Description |
+|---|---|
+| `name` | `"jax"`, `"numpy"`, or `"auto"` (case‑insensitive). |
+
+**Examples:**
+
+```python
+import randomization_tests as rt
+
+with rt.backend("numpy"):
+    # Runs strictly using NumPy backend within this block/thread
+    res = rt.randomization_test_regression(X, y)
+```
 
 ### `set_backend`
 
