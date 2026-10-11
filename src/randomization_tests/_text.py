@@ -37,7 +37,7 @@ Blei, D. M., & Lafferty, J. D. (2009).  Topic models.  In A. N. Srivastava &
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Sequence
 
 import numpy as np
 
@@ -61,7 +61,7 @@ __all__ = [
 
 
 def _fit_nmf(
-    docs: list[str],
+    docs: Sequence[str],
     n_components: int,
     *,
     random_state: int | None,
@@ -175,7 +175,7 @@ def _npmi_coherence(bin_arr: np.ndarray, H: np.ndarray, top_n: int) -> float:
 
 
 def docs_to_tfidf(
-    docs: list[str],
+    docs: Sequence[str],
     *,
     max_features: int | None = None,
     min_df: int = 1,
@@ -186,12 +186,12 @@ def docs_to_tfidf(
 
     Fits and transforms in a single pass on the full corpus supplied.
     For multi-group comparisons, **always** pass the concatenated corpus
-    ``docs_x + docs_y`` and then slice the result — fitting each group
+    ``list(docs_x) + list(docs_y)`` and then slice the result — fitting each group
     independently produces incompatible column spaces.
 
     Parameters
     ----------
-    docs : list[str]
+    docs : Sequence[str]
         Raw document strings.
     max_features : int or None
         If set, keep only the top *max_features* terms by corpus TF.
@@ -226,7 +226,7 @@ def docs_to_tfidf(
 
 
 def docs_to_topics(
-    docs: list[str],
+    docs: Sequence[str],
     n_components: int,
     *,
     random_state: int | None = None,
@@ -243,7 +243,7 @@ def docs_to_topics(
 
     Parameters
     ----------
-    docs : list[str]
+    docs : Sequence[str]
         Raw document strings.
     n_components : int
         Number of latent topics.  Use :func:`select_n_components` to choose
@@ -275,7 +275,7 @@ def docs_to_topics(
 
 
 def coherence_score(
-    docs: list[str],
+    docs: Sequence[str],
     n_components: int,
     *,
     top_n: int = 10,
@@ -289,7 +289,7 @@ def coherence_score(
 
     Parameters
     ----------
-    docs : list[str]
+    docs : Sequence[str]
         Raw document strings used for both fitting NMF and computing
         co-occurrence statistics.
     n_components : int
@@ -350,7 +350,7 @@ def exclusivity_score(H: np.ndarray, *, top_n: int = 10) -> float:
 
 
 def select_n_components(
-    docs: list[str],
+    docs: Sequence[str],
     n_components_range: Iterable[int],
     *,
     top_n: int = 10,
@@ -368,7 +368,7 @@ def select_n_components(
 
     Parameters
     ----------
-    docs : list[str]
+    docs : Sequence[str]
         Raw document strings.
     n_components_range : Iterable[int]
         Candidate topic counts to evaluate (e.g. ``range(2, 11)``).
@@ -410,12 +410,12 @@ def select_n_components(
 
 
 def text_mmd_test(
-    docs_x: list[str],
-    docs_y: list[str],
+    docs_x: Sequence[str],
+    docs_y: Sequence[str],
     *,
     n_components: int | None = None,
     kernel: Kernel | None = None,
-    preprocessor: Callable[[list[str]], np.ndarray] | None = None,
+    preprocessor: Callable[[Sequence[str]], np.ndarray] | None = None,
     n_randomizations: int = 5000,
     max_landmarks: int | None = None,
     random_state: int | None = None,
@@ -448,16 +448,16 @@ def text_mmd_test(
 
     Parameters
     ----------
-    docs_x : list[str]
+    docs_x : Sequence[str]
         Documents from group X (distribution P).
-    docs_y : list[str]
+    docs_y : Sequence[str]
         Documents from group Y (distribution Q).
     n_components : int or None
         If set, use NMF topic proportions instead of TF-IDF.
         Use :func:`select_n_components` to choose this value.
     kernel : Kernel or None
         Kernel override.  If ``None``, the default is chosen per path above.
-    preprocessor : Callable[[list[str]], np.ndarray] or None
+    preprocessor : Callable[[Sequence[str]], np.ndarray] or None
         Custom embedding function.  Receives the full pooled document list
         ``docs_x + docs_y`` and must return an ``(n_x + n_y, d)`` array.
     n_randomizations : int

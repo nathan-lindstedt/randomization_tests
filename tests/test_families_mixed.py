@@ -1065,6 +1065,7 @@ class TestLogisticScoreProject:
         perm_indices = np.array([rng.permutation(len(y)) for _ in range(B)])
         scores = calibrated_logistic_family.score_project(
             X,
+            y,
             0,
             resid,
             perm_indices,
@@ -1085,6 +1086,7 @@ class TestLogisticScoreProject:
         for feat_idx in range(X.shape[1]):
             scores = calibrated_logistic_family.score_project(
                 X,
+                y,
                 feat_idx,
                 resid,
                 perm_indices,
@@ -1099,6 +1101,7 @@ class TestLogisticScoreProject:
         with pytest.raises(RuntimeError, match="requires calibration"):
             f.score_project(
                 np.ones((5, 2)),
+                np.ones(5),
                 0,
                 np.ones(5),
                 np.arange(5, dtype=np.intp).reshape(1, -1),
@@ -1524,6 +1527,7 @@ class TestPoissonScoreProject:
         perm_indices = np.array([rng.permutation(len(y)) for _ in range(B)])
         scores = calibrated_poisson_family.score_project(
             X,
+            y,
             0,
             resid,
             perm_indices,
@@ -1541,6 +1545,7 @@ class TestPoissonScoreProject:
         for feat_idx in range(X.shape[1]):
             scores = calibrated_poisson_family.score_project(
                 X,
+                y,
                 feat_idx,
                 resid,
                 perm_indices,

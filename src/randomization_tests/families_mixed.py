@@ -972,12 +972,12 @@ class LinearMixedFamily:
     def score_project(
         self,
         X: np.ndarray,
+        y: np.ndarray,  # noqa: ARG002
         feature_idx: int,
         residuals: np.ndarray,
         perm_indices: np.ndarray,
         *,
         fit_intercept: bool = True,
-        y: np.ndarray | None = None,  # noqa: ARG002
         randomization: str = "permute",
     ) -> np.ndarray:
         """Score projection via the GLS projection matrix A.
@@ -2548,12 +2548,12 @@ class LogisticMixedFamily(_GLMMBatchStubMixin):
     def score_project(
         self,
         X: np.ndarray,
+        y: np.ndarray,  # noqa: ARG002
         feature_idx: int,
         residuals: np.ndarray,
         perm_indices: np.ndarray,
         *,
         fit_intercept: bool = True,
-        y: np.ndarray | None = None,  # noqa: ARG002
         randomization: str = "permute",
     ) -> np.ndarray:
         """One-step Le Cam score update via tangent-space score projection.
@@ -3183,12 +3183,12 @@ class PoissonMixedFamily(_GLMMBatchStubMixin):
     def score_project(
         self,
         X: np.ndarray,
+        y: np.ndarray,  # noqa: ARG002
         feature_idx: int,
         residuals: np.ndarray,
         perm_indices: np.ndarray,
         *,
         fit_intercept: bool = True,
-        y: np.ndarray | None = None,  # noqa: ARG002
         randomization: str = "permute",
     ) -> np.ndarray:
         """One-step Le Cam score update via tangent-space score projection.

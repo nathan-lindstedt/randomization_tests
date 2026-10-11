@@ -116,9 +116,9 @@ print_dataset_info_table(
 # ============================================================================
 # Out-of-Sample Train/Test Partition (80% Train-Calibration / 20% Test)
 # ============================================================================
-# In rigorous statistical practice, conformal prediction must be validated on an
-# independent held-out test cohort to verify that empirical coverage satisfies
-# P(Y_test in C(X_test)) >= 1 - alpha across unseen data points.
+# In rigorous statistical practice, conformal prediction must be validated on
+# an independent held-out test cohort to verify that empirical coverage
+# satisfies P(Y_test in C(X_test)) >= 1 - alpha across unseen data points.
 
 rng = np.random.default_rng(42)
 n_total = len(X)
@@ -135,9 +135,11 @@ print(
 
 # %%
 # ============================================================================
-# Population Test Evaluation — Split Conformal vs. Locally-Weighted Kernel vs. Jackknife+
+# Population Test Evaluation — Split Conformal vs. Locally-Weighted Kernel
+# vs. Jackknife+
 # ============================================================================
-# We evaluate out-of-sample prediction intervals across all 83 held-out test properties.
+# We evaluate out-of-sample prediction intervals across all 83 held-out test
+# properties.
 
 # 1. Standard Split Conformal (Homoscedastic baseline)
 res_split_test = conformal_prediction(
@@ -189,10 +191,11 @@ print_conformal_evaluation_table(
 # ============================================================================
 # Feature-Stratified Coverage (FSC) Across Transit Distance Corridors
 # ============================================================================
-# Standard split conformal guarantees marginal coverage averaged over the population,
-# but can exhibit conditional under-coverage across difficult feature sub-populations.
-# Using the library's built-in Feature-Stratified Coverage (FSC) evaluation
-# (Angelopoulos & Bates 2021), we partition properties into 3 spatial corridors:
+# Standard split conformal guarantees marginal coverage averaged over the
+# population,but can exhibit conditional under-coverage across difficult
+# feature sub-populations.Using the library's built-in Feature-Stratified
+# Coverage (FSC) evaluation (Angelopoulos & Bates 2021), we partition
+# properties into 3 spatial corridors:
 # - Near Station (< 500m)
 # - Intermediate (500 - 1,500m)
 # - Remote Outskirts (> 1,500m)

@@ -80,7 +80,7 @@ def _offset(family, X, y) -> float:
     _, preds_red = fit_reduced(family, np.delete(X, 0, axis=1), y, True)
     u0 = float(
         family.score_project(
-            X, 0, y - preds_red, _identity(len(y)), fit_intercept=True, y=y
+            X, y, 0, y - preds_red, _identity(len(y)), fit_intercept=True
         )[0]
     )
     return abs(beta - u0) / max(abs(beta), 1e-12)

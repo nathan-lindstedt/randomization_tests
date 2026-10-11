@@ -209,6 +209,7 @@ class PermutationEngine:
             try:
                 self.family.score_project(
                     np.zeros((2, 1)),
+                    np.zeros(2),
                     0,
                     np.zeros(2),
                     np.arange(2, dtype=np.intp).reshape(1, -1),

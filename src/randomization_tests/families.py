@@ -887,12 +887,12 @@ class ModelFamily(Protocol):
     def score_project(
         self,
         X: np.ndarray,
+        y: np.ndarray,
         feature_idx: int,
         residuals: np.ndarray,
         perm_indices: np.ndarray,
         *,
         fit_intercept: bool = True,
-        y: np.ndarray | None = None,
         randomization: str = "permute",
     ) -> np.ndarray:
         """Project permuted residuals onto feature *j* via a single matmul.
@@ -913,6 +913,9 @@ class ModelFamily(Protocol):
 
         Args:
             X: Full design matrix ``(n, p)`` — no intercept column.
+            y: Response vector ``(n,)``. Required for GLM families that need
+                working weights or class probabilities from a reduced-model fit.
+                Linear and mixed families may ignore this.
             feature_idx: Zero-based index of the feature being tested.
             residuals: Reduced-model residuals ``(n,)``.
             perm_indices: Randomization matrix ``(B, n)``.  When
@@ -921,9 +924,6 @@ class ModelFamily(Protocol):
                 ``randomization="sign_flip"``, contains ±1 values
                 (dtype int8).
             fit_intercept: Whether the model includes an intercept.
-            y: Response vector ``(n,)`` — required for GLM families
-                that need working weights from a reduced-model fit.
-                Linear and mixed families may ignore this.
             randomization: ``"permute"`` (default) or ``"sign_flip"``.
 
         Returns:
@@ -1626,12 +1626,12 @@ class LinearFamily:
     def score_project(
         self,
         X: np.ndarray,
+        y: np.ndarray,  # noqa: ARG002
         feature_idx: int,
         residuals: np.ndarray,
         perm_indices: np.ndarray,
         *,
         fit_intercept: bool = True,
-        y: np.ndarray | None = None,  # noqa: ARG002
         randomization: str = "permute",
     ) -> np.ndarray:
         """Score projection via cached pseudoinverse (or GLS) row.
@@ -2349,12 +2349,12 @@ class LogisticFamily:
     def score_project(
         self,
         X: np.ndarray,
+        y: np.ndarray,
         feature_idx: int,
         residuals: np.ndarray,
         perm_indices: np.ndarray,
         *,
         fit_intercept: bool = True,
-        y: np.ndarray | None = None,
         randomization: str = "permute",
     ) -> np.ndarray:
         """Score projection via Fisher-information-weighted projection.
@@ -2370,12 +2370,6 @@ class LogisticFamily:
         Requires ``y`` to fit the reduced model and compute μ̂.
         """
         from ._strategies import _apply_randomization
-
-        if y is None:
-            raise ValueError(
-                "LogisticFamily.score_project() requires y to compute "
-                "working weights from the reduced-model fit."
-            )
 
         try:
             from ._backends._jax import _glm_score_projection_row
@@ -3103,12 +3097,12 @@ class PoissonFamily:
     def score_project(
         self,
         X: np.ndarray,
+        y: np.ndarray,
         feature_idx: int,
         residuals: np.ndarray,
         perm_indices: np.ndarray,
         *,
         fit_intercept: bool = True,
-        y: np.ndarray | None = None,
         randomization: str = "permute",
     ) -> np.ndarray:
         """Score projection via Fisher-information-weighted projection.
@@ -3124,12 +3118,6 @@ class PoissonFamily:
         Requires ``y`` to fit the reduced model and compute μ̂.
         """
         from ._strategies import _apply_randomization
-
-        if y is None:
-            raise ValueError(
-                "PoissonFamily.score_project() requires y to compute "
-                "working weights from the reduced-model fit."
-            )
 
         try:
             from ._backends._jax import _glm_score_projection_row
@@ -3829,12 +3817,12 @@ class NegativeBinomialFamily:
     def score_project(
         self,
         X: np.ndarray,
+        y: np.ndarray,
         feature_idx: int,
         residuals: np.ndarray,
         perm_indices: np.ndarray,
         *,
         fit_intercept: bool = True,
-        y: np.ndarray | None = None,
         randomization: str = "permute",
     ) -> np.ndarray:
         """Score projection via Fisher-information-weighted projection.
@@ -3850,12 +3838,6 @@ class NegativeBinomialFamily:
         Requires ``y`` to fit the reduced model and compute μ̂.
         """
         from ._strategies import _apply_randomization
-
-        if y is None:
-            raise ValueError(
-                "NegativeBinomialFamily.score_project() requires y to "
-                "compute working weights from the reduced-model fit."
-            )
 
         try:
             from ._backends._jax import _glm_score_projection_row
@@ -4626,12 +4608,12 @@ class OrdinalFamily:
     def score_project(
         self,
         X: np.ndarray,
+        y: np.ndarray,
         feature_idx: int,
         residuals: np.ndarray,  # noqa: ARG002 — unused; ordinal uses R-matrix
         perm_indices: np.ndarray,
         *,
         fit_intercept: bool = True,
-        y: np.ndarray | None = None,
         randomization: str = "permute",
     ) -> np.ndarray:
         """Exact score projection for the proportional-odds ordinal model.
@@ -4671,12 +4653,12 @@ class OrdinalFamily:
 
         Args:
             X: Full design matrix ``(n, p)`` — **not** intercept-augmented.
+            y: Observed response ``(n,)`` — required.
             feature_idx: Index of the feature being tested.
             residuals: Ignored — ordinal uses the R-matrix gather instead.
             perm_indices: Permutation indices ``(B, n)``.
             fit_intercept: Accepted for protocol compatibility; thresholds
                 serve as ordinal intercepts so this has no effect here.
-            y: Observed response ``(n,)`` — required.
             randomization: ``"permute"`` only; sign-flip is not supported.
 
         Returns:
@@ -4685,15 +4667,12 @@ class OrdinalFamily:
         Raises:
             NotImplementedError: If ``randomization="sign_flip"`` or JAX
                 is not available.
-            ValueError: If ``y`` is not provided.
         """
         if randomization == "sign_flip":
             raise NotImplementedError(
                 "OrdinalFamily.score_project() does not support sign_flip. "
                 "Ordinal responses are not sign-flippable."
             )
-        if y is None:
-            raise ValueError("OrdinalFamily.score_project() requires y.")
 
         try:
             from ._backends._jax import _glm_score_projection_row
@@ -5436,12 +5415,12 @@ class MultinomialFamily:
     def score_project(
         self,
         X: np.ndarray,
+        y: np.ndarray,
         feature_idx: int,
         residuals: np.ndarray,  # noqa: ARG002 — unused; multinomial uses I_jj gather
         perm_indices: np.ndarray,
         *,
         fit_intercept: bool = True,
-        y: np.ndarray | None = None,
         randomization: str = "permute",
     ) -> np.ndarray:
         """Exact score chi-square projection for the multinomial logit model.
@@ -5481,13 +5460,13 @@ class MultinomialFamily:
 
         Args:
             X: Full design matrix ``(n, p)`` — **not** intercept-augmented.
+            y: Observed response ``(n,)`` — required.
             feature_idx: Index of the feature being tested (in X).
             residuals: Ignored — multinomial uses the score chi-square
                 statistic instead.
             perm_indices: Permutation indices ``(B, n)``.
             fit_intercept: Whether to include an intercept in reduced
                 model fits (passed through to ``fit()``).
-            y: Observed response ``(n,)`` — required.
             randomization: ``"permute"`` only; sign-flip is not supported.
 
         Returns:
@@ -5495,15 +5474,12 @@ class MultinomialFamily:
 
         Raises:
             NotImplementedError: If ``randomization="sign_flip"``.
-            ValueError: If ``y`` is not provided.
         """
         if randomization == "sign_flip":
             raise NotImplementedError(
                 "MultinomialFamily.score_project() does not support sign_flip. "
                 "Multinomial responses are not sign-flippable."
             )
-        if y is None:
-            raise ValueError("MultinomialFamily.score_project() requires y.")
 
         n = len(y)
 

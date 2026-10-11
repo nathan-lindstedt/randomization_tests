@@ -769,11 +769,11 @@ class TestTier2NumericalSolversAndWhitening:
         u0 = float(
             fam.score_project(
                 X,
+                y,
                 0,
                 y - preds_red,
                 identity_perm,
                 fit_intercept=True,
-                y=y,
             )[0]
         )
 

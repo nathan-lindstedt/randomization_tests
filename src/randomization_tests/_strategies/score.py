@@ -154,11 +154,11 @@ class ScoreIndividualStrategy:
             # permutation — shape (B,).  This is the varying part.
             raw_scores = family.score_project(
                 X_np,
+                y_values,
                 j,
                 e,
                 perm_indices,
                 fit_intercept=fit_intercept,
-                y=y_values,
                 randomization=randomization,
             )  # (B,) — raw score (sans constant)
 
@@ -172,11 +172,11 @@ class ScoreIndividualStrategy:
             identity = np.arange(n, dtype=perm_indices.dtype).reshape(1, -1)
             observed_raw = family.score_project(
                 X_np,
+                y_values,
                 j,
                 e,
                 identity,
                 fit_intercept=fit_intercept,
-                y=y_values,
                 randomization="permute",  # identity uses index mode
             )[0]  # scalar — A_j @ e (unpermuted)
             result[:, j] = model_coefs[j] + (raw_scores - observed_raw)

@@ -176,6 +176,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Harmonized `score_project(X, y, ...)` protocol signature**:
+  Repositioned `y` to immediately follow `X` as the second positional argument
+  across the `ModelFamily` protocol, 6 base families, and 3 mixed families,
+  standardizing positional conventions across all dataset-level protocol methods
+  and eliminating redundant runtime checks.
+
 - **JAX backend mathematical hardening and vectorization**:
   - `_newton_solve_static`: inner loop in `jax.lax.while_loop` now carries
     `converged_prev` across iterations and masks parameter/NLL updates with

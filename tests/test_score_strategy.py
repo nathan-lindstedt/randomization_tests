@@ -31,6 +31,19 @@ from randomization_tests._strategies.score import (
     ScoreIndividualStrategy,
     ScoreJointStrategy,
 )
+from randomization_tests.families import (
+    LinearFamily,
+    LogisticFamily,
+    MultinomialFamily,
+    NegativeBinomialFamily,
+    OrdinalFamily,
+    PoissonFamily,
+)
+from randomization_tests.families_mixed import (
+    LinearMixedFamily,
+    LogisticMixedFamily,
+    PoissonMixedFamily,
+)
 
 # ------------------------------------------------------------------ #
 # Shared helpers
@@ -1059,3 +1072,183 @@ class TestScoreJointGLMM:
         assert result.features_tested == ["x1"]
         assert result.confounders == ["z1"]
         assert result.observed_improvement > 0.0
+
+
+# ------------------------------------------------------------------ #
+# Direct score_project() unit tests across all 9 model families
+# ------------------------------------------------------------------ #
+
+
+class TestScoreProjectDirect:
+    """Direct tests for score_project(X, y, feature_idx, residuals, perm_indices) across all 9 families."""
+
+    @pytest.fixture()
+    def family_data(self):
+        rng = np.random.default_rng(42)
+        n, p = 60, 3
+        G = 6
+        groups = np.repeat(np.arange(G), n // G)
+        X = rng.standard_normal((n, p))
+        y_lin = X[:, 0] * 1.5 + rng.standard_normal(n) * 0.5
+        y_bin = (rng.uniform(size=n) > 0.5).astype(float)
+        y_count = rng.poisson(lam=np.exp(np.clip(0.3 + X[:, 0] * 0.4, -3, 2))).astype(
+            float
+        )
+        y_nb = rng.negative_binomial(
+            1.0, 1.0 / (1.0 + np.exp(np.clip(X[:, 0] * 0.4, -3, 2)))
+        ).astype(float)
+        z_ord = X[:, 0] + rng.logistic(0, 1, size=n)
+        q1, q2 = np.quantile(z_ord, [0.33, 0.67])
+        y_ord = np.digitize(z_ord, [q1, q2]).astype(float)
+        y_multi = rng.choice(3, size=n).astype(float)
+
+        u = rng.standard_normal(G) * 0.5
+        y_lmm = y_lin + u[groups]
+        y_glmm_bin = (rng.uniform(size=n) > 0.5).astype(float)
+        y_glmm_count = rng.poisson(lam=2.5, size=n).astype(float)
+
+        return {
+            "linear": (LinearFamily(), X, y_lin, None),
+            "logistic": (LogisticFamily(), X, y_bin, None),
+            "poisson": (PoissonFamily(), X, y_count, None),
+            "negative_binomial": (NegativeBinomialFamily(alpha=1.0), X, y_nb, None),
+            "ordinal": (OrdinalFamily(), X, y_ord, None),
+            "multinomial": (MultinomialFamily(), X, y_multi, None),
+            "linear_mixed": (
+                LinearMixedFamily().calibrate(
+                    X, y_lmm, fit_intercept=True, groups=groups
+                ),
+                X,
+                y_lmm,
+                groups,
+            ),
+            "logistic_mixed": (
+                LogisticMixedFamily().calibrate(
+                    X, y_glmm_bin, fit_intercept=True, groups=groups
+                ),
+                X,
+                y_glmm_bin,
+                groups,
+            ),
+            "poisson_mixed": (
+                PoissonMixedFamily().calibrate(
+                    X, y_glmm_count, fit_intercept=True, groups=groups
+                ),
+                X,
+                y_glmm_count,
+                groups,
+            ),
+        }
+
+    @pytest.mark.parametrize(
+        "family_name",
+        [
+            "linear",
+            "logistic",
+            "poisson",
+            "negative_binomial",
+            "ordinal",
+            "multinomial",
+            "linear_mixed",
+            "logistic_mixed",
+            "poisson_mixed",
+        ],
+    )
+    def test_score_project_shape_and_finite(self, family_data, family_name):
+        fam, X, y, _ = family_data[family_name]
+        n = len(y)
+        B = 25
+        rng = np.random.default_rng(123)
+        perm_indices = np.array([rng.permutation(n) for _ in range(B)])
+        resids = y - np.mean(y)
+
+        scores = fam.score_project(X, y, 0, resids, perm_indices, fit_intercept=True)
+        assert isinstance(scores, np.ndarray)
+        assert scores.shape == (B,)
+        assert np.all(np.isfinite(scores))
+
+    @pytest.mark.parametrize(
+        "family_name",
+        [
+            "linear",
+            "logistic",
+            "poisson",
+            "negative_binomial",
+            "ordinal",
+            "multinomial",
+            "linear_mixed",
+            "logistic_mixed",
+            "poisson_mixed",
+        ],
+    )
+    def test_score_project_identity(self, family_data, family_name):
+        fam, X, y, _ = family_data[family_name]
+        n = len(y)
+        identity_perm = np.arange(n)[None, :]
+        resids = y - np.mean(y)
+
+        scores = fam.score_project(X, y, 0, resids, identity_perm, fit_intercept=True)
+        assert scores.shape == (1,)
+        assert np.isfinite(scores[0])
+
+    @pytest.mark.parametrize(
+        "family_name",
+        [
+            "linear",
+            "logistic",
+            "poisson",
+            "negative_binomial",
+            "linear_mixed",
+            "logistic_mixed",
+            "poisson_mixed",
+        ],
+    )
+    def test_score_project_sign_flip_supported(self, family_data, family_name):
+        fam, X, y, _ = family_data[family_name]
+        n = len(y)
+        B = 20
+        rng = np.random.default_rng(456)
+        sign_flips = rng.choice([-1, 1], size=(B, n))
+        resids = y - np.mean(y)
+
+        scores = fam.score_project(
+            X, y, 0, resids, sign_flips, fit_intercept=True, randomization="sign_flip"
+        )
+        assert scores.shape == (B,)
+        assert np.all(np.isfinite(scores))
+
+    @pytest.mark.parametrize("family_name", ["ordinal", "multinomial"])
+    def test_score_project_sign_flip_rejected_for_discrete_families(
+        self, family_data, family_name
+    ):
+        fam, X, y, _ = family_data[family_name]
+        n = len(y)
+        B = 10
+        sign_flips = np.ones((B, n))
+        resids = y - np.mean(y)
+
+        with pytest.raises(NotImplementedError, match="does not support sign_flip"):
+            fam.score_project(
+                X,
+                y,
+                0,
+                resids,
+                sign_flips,
+                fit_intercept=True,
+                randomization="sign_flip",
+            )
+
+    @pytest.mark.parametrize(
+        "cls", [LinearMixedFamily, LogisticMixedFamily, PoissonMixedFamily]
+    )
+    def test_score_project_uncalibrated_mixed_family_raises(self, cls):
+        fam = cls()
+        with pytest.raises(RuntimeError, match="requires calibration"):
+            fam.score_project(
+                np.zeros((5, 2)),
+                np.zeros(5),
+                0,
+                np.zeros(5),
+                np.arange(5)[None, :],
+                fit_intercept=True,
+            )
