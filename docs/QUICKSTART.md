@@ -248,6 +248,95 @@ res_clf = conformal_prediction(
 print_conformal_table(res_clf)
 ```
 
+## Controlled variable selection via knockoffs
+
+Select relevant features while controlling the False Discovery Rate (FDR)
+using synthetic knockoff features:
+
+```python
+from randomization_tests import knockoff_test, print_knockoff_table
+
+# 1. Fixed-X knockoffs (finite-sample exact FDR control for linear models with n >= 2p)
+res_ko_fixed = knockoff_test(
+    X, y,
+    method="fixed_x",
+    fdr_level=0.10,
+    random_state=42,
+)
+print_knockoff_table(res_ko_fixed)
+
+# 2. Model-X equicorrelated knockoffs with Ledoit-Wolf covariance shrinkage
+res_ko_model = knockoff_test(
+    X, y,
+    method="equicorrelated",
+    fdr_level=0.10,
+    random_state=42,
+)
+print_knockoff_table(res_ko_model)
+```
+
+## Conditional invariance testing
+
+Test whether the causal mechanism generating outcome $Y$ from predictor $X$
+remains invariant across experimental or observational environments $E$ ($H_0: Y \perp\!\!\perp E \mid X$):
+
+```python
+from randomization_tests import invariance_test, print_invariance_table
+
+# Test invariance of predictor "treatment" across distinct environments
+res_inv = invariance_test(
+    X, y,
+    predictor="treatment",
+    environments=environments,
+    method="freedman_lane",
+    n_randomizations=5_000,
+    random_state=42,
+)
+print_invariance_table(res_inv)
+```
+
+## Nonparametric kernel hypothesis tests
+
+Evaluate two-sample distributional differences and non-linear independence
+without distributional or functional form assumptions:
+
+```python
+from randomization_tests._kernel_tests import hsic_test, kernel_regression_test, mmd_test
+from randomization_tests._kernels import GaussianKernel
+
+# 1. Two-sample MMD test (H0: P = Q)
+res_mmd = mmd_test(X1, X2, kernel=GaussianKernel(), n_randomizations=5_000, random_state=42)
+print(f"MMD^2: {res_mmd.statistic:.4f} | p-value: {res_mmd.p_value:.4f}")
+
+# 2. Nonparametric independence test via HSIC (H0: X \perp Y)
+res_hsic = hsic_test(X, Y, n_randomizations=5_000, random_state=42)
+print(f"HSIC: {res_hsic.statistic:.4f} | p-value: {res_hsic.p_value:.4f}")
+
+# 3. Kernel partial independence regression test (H0: X \perp Y | Z)
+res_kreg = kernel_regression_test(X, y, confounders=Z, n_randomizations=5_000, random_state=42)
+print(f"Kernel regression score: {res_kreg.statistic:.4f} | p-value: {res_kreg.p_value:.4f}")
+```
+
+## Clustered and mixed-effects models
+
+Fit linear, logistic, and Poisson mixed-effects models with random cluster intercepts
+and slopes, using Henderson REML and Laplace approximation:
+
+```python
+from randomization_tests import print_results_table, randomization_test_regression
+
+# Hierarchical linear mixed model with cluster-aware score test
+results_lmm = randomization_test_regression(
+    X, y,
+    family="linear_mixed",
+    groups=cluster_ids,
+    method="score",
+    n_randomizations=2_000,
+    random_state=42,
+)
+print_results_table(results_lmm)
+```
+
 ## Input formats
 
 All public functions accept both **pandas** and **Polars** DataFrames:

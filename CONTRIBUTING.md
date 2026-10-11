@@ -13,7 +13,6 @@ Thank you for your interest in contributing to **randomization_tests**.
 ```bash
 git clone https://github.com/nathanlindstedt/randomization_tests.git
 cd randomization_tests
-git checkout experimental
 python -m venv .venv
 source .venv/bin/activate
 pip install -e ".[dev]"
@@ -50,14 +49,14 @@ This project uses [Ruff](https://docs.astral.sh/ruff/) for linting and
 formatting. Configuration lives in `pyproject.toml`.
 
 ```bash
-ruff check src/ tests/       # lint
-ruff format src/ tests/       # format
+ruff check src/ tests/ benchmarks/       # lint
+ruff format src/ tests/ benchmarks/       # format
 ```
 
 ## Type checking
 
 ```bash
-mypy src/randomization_tests/
+mypy src/
 ```
 
 ## Dependency compatibility

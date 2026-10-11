@@ -59,7 +59,7 @@ is unnecessary.
 
 ### Benchmark script
 
-[benchmarks/profile_dedup.py](../benchmarks/profile_dedup.py) runs all
+[`profile_dedup.py`](../profile_dedup.py) runs all
 four generators for every configuration in their respective grids,
 measuring:
 

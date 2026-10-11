@@ -70,11 +70,11 @@ to override auto‑detection.
 | `n_jobs` | Number of parallel jobs for the permutation batch‑fit loop. `1` (default) is sequential; `-1` uses all CPU cores. Ignored when the JAX backend is active. |
 | `backend` | `"numpy"`, `"jax"`, or `None` (default). When `None`, the global policy from `set_backend()` is used. An explicit value overrides the global setting for this call only. |
 | `groups` | Exchangeability group labels. When provided, permutations are constrained to respect group structure rather than shuffling globally. Accepts a 1‑D array‑like of integer labels `(n_samples,)` or a `DataFrame` with one or more blocking columns (multi‑column DataFrames are cross‑classified into integer cell labels). |
-| `permutation_strategy` | Cell‑level permutation strategy: `"within"` shuffles only within cells, `"between"` permutes entire cells as units, `"two-stage"` composes both. Defaults to `"within"` when `groups` is provided. Cannot be set without `groups`. |
+| `permutation_strategy` | Permutation strategy: `"within"` shuffles only within cells, `"between"` permutes entire cells as units, `"two-stage"` composes both, and `"unrestricted"` performs unconstrained shuffling across all observations while retaining grouping metadata for model calibration and cluster-robust standard errors. Defaults to `"within"` when `groups` is provided without `panel_id`. Cannot be set without `groups`. |
 | `permutation_constraints` | Optional post‑filter callback. Receives a `(B, n)` permutation array and must return a `(B', n)` array with `B' ≤ B` rows. Used for domain‑specific constraints that cannot be expressed via cell structure alone. |
 | `random_slopes` | Random‑slope column indices or `{factor: [indices]}` mapping for mixed‑effects families. Passed to `calibrate()` to build the random‑effects design matrix Z. |
 | `confidence_level` | Confidence level for all CI types (permutation, Wald, Clopper–Pearson, standardised). Defaults to `0.95`. |
-| `panel_id` | Panel (subject/unit) identifier for longitudinal data. When provided, automatically sets `groups=panel_id` and `permutation_strategy="within"`. Accepts a 1‑D array‑like of labels or a column name (string) in `X`. Cannot be used together with an explicit `groups=` argument. |
+| `panel_id` | Panel (subject/unit) identifier for longitudinal data. When provided, automatically sets `groups=panel_id` (defaulting to `permutation_strategy="unrestricted"` for score methods and AR longitudinal models to preserve exact zero-centered null expectation, or `"within"` otherwise). Accepts a 1‑D array‑like of labels or a column name (string) in `X`. Cannot be used together with an explicit `groups=` argument. |
 | `time_id` | Time‑period identifier for longitudinal data. Only meaningful when `panel_id` is also provided. Used for validation checks: warns if data is not sorted by `(panel_id, time_id)` or if panels are unbalanced. |
 | `ar_order` | Order of the autoregressive working-correlation correction for longitudinal panel data. Requires `panel_id`, `time_id`, and a score-based method. The AR comparison display contrasts the uncorrected baseline with the highest supplied AR order. |
 | `randomization` | `"permute"` (default) or `"sign_flip"`. With `"sign_flip"`, residuals are randomised by random sign reversal (±1) rather than permutation, requiring only that errors are symmetrically distributed — a weaker assumption than exchangeability. Not valid for `"ordinal"` or `"multinomial"` families (no well‑defined residuals) or for `"manly"` and `"manly_joint"` methods (which permute Y directly). |
@@ -182,6 +182,19 @@ Both support attribute access (`result.p_value`), dict-style access
 `result.to_dict()` serialization. Each result carries:
 - `guarantee_tier`: Formal mathematical inferential guarantee string (e.g. `"Finite-Sample Exact"`, `"Asymptotically Exact (Canonical Freedman–Lane)"`, or `"Asymptotically Exact (DML)"`).
 - `context`: An attached `FitContext` carrying the observed fit, diagnostics, permutation metadata, and captured expected advisories.
+
+### `KernelTestResult`
+
+Result object returned by kernel hypothesis tests (`mmd_test`, `hsic_test`,
+and `kernel_regression_test`).
+
+Provides:
+- `statistic`: Observed test statistic ($MMD^2$, $HSIC$, or kernel regression score).
+- `p_value`: Phipson & Smyth (2010) corrected permutation p-value.
+- `null_distribution`: Permuted statistic values under $H_0$, shape `(n_randomizations,)`.
+- `kernel_name`: Name or comma-separated names of the kernels used (e.g. `"gaussian"`, `"gaussian,gaussian"`).
+- `n_randomizations`: Number of randomizations evaluated.
+- `method`: Test method identifier (`"mmd"`, `"hsic"`, or `"kernel_regression"`).
 
 ### `ConfounderAnalysisResult`
 
@@ -763,14 +776,20 @@ calculate_p_values(
     precision: int = 3,
     p_value_threshold_one: float = 0.05,
     p_value_threshold_two: float = 0.01,
+    p_value_threshold_three: float = 0.001,
     fit_intercept: bool = True,
-) -> tuple[list[str], list[str], np.ndarray, np.ndarray]
+    *,
+    family: ModelFamily,
+    groups: np.ndarray | ExchangeabilityTree | None = None,
+) -> tuple[list[str], list[str], np.ndarray, np.ndarray, np.ndarray]
 ```
 
 Calculate empirical (permutation) and classical (asymptotic) p‑values.
 
-Uses the Phipson & Smyth (2010) correction `p = (b + 1) / (B + 1)` to
-ensure p‑values are never exactly zero.
+Empirical p-values use the Phipson & Smyth (2010) correction `p = (b + 1) / (B + 1)` to
+ensure p‑values are never exactly zero. Classical p-values are delegated to `family.classical_p_values()`
+using observed Fisher information standard errors, sandwich estimators, or cluster-robust standard errors
+when `groups` is supplied.
 
 | Parameter | Description |
 |---|---|
@@ -779,15 +798,18 @@ ensure p‑values are never exactly zero.
 | `permuted_coefs` | Coefficients from each permutation, shape `(n_randomizations, n_features)`. |
 | `model_coefs` | Observed (unpermuted) coefficients, shape `(n_features,)`. |
 | `precision` | Decimal places for rounding. |
-| `p_value_threshold_one` | First significance threshold. |
-| `p_value_threshold_two` | Second significance threshold. |
+| `p_value_threshold_one` | First significance threshold (default `0.05`, marked `*`). |
+| `p_value_threshold_two` | Second significance threshold (default `0.01`, marked `**`). |
+| `p_value_threshold_three` | Third significance threshold (default `0.001`, marked `***`). |
 | `fit_intercept` | Whether to include an intercept in the asymptotic model. |
+| `family` | `ModelFamily` instance used to compute classical p-values. |
+| `groups` | Optional cluster labels or `ExchangeabilityTree` for cluster-robust standard errors. |
 
-**Returns:** A 4‑tuple
-`(permuted_p_values, classic_p_values, raw_permuted_p, raw_classic_p)`
+**Returns:** A 5‑tuple
+`(permuted_p_values, classic_p_values, raw_permuted_p, raw_classic_p, permuted_p_thresholds)`
 where the first two are lists of formatted p‑value strings with
-significance markers (`*`, `**`, or `ns`) and the last two are raw
-`np.ndarray` values.
+significance markers (`*`, `**`, `***`, or `ns`), the next two are raw
+`np.ndarray` values, and the fifth is a 1-D array of significance marker strings.
 
 ---
 
@@ -1427,6 +1449,8 @@ max deviation, guarantee tier, and diagnostics.
 
 ---
 
+## Knockoff Filter
+
 ### `knockoff_test`
 
 ```python
@@ -1463,6 +1487,268 @@ the Barber & Candès (2015) knockoff+ threshold.
 
 **Returns:** `KnockoffResult` containing selected features, W-statistics, threshold $\tau_+$,
 guarantee tier, and diagnostic checks.
+
+---
+
+## Nonparametric Kernel Hypothesis Tests
+
+### `mmd_test`
+
+```python
+mmd_test(
+    X: np.ndarray,
+    Y: np.ndarray,
+    *,
+    kernel: Kernel | None = None,
+    n_randomizations: int = 5000,
+    max_landmarks: int | None = None,
+    random_state: int | None = None,
+) -> KernelTestResult
+```
+
+Maximum Mean Discrepancy (MMD) two-sample permutation test (Gretton et al., 2012).
+
+Tests the null hypothesis $H_0: P = Q$ given observations $X \sim P$ and $Y \sim Q$.
+Evaluates the unbiased $U$-statistic estimate $\text{MMD}_u^2$. Relabels observations across
+groups under $H_0$. When `max_landmarks` is set, applies Nyström low-rank approximation
+to reduce memory from $O(n^2)$ to $O(nm)$.
+
+| Parameter | Description |
+|---|---|
+| `X` | Observations from distribution $P$. Shape `(n_x,)` or `(n_x, d)`. |
+| `Y` | Observations from distribution $Q$. Shape `(n_y,)` or `(n_y, d)`. |
+| `kernel` | `Kernel` instance to use. Defaults to `GaussianKernel(sigma="median")`. |
+| `n_randomizations` | Number of random relabellings (default `5000`). |
+| `max_landmarks` | Nyström landmark count for linear-memory approximation. |
+| `random_state` | Seed for reproducible permutations and landmark sampling. |
+
+**Returns:** `KernelTestResult` with `method="mmd"` and unbiased $\text{MMD}^2$ statistic.
+
+---
+
+### `hsic_test`
+
+```python
+hsic_test(
+    X: np.ndarray,
+    Y: np.ndarray,
+    *,
+    kernel_x: Kernel | None = None,
+    kernel_y: Kernel | None = None,
+    n_randomizations: int = 5000,
+    max_landmarks: int | None = None,
+    random_state: int | None = None,
+) -> KernelTestResult
+```
+
+Hilbert-Schmidt Independence Criterion (HSIC) nonparametric independence test (Gretton et al., 2005).
+
+Tests the null hypothesis $H_0: X \perp Y$ given paired observations $(X_i, Y_i)_{i=1}^n$.
+Evaluates the non-negative $V$-statistic $\text{HSIC}_b = \frac{1}{n^2} \text{Tr}(K_c L_c)$, where
+$K_c$ and $L_c$ are doubly-centered Gram matrices. Permutes rows of $Y$ while holding $X$ fixed.
+The empirical permutation null distribution centers at the exact analytical expectation:
+$$\mathbb{E}_\pi[\text{HSIC}_b] = \frac{\text{Tr}(K_c)\text{Tr}(L_c)}{n^2(n-1)}$$
+
+| Parameter | Description |
+|---|---|
+| `X` | First variable. Shape `(n,)` or `(n, d_x)`. |
+| `Y` | Second variable. Shape `(n,)` or `(n, d_y)`. |
+| `kernel_x` | `Kernel` instance for $X$. Defaults to `GaussianKernel(sigma="median")`. |
+| `kernel_y` | `Kernel` instance for $Y$. Defaults to `GaussianKernel(sigma="median")`. |
+| `n_randomizations` | Number of random permutations of $Y$ (default `5000`). |
+| `max_landmarks` | Nyström landmark count applied to both kernels. |
+| `random_state` | Seed for reproducible permutations. |
+
+**Returns:** `KernelTestResult` with `method="hsic"` and observed $\text{HSIC}_b$ statistic.
+
+---
+
+### `kernel_regression_test`
+
+```python
+kernel_regression_test(
+    X: np.ndarray,
+    Y: np.ndarray,
+    *,
+    kernel_y: Kernel | None = None,
+    confounders: np.ndarray | None = None,
+    reduced_model: Any | None = None,
+    n_randomizations: int = 5000,
+    max_landmarks: int | None = None,
+    random_state: int | None = None,
+) -> KernelTestResult
+```
+
+Kernel partial independence test in RKHS after OLS or cross-fitted DML residualization.
+
+Tests $H_0: X \perp Y \mid Z$, where $Z$ is a matrix of confounders. When `reduced_model=None`,
+both $X$ and $Y$ are residualized on $Z$ via ordinary least squares (OLS hat projection).
+When `reduced_model` is supplied, non-linear confounding is absorbed out-of-fold by
+cross-fitting nuisance regressions $\mathbb{E}[Y \mid Z]$ and $\mathbb{E}[X \mid Z]$
+via Double/Debiased Machine Learning (DML), achieving Neyman orthogonality.
+
+| Parameter | Description |
+|---|---|
+| `X` | Treatment / predictor variable. Shape `(n,)` or `(n, d_x)`. |
+| `Y` | Outcome variable. Shape `(n,)` or `(n, d_y)`. |
+| `kernel_y` | Kernel for the outcome residuals. Defaults to `GaussianKernel(sigma="median")`. |
+| `confounders` | Confounder matrix $Z$. Shape `(n, q)`. |
+| `reduced_model` | Optional flexible machine learning estimator (e.g. `GradientBoostingRegressor`). |
+| `n_randomizations` | Number of random permutations (default `5000`). |
+| `max_landmarks` | Nyström landmark count for large-sample approximation. |
+| `random_state` | Seed for reproducible cross-fitting and permutations. |
+
+**Returns:** `KernelTestResult` with `method="kernel_regression"`.
+
+---
+
+## Kernel Representations
+
+### `Kernel` (Protocol)
+
+Runtime-checkable protocol that every kernel implementation must satisfy.
+
+| Property / Method | Description |
+|---|---|
+| `name() -> str` | Short identifier string (e.g. `"gaussian"`, `"linear"`). |
+| `__call__(X, Y) -> np.ndarray` | Compute dense Gram matrix $K_{ij} = k(X_i, Y_j)$ of shape `(n, m)`. |
+| `evaluate(X, max_landmarks, random_state) -> KernelEval` | Return a `KernelEval` representation (dense Gram or low-rank factor). |
+
+### Concrete Kernels
+
+- `GaussianKernel(gamma=None, sigma="median")`: Radial Basis Function (RBF) kernel $k(x, y) = \exp(-\gamma \|x - y\|^2)$. When `sigma="median"`, sets $\gamma = 1 / (2 \sigma_{\text{med}}^2)$ from pairwise sample distances.
+- `LinearKernel()`: Standard inner-product kernel $k(x, y) = x^T y$.
+- `LaplacianKernel(gamma=None, sigma="median")`: Exponential kernel $k(x, y) = \exp(-\gamma \|x - y\|_1)$.
+- `CosineKernel()`: Normalized angular similarity kernel $k(x, y) = \frac{x^T y}{\|x\|_2 \|y\|_2}$.
+- `PrecomputedKernel(gram_matrix)`: Wraps an existing positive semi-definite Gram matrix.
+
+### `KernelEval`
+
+Unified representation container for kernel evaluation. When the full Gram matrix is computed, stores dense `gram`. When `max_landmarks` is specified, stores low-rank Nyström factor `factor` of shape `(n, m)` such that $K \approx \text{factor} \cdot \text{factor}^T$, avoiding $O(n^2)$ memory materialization.
+
+---
+
+## Text Processing Pipeline
+
+Vectorization, topic modeling, and diagnostic tools for unstructured text data.
+
+### `docs_to_tfidf`
+
+```python
+docs_to_tfidf(
+    documents: Sequence[str],
+    *,
+    max_features: int = 5000,
+    stop_words: str | list[str] | None = "english",
+    ngram_range: tuple[int, int] = (1, 1),
+    min_df: int | float = 2,
+    max_df: int | float = 0.95,
+) -> tuple[np.ndarray, list[str]]
+```
+
+Convert text documents into a dense TF-IDF feature matrix with L2 normalization.
+Returns `(X_tfidf, feature_names)`.
+
+### `docs_to_topics`
+
+```python
+docs_to_topics(
+    X_tfidf: np.ndarray,
+    n_components: int = 10,
+    *,
+    beta_loss: str = "kullback-leibler",
+    solver: str = "mu",
+    max_iter: int = 500,
+    random_state: int | None = None,
+) -> tuple[np.ndarray, np.ndarray]
+```
+
+Extract topic proportions via Non-negative Matrix Factorization (NMF) with Kullback–Leibler divergence.
+Returns `(W, H)` where $W \in \mathbb{R}^{n \times k}$ is the document-topic distribution (row-normalized to simplex)
+and $H \in \mathbb{R}^{k \times p}$ is the topic-word distribution.
+
+### `coherence_score`
+
+```python
+coherence_score(
+    X_tfidf: np.ndarray,
+    H: np.ndarray,
+    *,
+    top_n: int = 10,
+    binary: bool = True,
+) -> float
+```
+
+Normalized Pointwise Mutual Information (NPMI) topic coherence (Bouma 2009; Lau et al. 2014).
+Evaluates co-occurrence probabilities among the top $N$ words per topic. Bounded in $[-1, 1]$.
+
+### `exclusivity_score`
+
+```python
+exclusivity_score(
+    H: np.ndarray,
+    *,
+    top_n: int = 10,
+) -> float
+```
+
+FREX topic exclusivity metric (Bischof & Airoldi 2012), quantifying whether top words in a topic
+are unique to that topic rather than shared across the corpus.
+
+### `select_n_components`
+
+```python
+select_n_components(
+    X_tfidf: np.ndarray,
+    candidate_k: Sequence[int],
+    *,
+    top_n: int = 10,
+    weight_coherence: float = 0.5,
+    random_state: int | None = None,
+) -> tuple[int, dict[int, dict[str, float]]]
+```
+
+Select optimal topic count $k$ by maximizing a weighted harmonic combination of NPMI coherence and FREX exclusivity.
+Returns `(best_k, metrics_by_k)`.
+
+### `text_mmd_test`
+
+```python
+text_mmd_test(
+    docs_x: Sequence[str],
+    docs_y: Sequence[str],
+    *,
+    kernel: Kernel | None = None,
+    n_randomizations: int = 5000,
+    max_features: int = 5000,
+    stop_words: str | list[str] | None = "english",
+    ngram_range: tuple[int, int] = (1, 1),
+    random_state: int | None = None,
+) -> KernelTestResult
+```
+
+End-to-end two-sample MMD test comparing text corpora. Fits a joint TF-IDF vocabulary across
+$X$ and $Y$, constructs document embeddings, and applies `mmd_test`.
+
+---
+
+## Permutation-First Dispatch Principle (Axiom D26)
+
+The governing architectural principle of `randomization_tests` is that **design-based,
+finite-sample exact inference is preferred whenever the conditioning structure permits it**:
+
+1. **Discrete Conditioning Variables**:
+   When conditioning on discrete factors (e.g. treatment blocks, study sites, sex, or categorical brackets),
+   the package auto-prefers stratified permutation within exchangeability cells (`ExchangeabilityTree`,
+   `permutation_strategy="within"`, or Tier 0 invariance). Under exchangeability, p-values are
+   **finite-sample exact** with zero distributional assumptions and zero nuisance parameter estimation error.
+
+2. **Continuous Conditioning Variables**:
+   When conditioning covariates are continuous, exact conditioning is mathematically impossible under
+   continuous densities without parametric or smoothness assumptions (Shah & Peters, 2020).
+   The package transparently dispatches to residualized permutation (`freedman_lane`, `kennedy`, `score`)
+   or Double/Debiased Machine Learning (`reduced_model=`), explicitly reporting the inferential guarantee
+   tier as **asymptotically exact** (`guarantee_tier="asymptotically_exact"`).
 
 ---
 
