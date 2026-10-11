@@ -10,23 +10,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **Production Benchmarking Suite & First-Principles Certification**:
+
   - Replaced scratch prototypes with `benchmarks/profile_solvers.py` covering JAX autodiff exactness, SVD ill-conditioning scaling, $O(G)$ Woodbury whitening, and Prais–Winsten AR overhead, with automated chart generation in `benchmarks/image/solvers-profile/`.
   - Modernized `benchmarks/profile_endtoend.py` across all 7 model families, 10 statistical methods, and 4 permutation strategies, benchmarking throughput up to $43{,}000$ permutations/sec.
   - Created `benchmarks/profile_subsystems.py` profiling kernel hypothesis tests ($O(N^2)$ scaling), distribution-free conformal prediction, Fixed-X vs Model-X knockoff filter, and multi-environment causal invariance testing.
   - Remediated `benchmarks/profile_dml.py` to eliminate harmonic parity cancellation in Scenario 2 and Scenario 6, empirically proving $100\%$ Type I error inflation for linear Freedman–Lane under nonlinear confounding vs nominal calibration for DML.
   - Added automated CI performance and algorithmic floor assertions in `tests/test_benchmark_contracts.py`.
-
 - **`score_joint` unblocked for GLMMs (`logistic_mixed`, `poisson_mixed`)**:
   Evaluates the Rao Score omnibus test statistic via closed-form orthogonal
   projection on the whitened tangent space of the frozen working response
   $\tilde z$, avoiding per-permutation iterative refitting while delivering
   nominal Type I error control and high empirical power under sub-millisecond
   execution. Supported in `ScoreJointStrategy`, `_validation.py`, and display.
-
 - **Double/Debiased Machine Learning (DML) integration (Phase 5)**:
   Full Double-Residualized DML (Robinson 1988; Chernozhukov et al.
   2018) via `reduced_model=` on `randomization_test_regression`
   and `kernel_regression_test`.
+
   - `_cross_fit_residualize()`: cross-fits nuisance regressions
     $E[Y \mid Z]$ and $E[X \mid Z]$ out-of-fold with $K$-fold and
     `GroupKFold` support, estimator cloning, and deterministic seeding.
@@ -42,9 +42,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - 15 unit and integration tests in `tests/test_dml.py` and benchmark harness
     in `benchmarks/profile_dml.py`.
   - Interactive example tutorial in `examples/double_machine_learning.py`.
-
 - **Conformal prediction module (`_conformal.py`, Phase 6)**:
   Distribution-free uncertainty quantification with finite-sample coverage guarantees:
+
   - `conformal_prediction()`: computes prediction intervals for regression and prediction
     sets for classification (`"logistic"`, `"ordinal"`, `"multinomial"`).
   - Exact order-statistic calibration constant: rank $\lceil (n_{\text{cal}} + 1)(1 - \alpha) \rceil$
@@ -68,10 +68,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     renders empirical verification and stratified FSC tables.
   - 21 unit and Monte Carlo tests in `tests/test_conformal.py`.
   - Interactive dual-paradigm tutorial in `examples/conformal_prediction.py`.
-
 - **Causal invariance testing module (`_invariance.py`, Phase 7)**:
   Distribution-free testing of conditional independence $H_0: Y \perp\!\!\perp E \mid X$
   across heterogeneous environments (Peters, Bühlmann & Meinshausen 2016; Berrett et al. 2020):
+
   - Robust to environmental covariate shift: because observational environments frequently
     exhibit distinct predictor distributions ($P(X \mid E=1) \ne P(X \mid E=2)$), conditioning
     on $X$ ensures shifts in sample demographics or exposure levels across environments are not
@@ -89,9 +89,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     tier banners, environment sample sizes, slope estimates, and deviation statistics.
   - Shared infrastructure `_cpt.py`: reusable pairwise-swap MCMC label sampler for Phase 7 and Phase 11.
   - 11 unit and adversarial dual-harness tests in `tests/test_invariance.py`.
-
 - **Knockoff filter feature selection module (`_knockoffs.py`, Phase 8)**:
   Controlled variable selection with false discovery rate (FDR) control:
+
   - `knockoff_test()`: constructs synthetic knockoff features $\tilde{X}$ that preserve the
     covariance structure of $X$ while conditionally independent of $Y \mid X$.
   - Fixed-X Knockoffs (`method="fixed_x"`, Barber & Candès 2015): finite-sample exact FDR control
@@ -116,13 +116,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     threshold $\tau_+$, selected features, and MMD swap diagnostic status.
   - 14 dual-harness tests in `tests/test_knockoffs.py`.
   - Interactive example tutorial in `examples/knockoff_filter.py`.
-
 - **Strict Zero-Debt SemVer 0.x Harmonization**:
   Standardized parameter naming to `n_randomizations: int = 5000` across all resampling
   methods (`mmd_test`, `hsic_test`, `kernel_regression_test`, `text_mmd_test`, `invariance_test`),
   completely eliminating deprecated parameter aliases, fallback branching, and compatibility
   properties without technical debt.
-
 - **`_validation.py` — structured validation layer**: five
   validator functions (`validate_compatibility`,
   `validate_confounders`, `validate_family_compatibility`,
@@ -130,13 +128,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `ValidationIssue` dataclasses instead of raising directly,
   enabling callers to collect and report multiple issues in a single
   pass.  75 tests in `test_validation.py`.
-
 - **`_results.py` — extended result dataclasses**: four new
   L2/L3 result types (`KernelTestResult`, `ConformalResult`,
   `InvarianceResult`, `KnockoffResult`) added alongside the
   existing `IndividualTestResult` and `JointTestResult`.  All share
   the `_DictAccessMixin` protocol.  61 tests in `test_results.py`.
-
 - **`_kernels.py` — kernel protocol and implementations**:
   `Kernel` protocol (`KernelEval` callable type), five concrete
   kernels (`GaussianKernel`, `CosineKernel`, `LinearKernel`,
@@ -144,23 +140,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   utilities (`gram_row_sums`, `gram_centering`, `gram_permute`,
   `gram_trace_product`, `_nystrom_evaluate`).  39 tests in
   `test_kernels.py`.
-
 - **`_kernel_tests.py` — MMD, HSIC, and kernel regression tests**:
   `mmd_test()` (two-sample Maximum Mean Discrepancy),
   `hsic_test()` (Hilbert-Schmidt Independence Criterion), and
   `kernel_regression_test()` (permutation F-test in the RKHS).
   Coverage in `test_kernel_tests.py`.
-
 - **`_text.py` — text preprocessing pipeline**: tokenisation,
   TF-IDF, and bag-of-words helpers for applying permutation tests
   to textual data.  Coverage in `test_text.py`.
-
 - **Complete dataset citations in `README.md`**: added citations for
   Abalone, Adult, Bike Sharing, Energy Efficiency, Parkinsons
   Telemonitoring, SUPPORT2, Wine, and Wine Quality (all with DOIs
   from the UCI Machine Learning Repository) alongside the previously
   cited Breast Cancer Wisconsin and Real Estate Valuation datasets.
-
 - **Kennedy and Kennedy joint strategies unblocked for GLMMs**
   (`logistic_mixed`, `poisson_mixed`): exposure-residualization
   permutation testing is now supported for GLMM families via the
@@ -168,7 +160,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `z̃`.  Because `z̃` and `V_z` are frozen from calibration,
   varying-X refitting reduces to whitened linear regression,
   avoiding iterative per-permutation IRLS re-solves.
-
 - **`permutation_strategy="unrestricted"` supported**: users can
   now decouple model grouping from the permutation strategy,
   fitting cluster-correlated models while evaluating unconstrained
@@ -181,8 +172,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   across the `ModelFamily` protocol, 6 base families, and 3 mixed families,
   standardizing positional conventions across all dataset-level protocol methods
   and eliminating redundant runtime checks.
-
 - **JAX backend mathematical hardening and vectorization**:
+
   - `_newton_solve_static`: inner loop in `jax.lax.while_loop` now carries
     `converged_prev` across iterations and masks parameter/NLL updates with
     `jnp.where(converged_prev, beta, beta_step)`. This freezes parameter vectors
@@ -208,21 +199,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     now verifies deviance finiteness during bracket expansion, cleanly returning
     `NaN` for unidentifiable bounds under quasi-complete separation rather than
     diverging into runaway values.
-
-### Removed
-
-- **`method="score_exact"` removed**: From first principles, score tests
-  evaluate likelihood gradients strictly under the restricted null model
-  without refitting under permutations. The legacy `score_exact` implementation
-  performed 20 unrolled Henderson IRLS refits per permutation on raw permuted
-  responses (a PQL-refitted Wald test under direct label permutation), which
-  destroyed partial conditioning in multiple regression and imposed massive
-  computational overhead. With the delivery of the unified tangent-space
-  linear model on frozen working response $\tilde z$, canonical `method="score"`
-  (individual) and `method="score_joint"` (omnibus) evaluate the exact Rao
-  Score test in closed form without iterative refitting, rendering `score_exact`
-  completely obsolete. All associated internal code (`_pql_fixed_irls_vmap`,
-  `ScoreExactStrategy`) has been pruned.
+- **`method="ter_braak"` and `method="freedman_lane"` now implement
+  their canonical algorithms** (breaking behavioral correction).
+  Previously the names were swapped/hybridised relative to the
+  literature: `ter_braak` permuted reduced-model residuals (the
+  procedure Freedman & Lane 1983 describe and Winkler et al. 2014,
+  Table 2, attribute to Freedman–Lane), while `freedman_lane`
+  permuted full-model residuals added to confounder-only fitted
+  values — a hybrid matching no procedure in the taxonomy.  Now:
+  `freedman_lane` fits the reduced model Y ~ X₋ⱼ and permutes its
+  residuals (canonical Freedman–Lane); `ter_braak` fits the full
+  model once, permutes full-model residuals about the full fit, and
+  recentres the null draws to β* − β̂ (canonical ter Braak 1992).
+  The `FreedmanLaneJointStrategy` likewise now permutes reduced
+  (confounders-only) model residuals.  The score strategy's
+  bit-for-bit equivalence guarantee now correctly names
+  `freedman_lane`.  Numerical results for both methods differ from
+  v0.4.x.
+- **`ci_method` in `confidence_intervals` is now
+  `"shift_inversion_percentile"`** (was `"bca"`/`"percentile"`),
+  reflecting the corrected CI construction.
+- **API.md**: fixed stale `ar_order` description (GLS→FGLS with Cholesky
+  whitening), corrected MultinomialFamily.coefs() from "LRT chi-squared"
+  to "Wald χ²", updated NB `calibrate()` from duck-typed to protocol method.
+- **QUICKSTART.md**: added missing methods (Manly, score, score_exact) to
+  available methods table, updated AR section terminology (GLS→FGLS).
+- **Version bump to 0.4.4**: `__version__` in `__init__.py` and `version`
+  in `pyproject.toml` updated from `"0.4.3"` to `"0.4.4"`.
+- **Lint cleanup**: removed unused imports (`fit_reduced`, `Callable`),
+  dead code (`K` assignments, unreachable `_validate_node` call, unused
+  `n_perm`), unquoted forward-reference type annotations, used `enumerate()`
+  for cell-id loop.
 
 ### Fixed
 
@@ -234,52 +241,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   enabling `FitResult.conf_int()` to evaluate exact Student's $t$ critical values
   ($t_{1-\alpha/2, \, df}$), guaranteeing exact test-inversion duality ($p < \alpha \iff 0 \notin \text{CI}$)
   and machine-precision agreement with statsmodels OLS ($< 10^{-14}$).
-
 - **`LinearFamily` score test null shift under AR eliminated (M14 / CD-8)**:
   `LinearFamily.fit()` and `fit_reduced()` now solve FGLS directly in the whitened
   coordinate space ($L X, L y$) when `ar_coefs` is calibrated, conforming to Decision D28.
   By the Frisch–Waugh–Lovell theorem on whitened data, $e_w \perp X_{\text{red}, w}$,
   collapsing the unpermuted score offset to machine precision ($< 10^{-14}$) and centering
   the AR score permutation null at zero ($|\text{mean}|/\text{sd} \le 0.15$).
-
 - **GLM AR score projection tangent-space orthogonality (M15 / CD-9)**:
   `LogisticFamily`, `PoissonFamily`, and `NegativeBinomialFamily` now evaluate AR score
   updates in the whitened working tangent space: $X_w = L (W^{1/2} X)$ and
   $e_w = L (W^{-1/2}(y - \hat{\mu}))$, with $A = \text{pinv}(X_w)$. By FWL on the
   whitened working tangent model, $X_{\text{red}, w}^T e_w \equiv \mathbf{0}$,
   eliminating the unpermuted score offset and centering the GLM AR score null at zero.
-
 - **Discrete GLMM AR prohibition with exchangeability guidance (M16 / CD-10)**:
   Additive residual whitening does not exist for discrete non-Gaussian data ($y \in \{0, 1\}$
   or $\mathbb{N}$); $N$-dimensional latent AR processes break Laplace/PQL approximations.
   Blocked `logistic_mixed` and `poisson_mixed` from `ar_order` in `_validation.py`, `core.py`,
   and `families_mixed.py` with an informative `ValueError`, guiding users to cluster-level
   permutation (`permutation_strategy="between"`).
-
 - **2D profile likelihood broadcasting fix in diagnostics (CD-1)**:
   Sanitized response inputs via `.ravel()` in `compute_profile_ci()`, preventing 2D array
   inputs from expanding into $(n, n)$ outer-product matrices and artificially collapsing
   profile deviance boundaries.
-
 - **Strict Pandas index alignment and dimensional precedence validation (CD-2)**:
   Enforced dimension validation (`len(X) != len(y)`) before label set checks, and
   automatically realigned permuted index labels via `y.reindex(X.index)`.
-
 - **Fixed-X knockoff Gram preservation validation (CD-4)**:
   Gated the MMD row-swap test to Model-X knockoffs and reported exact geometric Gram
   preservation errors ($\|X^T \tilde X - (X^T X - \text{diag}(s))\|_\infty < 10^{-12}$)
   for Fixed-X knockoffs, eliminating spurious swap violations on geometric designs.
-
 - **NPMI topic coherence exact probability calculation (CD-5)**:
   Formulated joint and marginal empirical probabilities consistently in `_npmi_coherence`,
   guaranteeing $P(w_i, w_j) \le \min(P(w_i), P(w_j))$ by definition and removing artificial
   `np.clip` bounds.
-
 - **Warning stacklevel transparency across all call sites (CD-6)**:
   Verified via AST parsing that 100% of the 37 `warnings.warn` calls across the entire
   codebase specify `stacklevel=2` (or appropriately deep), ensuring diagnostics cite
   the user's calling code rather than internal library utility lines.
-
 - **Hierarchical `ExchangeabilityTree` cluster-robust variance calculation**:
   `calculate_p_values()` in `pvalues.py` now collapses `ExchangeabilityTree`
   instances to leaf-level cluster cells (`to_flat_cells()`) before delegating
@@ -288,25 +286,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Type annotations for `groups` across `FitContext`, `IndividualTestResult`, and
   `JointTestResult` now explicitly include `ExchangeabilityTree`, eliminating
   static type-ignore workarounds across `core.py` and `engine.py`.
-
 - **Strategy protocol parity and forward-compatible execution**:
   Added `**kwargs: Any` to `PermutationStrategy.execute` and across all 9 strategy
   implementations (`ter_braak`, `kennedy`, `kennedy_joint`, `manly`, `manly_joint`,
   `score`, `score_joint`, `freedman_lane`, `freedman_lane_joint`). This ensures
   consistent execution signatures and prevents `TypeError` when forwarding runtime
   parameters across strategies.
-
 - **Model family varying-X signature parity**:
   Standardized `batch_fit_varying_X` and `batch_fit_and_score_varying_X` on
   `LogisticMixedFamily` and `PoissonMixedFamily` to `fit_intercept: bool`
   (removing default `= True`), establishing 100% signature uniformity across all
   9 concrete model families. Modernized `_GLMMBatchStubMixin` error messages
   to reflect that GLMMs support `method='kennedy'`.
-
 - **Core pipeline deduplication**:
   Eliminated a redundant duplicate DML validation block in `core.py` and added
   comprehensive integration verification in `tests/test_architecture_gate.py`.
-
 - **JAX batch Poisson and Negative Binomial deviance calculation**:
   `batch_poisson_fit_and_score`, `batch_poisson_fit_and_score_varying_X`,
   `batch_negbin_fit_and_score`, and `batch_negbin_fit_and_score_varying_X`
@@ -318,25 +312,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   negative numbers and inflate permuted null draws, producing false-negative
   joint p-values ($p = 1.000$) on real signals.  Added exact saturated offsets,
   matching the true deviance metric across both backends to machine precision.
-
 - **Unified vertical metric alignment in protocol artifacts table**:
   `print_protocol_usage_table()` in `display.py` now aligns all metrics and
   values—across family properties, fitted moments, coefficients, diagnostics,
   variance components, classical benchmarks, and permutation configuration—along
   a single uniform vertical column (column 30).
-
 - **Calibrated Cook's distance large-sample advisory**:
   In large datasets ($N > 1{,}000$), $4/n$ drops to near-zero ($< 0.004$),
   flagging minor leverage points as influential. `print_diagnostics_table()`
   now reports the maximum Cook's distance alongside the $4/n$ count,
   reassuring users when all points remain well below severe influence thresholds
   ($D < 0.5$).
-
 - **REML log-likelihood in linear mixed results headers**:
   Under REML estimation, AIC and BIC are undefined (NaN).
   `LinearMixedFamily.display_header()` now displays the maximized restricted
   log-likelihood (`REML Log-Lik: -30396.16`) in place of `BIC: N/A`.
-
 - **Decontaminated AR parameter estimation in longitudinal LMMs (M11) and composite cluster whitening (M7a)**:
   `LinearMixedFamily` previously estimated autoregressive parameters
   from raw marginal residuals $y - \bar y$. Because cluster random
@@ -354,7 +344,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Permanent regression gate `test_ar_lmm_spread_ratio` promoted from
   strict xfail to passing invariant (median spread ratio 1.079 in
   $[0.8, 1.25]$).
-
 - **LMM reduced-fit scale consistency in batch fitting (M1)**:
   `LinearMixedFamily.batch_fit_and_score()` previously fell back to
   unweighted OLS (`pinv`) when evaluating reduced designs with fewer
@@ -366,7 +355,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Defect M1 across all batch operations to machine precision (< 1e-14).
   Permanent regression gate `test_lmm_reduced_fit_uses_same_estimator`
   promoted from xfail to passing invariant.
-
 - **First-principles Rule of Three borderline B* recommendation (Step 11j)**:
   `_recommend_n_randomizations()` now partitions borderline p-value
   cases between interior normal-approximation half-widths and boundary
@@ -377,14 +365,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   advisories are captured onto `FitContext.warnings_captured` and formatted
   in 80-column wrapped Notes blocks, and `print_protocol_usage_table`
   renders nested variance components as structured, aligned rows.
-
 - **Decoupled model-structure grouping from permutation strategy (M8 / Step 11f)**:
   `panel_id` calls on score methods without `ar_order` previously
   reset `groups = None`, causing `LinearMixedFamily.calibrate` to fail
   with a missing `groups` error.  The permutation strategy is now
   routed to `"unrestricted"` while preserving group labels for family
   calibration and cluster-robust standard errors.
-
 - **GLMM score projection offset and null miscalibration (M4/M6)**:
   `LogisticMixedFamily.score_project` and `PoissonMixedFamily.score_project`
   previously used diagonal-only precision weights on response-scale
@@ -395,7 +381,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   apply full whitening `V_z⁻¹`, causing the unpermuted score offset
   to vanish to machine precision (< 1e-14) and centering the permutation
   null at zero.
-
 - **Unified varying-X batch solver for mixed models (Step 11d)**:
   `batch_fit_varying_X` and `batch_fit_and_score_varying_X` across
   linear and generalized mixed models now delegate to vectorised
@@ -404,7 +389,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and JAX backends.  Eliminates the redundant secondary Woodbury solve
   in `LinearMixedFamily` during RSS computation and ensures deviance
   and RSS reductions are evaluated on the consistent generalized scale.
-
 - **Mixed-model REML/Laplace solver silently returned wrong variance
   components** (`linear_mixed`, `logistic_mixed`, `poisson_mixed`):
   the Levenberg–Marquardt solver enforced its positive-definiteness
@@ -442,7 +426,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Fitted variance components, β̂, standard errors, and p-values may
   therefore change for mixed models — in every case measured, toward
   the correct REML optimum.
-
 - **Freedman–Lane, ter Braak, and score permuted raw residuals under
   non-compound-symmetric covariance** (`linear_mixed` with random
   slopes or crossed grouping factors): a GLS model's errors are only
@@ -459,12 +442,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   permutation for cluster-constant confounders was also repaired
   (ratio 0.82–0.90 at the gate's own B=399, power 0.475 against Type I
   0.025); `between` remains the general-purpose fix for that case.
-
 - **`LinearMixedFamily.residual_type` mislabeled `"conditional"`**:
   `residuals()` has always computed marginal residuals
   (`y − Xβ̂`, excluding random effects), but the `residual_type`
   property returned the wrong label. Corrected to `"marginal"`.
-
 - **AR-blind Woodbury identity in the reduced-design GLS projection**
   (`fit()`'s reduced branch, used by ter Braak/Freedman–Lane's
   confounder-only refit under AR correction): a second copy of the
@@ -474,7 +455,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   AR-corrected datasets. Both copies now share one derivation
   (`_woodbury_gls_projection`), parameterised by the same optional AR
   arguments.
-
 - **Silent OLS substitution when mixed-model p-values fail to
   compute**: `classical_p_values()` for `linear_mixed` caught any
   exception from the statsmodels refit and silently returned OLS
@@ -482,7 +462,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   correlation entirely and is anticonservative for clustered data.
   Now returns `NaN` and raises a `RuntimeWarning`; permutation
   p-values are unaffected.
-
 - **`freedman_lane_joint` on `linear_mixed` compared RSS on two
   different scales whenever confounders were present**: the reduced
   (confounder-only) branch of the joint reconstruction fell back to
@@ -501,7 +480,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (verified as an exact no-op for the 8 non-whitening families) —
   both branches and the observed statistic now always share one
   scale.
-
 - **`score_joint` permuted full-model residuals instead of
   reduced-model residuals**: canonical Freedman–Lane (1983; Winkler
   et al. 2014, Table 2) permutes the confounder-only reduced model's
@@ -520,7 +498,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ordinal/multinomial is unaffected. `score_joint`'s docstring
   previously also claimed to use `score_project()`'s one-step/Fisher-
   information machinery — it does not; corrected.
-
 - **Degenerate permutation confidence intervals for
   `method="kennedy"` and `method="score"`**: `compute_permutation_ci`
   assumed Kennedy/score null distributions were centred on β̂ (they
@@ -537,39 +514,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Regression test: all four strategies must produce positive-width
   CIs containing β̂ under strong signal.
 
-### Changed
+### Removed
 
-- **`method="ter_braak"` and `method="freedman_lane"` now implement
-  their canonical algorithms** (breaking behavioral correction).
-  Previously the names were swapped/hybridised relative to the
-  literature: `ter_braak` permuted reduced-model residuals (the
-  procedure Freedman & Lane 1983 describe and Winkler et al. 2014,
-  Table 2, attribute to Freedman–Lane), while `freedman_lane`
-  permuted full-model residuals added to confounder-only fitted
-  values — a hybrid matching no procedure in the taxonomy.  Now:
-  `freedman_lane` fits the reduced model Y ~ X₋ⱼ and permutes its
-  residuals (canonical Freedman–Lane); `ter_braak` fits the full
-  model once, permutes full-model residuals about the full fit, and
-  recentres the null draws to β* − β̂ (canonical ter Braak 1992).
-  The `FreedmanLaneJointStrategy` likewise now permutes reduced
-  (confounders-only) model residuals.  The score strategy's
-  bit-for-bit equivalence guarantee now correctly names
-  `freedman_lane`.  Numerical results for both methods differ from
-  v0.4.x.
-- **`ci_method` in `confidence_intervals` is now
-  `"shift_inversion_percentile"`** (was `"bca"`/`"percentile"`),
-  reflecting the corrected CI construction.
-- **API.md**: fixed stale `ar_order` description (GLS→FGLS with Cholesky
-  whitening), corrected MultinomialFamily.coefs() from "LRT chi-squared"
-  to "Wald χ²", updated NB `calibrate()` from duck-typed to protocol method.
-- **QUICKSTART.md**: added missing methods (Manly, score, score_exact) to
-  available methods table, updated AR section terminology (GLS→FGLS).
-- **Version bump to 0.4.4**: `__version__` in `__init__.py` and `version`
-  in `pyproject.toml` updated from `"0.4.3"` to `"0.4.4"`.
-- **Lint cleanup**: removed unused imports (`fit_reduced`, `Callable`),
-  dead code (`K` assignments, unreachable `_validate_node` call, unused
-  `n_perm`), unquoted forward-reference type annotations, used `enumerate()`
-  for cell-id loop.
+- **`method="score_exact"` removed**: From first principles, score tests
+  evaluate likelihood gradients strictly under the restricted null model
+  without refitting under permutations. The legacy `score_exact` implementation
+  performed 20 unrolled Henderson IRLS refits per permutation on raw permuted
+  responses (a PQL-refitted Wald test under direct label permutation), which
+  destroyed partial conditioning in multiple regression and imposed massive
+  computational overhead. With the delivery of the unified tangent-space
+  linear model on frozen working response $\tilde z$, canonical `method="score"`
+  (individual) and `method="score_joint"` (omnibus) evaluate the exact Rao
+  Score test in closed form without iterative refitting, rendering `score_exact`
+  completely obsolete. All associated internal code (`_pql_fixed_irls_vmap`,
+  `ScoreExactStrategy`) has been pruned.
 
 ## [0.4.3] - Unreleased
 
@@ -682,6 +640,74 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.4.2] - Unreleased
 
+### Added
+
+- **GLMM deviance note** (`LogisticMixedFamily.diagnostics`,
+  `PoissonMixedFamily.diagnostics`): diagnostics dict now includes
+  `"deviance_note": "marginal (fixed-effects only)"` to clarify
+  that deviance excludes BLUPs Zb̂.
+- **Rosenbaum homoscedasticity documentation**: added `Notes`
+  section to `rosenbaum_bounds` docstring and inline comment
+  documenting the equal-variance assumption and its implications
+  for heteroscedastic data.
+- **BCa multinomial limitation comment**: added inline comment in
+  `_jackknife_coefs` documenting that BCa bootstrap assumes an
+  approximate pivot, which the multinomial χ² statistic does not
+  satisfy exactly.
+- **13 new tests**: `TestNoInterceptNullScore` (4),
+  `TestSingularityGuards` (1), `TestSingularHessianSE` (1),
+  `TestPoissonEtaOverflow` (1),
+  `test_small_n_near_constant_returns_finite` (1),
+  `TestConfounderDisplay` (5).
+
+### Changed
+
+- **Fisher SE singularity guard** (`_fisher_information_se` in
+  `_jax.py`): replaced bare `jnp.linalg.inv` with
+  `jnp.linalg.solve` + finiteness check → `jnp.linalg.pinv`
+  fallback.  JAX does not raise on singular matrices, so the guard
+  checks for NaN/Inf explicitly instead of using try/except.
+- **Score projection singularity guard**
+  (`_glm_score_projection_row` in `_jax.py`): replaced
+  `np.linalg.inv(fisher)` with `np.linalg.solve(fisher, e_j)` +
+  `try/except LinAlgError` → `np.linalg.pinv` fallback.
+- **Poisson eta overflow guard** (`_poisson_nll`, `_poisson_grad`,
+  `_poisson_hessian` in `_jax.py`): clipped η to `[-20, 20]`
+  before `jnp.exp(η)` to prevent overflow.
+- **Score strategy regularisation** (`score.py`): added
+  `Σ_k += 1e-10·I` before `np.linalg.solve(Σ_k, …)` to stabilise
+  near-singular cluster scatter matrices.
+- **GLMM Fisher upgrade** (`LogisticMixedFamily.score_project`,
+  `PoissonMixedFamily.score_project`): upgraded from diagonal
+  `U_j / I_{jj}` to full inverse `[I⁻¹]_{jj}` with `try/except LinAlgError` → `pinv` fallback.
+- **Distance correlation denominator** (`confounders.py`): changed
+  `dvar_x * dvar_y - dcov² + 1e-300` to
+  `max(dvar_x * dvar_y - dcov², 1e-300)` to prevent negative
+  argument to `np.sqrt`.
+- **3-column model-level diagnostics grid**: restructured the
+  Model-level Diagnostics section of `print_diagnostics_table` into
+  a consistent Label (28ch) | Stat (14ch) | Detail layout, matching
+  the per-feature diagnostics alignment.
+- **`display_diagnostics()` protocol**: return type changed from
+  `list[tuple[str, str]]` to `list[tuple[str, str, str]]` across
+  all 10 family implementations (7 in `families.py`, 3 in
+  `families_mixed.py`) and the `ModelFamily` protocol signature.
+- **Cook's D rendering**: now shows `"3 obs."` in the stat column
+  and `"threshold = 0.0400"` in the detail column.
+- **Coverage label**: shortened from `"Permutation coverage:"` to
+  `"Coverage:"`.
+- **Coverage sufficiency verdict**: coverage line now ends with
+  `"— sufficient"` or `"— borderline"`, computed inline from
+  Clopper-Pearson CIs (whether any non-confounder CI straddles a
+  significance threshold).
+- **Coverage `n!` notation**: factorial overflow denominator now
+  renders as `414!` instead of `> 10^414`.
+- **`compute_permutation_coverage`**: returns two additional keys
+  `coverage_pct` and `n_factorial_str` for display decomposition.
+- **7 new tests**: `TestModelLevelDiagnosticsRendering` (7) covering
+  3-column alignment, Cook's D, coverage sufficient/borderline,
+  line width ≤ 80, B/denominator, and factorial overflow notation.
+
 ### Fixed
 
 - **Logistic null-score prediction** (`LogisticFamily.null_score`):
@@ -710,78 +736,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   markers and `n_randomizations` recommendations.
 - **Confounder P-Val CI in diagnostics**: NaN CIs now render as em
   dash `—` in the diagnostics table P-Val CI column.
-
-### Changed
-
-- **Fisher SE singularity guard** (`_fisher_information_se` in
-  `_jax.py`): replaced bare `jnp.linalg.inv` with
-  `jnp.linalg.solve` + finiteness check → `jnp.linalg.pinv`
-  fallback.  JAX does not raise on singular matrices, so the guard
-  checks for NaN/Inf explicitly instead of using try/except.
-- **Score projection singularity guard**
-  (`_glm_score_projection_row` in `_jax.py`): replaced
-  `np.linalg.inv(fisher)` with `np.linalg.solve(fisher, e_j)` +
-  `try/except LinAlgError` → `np.linalg.pinv` fallback.
-- **Poisson eta overflow guard** (`_poisson_nll`, `_poisson_grad`,
-  `_poisson_hessian` in `_jax.py`): clipped η to `[-20, 20]`
-  before `jnp.exp(η)` to prevent overflow.
-- **Score strategy regularisation** (`score.py`): added
-  `Σ_k += 1e-10·I` before `np.linalg.solve(Σ_k, …)` to stabilise
-  near-singular cluster scatter matrices.
-- **GLMM Fisher upgrade** (`LogisticMixedFamily.score_project`,
-  `PoissonMixedFamily.score_project`): upgraded from diagonal
-  `U_j / I_{jj}` to full inverse `[I⁻¹]_{jj}` with `try/except
-  LinAlgError` → `pinv` fallback.
-- **Distance correlation denominator** (`confounders.py`): changed
-  `dvar_x * dvar_y - dcov² + 1e-300` to
-  `max(dvar_x * dvar_y - dcov², 1e-300)` to prevent negative
-  argument to `np.sqrt`.
-
-### Added
-
-- **GLMM deviance note** (`LogisticMixedFamily.diagnostics`,
-  `PoissonMixedFamily.diagnostics`): diagnostics dict now includes
-  `"deviance_note": "marginal (fixed-effects only)"` to clarify
-  that deviance excludes BLUPs Zb̂.
-- **Rosenbaum homoscedasticity documentation**: added `Notes`
-  section to `rosenbaum_bounds` docstring and inline comment
-  documenting the equal-variance assumption and its implications
-  for heteroscedastic data.
-- **BCa multinomial limitation comment**: added inline comment in
-  `_jackknife_coefs` documenting that BCa bootstrap assumes an
-  approximate pivot, which the multinomial χ² statistic does not
-  satisfy exactly.
-- **13 new tests**: `TestNoInterceptNullScore` (4),
-  `TestSingularityGuards` (1), `TestSingularHessianSE` (1),
-  `TestPoissonEtaOverflow` (1),
-  `test_small_n_near_constant_returns_finite` (1),
-  `TestConfounderDisplay` (5).
-
-### Changed (Model Diagnostics Polish)
-
-- **3-column model-level diagnostics grid**: restructured the
-  Model-level Diagnostics section of `print_diagnostics_table` into
-  a consistent Label (28ch) | Stat (14ch) | Detail layout, matching
-  the per-feature diagnostics alignment.
-- **`display_diagnostics()` protocol**: return type changed from
-  `list[tuple[str, str]]` to `list[tuple[str, str, str]]` across
-  all 10 family implementations (7 in `families.py`, 3 in
-  `families_mixed.py`) and the `ModelFamily` protocol signature.
-- **Cook's D rendering**: now shows `"3 obs."` in the stat column
-  and `"threshold = 0.0400"` in the detail column.
-- **Coverage label**: shortened from `"Permutation coverage:"` to
-  `"Coverage:"`.
-- **Coverage sufficiency verdict**: coverage line now ends with
-  `"— sufficient"` or `"— borderline"`, computed inline from
-  Clopper-Pearson CIs (whether any non-confounder CI straddles a
-  significance threshold).
-- **Coverage `n!` notation**: factorial overflow denominator now
-  renders as `414!` instead of `> 10^414`.
-- **`compute_permutation_coverage`**: returns two additional keys
-  `coverage_pct` and `n_factorial_str` for display decomposition.
-- **7 new tests**: `TestModelLevelDiagnosticsRendering` (7) covering
-  3-column alignment, Cook's D, coverage sufficient/borderline,
-  line width ≤ 80, B/denominator, and factorial overflow notation.
 
 ## [0.4.1] - Unreleased
 
@@ -1085,9 +1039,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **60 confounder tests** covering partial/distance correlation,
   multiple-testing correction, collider detection (linear + logistic
   + multinomial + permutation guard), moderation, mixed-family
-  fallback, cluster bootstrap, collinearity guard, multinomial
-  exclusion, full sieve orchestrator, E-value (10 tests), and
-  Rosenbaum bounds (5 tests).
+    fallback, cluster bootstrap, collinearity guard, multinomial
+    exclusion, full sieve orchestrator, E-value (10 tests), and
+    Rosenbaum bounds (5 tests).
 - **`panel_id=` and `time_id=` convenience parameters** on
   `randomization_test_regression()`: syntactic sugar for
   `groups=panel_id, permutation_strategy="within"`.  When
@@ -1170,7 +1124,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`ScoreExactStrategy`** upgraded from Plan C placeholder
   (`NotImplementedError`) to full PQL-fixed implementation.
   Non-GLMM families now raise `ValueError` (not `NotImplementedError`).
-
 - `PermutationEngine.__init__()` accepts three new keyword arguments
   (`groups`, `permutation_strategy`, `permutation_constraints`) and
   stores them as instance attributes before permutation generation.
@@ -1283,7 +1236,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `OrdinalFamily` and `MultinomialFamily` (subsumed by `score()` and
   `null_score()`).
 
-## [0.3.0] - 2026-02-23
+## [0.3.0] - Released
 
 ### Added
 
@@ -1343,7 +1296,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `str | None` to `ModelFamily | None`.
 - All 6 example scripts updated to use self-contained display calls.
 - `API.md` and `QUICKSTART.md` updated for new display signatures.
-
 - **`compute_extended_diagnostics()` protocol method:** each
   `ModelFamily` now owns its family-specific model-level diagnostic
   computation (`breusch_pagan`, `deviance_residuals`, `poisson_gof`,
@@ -1351,9 +1303,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `model_type` branch block in `diagnostics.py` is deleted; replaced
   by a single `result.update(family.compute_extended_diagnostics(...))`
   dispatch.
-
-### Changed
-
 - `compute_all_diagnostics()` parameter `model_type: str` replaced
   by `family: ModelFamily`.  `core.py` call site updated from
   `model_type=engine.family.name` to `family=engine.family`.
@@ -1365,7 +1314,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Tests updated: `test_diagnostics.py` passes `family=` instances
   instead of `model_type=` strings; `test_families.py` gains 6 new
   `compute_extended_diagnostics` assertions.
-
 - **`ModelFamily` protocol:** strategy pattern decoupling model fitting
   from the permutation engine.  Each family implements `validate_y`,
   `fit`, `predict`, `coefs`, `residuals`, `reconstruct_y`, `fit_metric`,
@@ -1412,9 +1360,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Example scripts:** `poisson_regression.py`,
   `negative_binomial_regression.py`, `ordinal_regression.py`,
   `multinomial_regression.py`.
-
-### Changed
-
 - `core.py` refactored from `is_binary` branching to family-dispatched
   method calls via `_strategies/` package.
 - `compute_all_diagnostics` accepts `model_type: str` instead of
@@ -1432,7 +1377,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `family.diagnostics()`).
 - Top-level `_jax.py` shim (superseded by `_backends/_jax.py`).
 
-## [0.2.0] - 2026-02-22
+## [0.2.0] - Released
 
 ### Added
 
@@ -1479,7 +1424,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   marker; `addopts` excludes slow tests by default.
 - Test suite expanded from 125 to 163 tests (+ 6 slow/skipped).
 
-## [0.1.5] - 2026-02-21
+## [0.1.5] - Released
 
 ### Added
 
@@ -1494,6 +1439,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and p-value calculations for consistent model specification.
 - New tests for diagnostics, display, and core intercept handling
   (125 total, up from 100).
+
+### Changed
+
+- `calculate_p_values` return type expanded from 2-tuple to 4-tuple
+  `(permuted_str, classic_str, raw_empirical, raw_classic)`.
+- Examples refactored to use the new `print_diagnostics_table` API.
+- Docs (API.md, QUICKSTART.md, ROADMAP.md) updated for v0.1.5.
 
 ### Fixed
 
@@ -1511,14 +1463,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Exposure R² column suppressed when no confounders are specified
   (was displaying a wall of `0.0000` values).
 
-### Changed
-
-- `calculate_p_values` return type expanded from 2-tuple to 4-tuple
-  `(permuted_str, classic_str, raw_empirical, raw_classic)`.
-- Examples refactored to use the new `print_diagnostics_table` API.
-- Docs (API.md, QUICKSTART.md, ROADMAP.md) updated for v0.1.5.
-
-## [0.1.1] - 2026-02-21
+## [0.1.1] - Released
 
 ### Added
 
@@ -1533,7 +1478,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Comprehensive test suite for Polars input compatibility, including a parity
   test verifying identical results from Polars and pandas inputs.
 
-## [0.1.0] - 2026-02-20
+## [0.1.0] - Released
 
 ### Added
 
