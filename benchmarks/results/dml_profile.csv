@@ -1,17 +1,17 @@
 scenario,method,true_beta,mean_beta,bias,rmse,rejection_rate_05
-1_linear_confounding,Linear Freedman-Lane,0.0,-0.028340690137932043,-0.028340690137932043,0.1143352283798091,0.0
-1_linear_confounding,Double-Residualized DML,0.0,-0.021423599784557514,-0.021423599784557514,0.11317739646807645,0.0
-1_linear_confounding,Linear Freedman-Lane,1.0,0.9716593098620678,-0.028340690137932167,0.11433522837980893,1.0
-1_linear_confounding,Double-Residualized DML,1.0,0.9785764002154426,-0.021423599784557434,0.11317739646807648,1.0
-2_nonlinear_h0_leak,Linear Freedman-Lane,0.0,-0.004130780285401201,-0.004130780285401201,0.052398064601785865,0.0
-2_nonlinear_h0_leak,Double-Residualized DML (GBDT),0.0,-0.02176240203864963,-0.02176240203864963,0.10205257678165733,0.06666666666666667
-3_nonlinear_signal_recovery,Linear Freedman-Lane,-2.0,-0.2335325170674943,1.7664674829325058,1.7669850872023307,1.0
-3_nonlinear_signal_recovery,Double-Residualized DML (GBDT),-2.0,-1.809796306909049,0.19020369309095098,0.21528664855601495,1.0
-4_cluster_leakage,DML KFold (Standard),0.0,0.0,0.0,0.2781072422391079,0.06666666666666667
-4_cluster_leakage,DML GroupKFold (Cluster-Aware),0.0,0.0,0.0,0.286993340212396,0.13333333333333333
-5_logistic_gplm,Logistic Freedman-Lane,0.0,0.0,0.0,0.0,0.9333333333333333
-5_logistic_gplm,Probability Score DML,0.0,0.0,0.0,0.0,0.2
+1_linear_confounding,Linear Freedman-Lane,0.0,0.010952162557109351,0.010952162557109351,0.10693077588248252,0.075
+1_linear_confounding,Double-Residualized DML,0.0,0.007148803091528077,0.007148803091528077,0.10695256917416045,0.075
+1_linear_confounding,Linear Freedman-Lane,1.0,1.0109521625571094,0.010952162557109402,0.1069307758824824,1.0
+1_linear_confounding,Double-Residualized DML,1.0,1.0071488030915279,0.007148803091527878,0.1069525691741604,1.0
+2_nonlinear_h0_leak,Linear Freedman-Lane,0.0,1.026167210084348,1.026167210084348,1.0267363661528794,1.0
+2_nonlinear_h0_leak,Double-Residualized DML (GBDT),0.0,0.0028335014761211837,0.0028335014761211837,0.08011332854641184,0.175
+3_nonlinear_signal_recovery,Linear Freedman-Lane,-2.0,-0.2385737748864898,1.7614262251135102,1.7618401406003301,1.0
+3_nonlinear_signal_recovery,Double-Residualized DML (GBDT),-2.0,-1.8962716923884528,0.10372830761154717,0.12211535048072389,1.0
+4_cluster_leakage,DML KFold (Standard),0.0,0.0,0.0,0.5356573701588673,0.075
+4_cluster_leakage,DML GroupKFold (Cluster-Aware),0.0,0.0,0.0,0.5514782740288001,0.2
+5_logistic_gplm,Logistic Freedman-Lane,0.0,0.0,0.0,0.0,1.0
+5_logistic_gplm,Probability Score DML,0.0,0.0,0.0,0.0,0.075
 5_logistic_gplm,Logistic Freedman-Lane,1.0,0.0,0.0,0.0,1.0
-5_logistic_gplm,Probability Score DML,1.0,0.0,0.0,0.0,0.6666666666666666
-6_kernel_hsic_leak,Kernel Regression (OLS Hat Matrix),0.0,0.0,0.0,0.0,0.06666666666666667
-6_kernel_hsic_leak,Kernel Regression (Cross-Fitted DML),0.0,0.0,0.0,0.0,0.0
+5_logistic_gplm,Probability Score DML,1.0,0.0,0.0,0.0,0.8
+6_kernel_hsic_leak,Kernel Regression (OLS Hat Matrix),0.0,0.0,0.0,0.0,1.0
+6_kernel_hsic_leak,Kernel Regression (Cross-Fitted DML),0.0,0.0,0.0,0.0,0.025

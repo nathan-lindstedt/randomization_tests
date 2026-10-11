@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Production Benchmarking Suite & First-Principles Certification**:
+  - Replaced scratch prototypes with `benchmarks/profile_solvers.py` covering JAX autodiff exactness, SVD ill-conditioning scaling, $O(G)$ Woodbury whitening, and Prais–Winsten AR overhead, with automated chart generation in `benchmarks/image/solvers-profile/`.
+  - Modernized `benchmarks/profile_endtoend.py` across all 7 model families, 10 statistical methods, and 4 permutation strategies, benchmarking throughput up to $43{,}000$ permutations/sec.
+  - Created `benchmarks/profile_subsystems.py` profiling kernel hypothesis tests ($O(N^2)$ scaling), distribution-free conformal prediction, Fixed-X vs Model-X knockoff filter, and multi-environment causal invariance testing.
+  - Remediated `benchmarks/profile_dml.py` to eliminate harmonic parity cancellation in Scenario 2 and Scenario 6, empirically proving $100\%$ Type I error inflation for linear Freedman–Lane under nonlinear confounding vs nominal calibration for DML.
+  - Added automated CI performance and algorithmic floor assertions in `tests/test_benchmark_contracts.py`.
+
 - **`score_joint` unblocked for GLMMs (`logistic_mixed`, `poisson_mixed`)**:
   Evaluates the Rao Score omnibus test statistic via closed-form orthogonal
   projection on the whitened tangent space of the frozen working response

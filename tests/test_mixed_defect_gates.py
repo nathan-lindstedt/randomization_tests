@@ -499,8 +499,8 @@ def test_joint_type_i_at_zero_icc():
 
 
 @pytest.mark.slow
-@pytest.mark.xfail(strict=True, reason="Joint Type I remains inflated at high ICC")
 def test_joint_type_i_at_high_icc():
+    """Joint Type I error is controlled under high ICC (tau2=9.0) via whitened FGLS."""
     assert _rate(
         202, 0.0, joint=True, method="freedman_lane_joint", confounders=["z"]
     ) <= _bound(N_REP)
@@ -512,18 +512,14 @@ def test_individual_type_i_random_intercept():
 
 
 @pytest.mark.slow
-@pytest.mark.xfail(
-    strict=True, reason="Individual Type I remains inflated under random slopes"
-)
 def test_individual_type_i_random_slopes():
+    """Individual Type I error is controlled under random slopes via Woodbury whitening."""
     assert _rate(204, 0.0, method="score", slopes=True) <= _bound(N_REP)
 
 
 @pytest.mark.slow
-@pytest.mark.xfail(
-    strict=True, reason="Two-stage Type I remains inflated under random slopes"
-)
 def test_two_stage_type_i_random_slopes():
+    """Two-stage Type I error is controlled under random slopes via whitened residuals."""
     assert _rate(
         205, 0.0, method="score", slopes=True, permutation_strategy="two-stage"
     ) <= _bound(N_REP)
@@ -551,10 +547,8 @@ def test_individual_power_random_intercept():
 
 
 @pytest.mark.slow
-@pytest.mark.xfail(
-    strict=True, reason="Within-cell permutation has no power for level-2 predictors"
-)
 def test_level2_power_under_within():
+    """Within-cell permutation preserves power for level-2 predictors via precision-weighted projection."""
     assert _rate(209, 1.5, method="score", level2=True) > 0.5
 
 
@@ -579,14 +573,8 @@ def _glmm_rate(seed, beta, tau2=4.0):
 
 
 @pytest.mark.slow
-@pytest.mark.xfail(
-    strict=True, reason="GLMM individual Type I corroboration remains inflated"
-)
 def test_glmm_type_i_level1():
-    """Corroboration only. The primary gates are the deterministic
-    ``test_glmm_score_offset_is_zero`` and ``test_glmm_null_is_zero_centred``
-    above: both state the defect directly on one dataset, where this needs 300
-    replications to say the same thing less precisely."""
+    """GLMM individual Type I error is calibrated under tangent-space working pseudo-response score updates."""
     assert _glmm_rate(210, 0.0) <= _bound(N_REP_GLMM)
 
 

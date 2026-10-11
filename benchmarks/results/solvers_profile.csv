@@ -1,0 +1,23 @@
+category,family,metric,value,latency_ms,reference_latency_ms,details
+autodiff_exactness,logistic,gradient_error_vs_fd,1.0277960362792271e-06,0.012737498618662357,0.28433394618332386,cond(H)=1.89e+00
+autodiff_exactness,poisson,gradient_error_vs_fd,8.277805463308141e-06,0.010490817949175835,0.26687514036893845,cond(H)=1.85e+00
+single_fit,linear,fit_latency_ms,0.31808391213417053,0.31808391213417053,0.0,df=195.0
+single_fit,logistic,fit_latency_ms,1.8694999162107706,1.8694999162107706,267.8600831422955,max_diff_vs_jax=2.76e-04
+single_fit,poisson,fit_latency_ms,0.9920839220285416,0.9920839220285416,284.6944169141352,max_diff_vs_jax=1.43e-09
+single_fit,negative_binomial,fit_latency_ms,5.640416871756315,5.640416871756315,0.0,alpha=0.848
+single_fit,ordinal,fit_latency_ms,29.054082930088043,29.054082930088043,0.0,K=3
+single_fit,multinomial,fit_latency_ms,4.439833108335733,4.439833108335733,0.0,K=3
+single_fit,linear_mixed,fit_latency_ms,2109.124792041257,2109.124792041257,0.0,ICC=0.408
+condition_scaling,linear,svd_relative_error,7.029411577139875e-15,0.04016701132059097,0.020249979570508003,"kappa=1.0e+01, norm_eq_err=2.12e-15"
+condition_scaling,linear,svd_relative_error,2.494190303921627e-14,0.028999987989664078,0.01708301715552807,"kappa=1.0e+03, norm_eq_err=2.30e-10"
+condition_scaling,linear,svd_relative_error,2.6853052221060724e-13,0.024333130568265915,0.015584053471684456,"kappa=1.0e+05, norm_eq_err=2.34e-07"
+condition_scaling,linear,svd_relative_error,2.0968885305873776e-11,0.02345792017877102,0.015500001609325409,"kappa=1.0e+07, norm_eq_err=1.15e-02"
+whitening_complexity,linear_mixed,woodbury_whitening_ms,0.11055818758904934,0.11055818758904934,0.0,"G=10, N=200"
+whitening_complexity,linear_mixed,woodbury_whitening_ms,0.3033581655472517,0.3033581655472517,0.0,"G=25, N=500"
+whitening_complexity,linear_mixed,woodbury_whitening_ms,0.5342083983123302,0.5342083983123302,0.0,"G=50, N=1000"
+whitening_complexity,linear_mixed,woodbury_whitening_ms,1.1393917724490166,1.1393917724490166,0.0,"G=100, N=2000"
+whitening_complexity,linear_mixed,empirical_scaling_exponent,0.9973049416585535,0.0,1.0,log-log linear slope
+ar_whitening,linear_ar,prais_winsten_transform_ms,1.2625001836568117,1.2625001836568117,0.5103331059217453,"K=20, T=10, N=200"
+ar_whitening,linear_ar,prais_winsten_transform_ms,0.2062499988824129,0.2062499988824129,0.3730000462383032,"K=20, T=25, N=500"
+ar_whitening,linear_ar,prais_winsten_transform_ms,0.28112507425248623,0.28112507425248623,0.468582846224308,"K=20, T=50, N=1000"
+ar_whitening,linear_ar,prais_winsten_transform_ms,0.419040909036994,0.419040909036994,0.639582984149456,"K=20, T=100, N=2000"

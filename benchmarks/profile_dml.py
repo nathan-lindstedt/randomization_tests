@@ -288,10 +288,11 @@ def run_scenario_2_nonlinear_h0(
         z_col = Z[:, 0]
 
         # Nonlinear confounding in both X and Y
-        # m(Z) = sin(2Z) + 0.5 Z^2
-        # g(Z) = cos(2Z) + 0.5 Z^2
-        m_z = np.sin(2 * z_col) + 0.5 * (z_col**2)
-        g_z = np.cos(2 * z_col) + 0.5 * (z_col**2)
+        # Non-orthogonal confounder signals:
+        # m(Z) = sin(2Z) + Z^2
+        # g(Z) = 1.5 * Z^2
+        m_z = np.sin(2 * z_col) + (z_col**2)
+        g_z = 1.5 * (z_col**2)
 
         V = rep_rng.normal(0, 0.5, size=n_samples)
         eps = rep_rng.normal(0, 0.5, size=n_samples)
@@ -543,7 +544,7 @@ def run_scenario_4_clustered_leakage(
             "true_beta": 0.0,
             "mean_beta": 0.0,
             "bias": 0.0,
-            "rmse": float(np.mean(mse_kfold)),
+            "rmse": float(np.sqrt(np.mean(mse_kfold))),
             "rejection_rate_05": float(np.mean(np.array(p_kfold) < 0.05)),
         }
     )
@@ -554,7 +555,7 @@ def run_scenario_4_clustered_leakage(
             "true_beta": 0.0,
             "mean_beta": 0.0,
             "bias": 0.0,
-            "rmse": float(np.mean(mse_groupkfold)),
+            "rmse": float(np.sqrt(np.mean(mse_groupkfold))),
             "rejection_rate_05": float(np.mean(np.array(p_groupkfold) < 0.05)),
         }
     )
@@ -684,16 +685,10 @@ def run_scenario_6_kernel_hsic_leak(
         z_col = Z[:, 0]
 
         # X and Y both nonlinearly confounded by Z, but conditionally independent (H0)
-        X = (
-            np.sin(2 * z_col)
-            + 0.5 * (z_col**2)
-            + rep_rng.normal(0, 0.5, size=n_samples)
-        )
-        y = (
-            np.cos(2 * z_col)
-            + 0.5 * (z_col**2)
-            + rep_rng.normal(0, 0.5, size=n_samples)
-        )
+        # Non-orthogonal confounder signals:
+        # m(Z) = sin(2Z) + Z^2, g(Z) = 1.5 * Z^2
+        X = np.sin(2 * z_col) + (z_col**2) + rep_rng.normal(0, 0.5, size=n_samples)
+        y = 1.5 * (z_col**2) + rep_rng.normal(0, 0.5, size=n_samples)
 
         # 1. Shipped kernel_regression_test (OLS hat projection)
         with warnings.catch_warnings():
