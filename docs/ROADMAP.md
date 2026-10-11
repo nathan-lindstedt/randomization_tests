@@ -453,11 +453,11 @@ cell system, and structured result objects are all frozen.
 
 ### Benchmarks
 
-- [x] Runtime benchmarks across *n*, *n_randomizations*, *n_features*,
+- [X] Runtime benchmarks across *n*, *n_randomizations*, *n_features*,
   and model families (`profile_endtoend.py`, `profile_solvers.py`, `profile_subsystems.py`).
-- [x] Comparison against naive (non-vectorised) implementations to
+- [X] Comparison against naive (non-vectorised) implementations to
   quantify the performance gains from batch algebra, Woodbury whitening, and tangent-space score tests.
-- [x] Published benchmark results and architecture reports in `benchmarks/summaries/`.
+- [ ] Published benchmark results and architecture reports in `benchmarks/summaries/`.
 
 ### GPU acceleration
 
