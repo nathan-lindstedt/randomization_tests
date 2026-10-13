@@ -1,50 +1,73 @@
-"""Linear mixed-effects model family for clustered/grouped outcomes.
+r"""Hierarchical mixed-effects model families for clustered and longitudinal data.
 
-Implements the ``ModelFamily`` protocol for continuous outcomes with
-random-intercept and/or random-slope structure arising from
-clustering or repeated measures.
+Implements the :class:`~.families.ModelFamily` protocol (Tier 2 of the 7-tier
+inference abstraction tower) for hierarchical, clustered, and repeated-measures
+data structures across continuous, binary, and count outcomes.
 
-Model:
+Primary Components
+------------------
+* :class:`LinearMixedFamily`: Continuous outcomes with random intercepts/slopes via Henderson REML.
+* :class:`LogisticMixedFamily`: Binary outcomes with canonical logit link via Laplace approximation.
+* :class:`PoissonMixedFamily`: Count outcomes with canonical log link via Laplace approximation.
 
-    y = Xβ + Zu + ε,   u ~ N(0, σ²Γ),   ε ~ N(0, σ²I)
+Mathematical Foundations & Optimization Engines
+-----------------------------------------------
+1. **Linear Mixed Models** (:class:`LinearMixedFamily`):
+   Continuous responses with random intercepts and/or correlated random slopes:
 
-where Γ is block-diagonal:
+   .. math::
+       y = X\beta + Zu + \varepsilon, \quad u \sim \mathcal{N}(0, \sigma^2\Gamma(\theta)), \quad \varepsilon \sim \mathcal{N}(0, \sigma^2 I)
 
-    Γ = block_diag( kron(I_{G_1}, Σ_1), …, kron(I_{G_K}, Σ_K) )
+   where $\Gamma(\theta)$ is block-diagonal with factor-specific log-Cholesky covariances $\Sigma_k$.
+   Calibrated via Henderson's Mixed Model Equations (MME) in :func:`~._backends._jax._reml_solve`,
+   profiling out fixed effects $\beta$ and residual variance $\sigma^2$ with $O(G \cdot d^3)$
+   Woodbury linear complexity across $G$ clusters. Batch permutation loops evaluate
+   the $\sigma^2$-free GLS projection matrix $A = S^{-1} X^\top \tilde V^{-1}$ via a single BLAS-3
+   matrix multiplication $A @ Y_\pi$.
 
-and Σ_k is the (d_k × d_k) covariance matrix for one group in
-factor k (intercept + slopes), estimated via Cholesky decomposition
-Σ_k = L_k L_k' with log-Cholesky parameterisation.
+2. **Generalized Linear Mixed Models (GLMMs)**:
+   - :class:`LogisticMixedFamily`: Binary responses with canonical logit link.
+   - :class:`PoissonMixedFamily`: Count responses with canonical log link.
 
-The fixed effects β and variance components (σ², {Σ_k}) are
-estimated via REML using Henderson's mixed-model equations — no
-per-cluster iteration, no padding, no explicit N×N covariance matrix.
+   Calibrated via the unrolled two-loop Laplace approximation engine (:func:`~._backends._jax._laplace_solve`):
+   - **Inner Loop**: Unrolled Iteratively Reweighted Least Squares (IRLS) mode discovery
+     for conditional random effects $\hat u(\theta)$ and fixed effects $\hat\beta(\theta)$.
+   - **Outer Loop**: Levenberg–Marquardt–Nielsen Newton solver optimizing log-Cholesky
+     variance ratio parameters $\theta$ with branchless Gill–Murray eigenvalue flooring.
 
-The key quantity for the permutation test is the **GLS projection
-matrix** A = S⁻¹ X'Ṽ⁻¹, which is σ²-free.  This matrix is computed
-once during ``calibrate()`` and reused for all B permutations via
-the batch matmul A @ Y_π — structurally identical to what ``batch_ols``
-does with ``pinv(X) @ Y.T``.
-
-Architecture
-~~~~~~~~~~~~
-* **Step A.1:** ``_reml_solve()`` in ``_backends/_jax.py`` estimates
-  β̂, σ̂², {Σ̂_k}, and the projection A via JAX autodiff Newton–Raphson.
-* **Step A.2:** ``batch_mixed_lm()`` / ``batch_mixed_lm_varying_X()``
-  in both backends delegate to the projection matmul (or per-X
-  rebuild for Kennedy).
-* **Step A.3 (this file):** ``LinearMixedFamily`` orchestrates
-  calibration, single-model fit, and batch dispatch.
-
+Variance Component & Design Specification
+-----------------------------------------
 The grouping factor(s) can be supplied as:
+- A **1-D array** of integer cluster labels $\to$ single random intercept.
+- A **dict** mapping factor names to label arrays (or tuples with slope column indices)
+  $\to$ multiple crossed or nested grouping factors with correlated random slopes.
+- An :class:`~.exchangeability.ExchangeabilityTree` specifying multi-level hierarchies.
+- Longitudinal serial correlation can be modeled in LMMs via autoregressive $AR(p)$
+  Cholesky whitening pooled across panels.
 
-* A **1-D array** of integer labels → single random intercept.
-* A **dict** mapping factor names to label arrays (or tuples with
-  slope column indices) → multiple grouping factors with optional
-  correlated random slopes.
+Permutation & Testing Topology
+------------------------------
+- **Score Methods** (``method="score"``, ``"score_joint"``): Supported across all mixed
+  families via tangent-space working projection rows $A_j$.
+- **Kennedy Methods** (``method="kennedy"``, ``"kennedy_joint"``): Supported across all
+  mixed families via varying-X batch refits.
+- **Direct Residual Permutation** (``method="ter_braak"``, ``"freedman_lane"``): Supported
+  for continuous LMMs; guarded with clear error explanations for GLMMs due to the
+  non-exchangeability of discrete non-linear random-effect residuals.
 
-``calibrate()`` builds the random-effect design matrix Z and
-``re_struct`` from whichever form is provided.
+Cross-Module Integration
+------------------------
+* Inbound: Instantiated by :func:`~.families.resolve_family` and calibrated in :class:`~.engine.PermutationEngine`.
+* Outbound: Dispatches to JAX kernels in :mod:`~._backends._jax` (:func:`~._backends._jax._reml_solve`,
+  :func:`~._backends._jax._laplace_solve`) and whitening routines in :mod:`~._ar`.
+
+References
+----------
+Henderson, C. R. (1975). Best linear unbiased estimation and prediction under a
+    selection model. *Biometrics*, 31(2), 423–447.
+
+Bates, D., Mächler, M., Bolker, B., & Walker, S. (2015). Fitting linear mixed-effects
+    models using lme4. *Journal of Statistical Software*, 67(1), 1–48.
 """
 
 from __future__ import annotations
@@ -1500,7 +1523,14 @@ class LinearMixedFamily:
         raw_groups: Any = None,
         **kwargs: Any,
     ) -> LinearMixedFamily:
-        """REML calibration via the JAX Henderson solver."""
+        r"""REML calibration via JAX's accelerated Henderson solver.
+
+        Delegates to :func:`~._backends._jax._reml_solve`. Profiles out the
+        fixed effects and residual variance :math:`\sigma^2` using Henderson's
+        Mixed Model Equations (MME), optimising the log-Cholesky variance ratio
+        parameters :math:`\theta` via Levenberg–Marquardt–Nielsen damping with
+        :math:`O(G)` Woodbury linear complexity across clusters.
+        """
         from ._backends._jax import _reml_solve
 
         ar_order = kwargs.get("ar_order")
@@ -2172,7 +2202,12 @@ def _calibrate_glmm(
     family_name: str,
     **kwargs: Any,
 ) -> LogisticMixedFamily | PoissonMixedFamily:
-    """Shared Laplace-approximation calibration for GLMM families.
+    r"""Shared Laplace-approximation calibration for GLMM families via JAX.
+
+    Delegates to :func:`~._backends._jax._laplace_solve`, which implements an
+    unrolled two-loop optimization engine combining an inner unrolled IRLS for
+    mode discovery :math:`\hat u(\theta)` with an outer Levenberg–Marquardt–Nielsen
+    Newton step over the variance ratio parameters :math:`\theta`.
 
     Parameters
     ----------

@@ -1,37 +1,38 @@
-"""Text feature extraction and MMD-based two-sample tests for document corpora.
+r"""Text feature extraction and MMD-based two-sample tests for document corpora.
 
 Provides utilities for converting raw document lists to numerical representations
-(TF-IDF or NMF topic proportions) and running kernel-based statistical tests on them.
+(TF-IDF or NMF topic proportions) and running kernel-based statistical tests on them,
+enforcing the **pooled vocabulary** principle to guarantee shared feature spaces.
 
-The key design principle is **pooled vocabulary**: when comparing two document groups
-X and Y, the vectoriser must be fitted on the *union* ``docs_x + docs_y``.  Fitting
-separately on each group produces incompatible column spaces.  :func:`text_mmd_test`
-enforces this automatically; :func:`docs_to_tfidf` and :func:`docs_to_topics` expose
-it as an explicit contract for users who need the raw embeddings.
+Primary Components
+------------------
+* Embeddings: :func:`docs_to_tfidf` (TF-IDF vectors) and :func:`docs_to_topics` (NMF topic proportions).
+* Topic Diagnostics: :func:`coherence_score` (NPMI), :func:`exclusivity_score` (FREX),
+  and :func:`select_n_components` (optimal $k$ selection).
+* Hypothesis Testing: :func:`text_mmd_test` (end-to-end corpus two-sample MMD test).
 
-Representation choices
-----------------------
-* **TF-IDF + CosineKernel** (default): sensible for short documents where term
-  frequencies carry the signal.  Cosine similarity is invariant to document length.
-* **KL-NMF topic proportions + LinearKernel**: appropriate when documents are long
-  enough to support latent topic inference.  KL divergence NMF assumes Poisson counts
-  (raw ``CountVectorizer`` output), *not* TF-IDF.
-* **Custom preprocessor**: pass any ``Callable[[list[str]], np.ndarray]`` to
-  :func:`text_mmd_test` to use sentence-transformers, OpenAI embeddings, or any other
-  representation that produces an ``(n_docs, d)`` numpy array.
+Mathematical Foundations & Representation Choices
+-------------------------------------------------
+* **TF-IDF + CosineKernel**: Well-suited for short documents where term frequency carries
+  salient signals. Angular cosine similarity is invariant to document length:
+  $k(x, y) = x^\top y / (\Vert x \Vert_2 \Vert y \Vert_2)$.
+* **KL-NMF Topic Proportions + LinearKernel**: Decomposes Poisson word-count matrices into
+  latent topic matrices ($V \approx W H$), evaluating similarity across document topic distributions.
+* **Custom Preprocessors**: Accepts arbitrary embeddings from transformer models
+  (e.g. sentence-transformers) for high-dimensional semantic hypothesis testing.
 
-Diagnostic tools
-----------------
-:func:`coherence_score` and :func:`exclusivity_score` quantify topic quality.
-:func:`select_n_components` runs a grid search maximising their product, providing a
-principled way to choose NMF topic count before running :func:`text_mmd_test`.
+Cross-Module Integration
+------------------------
+* Inbound: Public user calls to text extraction and document comparison pipelines.
+* Outbound: Dispatches to :func:`~._kernel_tests.mmd_test` using :class:`~._kernels.CosineKernel`
+  or :class:`~._kernels.LinearKernel`, returning a :class:`~._results.KernelTestResult`.
 
 References
 ----------
 Mimno, D., Wallach, H. M., Talley, E., Leenders, M., & McCallum, A. (2011).
-    Optimizing semantic coherence in topic models.  *EMNLP*, 262–272.
+    Optimizing semantic coherence in topic models. *EMNLP*, 262–272.
 
-Blei, D. M., & Lafferty, J. D. (2009).  Topic models.  In A. N. Srivastava &
+Blei, D. M., & Lafferty, J. D. (2009). Topic models. In A. N. Srivastava &
     M. Sahami (Eds.), *Text Mining: Classification, Clustering, and Applications*.
 """
 

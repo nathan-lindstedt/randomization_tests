@@ -1,52 +1,49 @@
-"""Score projection strategy — batch permutation via a single matmul.
+r"""Score projection strategy for ultra-fast permutation testing via a single matmul.
 
-Instead of refitting the full model B times (ter Braak, Freedman–Lane),
-the score strategy computes the permutation test statistic for each
-feature via a single matrix–vector product:
+Instead of refitting the full model $B$ times (as in ter Braak or Freedman–Lane),
+the score strategy (Tier 4 of the 7-tier inference abstraction tower) evaluates
+the permutation test statistic for each feature via a single matrix–vector product:
 
-    β̂*_j = A_j @ (ŷ_red + e_π)  =  (A_j @ ŷ_red) + (A_j @ e_π)
+.. math::
+    \beta^*_{b, j} = A_j (\hat y_{\text{red}} + e_{\pi, b}) = (A_j \hat y_{\text{red}}) + (A_j e_{\pi, b})
 
-where A_j is the j-th row of the projection matrix (pseudoinverse for
-OLS, GLS projection for LMM) and e_π are the permuted reduced-model
-residuals.
+where $A_j = [(X^\top W X)^{-1} X^\top]_j$ is the $j$-th row of the projection matrix
+evaluated at the null reduced model, and $e_\pi$ are the permuted residuals.
 
-The first term ``A_j @ ŷ_red`` is constant across all permutations —
-only the second term varies.  ``family.score_project()`` computes the
-varying part ``A_j @ e_π`` for all B permutations at once via a single
-matmul ``(B, n) @ (n,) → (B,)``.  The strategy adds the constant
-offset so the returned values are on the coefficient scale, compatible
-with the existing p-value computation.
+Primary Components
+------------------
+* :class:`ScoreIndividualStrategy`: Per-feature score test (``is_joint=False``).
+* :class:`ScoreJointStrategy`: Collective omnibus improvement test (``is_joint=True``).
 
-**Equivalence guarantees:**
+Mathematical Foundations & Equivalence Guarantees
+-------------------------------------------------
+* **Linear & LMM Equivalence**: For linear and linear mixed models, score test statistics
+  are bit-for-bit identical to Freedman–Lane permutation refits while executing in
+  $O(n \cdot B)$ operations rather than $O(n \cdot p^2 \cdot B)$.
+* **GLMM Second-Order Accuracy**: For generalized linear mixed models, the one-step
+  Newton update achieves asymptotic equivalence to full refitting via Le Cam's (1960)
+  one-step estimator theorem.
+* **Zero-Centred Null Invariant**: The constant offset $A_j \hat y_{\text{red}}$ vanishes
+  identically for full-rank designs, ensuring that the permutation null is centered at zero.
 
-* **Linear / LMM:** Score p-values = Freedman–Lane p-values
-  (bit-for-bit identical: for each tested feature j both permute the
-  X_{−j} reduced-model residuals and evaluate A_j @ Y*, the score
-  strategy via one matmul, Freedman–Lane via the full batch refit).
-* **GLMM:** The one-step corrector upgrades score accuracy
-  to second-order (Le Cam estimator).  Handled inside
-  ``family.score_project()``, transparent to this strategy.
+[ Guarantee: Asymptotically Exact (Score) ]
+Like all residual-based schemes, Type I error control is asymptotically exact under
+error exchangeability (Anderson & Robinson 2001).
 
-**Guarantee**: the constant offset
-``A_j @ ŷ_red`` vanishes identically for full-column-rank designs
-(``pinv(X) @ X = I`` and ŷ_red lies in the span of the non-j columns),
-so the score permutation null is centred at ZERO — exactly like the
-Freedman–Lane null it reproduces.  Like all residual-based schemes,
-Type I control is **asymptotically exact**, not finite-sample exact
-(Anderson & Robinson 2001).
+Cross-Module Integration
+------------------------
+* Inbound: Instantiated by :class:`~.engine.PermutationEngine` when `method="score"`.
+* Outbound: Delegates row projection evaluation to :meth:`~.families.ModelFamily.score_project`.
 
-Two strategies:
+References
+----------
+Rao, C. R. (1948). Large sample tests of composite hypotheses. *Sankhyā*, 9(1), 44–56.
 
-* **ScoreIndividualStrategy** — per-coefficient test (``is_joint=False``).
-* **ScoreJointStrategy** — collective improvement test (``is_joint=True``).
+Le Cam, L. (1960). Locally asymptotically normal families of distributions.
+    *University of California Publications in Statistics*, 3, 37–98.
 
-References:
-    Rao, C. R. (1948). Large sample tests of composite hypotheses.
-    Sankhyā, 9(1), 44–56.
-
-    Le Cam, L. (1960). Locally asymptotically normal families of
-    distributions. *University of California Publications in
-    Statistics*, 3, 37–98.
+Anderson, M. J., & Robinson, J. (2001). Permutation tests for linear models.
+    *Australian & New Zealand Journal of Statistics*, 43(1), 75–88.
 """
 
 from __future__ import annotations

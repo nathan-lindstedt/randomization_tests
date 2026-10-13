@@ -1,39 +1,50 @@
-"""Pre-generation of unique sign-flip arrays.
+r"""Pre-generation of unique Rademacher sign-flip arrays and symmetry validation.
 
-Sign-flipping is the randomization analogue of permutation for designs
-where residuals are symmetric about zero under the null.  Instead of
-permuting the residual vector, each residual is independently
-multiplied by a Rademacher variable (+1 or −1).
+Sign-flipping is the randomization analogue of permutation testing for designs
+where residuals are conditionally symmetric about zero under the null hypothesis.
+Instead of permuting the residual vector, each residual is multiplied by an
+independent or synchronously grouped Rademacher variable ($+1$ or $-1$).
 
-Why sign-flips matter
----------------------
-Permutation tests rely on **exchangeability**: under H₀, any
-reordering of the residual vector is equally likely.  Sign-flip tests
-rely on the strictly weaker assumption of **symmetry**: under H₀, the
-distribution of each residual is symmetric about zero, so flipping its
-sign is equally likely.
+Primary Components
+------------------
+* :func:`generate_sign_flips`: Generates deduplicated, collision-free sign-flip matrices.
+* :func:`validate_symmetry`: Diagnostic evaluation of error symmetry via skewness and
+  the Wilcoxon signed-rank test.
 
-The reference set has size 2ⁿ rather than n!, and the generating
-mechanism is element-wise multiplication rather than reordering.
+Mathematical Foundations: Exchangeability vs. Symmetry
+-------------------------------------------------------
+Permutation tests assume full **exchangeability**: under $H_0$, any permutation
+of the residual vector has equal probability. Sign-flip tests rely on the strictly
+weaker assumption of **symmetry**: under $H_0$, the conditional error distribution
+is symmetric about zero ($\varepsilon_i \overset{d}{=} -\varepsilon_i$), so reversing
+the sign of any residual preserves its distributional law.
+[ Guarantee: Exact Under Symmetry ]
 
-Three generation strategies are used depending on the sample size:
+Hierarchical & Clustered Sign-Flipping
+--------------------------------------
+Sign-flipping naturally generalises to grouped and clustered structures:
+- **Individual Flipping**: Each observation flips independently ($\pm 1$), sampling
+  from a reference space of size $2^n$.
+- **Cluster/Block Synchronous Flipping** (``cells=``, ``strategy="between"``, ``tree=``):
+  All observations within the same cluster flip their signs synchronously as a unit,
+  preserving intra-cluster error covariance while randomizing across independent clusters.
 
-1. **Exhaustive enumeration** (n ≤ ``max_exhaustive``, default 20):
-   All 2ⁿ sign-flip vectors are enumerated via binary counting.
-   When 2ⁿ > ``n_flips``, a random subset is drawn without
-   replacement.
+Sampling & Deduplication Regimes
+--------------------------------
+1. **Exhaustive Enumeration** ($n \le \text{max\_exhaustive}$, default 20):
+   Enumerates all $2^n$ sign-flip vectors via bitwise unranking, subsampling without
+   replacement if $2^n > B$.
+2. **Batch Generation with Negligible Collision Risk** ($2^n \gg B^2$):
+   Generates $B$ sign-flip vectors via vectorised random Bernoulli draws.
+3. **Hash-Set Deduplication** (intermediate $n$):
+   Filters random draws through a Python set of byte representations to guarantee
+   uniqueness and eliminate the identity transformation ($+1, \dots, +1$).
 
-2. **Random sampling with negligible collision probability**
-   (n large enough that 2ⁿ >> n_flips²):  All B vectors are drawn
-   independently and collision risk is below 1e−9.
-
-3. **Random sampling with hash-based deduplication** (medium n):
-   Same random draw, followed by a post-hoc uniqueness pass using
-   Python ``set`` on byte representations.
-
-The ``validate_symmetry`` function provides a diagnostic check
-via the Wilcoxon signed-rank test to help users assess whether the
-symmetry assumption is plausible for their data.
+Cross-Module Integration
+------------------------
+* Inbound: Called by :class:`~.engine.PermutationEngine` when ``randomization="sign_flip"``;
+  symmetry validation invoked by :func:`~.display.print_symmetry_table`.
+* Outbound: Dispatches to NumPy random generation and :mod:`scipy.stats`.
 """
 
 from __future__ import annotations

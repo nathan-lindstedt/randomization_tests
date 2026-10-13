@@ -1,16 +1,13 @@
-"""Computation context — mutable accumulator for pipeline artifacts.
+r"""Computation context and pipeline artifact accumulator.
 
-A :class:`FitContext` travels through the permutation-test pipeline,
-collecting intermediate artifacts at their natural computation points.
-Downstream consumers (display, diagnostics, benchmarking) read from
-the context instead of re-computing.
+A :class:`FitContext` travels through the permutation-test pipeline, collecting
+intermediate artifacts at their natural computation points. Downstream consumers
+(display tables, diagnostics, benchmarking) read directly from the context instead
+of triggering redundant model refits.
 
-The context is **not** part of the public serialisation API: it carries
-NumPy arrays and opaque model objects that should not be JSON'd.
-:meth:`~_results.IndividualTestResult.to_dict` and
-:meth:`~_results.JointTestResult.to_dict` skip it automatically.
-
-Lifecycle::
+Pipeline Lifecycle Architecture
+-------------------------------
+The context accumulator operates across the orchestration workflow::
 
     ┌─────────────────────────────────────────────┐
     │  randomization_test_regression()              │
@@ -31,8 +28,22 @@ Lifecycle::
     │  └─ return result                           │
     └─────────────────────────────────────────────┘
 
-    # Later — zero re-computation:
+    # Downstream consumers read without recomputation:
     print_protocol_usage_table(result)  # reads result.context
+
+Serialization Contracts & Internal State
+-----------------------------------------
+The context carries NumPy arrays and fitted model instances. It is intended strictly
+for in-memory introspection and is intentionally excluded from public JSON dictionary
+exports (:meth:`~._results.IndividualTestResult.to_dict` and
+:meth:`~._results.JointTestResult.to_dict`).
+
+Cross-Module Integration
+------------------------
+* Inbound: Initialized in :func:`~.core.randomization_test_regression`; populated
+  by :class:`~.engine.PermutationEngine` and strategy executors.
+* Outbound: Read by table renderers in :mod:`~.display` and post-fit routines
+  in :mod:`~.diagnostics`.
 """
 
 from __future__ import annotations

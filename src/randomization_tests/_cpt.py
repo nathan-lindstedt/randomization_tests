@@ -1,14 +1,43 @@
-r"""Conditional Permutation Test (CPT) label sampler (Berrett et al. 2020).
+r"""Conditional Permutation Test (CPT) label sampler using pairwise-swap MCMC.
 
-Implements the pairwise-swap MCMC sampler of Berrett, Wang, Barber &
-Samworth (2020, JRSS-B §5) for sampling categorical label vectors
-conditionally on continuous or multi-dimensional covariates X:
+Implements the pairwise-swap Metropolis–Hastings MCMC sampler of Berrett, Wang,
+Barber & Samworth (2020) for drawing categorical label vectors conditionally
+on continuous or multi-dimensional covariates $X$.
 
-    P(pi | X) \propto \prod_{i=1}^n \hat{P}(E_{pi(i)} | X_i)
+Primary Components
+------------------
+* :func:`cpt_sample`: Generates conditionally permuted label matrices preserving
+  marginal class frequencies while conditioning on continuous covariates.
 
-Shared infrastructure for:
-- Invariance testing (Phase 7, Tier 2 CPT)
-- Local Markov condition testing (Phase 11, Markov rigor ladder Tier 2)
+Mathematical Foundations & Sampling Invariant
+---------------------------------------------
+The Conditional Permutation Test approximates draws from the exact conditional law:
+
+.. math::
+    \mathbb{P}(\pi \mid X) \propto \prod_{i=1}^n \hat{P}(E_{\pi(i)} \mid X_i)
+
+The pairwise-swap Metropolis–Hastings transition kernel selects index pairs $(i, j)$
+uniformly at random and accepts candidate label swaps with probability:
+
+.. math::
+    \alpha = \min\left(1, \; \frac{\hat P(E_{\pi(j)} \mid X_i) \, \hat P(E_{\pi(i)} \mid X_j)}{\hat P(E_{\pi(i)} \mid X_i) \, \hat P(E_{\pi(j)} \mid X_j)}\right)
+
+Marginal Invariant:
+Because operations consist exclusively of index swaps, every resampled draw preserves
+the exact marginal class counts of the original label vector.
+[ Guarantee: Exact Up to Total Variation Error ]
+
+Cross-Module Integration
+------------------------
+* Inbound: Consumed by :func:`~._invariance.invariance_test` for Tier 2 conditional
+  causal invariance testing when conditioning sets are continuous.
+* Outbound: Fits conditional label probabilities via :class:`sklearn.linear_model.LogisticRegression`.
+
+References
+----------
+Berrett, T. B., Wang, Y., Barber, R. F., & Samworth, R. J. (2020). The conditional
+    permutation test for independence while controlling for covariates. *Journal of
+    the Royal Statistical Society Series B: Statistical Methodology*, 82(3), 663–688.
 """
 
 from __future__ import annotations

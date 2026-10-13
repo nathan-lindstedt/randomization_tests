@@ -1,26 +1,43 @@
-"""Permutation strategy registry and protocol.
+r"""Permutation testing strategy protocol and algorithm registry.
 
-Each strategy encapsulates a single permutation testing algorithm
-(ter Braak, Kennedy, Freedman–Lane) and exposes a uniform
-``execute()`` interface that the :class:`~randomization_tests.engine.PermutationEngine`
-calls after resolving family, backend, and permutation indices.
+Each strategy encapsulates a distinct statistical testing algorithm (Tier 4 of
+the 7-tier inference abstraction tower) and exposes a uniform :meth:`execute`
+interface called by :class:`~.engine.PermutationEngine` after model calibration,
+family resolution, and permutation index generation.
 
-Two result shapes exist:
+Strategy Paradigms & Algorithm Classes
+--------------------------------------
+The package implements nine concrete strategy classes across five core algorithmic families:
 
-* **Individual strategies** return ``np.ndarray`` of shape
-  ``(B, n_features)`` — one permuted coefficient vector per
-  permutation.
-* **Joint strategies** return a
-  ``(obs_improvement, perm_improvements, metric_type, features_tested)``
-  tuple describing the collective fit-improvement test.
+1. **ter Braak (1992)** (:class:`~.ter_braak.TerBraakStrategy`):
+   Full-model residual permutation with a recentred permutation null distribution.
+2. **Kennedy (1995)** (:class:`~.kennedy.KennedyIndividualStrategy`, :class:`~.kennedy.KennedyJointStrategy`):
+   Exposure-residual permutation under Frisch–Waugh–Lovell partialling, with automatic
+   conditional fallback across all remaining predictors when explicit confounders are omitted.
+3. **Freedman–Lane (1983)** (:class:`~.freedman_lane.FreedmanLaneIndividualStrategy`, :class:`~.freedman_lane.FreedmanLaneJointStrategy`):
+   Reduced-model residual permutation preserving nuisance relationships, featuring
+   out-of-fold cross-fitting for Double/Debiased Machine Learning (DML; Chernozhukov et al. 2018).
+4. **Manly (1997)** (:class:`~.manly.ManlyStrategy`, :class:`~.manly.ManlyJointStrategy`):
+   Direct outcome permutation testing the marginal association null, serving as the
+   finite-sample exact baseline for discrete categorical models lacking residuals.
+5. **Rao Score Projection** (:class:`~.score.ScoreIndividualStrategy`, :class:`~.score.ScoreJointStrategy`):
+   Null tangent-space projection matrix updates in $O(n \cdot B)$ FLOPs without refitting.
 
-Adding a new strategy
-~~~~~~~~~~~~~~~~~~~~~
-1. Create a module under ``strategies/`` with a class that satisfies
-   the :class:`PermutationStrategy` protocol.
-2. Register it in the :data:`_STRATEGY_REGISTRY` mapping below.
-3. The engine and ``core.randomization_test_regression`` will pick it
-   up automatically.
+Result Topologies & Strategy Contracts
+--------------------------------------
+* **Individual Strategies** (``is_joint=False``):
+  Return ``np.ndarray`` of shape ``(B, n_features)``—one permuted slope coefficient vector
+  per permutation draw.
+* **Joint Strategies** (``is_joint=True``):
+  Return a ``(obs_improvement, perm_improvements, metric_type, features_tested)`` tuple
+  measuring omnibus goodness-of-fit improvement across tested features.
+
+Cross-Module Integration
+------------------------
+* Inbound: Resolved by :func:`resolve_strategy` called from :func:`~.core.randomization_test_regression`.
+* Outbound: Dispatches to concrete strategy classes in :mod:`~._strategies.ter_braak`,
+  :mod:`~._strategies.kennedy`, :mod:`~._strategies.freedman_lane`,
+  :mod:`~._strategies.manly`, and :mod:`~._strategies.score`.
 """
 
 from __future__ import annotations

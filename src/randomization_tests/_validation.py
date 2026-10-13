@@ -1,17 +1,33 @@
-"""Structured validation utilities for the graph compiler and core pipeline.
+"""Structured validation utilities for testing methods, families, and constraints.
 
-All validators return ``list[ValidationIssue]`` rather than raising, so that
-callers can collect and report all issues at once rather than failing on the
-first problem.
+Provides pre-flight compatibility checking and pipeline invariant verification
+across the combinatorial grid of statistical methods, model families, and
+resampling constraints.
 
-``core.py`` and ``engine.py`` continue to raise ``ValueError`` /
-``UserWarning`` as before.  Runtime validation remains local to the hot path;
-callers that need to collect compatibility issues can use
-``validate_compatibility()`` directly.
+Primary Components
+------------------
+* :class:`ValidationIssue`: Structured frozen dataclass encapsulating a validation
+  diagnostic, carrying severity level (``"error"`` or ``"warning"``), error code,
+  human-readable description, and suggested remedial action.
+* :func:`validate_compatibility`: Exhaustive pre-flight validator evaluating
+  method × family compatibility, randomization scheme constraints, longitudinal
+  panel parameters, and exchangeability grouping feasibility.
 
-Public API (re-exported via ``__init__.py``):
-    ValidationIssue
-    validate_compatibility
+Validation Invariants & Non-Raising Contract
+--------------------------------------------
+Unlike hot-path runtime assertions in :mod:`~.core` and :mod:`~.engine` that raise
+immediate :class:`ValueError` or :class:`UserWarning` exceptions, validators in
+this module return a ``list[ValidationIssue]``. This non-raising design allows
+user interfaces, table renderers, and pre-execution linters to collect and report
+all configuration issues simultaneously rather than failing on the first defect.
+
+Cross-Module Integration
+------------------------
+* Inbound: Consumed by :func:`~.display.print_compatibility_table` to render
+  the method-by-family support matrix, and called by :class:`~.engine.PermutationEngine`
+  during input verification.
+* Outbound: Validates against package constant sets: ``_VALID_METHODS``,
+  ``_VALID_RANDOMIZATIONS``, ``_RESIDUAL_ONLY_METHODS``, and ``_GLMM_BLOCKED_METHODS``.
 """
 
 from __future__ import annotations

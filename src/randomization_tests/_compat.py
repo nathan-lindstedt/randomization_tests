@@ -1,13 +1,28 @@
-"""Input compatibility layer for optional Polars support.
+r"""Input compatibility layer for transparent Polars and DataFrame conversions.
 
-All public API functions accept pandas DataFrames.  This module adds
-transparent support for Polars DataFrames: when a user passes a
-``polars.DataFrame`` (or ``polars.LazyFrame``) it is converted to
-``pandas.DataFrame`` at the boundary so that internal code — which
-operates on NumPy arrays extracted from pandas — remains unchanged.
+All public API functions accept pandas DataFrames. This module adds transparent
+support for Polars DataFrames: when a user passes a ``polars.DataFrame`` or
+``polars.LazyFrame``, it is converted to a :class:`pandas.DataFrame` at the boundary
+so that internal linear algebra and estimation routines operate on unified data structures.
 
-Polars is **not** a required dependency.  If it is not installed, the
-converter simply passes pandas objects through untouched.
+Primary Components
+------------------
+* :func:`_ensure_pandas_df`: Boundary converter supporting pandas, Polars DataFrames,
+  and Polars LazyFrames.
+* :data:`DataFrameLike`: Unified type alias accommodating pandas and Polars tabular inputs.
+
+Conversion Semantics & Optional Dependencies
+--------------------------------------------
+Polars is an **optional** dependency. If Polars is not installed, the converter
+passes pandas objects through untouched with zero runtime overhead and rejects
+incompatible input types with informative TypeError messages.
+
+Cross-Module Integration
+------------------------
+* Inbound: Boundary entrypoints in :func:`~.core.randomization_test_regression`,
+  :func:`~.confounders.identify_confounders`, :func:`~._invariance.invariance_test`,
+  and :func:`~._knockoffs.knockoff_test`.
+* Outbound: Interacts with optional ``polars`` library when present.
 """
 
 from __future__ import annotations

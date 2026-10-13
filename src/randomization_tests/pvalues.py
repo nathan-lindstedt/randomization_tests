@@ -1,43 +1,56 @@
-"""P-value calculation for permutation tests.
+r"""P-value calculation for permutation, sign-flip, and asymptotic hypothesis tests.
 
-Provides both empirical (permutation) and classical (asymptotic)
-p-values, with vectorised computation over coefficients.
+Provides vectorised empirical (permutation) and classical (asymptotic) p-value
+computation for both individual per-feature tests and omnibus joint tests.
 
-Empirical p-values — Phipson & Smyth (2010) correction
--------------------------------------------------------
-A naïve empirical p-value counts the proportion of permuted test
-statistics at least as extreme as the observed one:
+Primary Components
+------------------
+* :func:`calculate_p_values`: Vectorised calculation of empirical and asymptotic
+  p-values across individual model coefficients.
+* :func:`calculate_joint_p_value`: Omnibus collective p-value evaluation for joint
+  hypothesis tests based on fit-improvement metrics.
 
-    p_naïve = #{|β*_j| >= |β_j|} / B
+Empirical P-Values & Phipson–Smyth Correction
+---------------------------------------------
+A naïve empirical p-value counts the proportion of permuted test statistics
+at least as extreme as the observed one:
 
-where B is the number of permutations and β*_j is the j-th coefficient
-from permutation b.  This estimator has a fundamental flaw: when the
-observed statistic is the most extreme in the reference set, the p-value
-is exactly zero — an impossible result, since the observed arrangement
-is itself one of the (B+1) equally likely orderings.
+.. math::
+    p_{\mathrm{na\ddot{\imath}ve}} = \frac{1}{B} \sum_{b=1}^B \mathbb{I}(|\beta^*_{b, j}| \ge |\hat\beta_j|)
 
-Phipson & Smyth (2010) correct this by treating the observed statistic
-as a member of the reference set:
+This estimator has a fundamental flaw: when the observed statistic is the most
+extreme value in the reference set, the naïve p-value is zero—an impossible result
+in finite samples, as the observed data arrangement is itself an exchangeable realization
+under the null hypothesis.
 
-    p = (b + 1) / (B + 1)
+Phipson & Smyth (2010) correct this by incorporating the observed test statistic
+directly into the reference set:
 
-where b = #{|β*_j| >= |β_j|} and B is the total number of permutations.
-This ensures:
-  • p is never exactly zero (minimum is 1/(B+1));
-  • The test has correct size — Pr(p <= α) <= α under H0.
+.. math::
+    p = \frac{b + 1}{B + 1}
 
-Classical (asymptotic) p-values
--------------------------------
-Classical p-values are delegated to ``family.classical_p_values()``,
-which internally uses statsmodels (``OLS`` for linear, ``Logit`` for
-logistic, etc.).  This avoids re-detecting the outcome type and
-re-fitting the model.
+where $b = \sum_{b=1}^B \mathbb{I}(|\beta^*_{b, j}| \ge |\hat\beta_j|)$ and $B$ is
+the total number of permutations. This formulation guarantees:
+- $p$ is strictly positive with a lower bound of $1 / (B + 1)$.
+- Exact size control: $\mathbb{P}(p \le \alpha) \le \alpha$ under $H_0$ for any nominal $\alpha$.
 
-Reference:
-    Phipson, B. & Smyth, G. K. (2010). Permutation p-values should
-    never be zero: calculating exact p-values when permutations are
-    randomly drawn. *Statistical Applications in Genetics and Molecular
-    Biology*, 9(1), Article 39.
+Classical Asymptotic Inference Paths
+------------------------------------
+Classical p-values are computed via ``family.classical_p_values()``, which prioritises
+fast JAX observed Fisher information inversion ($H^{-1}$) and empirical Huber–White
+sandwich estimators ($V = H^{-1} S^\top S H^{-1}$), with automatic fallback to
+statsmodels (including cluster-robust covariance matrices when `groups` is provided).
+
+Cross-Module Integration
+------------------------
+* Inbound: Called by :func:`~.core.randomization_test_regression` during result packaging.
+* Outbound: Calls :meth:`~.families.ModelFamily.classical_p_values` for asymptotic baselines.
+
+References
+----------
+Phipson, B., & Smyth, G. K. (2010). Permutation p-values should never be zero:
+    calculating exact p-values when permutations are randomly drawn.
+    *Statistical Applications in Genetics and Molecular Biology*, 9(1), Article 39.
 """
 
 from __future__ import annotations

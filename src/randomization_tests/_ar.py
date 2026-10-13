@@ -1,14 +1,57 @@
-"""Autoregressive (AR) utilities for longitudinal panel data.
+r"""Autoregressive (AR) correlation modeling and whitening for longitudinal panel data.
 
-Stateless, pure-NumPy/SciPy functions for:
+Provides stateless, high-performance numerical routines (Tier 7 of the 7-tier
+inference abstraction tower) for longitudinal serial correlation adjustment in
+repeated-measures and panel regression designs.
 
-- Yule-Walker AR(p) coefficient estimation pooled across panels
-- AR(p) precision-matrix construction and block-diagonal application
-- Durbin-Watson and Ljung-Box residual diagnostics
+Primary Numerical Routines
+--------------------------
+1. **Stationarity Verification** (:func:`validate_ar_stationarity`):
+   Validates that estimated $AR(p)$ autoregressive parameters define a weakly stationary
+   process by verifying that all roots of the characteristic lag polynomial lie
+   strictly outside the unit circle in the complex plane ($|\lambda| < 1$).
 
-These functions are consumed by family ``calibrate()`` and
-``score_project()`` methods to fold working-correlation structure
-into the score projection matrix.
+2. **Panel-Pooled Yule–Walker Estimation** (:func:`estimate_panel_ar_coefficients`):
+   Estimates $AR(p)$ autoregressive coefficients pooled across panels/subjects,
+   removing subject-level fixed or random intercepts to isolate within-unit temporal correlation.
+
+3. **Cholesky Precision Whitening** (:func:`build_ar_cholesky_factor`, :func:`apply_ar_cholesky_transform`):
+   Constructs the lower-triangular Cholesky factor $L$ of the stationary autoregressive
+   precision matrix ($L^\top L = \Sigma^{-1}$), applying generalized Prais–Winsten and
+   Cochrane–Orcutt transformations to whiten design and residual matrices in $O(N)$ operations.
+
+4. **Residual Autocorrelation Diagnostics** (:func:`compute_ar_diagnostics`):
+   Evaluates Durbin–Watson and Ljung–Box portmanteau test statistics on raw vs. whitened
+   residuals to verify elimination of temporal autocorrelation.
+
+Mathematical Foundations & Whitening Invariant
+----------------------------------------------
+An $AR(p)$ process with lag polynomial $A(z) = 1 - \sum_{j=1}^p \rho_j z^j$ is
+stationary if and only if all characteristic roots $\lambda$ lie strictly inside
+the unit circle ($|\lambda| < 1$). The Cholesky whitening transform rotates the
+correlated error vector $\varepsilon \sim \mathcal{N}(0, \sigma^2 \Sigma)$ into
+spherical i.i.d. coordinates:
+
+.. math::
+    \varepsilon^* = L \varepsilon \sim \mathcal{N}(0, \sigma^2 I)
+
+guaranteeing that whitened residuals satisfy the exchangeability assumption required
+for valid downstream permutation and sign-flip testing.
+
+Cross-Module Integration
+------------------------
+* Inbound: Consumed by :class:`~.families.ModelFamily` calibration and
+  :meth:`~.families.ModelFamily.score_project` methods.
+* Outbound: Pure stateless NumPy/SciPy operations without external package dependencies.
+
+References
+----------
+Prais, S. J., & Winsten, C. B. (1954). Trend estimators and serial correlation.
+    *Cowles Commission Discussion Paper*, No. 383.
+
+Cochrane, D., & Orcutt, G. H. (1949). Application of least squares regression to
+    relationships containing auto-correlated error terms. *Journal of the American
+    Statistical Association*, 44(245), 32–61.
 """
 
 from __future__ import annotations

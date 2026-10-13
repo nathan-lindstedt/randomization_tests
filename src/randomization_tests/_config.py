@@ -1,28 +1,52 @@
-"""Backend configuration for the randomization_tests package.
+r"""Global and thread-local computational backend configuration management.
 
-Controls whether the JAX-accelerated logistic regression path is used
-or whether the package falls back to the sklearn/numpy implementation.
+Controls global and thread-local computational backend resolution across all
+resampling loops, numerical GLM solvers, and mixed-model optimization engines:
+- JAX backend (:mod:`._backends._jax`): XLA-compiled vectorised batch fitting,
+  automatic differentiation, Henderson REML, and two-loop Laplace GLMM engines.
+- NumPy backend (:mod:`._backends._numpy`): CPU fallback using standard NumPy
+  BLAS-3 operations, statsmodels IRLS, and scikit-learn estimators.
 
+Resolution Policy & Precedence
+------------------------------
 Resolution order (first match wins):
-    1. Programmatic override via :func:`set_backend`.
-    2. The ``RANDOMIZATION_TESTS_BACKEND`` environment variable.
-    3. Auto-detection: ``"jax"`` if JAX is importable, else ``"numpy"``.
+1. Context-isolated override via :func:`backend` or programmatic :func:`set_backend`.
+2. The ``RANDOMIZATION_TESTS_BACKEND`` environment variable.
+3. Auto-detection: ``"jax"`` if JAX is importable, else ``"numpy"``.
 
 Valid backend names are ``"jax"`` and ``"numpy"`` (case-insensitive).
 
-Examples:
-    Disable JAX globally from the shell::
+Context Isolation & Thread Safety
+---------------------------------
+Thread-local and coroutine-safe backend overrides are managed via Python's
+:mod:`contextvars` module. Context managers modify state strictly within the
+calling thread or task, ensuring that concurrent executions in multi-threaded
+or asynchronous environments remain completely isolated.
 
-        export RANDOMIZATION_TESTS_BACKEND=numpy
+Usage Examples
+--------------
+Temporarily override backend within a block::
 
-    Disable JAX programmatically::
+    with rt.backend("numpy"):
+        res = rt.randomization_test_regression(X, y)
 
-        import randomization_tests
-        randomization_tests.set_backend("numpy")
+Disable JAX globally from the shell::
 
-    Re-enable auto-detection::
+    export RANDOMIZATION_TESTS_BACKEND=numpy
 
-        randomization_tests.set_backend("auto")
+Disable JAX programmatically::
+
+    import randomization_tests
+    randomization_tests.set_backend("numpy")
+
+Re-enable auto-detection::
+
+    randomization_tests.set_backend("auto")
+
+Cross-Module Integration
+------------------------
+* Inbound: Public API functions (:func:`set_backend`, :func:`get_backend`, :func:`backend`).
+* Outbound: Consumed by :func:`~._backends.resolve_backend` during engine initialization.
 """
 
 from __future__ import annotations

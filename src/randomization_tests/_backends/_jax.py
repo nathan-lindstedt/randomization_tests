@@ -1,55 +1,218 @@
-"""JAX-accelerated backend for batch model fitting.
+r"""JAX-accelerated computational engine for batch fitting, autodiff, and numerical optimization.
 
-Wraps the autodiff Newton–Raphson logistic solver and ``jnp.linalg``
-OLS path behind the :class:`~._backends.BackendProtocol` interface.
+Provides XLA-compiled kernels, automatic differentiation, and vectorised tensor
+dispatch across the 7-tier inference abstraction tower of ``randomization_tests``.
 
-Architecture
-~~~~~~~~~~~~
-The module is structured in two layers:
+Role in the 7-Tier Inference Tower
+----------------------------------
+While historically conceived as an acceleration wrapper for logistic regression,
+JAX serves as the primary high-performance numerical backbone of the package.
+Within the 7-tier architectural abstraction tower of ``randomization_tests``:
 
-1. **Solver helper functions** (module-level, inside ``if _CAN_IMPORT_JAX``):
-   Pure-JAX JIT-compiled functions for NLL, gradient, Hessian, and
-   Newton–Raphson solvers for each GLM family.  These are the
-   performance-critical kernels compiled to XLA.
+    Tier 1: High-Level User Protocol (randomization_test_regression)
+    Tier 2: Model Families (ModelFamily implementations)
+    Tier 3: Permutation Orchestration Engine (PermutationEngine)
+    Tier 4: Statistical Testing Strategies (TestStrategy implementations)
+    Tier 5: Accelerated Computational Backends (JaxBackend, NumPyBackend)
+    Tier 6: Result Containers & Inference Diagnostics (IndividualTestResult, ...)
+    Tier 7: Linear Algebra & Optimization Primitives (_backends._jax, ...)
 
-2. **JaxBackend class** (``BackendProtocol`` implementation):
-   Thin wrapper that converts NumPy → JAX arrays at the boundary,
-   dispatches to the solver helpers via ``jax.vmap``, and converts
-   JAX arrays back to NumPy on return.  Callers never touch JAX
-   types directly.
+JAX operates simultaneously at Tier 5 and Tier 7, while directly anchoring
+core numerical operations across Tiers 2, 4, and 6. Rather than functioning
+solely as an optional batch regression accelerator, JAX supplies:
+  - Exact observed Fisher information inversion for Wald standard errors.
+  - Per-observation autodiff score Jacobians for empirical sandwich SEs.
+  - Influence-function Cook's distance across models unsupported by statsmodels.
+  - Profile deviance bisection for exact non-asymptotic confidence intervals.
+  - One-step tangent-space score test projection vectors.
+  - Henderson REML and Laplace solvers for multi-level hierarchical models.
 
-NumPy ↔ JAX boundary convention
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-All public methods accept NumPy arrays and return NumPy arrays.
-JAX arrays are materialised at the method boundary:
+Five Functional Domains of JAX
+------------------------------
+The JAX backend unifies five mathematically distinct computational domains:
 
-* **Inbound:** ``jnp.array(X, dtype=jnp.float64)`` — creates a
-  float64 JAX DeviceArray.  The float64 cast is explicit because
-  JAX defaults to float32 (even with ``jax_enable_x64``, the
-  input dtype matters for type promotion).
-* **Outbound:** ``np.asarray(result)`` — zero-copy when backend is
-  CPU, triggers device-to-host transfer on GPU.
+1. Batch Resampling Tensor Acceleration:
+   Executes $B$ permutation, bootstrap, or jackknife refits simultaneously via
+   ``jax.vmap`` and XLA kernel fusion, replacing Python-level iteration with
+   parallel hardware dispatch across SIMD execution units.
 
-Float64 rationale
-~~~~~~~~~~~~~~~~~
-All arithmetic uses **float64** for numerical reliability on
-ill-conditioned Hessians, matching statsmodels and scipy.  On Apple
-Silicon this routes through CPU Accelerate BLAS rather than Metal
-(which lacks float64 support), with no measurable overhead for the
-small matrices typical of GLM regression.
+2. Dual Optimization Engines (Convex vs. Non-Convex):
+   - Convex GLM Optimization (``_newton_solve_static``): Damped Newton–Raphson
+     with static diagonal regularization ($\lambda_{\min} I$) and parameter freezing
+     for strictly convex negative log-likelihoods ($H \succ 0$).
+   - Non-Convex REML / Laplace Optimization (``_reml_newton_solve``): Adaptive
+     Levenberg–Marquardt–Nielsen damping with branchless Gill–Murray eigenvalue
+     spectrum flooring for non-convex marginal likelihood surfaces.
 
-The Newton–Raphson solver requires float64 because the gradient
-noise floor is κ(H) × ε, where κ(H) is the Hessian condition
-number and ε is machine epsilon.  In float32 (~ 6e-8) with
-κ ≈ 10 000, the noise floor is ~ 6e-4 — above any reasonable
-tolerance.  Float64 (ε ~ 1e-16) lowers the floor to ~ 1e-12.
+3. Automatic Differentiation & Fisher Information Geometry:
+   Reverse-mode autodiff (``jax.grad`` and ``jax.hessian``) computes machine-precision
+   gradients and Hessians without finite-difference truncation error. Computes
+   observed Fisher information $\mathcal{I}(\hat\beta) = -H(\hat\beta)$,
+   empirical outer-product-of-gradients (OPG) matrices, and influence vectors.
 
-Graceful degradation
-~~~~~~~~~~~~~~~~~~~~
-If JAX is not installed, the :class:`JaxBackend` can still be
-instantiated (for introspection) but ``is_available`` returns
-``False`` and :func:`resolve_backend` will raise ``ImportError``
-when this backend is explicitly requested.
+4. Constrained Profile Likelihood Deviance Bisection:
+   Dedicated root-finding engine (``_profile_ci_coefficients``) that traces
+   the 1-D profile deviance manifold $2[\text{NLL}_{\text{profile}}(\beta_j) - \text{NLL}_{\text{full}}] = \chi^2_1(1-\alpha)$
+   under dynamic parameter fixing and quasi-complete separation guards.
+
+5. Tangent-Space Score Test Projection:
+   Evaluates the null score projection row $a_j = [(\tilde X^T W \tilde X)^{-1} \tilde X^T]_j$,
+   enabling exact Rao score test updates across $B$ permutations in $O(n \cdot B)$
+   operations with zero iterative refitting.
+
+Three Multi-Dimensional Vectorization Patterns
+----------------------------------------------
+The package defines three canonical tensor dispatch patterns for batch resampling:
+
+1. Shared Design Matrix, Many Response Vectors (``_batch_shared_X``):
+   - Tensor Signature: $X \in \mathbb{R}^{n \times p}$ (fixed), $Y \in \mathbb{R}^{B \times n}$ (varying).
+   - Used By: Ter Braak direct permutation, Freedman–Lane reduced-residual
+     shuffling, and Manly direct target permutation.
+   - Vectorization Mechanism: The design matrix $X$ is captured as an immutable
+     constant in the XLA computation graph; ``vmap`` vectorises over the leading
+     dimension of $Y$, executing $B$ solves with unified memory layouts.
+
+2. Varying Design Tensor, Shared Response Vector (``_batch_varying_X``):
+   - Tensor Signature: $X \in \mathbb{R}^{B \times n \times p}$ (varying), $y \in \mathbb{R}^n$ (fixed).
+   - Used By: Kennedy individual residual permutation (where column $j$ is
+     replaced by permuted residuals per slice), varying-X reduced designs,
+     and Invariance environment testing.
+   - Vectorization Mechanism: ``vmap`` broadcasts over the batch dimension of $X$,
+     solving $B$ independent design topologies against a single target vector.
+
+3. Paired Resampling (``_batch_paired``):
+   - Tensor Signature: $X \in \mathbb{R}^{B \times n \times p}$ (varying), $Y \in \mathbb{R}^{B \times n}$ (varying).
+   - Used By: Paired bootstrap resampling, jackknife influence loops,
+     confounder stability screening, and Double Machine Learning (DML) cross-fitting.
+   - Vectorization Mechanism: Joint ``vmap`` over both operands, processing
+     fully perturbed empirical distributions in lockstep.
+
+Optimization Theory & Curvature Differentiation
+-----------------------------------------------
+The library enforces a strict theoretical boundary between convex and non-convex
+optimization paradigms:
+
+1. Convex GLM Optimization (``_newton_solve_static``):
+   For canonical-link exponential families (Logistic, Poisson) and well-behaved
+   extensions (Negative Binomial, Ordinal, Multinomial), the negative log-likelihood
+   satisfies strict convexity ($H = \nabla^2 \text{NLL} \succ 0$) on all non-degenerate
+   samples.
+   - Static Singularity Guard: Adds $\lambda_{\min} I = 10^{-8} I$ to the Hessian.
+     This does not alter the objective function, but prevents numerical instability
+     under ill-conditioned designs ($\kappa(X) \gg 1$).
+   - Parameter Freezing Invariant: Inside ``jax.lax.while_loop``, heterogeneous
+     permutation slices converge at differing iteration counts. When a slice meets
+     convergence ($\|g\|_\infty < \tau$ or $\|\Delta\beta\|_\infty < \tau$), its
+     parameter state is frozen via ``jnp.where(converged_prev, beta, beta_step)``.
+     This prevents gradient noise floor jitter from destabilizing converged roots
+     during subsequent iterations.
+
+2. Non-Convex Likelihood Optimization (``_reml_newton_solve``):
+   For restricted maximum likelihood (REML) and Laplace GLMM approximations, the
+   marginal NLL with respect to log-Cholesky variance ratio parameters $\theta$
+   is non-convex, often possessing indefinite Hessians ($H \not\succ 0$) near $\theta = 0$
+   (e.g., random slopes with dimension $d_k > 1$).
+   - Levenberg–Marquardt–Nielsen Damping: Solves $(H + \lambda I)\delta = g$ and
+     evaluates the gain ratio $\rho = \frac{f(\theta) - f(\theta - \delta)}{\frac{1}{2}\delta^T(\lambda\delta + g)}$.
+     Steps are accepted if and only if $f(\theta)$ strictly decreases.
+   - Gill–Murray Eigenvalue Floor Invariant: Because negative curvature causes
+     unbounded ascent steps and sign-inverts $\rho$, an eigenvalue floor is applied:
+       $\lambda_{\text{eff}} = \max\bigl(\lambda, \max(0, -\lambda_{\min}(H)) + \varepsilon\|H\|_2\bigr)$
+     This branchless spectral floor guarantees $H + \lambda_{\text{eff}} I \succ 0$
+     at every iterate, preserving monotonic descent inside ``while_loop`` without
+     costly Cholesky-retry branching.
+
+Mixed-Model Henderson REML & Laplace Architecture
+-------------------------------------------------
+Multi-level and hierarchical models employ specialized JAX solvers:
+
+1. Linear Mixed Models via Henderson REML (``_reml_solve``):
+   Profiles out the residual variance $\sigma^2$ and fixed effects $\beta$ via
+   Henderson's Mixed Model Equations (MME), reducing the optimization problem to
+   the low-dimensional variance ratio parameter vector $\theta$.
+   - Woodbury Linear Complexity: Evaluates $(Z^T Z + \Gamma^{-1})^{-1}$ in $O(G \cdot d^3)$
+     FLOPs across $G$ independent clusters, completely bypassing dense $O(N^3)$
+     covariance inversion.
+
+2. Generalized Linear Mixed Models via Laplace Approximation (``_laplace_solve``):
+   Implements an unrolled two-loop optimization engine:
+   - Inner Loop (Mode Finding): Unrolled Iteratively Reweighted Least Squares (IRLS)
+     computes the conditional random effects mode $\hat u(\theta)$ for given $\theta$.
+   - Outer Loop (Variance Components): Evaluates the marginal Laplace NLL:
+       $\text{NLL}_{\text{Laplace}}(\theta) = -\ell(y \mid \hat u) + \frac{1}{2}\hat u^T \Gamma^{-1}\hat u + \frac{1}{2}\log|\Gamma| + \frac{1}{2}\log|H_u|$
+     and updates $\theta$ via the Levenberg–Marquardt–Nielsen solver.
+   - Returns a structured ``LaplaceResult`` container matching the Henderson contract.
+
+Diagnostic & Inference Geometry
+-------------------------------
+JAX supplies exact differential geometry for post-fit statistical inference:
+
+1. Observed Fisher Information Standard Errors (``_fisher_information_se``):
+   Directly evaluates the Hessian $H(\hat\beta) = \nabla^2 \text{NLL}(\hat\beta)$
+   and inverts it via ``jnp.linalg.solve(H, I)`` with a pseudoinverse fallback.
+   Yields exact Wald standard errors $\text{SE}(\hat\beta_j) = \sqrt{[H^{-1}]_{jj}}$.
+
+2. Empirical Huber–White Sandwich Standard Errors (``_sandwich_se``):
+   Computes the heteroscedasticity-robust covariance matrix:
+       $V = H^{-1} S^T S H^{-1}$
+   where $S \in \mathbb{R}^{n \times p}$ is the empirical score matrix evaluated via
+   ``vmap(grad(nll_per_obs))``. Provides robust inference without distributional assumptions.
+
+3. Autodiff Influence-Function Cook's Distance (``_autodiff_cooks_d``):
+   Evaluates observation-level influence metrics:
+       $D_i = \frac{1}{p} s_i^T H^{-1} s_i$
+   Extends influence diagnostics to Ordinal and Multinomial GLMs where statsmodels
+   and standard statistical libraries lack native influence implementations.
+
+4. Constrained Profile Likelihood Bisection (``_profile_ci_coefficients``):
+   Computes inversion confidence intervals by solving:
+       $2[\text{NLL}_{\text{profile}}(\beta_j) - \text{NLL}_{\text{full}}] = \chi^2_1(1-\alpha)$
+   using vectorised bisection. Employs separation guards returning NaN when flat
+   deviance profiles indicate complete separation.
+
+Numerical Precision & Device Boundaries
+---------------------------------------
+1. Float64 Precision Mandate:
+   All computations strictly enforce 64-bit IEEE 754 floating-point arithmetic
+   via ``jax.config.update("jax_enable_x64", True)``.
+   - Mathematical Rationale: In statistical optimization, the gradient noise
+     floor scales as $\kappa(H) \times \varepsilon_{\text{mach}}$, where $\kappa(H)$
+     is the condition number of the Hessian. Under float32 ($\varepsilon \approx 6 \times 10^{-8}$),
+     a moderately collinear design with $\kappa = 10^4$ produces a gradient noise
+     floor of $\approx 6 \times 10^{-4}$, rendering convergence to standard tolerances
+     ($\tau = 10^{-8}$) impossible. Float64 ($\varepsilon \approx 2.22 \times 10^{-16}$)
+     depresses the noise floor to $\approx 2 \times 10^{-12}$, enabling machine-precision
+     optimality and matching statsmodels/scipy baselines to $< 10^{-14}$.
+
+2. Memory Management & Device Boundary Convention:
+   - Inbound Conversion: NumPy arrays are cast to float64 JAX DeviceArrays
+     strictly at public entry points via ``jnp.array(X, dtype=jnp.float64)``.
+   - Outbound Conversion: JAX DeviceArrays are converted back to NumPy arrays
+     via ``np.asarray(result)`` at all return boundaries. Callers outside this
+     module never interact with JAX types or DeviceArrays.
+   - Memory Zero-Copy: On CPU backends, ``np.asarray()`` operates as a zero-copy
+     view over shared host memory. On GPU/TPU devices, it coordinates asynchronous
+     device-to-host transfers.
+
+Cross-Module Invocations & Public Seams
+---------------------------------------
+The JAX backend exposes public and package-private seams across the codebase:
+
+- ``_backends.__init__.py``:
+  Instantiates ``JaxBackend`` as a registered ``BackendProtocol`` provider;
+  manages global backend resolution and environment overrides.
+- ``families.py``:
+  - Calls ``_glm_score_projection_row`` for one-step Rao score test projections.
+  - Calls ``_classical_p_values_*`` for exact Fisher information and sandwich SEs.
+- ``families_mixed.py``:
+  - Calls ``_reml_solve`` for Henderson REML LMM variance ratio estimation.
+  - Calls ``_laplace_solve`` for unrolled two-loop GLMM Laplace approximation.
+  - Imports ``_augment_intercept_2d`` and ``_augment_intercept_3d`` for batch design construction.
+- ``diagnostics.py``:
+  - Calls ``_profile_ci_coefficients`` for non-asymptotic profile deviance CIs.
+  - Calls ``_autodiff_cooks_d`` for influence-function Cook's distance evaluation.
+- ``engine.py``:
+  - Dispatches batch permutation loops directly to ``backend.batch_*`` methods.
 """
 
 from __future__ import annotations
@@ -129,16 +292,15 @@ except ImportError:
 # JAX is absent.  Each family follows the same pattern:
 #
 #   1. NLL function (→ scalar) — the objective to minimise.
-#   2. Gradient function (→ vector) — ∇_β NLL.
-#   3. Hessian function (→ matrix) — H = ∇²_β NLL.
+#   2. Gradient function (→ vector) — ∇_β NLL via autodiff or analytic form.
+#   3. Hessian function (→ matrix) — H = ∇²_β NLL via autodiff or analytic form.
 #   4. Newton–Raphson solver — iterates β ← β − H⁻¹g using
-#      ``jax.lax.while_loop`` for dynamic early exit.
+#      ``jax.lax.while_loop`` for dynamic early exit and parameter freezing.
 #
-# For families with a canonical link (logistic, Poisson) the
-# gradient and Hessian are coded analytically for clarity and
-# to avoid double-compilation through ``jax.grad(jax.grad(...))``.
-# For ordinal and multinomial, ``jax.grad`` and ``jax.hessian``
-# are used because the closed-form derivatives are unwieldy.
+# Derivative computation across all GLM families is unified via JAX
+# automatic differentiation (``jax.grad`` and ``jax.hessian``) compiled
+# to fused XLA kernels, guaranteeing exact evaluation to machine precision
+# without numerical truncation error.
 # ------------------------------------------------------------------ #
 
 if _CAN_IMPORT_JAX:
@@ -148,8 +310,9 @@ if _CAN_IMPORT_JAX:
     #
     # Every GLM family (logistic, Poisson, NB, ordinal, multinomial)
     # uses the identical ``jax.lax.while_loop`` body: damped Newton
-    # step, triple convergence check (gradient / step / relative NLL),
-    # gated on finite parameters.  The only differences are:
+    # step, parameter freezing upon convergence, triple convergence
+    # check (gradient / step / relative NLL), gated on finite parameters.
+    # The only differences are:
     #
     #   - Which NLL / gradient / Hessian functions to call
     #   - How to initialise β₀
@@ -160,8 +323,8 @@ if _CAN_IMPORT_JAX:
     #
     # This solver uses **static** damping (``min_damping * I``) and
     # is correct for convex objectives (all GLM families with
-    # canonical or standard links).  For the **non-convex** REML /
-    # Laplace NLL, see ``_reml_newton_solve`` which uses adaptive
+    # canonical or standard links where H ≻ 0).  For the **non-convex**
+    # REML / Laplace NLL, see ``_reml_newton_solve`` which uses adaptive
     # Levenberg–Marquardt–Nielsen damping instead.
     # -------------------------------------------------------------- #
 
@@ -180,6 +343,13 @@ if _CAN_IMPORT_JAX:
         ``min_damping * I`` added to the Hessian as a singularity
         guard — this does *not* modify the objective, only the
         linear-algebra solve.
+
+        Parameter Freezing Invariant:
+        When vectorised across $B$ slices in ``vmap``, different permutations
+        converge at different iteration counts. Once a slice satisfies
+        convergence, ``jnp.where(converged_prev, beta, beta_step)`` freezes
+        its parameter vector, preventing gradient noise floor oscillation
+        from perturbing converged roots during subsequent loop passes.
 
         Convergence is checked via three criteria (OR):
 
@@ -279,11 +449,30 @@ if _CAN_IMPORT_JAX:
     ) -> np.ndarray:
         r"""Standard errors from the observed Fisher information.
 
-        Evaluates the Hessian of the NLL at the converged β̂ and
-        inverts it:
+        Evaluates the Hessian of the NLL at the converged parameter vector
+        :math:`\hat\beta` and inverts it to obtain the asymptotic covariance matrix:
+
+        .. math::
+            \mathcal{I}(\hat\beta) = H(\hat\beta) = \nabla^2 \mathrm{NLL}(\hat\beta)
+            \quad\Longrightarrow\quad
+            \mathrm{Cov}(\hat\beta) = \mathcal{I}(\hat\beta)^{-1}
+
+        Standard errors are the square roots of the diagonal elements:
 
         .. math::
             \text{SE}(\hat\beta_j) = \sqrt{[H(\hat\beta)^{-1}]_{jj}}
+
+        Numerical Inversion Strategy:
+        Attempts a direct solve :math:`H \cdot \mathrm{Cov} = I_p` via
+        ``jnp.linalg.solve``. If numerical ill-conditioning or boundary separation
+        renders the solve non-finite (NaN or Inf), gracefully falls back to the
+        Moore–Penrose pseudoinverse ``jnp.linalg.pinv(H)``.
+
+        Parity with Statsmodels:
+        Used by ``classical_p_values()`` across all exponential families to compute
+        exact Wald z-statistics without requiring an expensive secondary statsmodels
+        model fit. Matches statsmodels observed information standard errors to
+        within float64 precision (< 1e-12).
 
         Args:
             hess_fn: ``β → (p, p)`` Hessian of the NLL.
@@ -423,7 +612,24 @@ if _CAN_IMPORT_JAX:
         X: jnp.ndarray,
         y: jnp.ndarray,
     ) -> np.ndarray:
-        r"""Sandwich (robust) standard errors.
+        r"""Sandwich (heteroscedasticity-robust) standard errors via autodiff.
+
+        Computes the Huber–White sandwich covariance estimator:
+
+        .. math::
+            V = H^{-1} \left( \sum_{i=1}^n s_i s_i^\top \right) H^{-1} = H^{-1} (S^\top S) H^{-1}
+
+        where:
+        - :math:`H = \nabla^2 \mathrm{NLL}(\hat\beta)` is the Hessian (bread).
+        - :math:`s_i = \nabla_\beta \mathrm{NLL}_i(\hat\beta)` is the empirical score
+          vector for the :math:`i`-th observation.
+        - :math:`S = [s_1, \dots, s_n]^\top \in \mathbb{R}^{n \times p}` is the score
+          matrix (meat factor).
+
+        Autodiff Vectorisation:
+        Instead of a Python loop over observations, evaluates the score matrix
+        via ``vmap(grad(nll_i), in_axes=(None, 0))`` over observation indices,
+        fusing the gradient operations into a single vectorised XLA kernel.
 
         Args:
             nll_per_obs_fn: ``(β, X, y) → (n,)`` per-observation NLL.
@@ -480,14 +686,25 @@ if _CAN_IMPORT_JAX:
         X: jnp.ndarray,
         y: jnp.ndarray,
     ) -> np.ndarray:
-        r"""Cook's distance via autodiff influence function.
+        r"""Cook's distance via autodiff empirical influence function.
 
-        For each observation i:
+        For each observation :math:`i \in \{1, \dots, n\}`, evaluates the influence
+        function approximation to leave-one-out parameter displacement:
 
         .. math::
-            D_i = \frac{1}{p} s_i^\top H^{-1} s_i
+            \mathrm{IF}_i = H^{-1} s_i
+            \quad\Longrightarrow\quad
+            D_i = \frac{1}{p} \mathrm{IF}_i^\top H \mathrm{IF}_i = \frac{1}{p} s_i^\top H^{-1} s_i
 
-        where ``s_i = ∂ℓ_i/∂β`` and ``H = Σ ∂²ℓ_i/∂β∂β'``.
+        where :math:`s_i = \nabla_\beta \mathrm{NLL}_i(\hat\beta)` is the :math:`i`-th
+        observation score vector and :math:`H = \nabla^2 \mathrm{NLL}(\hat\beta)`.
+
+        Theoretical Scope & Coverage:
+        Standard statistical packages (e.g. statsmodels) only provide Cook's distance
+        for linear regression and simple GLMs (logistic, Poisson). This implementation
+        generalises influence diagnostics to all supported GLM families, including
+        Negative Binomial, Ordinal proportional-odds, and Multinomial logit models,
+        by evaluating exact autodiff score vectors and Hessian inverses.
 
         Args:
             nll_per_obs_fn: ``(β, X, y) → (n,)`` per-observation NLL.
@@ -635,19 +852,34 @@ if _CAN_IMPORT_JAX:
         max_bisect: int = 60,
         tol: float = 1e-6,
     ) -> np.ndarray:
-        r"""Profile likelihood CIs for selected parameters.
+        r"""Profile likelihood confidence intervals via constrained bisection.
 
-        For each index *j* in *feature_indices*, uses bisection to
-        find the lower and upper values of β_j where:
+        Inverts the profile likelihood ratio test for each requested coefficient
+        :math:`\beta_j` (:math:`j \in \text{feature\_indices}`):
 
         .. math::
-            2\bigl[\mathrm{NLL}_{\mathrm{profile}}(\beta_j)
-                  - \mathrm{NLL}(\hat\beta)\bigr]
-            = \chi^2_1(\alpha)
+            \mathcal{C}_{1-\alpha}(\beta_j) = \left\{ \beta_j^* : 2\bigl[\mathrm{NLL}_{\mathrm{profile}}(\beta_j^*) - \mathrm{NLL}(\hat\beta)\bigr] \le \chi^2_1(1 - \alpha) \right\}
 
-        The initial bracket for the bisection is set to ±5 SE (from
-        the observed Fisher information) and expanded geometrically
-        if the deviance at the bracket endpoint is insufficient.
+        where :math:`\mathrm{NLL}_{\mathrm{profile}}(\beta_j^*) = \min_{\beta_{-j}} \mathrm{NLL}(\beta_j = \beta_j^*, \beta_{-j})`.
+
+        Algorithm & Convergence:
+        1. Pre-compiles specialized JAX Newton solvers per parameter index,
+           freezing :math:`\beta_j = \beta_j^*` and optimising over the remaining
+           :math:`p - 1` free parameters via ``jax.lax.while_loop``.
+        2. Establishes an initial bisection bracket scaled to :math:`\hat\beta_j \pm 5 \cdot \text{SE}_j`
+           (using observed Fisher information standard errors).
+        3. If the deviance at the bracket endpoint is less than :math:`\chi^2_1(1-\alpha)`,
+           geometrically doubles the bracket width up to 5 times.
+        4. Bisects to find the exact boundary root where the profile deviance matches
+           the critical value within :math:`\text{tol} \cdot \text{SE}_j`.
+
+        Separation & Boundary Guards:
+        Under quasi-complete separation (e.g. in logistic regression where a covariate
+        perfectly separates response classes), the profile likelihood asymptotically
+        flattens, and the true confidence interval extends to :math:`\pm\infty`.
+        If the deviance fails to cross the critical threshold after maximum bracket
+        expansion, or if the Hessian becomes singular, the function returns ``NaN``
+        for that bound, signalling unidentifiability.
 
         Args:
             nll_fn: ``(β, X, y) → scalar`` NLL — NOT jitted (we
@@ -1065,9 +1297,9 @@ if _CAN_IMPORT_JAX:
     #
     #   NLL = Σ_i log(1 + exp(−s_i · X_iβ))  where s_i = 2y_i − 1
     #
-    # The gradient and Hessian are coded analytically (not via
-    # ``jax.grad``) because the closed forms are simple and avoid
-    # a second tracing pass through the XLA compiler.
+    # The gradient and Hessian are computed via JIT-compiled automatic
+    # differentiation (``jax.grad`` and ``jax.hessian``), generating
+    # fused XLA kernels evaluated to exact 64-bit precision.
     # -------------------------------------------------------------- #
 
     @jit
@@ -1137,9 +1369,10 @@ if _CAN_IMPORT_JAX:
     #
     #   NLL = Σ [exp(Xβ) − y · Xβ]
     #
-    # The gradient X'(μ − y) and Hessian X' diag(μ) X are coded
-    # analytically.  Warm start uses OLS on the working response
-    # log(y + 0.5) — the standard IRLS initialisation.
+    # The gradient and Hessian are computed via JIT-compiled automatic
+    # differentiation (``jax.grad`` and ``jax.hessian``). Warm start
+    # uses OLS on the working response log(y + 0.5) — the standard IRLS
+    # initialisation.
     # -------------------------------------------------------------- #
 
     @jit
@@ -2719,22 +2952,38 @@ if _CAN_IMPORT_JAX:
         max_inner: int = 10,
         tol: float = _DEFAULT_TOL,
     ) -> LaplaceResult:
-        """Laplace GLMM solver via outer Newton on the marginal NLL.
+        r"""Laplace GLMM solver via unrolled two-loop optimization.
 
-        Architecture
-        ~~~~~~~~~~~~
-        1. **GLM warm-start** — fit a fixed-effects GLM via IRLS
-           (:func:`_fit_glm_irls`) with step-halving to obtain
-           :math:`\\hat\\beta_{GLM}`.  This is the ``lme4::glmer()``
-           initialisation strategy (Bates et al. 2015, §2.3).
-        2. **Build** ``laplace_nll(θ)`` via
-           :func:`_build_laplace_nll` — a pure JAX function of the
-           log-Cholesky parameters, with the inner IRLS warm-started
-           at :math:`\\hat\\beta_{GLM}`.
-        3. **Optimise** θ via Levenberg–Marquardt–Nielsen
-           (:func:`_reml_newton_solve`).
-        4. **Post-convergence** — recover β̂, û, W, μ̂, V⁻¹_diag,
-           Fisher information from the optimal θ̂.
+        Evaluates Generalized Linear Mixed Models (GLMMs; Logistic, Poisson) by
+        approximating the intractable marginal likelihood integral via the first-order
+        Laplace expansion:
+
+        .. math::
+            L(\beta, \theta) = \int_{\mathbb{R}^q} \exp\left\{ \ell(y \mid \beta, u) - \frac{1}{2} u^\top \Gamma(\theta)^{-1} u \right\} du
+            \approx (2\pi)^{q/2} |H_u(\hat u)|^{-1/2} \exp\left\{ \ell(y \mid \beta, \hat u) - \frac{1}{2} \hat u^\top \Gamma(\theta)^{-1} \hat u \right\}
+
+        Two-Loop Unrolled Architecture
+        ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        1. **GLM Warm-Start** — Fits a fixed-effects GLM via IRLS (:func:`_fit_glm_irls`)
+           with step-halving to obtain :math:`\hat\beta_{\mathrm{GLM}}`, following the
+           canonical ``lme4::glmer()`` initialisation protocol (Bates et al. 2015, §2.3).
+        2. **Inner Mode Discovery (Unrolled IRLS)** — For any candidate variance ratio
+           vector :math:`\theta`, unrolls ``max_inner`` iterations of Henderson-weighted
+           least squares to discover the conditional random effects mode :math:`\hat u(\theta)`
+           and fixed effects :math:`\hat\beta(\theta)` simultaneously. Unrolling preserves
+           full XLA autodiff traceability across the mode-finding trajectory.
+        3. **Outer Variance Parameter Optimization** — Evaluates the exact marginal
+           Laplace negative log-likelihood:
+           .. math::
+               \mathrm{NLL}_{\mathrm{Laplace}}(\theta) = -\ell(y \mid \hat\beta, \hat u)
+               + \frac{1}{2} \hat u^\top \Gamma^{-1} \hat u
+               + \frac{1}{2} \log|\Gamma|
+               + \frac{1}{2} \log|H_u|
+           and updates :math:`\theta` via Levenberg–Marquardt–Nielsen damping
+           (:func:`_reml_newton_solve`) with a Gill–Murray eigenvalue floor.
+        4. **Post-Convergence Recovery** — Re-evaluates final predictions :math:`\hat\mu`,
+           working weights :math:`W`, random effects covariance :math:`\hat\Sigma_k`,
+           effective degrees of freedom, and inverted Fisher information.
 
         Args:
             X_raw: Fixed-effect design ``(n, p)``, WITHOUT intercept.
@@ -3026,23 +3275,31 @@ class JaxBackend:
     """JAX-accelerated compute backend.
 
     Implements :class:`BackendProtocol` using JAX’s XLA compiler,
-    automatic differentiation, and ``vmap`` vectorisation.
+    automatic differentiation, and ``vmap`` vectorisation across 32
+    batch fitting methods.
 
-    Performance model
-    ~~~~~~~~~~~~~~~~~
-    * **OLS:** Single ``jnp.linalg.pinv`` + BLAS-3 matmul (same
-      algorithmic approach as the NumPy backend, but JIT-compiled).
-    * **GLMs (logistic, Poisson, NB2, ordinal, multinomial):**
+    Performance Model & Capabilities
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    * **OLS Resampling:** Single ``jnp.linalg.pinv`` + BLAS-3 matmul
+      with JIT compilation for instant execution across thousands of slices.
+    * **GLMs (Logistic, Poisson, NB2, Ordinal, Multinomial):**
       ``jax.vmap`` maps the Newton–Raphson solver across all B
       permutations, fusing them into a single XLA kernel launch.
       This eliminates Python-loop overhead and enables SIMD
       parallelism across permutations.
+    * **Multi-Dimensional Batch Patterns:**
+      - Fixed $X$, varying $Y$ (canonical ter Braak, Freedman–Lane)
+      - Varying $X$, fixed $y$ (Kennedy exposure shuffle, invariance)
+      - Paired $(X, Y)$ (paired bootstrap and jackknife)
+      - Fit-and-score joint deviance evaluation (Double Machine Learning)
+    * **Mixed Linear Models:**
+      Batch projection solver for hierarchical data structures.
 
     The frozen dataclass has no mutable state — all per-call data
     flows through method arguments, making instances trivially
     thread-safe and picklable.
 
-    NumPy ↔ JAX conversion boundary
+    NumPy ↔ JAX Conversion Boundary
     ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     Every public method follows the same pattern:
 

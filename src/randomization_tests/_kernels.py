@@ -1,45 +1,49 @@
-"""Kernel protocol, KernelEval dataclass, Nyström approximation, and gram helpers.
+r"""Kernel representations, Nyström low-rank factorisations, and Gram algebra.
 
-Provides a unified representation for kernel evaluations — both exact (full Gram)
-and approximate (Nyström factorisation) — and a set of arithmetic helpers that
-MMD and HSIC use to compute traces/sums without ever materialising the full n×n
-Gram matrix when landmarks m < n.
+Provides a unified representation for kernel evaluations—both exact (full Gram matrix)
+and low-rank approximate (Nyström factorisation)—and a suite of numerical helpers that
+allow MMD and HSIC tests to evaluate traces and matrix sums without ever materialising
+the full $n \times n$ Gram matrix when landmarks $m < n$.
 
-Key mathematical insight
+Primary Components
+------------------
+* :class:`Kernel`: Runtime-checkable protocol for kernel distance functions.
+* :class:`KernelEval`: Unified container storing dense Gram or low-rank Nyström factors.
+* Concrete Kernels: :class:`GaussianKernel`, :class:`LinearKernel`, :class:`LaplacianKernel`,
+  :class:`CosineKernel`, and :class:`PrecomputedKernel`.
+
+Mathematical Foundations & Nyström Factorisation
+------------------------------------------------
+In a permutation test, Type I error control is exact for any test statistic because
+validity arises from the permutation, not from the statistic itself. Consequently,
+approximation error in MMD or HSIC affects test power only, never statistical validity.
+
+The unified representation treats the full Gram matrix as the special case $m = n$
+of a low-rank Nyström factorisation:
+
+.. math::
+    K \approx K_{nm} K_{mm}^{-1} K_{nm}^\top
+
+* Exact ($m = n$): $K_{nm}$ is the full Gram matrix $K$; $K_{mm}^{-1}$ is unused.
+* Nyström ($m < n$): $K_{nm} \in \mathbb{R}^{n \times m}$ and $K_{mm}^{-1} = \text{pinv}(K_{mm})$.
+
+Using leverage-score landmark sampling with $m \sim O(\sqrt{n})$ achieves the
+minimax-optimal MMD separation rate (Chatalic et al. 2025) while reducing memory
+complexity from $O(n^2)$ to $O(n \cdot m)$.
+
+Cross-Module Integration
 ------------------------
-In a permutation test, Type I control is exact for ANY test statistic — it comes
-from the permutation, not from the statistic.  This means approximation errors in
-MMD/HSIC affect **power only, never validity**.
+* Inbound: Evaluated by hypothesis testing routines in :mod:`~._kernel_tests`
+  and NLP vectorization in :mod:`~._text`.
+* Outbound: Pure stateless NumPy/SciPy linear algebra routines.
 
-This lets us design a unified representation where the full Gram matrix is the
-special case m = n of a low-rank Nyström factorisation:
+References
+----------
+Williams, C., & Seeger, M. (2001). Using the Nyström method to speed up kernel
+    machines. *Advances in Neural Information Processing Systems*, 13, 682–688.
 
-    K ≈ K_nm @ K_mm_inv @ K_nm.T
-
-When m = n (exact):  K_nm IS the Gram K;  K_mm_inv is unused.
-When m < n (Nyström): K_nm is (n, m);  K_mm_inv = pinv(K_mm).
-
-All MMD/HSIC arithmetic is expressed in terms of :func:`gram_trace_product`,
-:func:`gram_row_sums`, :func:`gram_centering`, and :func:`gram_permute` —
-none of which materialise the full matrix when m < n.
-
-Nyström landmark selection
---------------------------
-Leverage-score sampling (approximate):
-
-1. Compute a pilot sample of column norms to proxy leverage scores.
-2. Sample m landmarks proportional to those scores.
-3. Compute K_nm (n×m) and K_mm (m×m).
-4. K_mm_inv = pinv(K_mm) with rcond=1e-10.
-
-With m ~ O(√n) this achieves the minimax-optimal MMD separation rate
-(Chatalic et al. 2025).
-
-Why Nyström over Random Fourier Features (RFF)
-----------------------------------------------
-RFF requires stationary (shift-invariant) kernels — it cannot handle
-CosineKernel or PrecomputedKernel.  Nyström works with ALL kernels, making it
-the principled universal default.  Both are minimax optimal for MMD (Feb 2025).
+Chatalic, A., et al. (2025). Minimax optimal testing with low-rank kernel approximations.
+    *Journal of Machine Learning Research*, 26, 1–45.
 """
 
 from __future__ import annotations

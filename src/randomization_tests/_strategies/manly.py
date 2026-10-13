@@ -1,48 +1,60 @@
-"""Manly (1997) — direct Y permutation.
+r"""Manly direct response permutation testing for complete null marginal independence.
 
-The simplest permutation test: permute the response vector Y directly
-and refit the model.  This tests **marginal** association between X
-and Y — whether X predicts Y at all, without partialling out other
-features.
+The Manly (1997) method permutes the observed outcome vector $Y$ directly across all
+units and refits the regression model on $(X, \pi(Y))$. This tests the complete null
+hypothesis of **marginal** independence between $X$ and $Y$ ($Y \perp X$),
+evaluating whether predictors have any association with the response without partialling
+out shared variance among covariates.
 
-Manly is appropriate when:
+Primary Components
+------------------
+* :class:`ManlyStrategy`: Per-feature marginal association permutation test.
+* :class:`ManlyJointStrategy`: Group-level omnibus marginal fit improvement test.
 
-* **Residuals are not well-defined** — ordinal (proportional odds)
-  and multinomial (softmax) families have no residual pipeline, so
-  residual-based methods (ter Braak, Freedman–Lane) cannot be used.
+Mathematical Foundations & Inferential Guarantees
+-------------------------------------------------
+Direct outcome permutation tests the complete independence null:
 
-* **Marginal tests are desired** — sometimes the research question
-  is whether X and Y are associated at all, not whether X has an
-  effect after controlling for other predictors.
+.. math::
+    H_0: Y \perp X
 
-Manly is **less powerful** than residual-based methods when confounders
-are present, because permuting Y destroys all predictor–response
-structure (not just the tested feature's contribution).
+The synthetic response is formed without residualization:
 
-**Guarantee**: direct Y permutation
-is **finite-sample exact** for the COMPLETE null — Y is independent of
-the entire design — when observations are exchangeable under H₀ (no
-residuals, no estimation, no asymptotics).  This is the strongest
-guarantee any strategy in the package offers, but for the weakest null:
-when some other predictor truly affects Y, the complete null is false
-and rejection may reflect that predictor rather than the one under
-test.  Per-coefficient p-values from Manly are marginal-association
-tests, not partial tests.
+.. math::
+    Y^* = \pi(Y)
 
-Sign-flipping is **not supported** — there are no residuals to flip.
+[ Guarantee: Finite-Sample Exact ]
+Direct $Y$ permutation is finite-sample exact for the complete null hypothesis
+when observations are exchangeable under $H_0$ (no residual estimation, no hat matrix
+projection, no asymptotic approximation).
 
-Two strategies:
+Sign-flipping is **not supported** because raw response values cannot be sign-flipped
+without altering the marginal mean structure.
 
-* **ManlyStrategy** — per-coefficient test (``is_joint=False``).
-  Permutes Y, refits the full model, extracts per-feature coefficients.
+Role in the Architecture & Advisory
+-----------------------------------
+* **Baseline for Non-Residual Families**: For discrete categorical families
+  (:class:`~.families.OrdinalFamily`, :class:`~.families.MultinomialFamily`),
+  unambiguous continuous residuals do not exist. Manly serves as the exact
+  nonparametric baseline where residual-based methods (ter Braak, Freedman–Lane)
+  cannot be applied.
+* **Substantive Advisory on Continuous Models**: When applied to models with
+  correlated predictors, permuting $Y$ destroys covariate structure, leaking
+  correlation from non-tested predictors into the test statistic. The package
+  permits Manly for all families but emits a clear advisory (⚠¹) clarifying
+  that the resulting p-values evaluate marginal rather than partial conditional effects.
 
-* **ManlyJointStrategy** — collective improvement test
-  (``is_joint=True``).  Permutes Y, fits both reduced and full
-  models, computes the improvement Δ = S(reduced) − S(full).
+Cross-Module Integration
+------------------------
+* Inbound: Instantiated by :func:`~._strategies.resolve_strategy` when
+  ``method="manly"`` or ``"manly_joint"``.
+* Outbound: Dispatches batch refits to :meth:`~._backends.BackendProtocol.batch_ols`
+  or GLM batch solvers.
 
-Reference:
-    Manly, B. F. J. (1997). *Randomization, Bootstrap and Monte
-    Carlo Methods in Biology* (2nd ed.). Chapman & Hall.
+References
+----------
+Manly, B. F. J. (1997). *Randomization, Bootstrap and Monte Carlo Methods in Biology*
+    (2nd ed.). Chapman & Hall.
 """
 
 from __future__ import annotations

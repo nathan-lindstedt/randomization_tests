@@ -1,66 +1,43 @@
-"""NumPy / scikit-learn backend (always available).
+r"""Always-available CPU backend using NumPy BLAS-3, statsmodels, and scikit-learn.
 
-This is the fallback backend that requires no optional dependencies
-beyond NumPy and scikit-learn, both of which are hard requirements
-of the package.
+This is the default fallback backend (Tier 5 of the 7-tier inference abstraction tower)
+that operates without optional acceleration libraries, requiring only NumPy,
+SciPy, and scikit-learn.
 
-Architecture
-~~~~~~~~~~~~
-Every ``batch_*`` method implements one cell of the strategy matrix:
+Resampling Strategy Dimensions
+------------------------------
+Every ``batch_*`` method implements one cell of the compute dispatch matrix:
 
     strategy dimension  ×  model family  →  batch solver
 
-The three strategy dimensions are:
+1. **Shared X, Many Y** (``batch_*``):
+   The design matrix $X$ is fixed and the response $y$ is permuted $B$ times (ter Braak,
+   Freedman–Lane, Manly). For OLS, evaluates a *single* pseudoinverse multiply
+   $\text{pinv}(X) Y^\top$, replacing $B$ separate least-squares solves with one
+   $(p \times n) \times (n \times B)$ BLAS-3 matrix product. For GLMs, solves
+   sequentially across permutations using statsmodels/scikit-learn IRLS.
 
-1. **Shared X, many Y** (``batch_*``): ter Braak path — the design
-   matrix X is fixed and the response y is permuted B times.  OLS
-   exploits a *single* pseudoinverse multiply ``pinv(X) @ Y.T``,
-   replacing B separate least-squares solves with one ``(p, n) @
-   (n, B)`` BLAS-3 matrix product.  GLM families (logistic, Poisson,
-   NB, ordinal, multinomial) cannot vectorise this way because the
-   iterative solver (Newton–Raphson / IRLS) restarts from scratch for
-   each permuted y, so they fall back to a Python loop over B.
+2. **Many X, Shared y** (``batch_*_varying_X``):
+   Kennedy individual path—each permutation replaces one column of $X$ with permuted
+   residuals, yielding $B$ distinct design matrices. Evaluates $B$ separate solves.
 
-2. **Many X, shared y** (``batch_*_varying_X``): Kennedy individual
-   path — each permutation replaces one column of X with permuted
-   exposure residuals, yielding B distinct design matrices.  Even OLS
-   requires B separate ``lstsq`` calls here because the pseudoinverse
-   changes with every X.
+3. **Both X and Y Vary** (``batch_*_paired``):
+   Bootstrap and jackknife loops where rows are resampled or left out, perturbing
+   both design and response simultaneously.
 
-3. **Both X and Y vary** (``batch_*_paired``): Bootstrap / jackknife
-   path — each replicate resamples (or leaves-one-out) *rows*, so
-   both X and y change simultaneously per replicate.
+Parallel Execution & Warning Suppression
+---------------------------------------
+* **Multiprocessing via Threads**: When ``n_jobs != 1``, permutation loops execute
+  via ``joblib.Parallel(prefer="threads")``. Thread-based parallelism avoids IPC
+  serialization because underlying LAPACK and Cython routines release the Python GIL.
+* **Non-Convergence Retention**: Failed or non-converged permutation fits are retained
+  as NaN values rather than discarded, preventing anti-conservative p-value bias.
+  Because ``NaN >= x`` evaluates to False, failed fits never increment the rejection count.
 
-Parallelism
-~~~~~~~~~~~
-When ``n_jobs != 1``, loops are parallelised with
-``joblib.Parallel(prefer="threads")``.  Thread-based parallelism
-(rather than process-based) avoids data serialisation overhead
-because the underlying solvers — sklearn's Cython/BLAS logistic
-regression, NumPy's LAPACK ``dgelsd``, and statsmodels' IRLS — all
-release the GIL during the heavy computation.  Multiple permutations
-can therefore overlap on multi-core hardware with near-zero Python
-overhead.
-
-Warning suppression
-~~~~~~~~~~~~~~~~~~~
-Statsmodels emits ``ConvergenceWarning`` and ``RuntimeWarning`` when
-IRLS fails to converge within ``maxiter`` iterations, which happens
-routinely for degenerate permuted-y vectors (e.g. a Poisson response
-where every permuted count lands on 0).  These warnings are suppressed
-inside each ``_fit_one`` closure because:
-
-* Non-converged permutations are **retained** in the null distribution
-  — discarding them would bias the p-value anti-conservatively.
-* The warnings would fire thousands of times (once per non-converged
-  permutation), flooding stderr with no actionable information.
-* The JAX backend handles the same situation silently (the
-  ``lax.while_loop`` simply exits at ``max_iter``).
-
-Failed fits return ``np.nan`` coefficients, which the p-value
-calculation in ``pvalues.py`` handles correctly (NaN ≥ anything
-is False, so NaN permutations never contribute to the empirical
-p-value count).
+Cross-Module Integration
+------------------------
+* Inbound: Instantiated by :func:`~._backends.resolve_backend` when ``backend="numpy"``.
+* Outbound: Delegates to :mod:`scipy.linalg`, :mod:`statsmodels`, and :mod:`sklearn`.
 """
 
 from __future__ import annotations

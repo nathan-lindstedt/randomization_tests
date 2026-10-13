@@ -1,14 +1,61 @@
-"""Multi-environment causal invariance testing module (Phase 7, Steps 18-20).
+r"""Multi-environment causal invariance testing for invariant causal prediction.
 
-Tests conditional distribution invariance across environments:
-    H₀: P(Y | X) is identical across environments E ∈ {1, ..., K}
+Tests conditional distribution invariance across heterogeneous experimental, observational,
+or temporal environments:
+
+.. math::
+    H_0: P(Y \mid X) \text{ is invariant across environments } E \in \{1, \dots, K\}
+
 equivalently formulated as the conditional independence hypothesis:
-    H₀: Y ⟂ E | X
 
-Supports three rigorous tiers:
-- Tier 0: Exact discrete cell stratification (method="stratified") via ExchangeabilityTree
-- Tier 1: Residualized joint E-block testing (method="freedman_lane", "kennedy", "score")
-- Tier 2: Conditional Permutation Test (method="conditional") via CPT MCMC (BWBS 2020)
+.. math::
+    H_0: Y \perp E \mid X
+
+Primary Components
+------------------
+* :func:`invariance_test`: High-level entrypoint for multi-environment invariance testing.
+* :class:`~._results.InvarianceResult`: Typed frozen dataclass container storing the
+  omnibus decision, permutation p-value, per-environment slopes, pooled coefficient,
+  maximum slope deviation, and guarantee tier.
+
+Mathematical Foundations & Inference Tiers
+------------------------------------------
+Based on the principles of Invariant Causal Prediction (Peters, Bühlmann & Meinshausen 2016),
+a causal relationship remains invariant under structural interventions and environmental shifts,
+whereas non-causal or confounded associations vary across environments.
+
+Three Rigorous Inference Tiers
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+* **Tier 0: Exact Discrete Stratification** (``method="stratified"``):
+  When conditioning covariates $X$ are discrete, stratifies permutations within
+  identical $X$ cells via :class:`~.exchangeability.ExchangeabilityTree`.
+  [ Guarantee: Finite-Sample Exact ]
+* **Tier 1: Residualized Joint E-Block Testing** (``method="freedman_lane"``, ``"kennedy"``, ``"score"``):
+  Fits joint environment interaction models and tests environment-block significance via
+  residual permutation, evaluating whether environment interactions improve fit over pooled OLS.
+  [ Guarantee: Asymptotically Exact (Canonical Freedman–Lane) ]
+* **Tier 2: Conditional Permutation Test** (``method="conditional"``):
+  When conditioning covariates are continuous or multi-dimensional, uses the pairwise-swap
+  Metropolis–Hastings sampler (:mod:`._cpt`, Berrett et al. 2020) to sample label
+  permutations conditionally on $X$, preserving marginal environment class balances.
+  [ Guarantee: Exact Up to Total Variation Error ]
+
+Cross-Module Integration
+------------------------
+* Inbound: Public user calls to :func:`invariance_test`.
+* Outbound: Delegates to :class:`~.exchangeability.ExchangeabilityTree` for Tier 0,
+  :func:`~.core.randomization_test_regression` for Tier 1, and :func:`~._cpt.cpt_sample`
+  for Tier 2. Packages output into :class:`~._results.InvarianceResult`.
+
+References
+----------
+Peters, J., Bühlmann, P., & Meinshausen, N. (2016). Causal inference by using
+    invariant prediction: identification and confidence intervals. *Journal of the
+    Royal Statistical Society Series B: Statistical Methodology*, 78(5), 947–1012.
+
+Berrett, T. B., Wang, Y., Barber, R. F., & Samworth, R. J. (2020). The conditional
+    permutation test for independence while controlling for covariates. *Journal of the
+    Royal Statistical Society Series B: Statistical Methodology*, 82(3), 663–688.
 """
 
 from __future__ import annotations

@@ -1,22 +1,60 @@
-"""Permutation engine — Builder for resolution, calibration, and shared primitives.
+r"""Permutation testing engine for model calibration, resolution, and index generation.
 
-The :class:`PermutationEngine` centralises everything that happens
-*before* a strategy executes:
+The :class:`PermutationEngine` serves as the central builder and pipeline manager
+(Tier 3 of the 7-tier inference abstraction tower), resolving state and compiling
+shared resampling primitives *before* any testing strategy executes.
 
-1. **Family resolution** — map ``"auto"`` / ``"linear"`` / ``"logistic"``
-   to a ``ModelFamily`` instance.
-2. **Calibration** — estimate nuisance parameters (e.g. negative
-   binomial α) from the observed data.
-3. **Y validation** — reject mismatched family / response combos early.
-4. **Backend resolution** — determine NumPy vs JAX and apply n_jobs
-   overrides.
-5. **Observed model fit** — fit once to get β̂ and diagnostics.
-6. **Permutation index generation** — single call to
-   ``generate_unique_permutations`` shared by all strategies.
+Pre-Execution Pipeline
+----------------------
+1. **Family Resolution & Validation**:
+   Maps family identifiers (``"auto"``, ``"linear"``, ``"logistic"``, ``"poisson"``,
+   ``"negative_binomial"``, ``"ordinal"``, ``"multinomial"``, ``"linear_mixed"``,
+   ``"logistic_mixed"``, ``"poisson_mixed"``) to concrete :class:`~.families.ModelFamily`
+   instances and verifies target response compatibility.
 
-The engine also exposes :meth:`permute_indices` as the single shared
-primitive used by exchangeability cells — all
-strategies receive their indices from this method.
+2. **Model Calibration & Parameter Estimation**:
+   Estimates data-dependent nuisance parameters prior to resampling: dispersion
+   parameter $\alpha$ for Negative Binomial models; log-Cholesky variance ratio
+   parameters $\theta$ and random-effects structures $Z$ for hierarchical mixed models
+   (via Henderson REML or unrolled Laplace approximations); and autoregressive
+   coefficients $\hat\rho$ for longitudinal panel data.
+
+3. **Backend Resolution & Hardware Dispatch**:
+   Resolves the active execution backend (NumPy vs JAX), enforcing thread-safe
+   configuration, float64 precision mandates, and GPU/CPU acceleration policies.
+
+4. **Exchangeability & Resampling Matrix Generation**:
+   Generates deduplicated, collision-free permutation or sign-flip matrices
+   satisfying exchangeability constraints (unrestricted, within-cell, between-cell,
+   two-stage, or multi-level :class:`~.exchangeability.ExchangeabilityTree` hierarchies).
+
+5. **Observed Baseline Fit & Context Accumulation**:
+   Fits the observed unpermuted baseline model, evaluates model-level diagnostics,
+   and records intermediate computational artifacts in a :class:`~._context.FitContext`
+   accumulator for zero-recomputation downstream inference.
+
+Calibration & Resampling Invariants
+-----------------------------------
+- **Nuisance Freezing**: Nuisance parameters ($\alpha, \theta, \hat\rho$) are estimated
+  strictly *once* on observed data during calibration, preserving exchangeability and
+  preventing per-permutation estimation jitter from corrupting null calibration.
+- **Shared Reference Sets**: Strategy classes receive permutation matrices directly
+  from :meth:`permute_indices`, guaranteeing that all tested features are evaluated
+  under identical empirical realizations.
+
+Cross-Module Integration
+------------------------
+* Inbound: Instantiated by :func:`~.core.randomization_test_regression`.
+* Outbound: Delegates to :class:`~.families.ModelFamily` calibration, generates indices
+  via :mod:`~.permutations`, and initializes :class:`~._context.FitContext`.
+
+References
+----------
+Winkler, A. M., Webster, M. A., Vidaurre, D., Nichols, T. E., & Smith, S. M. (2015).
+    Multi-level block permutation. *NeuroImage*, 123, 253–268.
+
+Henderson, C. R. (1975). Best linear unbiased estimation and prediction under a
+    selection model. *Biometrics*, 31(2), 423–447.
 """
 
 from __future__ import annotations

@@ -1,15 +1,56 @@
-"""Formatted ASCII table display utilities for permutation test results.
+"""Formatted ASCII table presentation suite for results and diagnostics.
 
-These tables mirror the statsmodels summary style, presenting both the
-model diagnostics (top panel) and the per-feature coefficients with
-empirical (permutation) and classical (asymptotic) p-values side by
-side (bottom panel).
+Provides clean, publication-ready ASCII tables mirroring the statsmodels summary
+aesthetic, rendering model diagnostics, per-feature inference, omnibus statistics,
+causal discoveries, conformal coverage, and invariance guarantees side-by-side.
 
-Having both p-values in the same table makes it easy to spot
-discrepancies — cases where the permutation and asymptotic p-values
-diverge (common with small samples, non-normal residuals, or heavy-
-tailed error distributions) are precisely the situations where the
-permutation test adds value.
+Specialized Table Printers
+--------------------------
+The module exports 14 dedicated presentation functions:
+
+1. :func:`print_results_table`:
+   Individual per-feature regression test results, displaying observed coefficients,
+   standard errors, empirical (permutation) and classical asymptotic p-values,
+   significance stars, confidence intervals, and formal inferential guarantee tiers.
+2. :func:`print_joint_results_table`:
+   Omnibus goodness-of-fit improvement tests across tested feature sets.
+3. :func:`print_diagnostics_table`:
+   Comprehensive model diagnostics (VIF, Breusch–Pagan, deviance residuals,
+   generalized Cook's distance, effective permutation coverage, E-values, Rosenbaum bounds).
+4. :func:`print_symmetry_table`:
+   Residual symmetry diagnostics (Wilcoxon signed-rank test and skewness) to verify
+   assumptions for Rademacher sign-flip randomization tests.
+5. :func:`print_comparison_table`:
+   Side-by-side contrast between baseline models and longitudinal autoregressive
+   $AR(p)$ corrected models.
+6. :func:`print_confounder_table`:
+   Detailed results from the 4-stage causal sieve (colliders, mediators, moderators,
+   and confirmed confounders) and bootstrap mediation pathways.
+7. :func:`print_dataset_info_table`:
+   Summary of feature matrix dimensions, missing values, and exchangeability grouping cells.
+8. :func:`print_family_info_table`:
+   Mathematical properties of model families (link functions, dispersion, working weights).
+9. :func:`print_compatibility_table`:
+   Full compatibility matrix mapping testing strategies to model families.
+10. :func:`print_protocol_usage_table`:
+    Pedagogical step-by-step audit of method dispatch and intermediate computational
+    artifacts captured in :class:`~._context.FitContext`.
+11. :func:`print_conformal_table`:
+    Conformal prediction regions (intervals for regression, sets for classification)
+    with theoretical coverage guarantees.
+12. :func:`print_conformal_evaluation_table`:
+    Out-of-sample empirical coverage verification, interval sharpness, and Feature-Stratified Coverage (FSC).
+13. :func:`print_invariance_table`:
+    Multi-environment causal invariance decisions, per-environment slopes, and maximum deviations.
+14. :func:`print_knockoff_table`:
+    Knockoff filter feature selection results, W-statistics, and knockoff+ thresholds.
+
+Cross-Module Integration
+------------------------
+* Inbound: Public user calls to table presentation functions; invoked by result object
+  introspection helpers.
+* Outbound: Formats data structures from :mod:`~._results`, :class:`~._context.FitContext`,
+  and :mod:`~.families`.
 """
 
 from __future__ import annotations

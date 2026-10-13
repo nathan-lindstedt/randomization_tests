@@ -1,63 +1,56 @@
-"""Pre-generation of unique permutation index arrays.
+r"""Pre-generation of unique, collision-free permutation index arrays.
 
-Ensures no duplicate permutations are drawn and supports exhaustive
-enumeration when n! is small enough.
+Ensures no duplicate or identity permutations are drawn across $B$ resampling
+draws, providing exact combinatorial reference distributions for finite-sample
+and asymptotic hypothesis testing.
 
-Why unique permutations matter
-------------------------------
-Permutation tests derive their validity from the exchangeability
-assumption: under the null hypothesis, the observed test statistic is
-just one member of a finite reference set of size n! (for *n* data
-points).  Drawing the **same** permutation more than once wastes
-computation without adding information, and can bias the empirical
-p-value upward (toward anti-conservatism) for very small n.
+Primary Components
+------------------
+* :func:`generate_unique_permutations`: Primary entrypoint for unique permutation matrix generation.
+* :func:`generate_within_cell_permutations`: Restricts shuffling strictly within exchangeability cells.
+* :func:`generate_between_cell_permutations`: Permutes whole exchangeability blocks of matched size.
+* :func:`generate_two_stage_permutations`: Composes block swaps with intra-block shuffling.
+* :func:`generate_nested_permutations`: Recursively samples across multi-level tree hierarchies.
 
-Three generation strategies are used depending on the sample size:
+Mathematical Foundations & Sampling Regimes
+-------------------------------------------
+Under the null hypothesis $H_0$, the observed data is one of $n!$ equally likely
+orderings. Drawing duplicate permutations wastes compute and biases empirical p-values
+upward for small samples. The module employs three generation regimes:
 
-1. **Lehmer-code sampling** (n <= ``max_exhaustive``, default 10):
-   Each of the n! lexicographic orderings can be identified by a unique
-   integer rank k ∈ [0, n!).  Rather than materialising all n!
-   orderings (which is infeasible for n >= 11), we draw B ranks
-   without replacement via ``np.random.choice`` and convert each rank
-   to its corresponding permutation using the factorial number system
-   (Lehmer code).  This is O(B·n) in time and O(B·n) in memory —
-   independent of n!.
+1. **Lehmer-Code Sampling** ($n \le \text{max\_exhaustive}$, default 10):
+   Draws $B$ distinct integer ranks $k \in [0, n!)$ without replacement and unranks
+   each in $O(n)$ time via the factorial number system (factoradic basis), achieving
+   $O(B \cdot n)$ total complexity without materialising the $n!$ permutation space.
 
-2. **Vectorised batch generation** (n large enough that collisions are
-   negligible): All B permutations are produced in a single
-   ``np.random.Generator.permuted`` call — a C-level loop with no
-   Python overhead per permutation.  The birthday-paradox bound
-   B(B−1)/(2·n!) is evaluated to decide whether deduplication is
-   needed (threshold: < 1e−9).
+2. **Vectorised Batch Generation** ($n \ge 20$):
+   Evaluates the birthday-paradox collision bound:
 
-3. **Vectorised generation with hash-based deduplication** (medium n
-   where collisions are rare but possible): Same batch generation,
-   followed by a post-hoc pass that inserts each permutation's tuple
-   into a Python ``set`` to detect duplicates.  Any gaps from
-   collisions or identity removal are filled with targeted redraws.
+   .. math::
+       P_{\text{collision}} \approx \frac{B(B - 1)}{2 \cdot n!} < 10^{-9}
 
-Cell-constrained permutation generators
-----------------------------------------
-Three additional generators restrict permutations within
-exchangeability cells — contiguous or non-contiguous subsets of
-observations that are exchangeable under H₀:
+   Generates all $B$ permutations in a single C-level vectorised call with zero Python overhead.
 
-4. **Within-cell permutations** — shuffle indices *only* within each
-   cell.  Positions in different cells are never swapped.  This is the
-   standard strategy for clustered / hierarchical designs where
-   observations within a cluster are exchangeable but observations
-   across clusters are not.
+3. **Hash-Based Deduplication** (intermediate $10 < n < 20$):
+   Generates batch candidates and filters row tuples through a Python set, redrawing
+   to replace collisions and identities until exactly $B$ unique permutations are formed.
 
-5. **Between-cell permutations** — permute *entire cells* as units,
-   preserving the internal ordering within each cell.  The
-   permutation operates on the G cell labels, then remaps back to
-   data-level indices.  Only cells of the same size may be
-   exchanged; the effective reference set is ``∏_s count_s!``.
+Cell-Constrained & Hierarchical Generation
+------------------------------------------
+* **Within-Cell**: Shuffles within cells, preserving cluster boundaries ($|\Pi| = \prod_c n_c!$).
+* **Between-Cell**: Swaps equal-sized blocks as indivisible units ($|\Pi| = \prod_s (\text{count}_s!)$).
+* **Two-Stage**: Composes block swaps and within-cell permutations.
+* **Nested PALM Tree**: Recursively traverses multi-level nested designs (Winkler et al. 2015).
 
-6. **Two-stage permutations** — compose between-cell and within-cell
-   permutations.  First shuffle cell labels (between), then
-   independently shuffle within each cell (within).  Appropriate
-   when both levels of exchangeability are plausible.
+Cross-Module Integration
+------------------------
+* Inbound: Called by :class:`~.engine.PermutationEngine` to compile reference indices.
+* Outbound: Dispatches to NumPy :class:`numpy.random.Generator`.
+
+References
+----------
+Winkler, A. M., Webster, M. A., Vidaurre, D., Nichols, T. E., & Smith, S. M. (2015).
+    Multi-level block permutation. *NeuroImage*, 123, 253–268.
 """
 
 from __future__ import annotations

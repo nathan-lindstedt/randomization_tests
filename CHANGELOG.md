@@ -167,6 +167,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Codebase-wide module header standardization (PEP 257 / PEP 287)**:
+  Standardized top-of-file docstrings across all 34 source files in
+  `src/randomization_tests/` to a uniform 6-part anatomy (summary line,
+  architectural overview, primary components, mathematical foundations
+  and guarantees, cross-module integration seams, and references). Enforced
+  reStructuredText Level 1 hyphen (`------`) and Level 2 tilde (`~~~~~~`)
+  underlines, eliminated ad-hoc ASCII divider boxes, and applied strict
+  raw-string (`r"""`) syntax to all docstrings containing LaTeX math or escapes.
+- **JAX computational architecture and capabilities map**:
+  Expanded the Backend Configuration section in `docs/API.md` with an
+  architectural overview, a structured capabilities table spanning all 12 core
+  numerical subsystems, and formal explanations of the float64 precision
+  mandate and `vmap` SIMD execution model.
+- **Benchmark suite documentation and contract verification**:
+  Consolidated benchmark architecture documentation in `docs/BENCHMARKS.md` and
+  aligned automated CI contract assertions in `tests/test_benchmark_contracts.py`.
+- **GitHub Markdown and KaTeX math formatting compatibility**:
+  Resolved mathematical rendering collisions in `docs/BENCHMARKS.md` and
+  `docs/API.md` (eliminated currency ambiguity for `$1...` patterns, substituted
+  table pipe collisions with KaTeX `\Vert`, and formatted standalone display math blocks).
 - **Harmonized `score_project(X, y, ...)` protocol signature**:
   Repositioned `y` to immediately follow `X` as the second positional argument
   across the `ModelFamily` protocol, 6 base families, and 3 mixed families,

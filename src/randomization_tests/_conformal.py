@@ -1,74 +1,75 @@
-"""Conformal prediction module with finite-sample distribution-free guarantees.
+r"""Distribution-free conformal prediction with finite-sample coverage guarantees.
 
-Provides split conformal prediction and jackknife+ for regression and
-classification families, with support for locally-weighted kernel adaptation
-(Papadopoulos et al. 2008) and hierarchical/clustered exchangeability
-(Dunn, Wasserman & Ramdas 2022).
+Provides split conformal prediction and jackknife+ for regression and classification
+models, with support for locally-weighted kernel adaptation (Papadopoulos et al. 2008)
+and hierarchical/clustered exchangeability (Dunn, Wasserman & Ramdas 2022).
 
-Mathematical Foundations & Coverage Guarantees
------------------------------------------------
-Conformal prediction constructs prediction regions $\\mathcal{C}(X_{\\text{new}})$
-that are mathematically guaranteed to cover the unseen true outcome $Y_{\\text{new}}$
-at a user-specified confidence level $1 - \\alpha$, assuming only exchangeability of
-the data points:
+Primary Components
+------------------
+* :func:`conformal_prediction`: Constructs finite-sample prediction intervals or sets.
+* :func:`evaluate_conformal`: Evaluates empirical coverage, sharpness, and Feature-Stratified Coverage (FSC).
 
-1. **Split Conformal Prediction (inductive conformal)**:
-   Partitions data into a proper training set $(X_{\\text{train}}, y_{\\text{train}})$
-   and a calibration set $(X_{\\text{cal}}, y_{\\text{cal}})$ of size $n_{\\text{cal}}$.
-   The model is fit on the training fold, and nonconformity scores
-   $S_i = \\mathcal{S}(X_{\\text{cal}, i}, y_{\\text{cal}, i}; \\hat\\mu)$ are evaluated on the
-   calibration fold.
+Mathematical Foundations & Guarantees
+-------------------------------------
+Conformal prediction constructs prediction regions $\mathcal{C}(X_{\text{new}})$
+guaranteed to cover unseen outcomes $Y_{\text{new}}$ at nominal confidence level
+$1 - \alpha$, assuming only exchangeability of the data:
 
-   The calibration threshold is computed at the finite-sample order statistic rank:
+1. **Split Conformal Prediction (Inductive Conformal)**:
+   Partitions data into training and calibration sets of size $n_{\text{cal}}$.
+   Nonconformity scores $S_i = \mathcal{S}(X_{\text{cal}, i}, y_{\text{cal}, i}; \hat\mu)$
+   are evaluated on calibration data. The calibration threshold $\hat q$ is the order
+   statistic at rank:
+
    .. math::
-       k = \\lceil (n_{\\text{cal}} + 1)(1 - \\alpha) \\rceil
+       k = \lceil (n_{\text{cal}} + 1)(1 - \alpha) \rceil
 
-   Under exchangeability of $(X_i, y_i)_{i=1}^{n_{\\text{cal}}+1}$, the prediction region
-   $\\mathcal{C}(X_{\\text{new}})$ satisfies the finite-sample exact marginal coverage guarantee:
+   Under exchangeability, marginal coverage satisfies the finite-sample exact bounds:
+
    .. math::
-       1 - \\alpha \\le \\mathbb{P}(Y_{\\text{new}} \\in \\mathcal{C}(X_{\\text{new}}))
-       \\le 1 - \\alpha + \\frac{1}{n_{\\text{cal}} + 1}
+       1 - \alpha \le \mathbb{P}(Y_{\text{new}} \in \mathcal{C}(X_{\text{new}})) \le 1 - \alpha + \frac{1}{n_{\text{cal}} + 1}
 
-   The $+1$ in the order statistic rank is the exact mathematical counterpart to the $+1$
-   in the Phipson & Smyth (2010) permutation p-value: both arise from the uniform ordering
-   distribution of $n+1$ exchangeable random variables.
+   [ Guarantee: Finite-Sample Exact ]
 
 2. **Jackknife+ (Barber, Candès, Ramdas & Tibshirani 2021)**:
-   Constructs leave-one-out residuals $R_i^{\\text{LOO}} = |y_i - \\hat\\mu_{-i}(X_i)|$ and
-   forms prediction intervals by evaluating candidate bounds
-   $\\{\\hat\\mu_{-i}(X_{\\text{new}}) \\mp R_i^{\\text{LOO}}\\}_{i=1}^n$.
+   Constructs leave-one-out residuals $R_i^{\text{LOO}} = |y_i - \hat\mu_{-i}(X_i)|$ and
+   forms intervals from $\{\hat\mu_{-i}(X_{\text{new}}) \mp R_i^{\text{LOO}}\}_{i=1}^n$.
    Theoretical distribution-free worst-case guarantee:
-   .. math::
-       \\mathbb{P}(Y_{\\text{new}} \\in \\mathcal{C}(X_{\\text{new}})) \\ge 1 - 2\\alpha
 
-   (In empirical practice, coverage typically approximates $1 - \\alpha$).
+   .. math::
+       \mathbb{P}(Y_{\text{new}} \in \mathcal{C}(X_{\text{new}})) \ge 1 - 2\alpha
 
 3. **Locally-Weighted Adaptive Intervals (Papadopoulos et al. 2008)**:
-   When a :class:`~randomization_tests._kernels.Kernel` is provided, local conditional
-   variance $\\hat\\sigma^2(X)$ is estimated via Nadaraya–Watson kernel smoothing over
-   squared calibration residuals. Scores are studentized:
-   .. math::
-       S_i = \\frac{|y_i - \\hat\\mu(X_i)|}{\\hat\\sigma(X_i)}
-   yielding adaptive intervals with variable width $2\\hat q \\hat\\sigma(X_{\\text{new}})$ that
-   are narrower in dense, low-noise regions and wider in uncertain regions while preserving
-   exact marginal coverage.
+   Estimates conditional variance $\hat\sigma^2(X)$ via Nadaraya–Watson kernel smoothing
+   over squared residuals, studentizing nonconformity scores $S_i = |y_i - \hat\mu(X_i)| / \hat\sigma(X_i)$
+   to produce variable-width intervals adapting to heteroscedasticity.
 
-4. **Clustered / Hierarchical Conformal (Dunn, Wasserman & Ramdas 2022)**:
-   When data are clustered (violating observation-level exchangeability), data are split
-   at the cluster level. Cluster-maximum nonconformity scores $S_g = \\max_{i \\in g} S_i$
-   are calibrated at rank $\\lceil (G_{\\text{cal}} + 1)(1 - \\alpha) \\rceil$, ensuring
-   finite-sample validity under arbitrary intra-cluster correlation.
+4. **Clustered Conformal Prediction (Dunn, Wasserman & Ramdas 2022)**:
+   Splits data at the cluster level and calibrates cluster-maximum scores
+   $S_g = \max_{i \in g} S_i$ at rank $\lceil (G_{\text{cal}} + 1)(1 - \alpha) \rceil$,
+   guaranteeing validity under arbitrary intra-cluster correlation.
 
-References:
-    - Vovk, V., Gammerman, A., & Shafer, G. (2005). *Algorithmic Learning in a Random World*. Springer.
-    - Papadopoulos, H., Proedrou, K., Vovk, V., & Gammerman, A. (2008). Inductive confidence
-      machines for regression. *ECML 2002*, LNAI 2430, 345–356.
-    - Barber, R. F., Candès, E. J., Ramdas, A., & Tibshirani, R. J. (2021). Predictive inference
-      with the jackknife+. *Annals of Statistics*, 49(1), 486–507.
-    - Dunn, R., Wasserman, L., & Ramdas, A. (2022). Distribution-free prediction sets for two-layer
-      hierarchical models. *Journal of the American Statistical Association*, 1–12.
-    - Sadinle, M., Lei, J., & Wasserman, L. (2019). Least ambiguous prediction sets for classification
-      with an application to medical diagnostics. *JASA*, 114(526), 723–734.
+Cross-Module Integration
+------------------------
+* Inbound: Public user calls to :func:`conformal_prediction` and :func:`evaluate_conformal`.
+* Outbound: Delegates to :class:`~.families.ModelFamily` fits and returns typed
+  :class:`~._results.ConformalResult` containers.
+
+References
+----------
+Vovk, V., Gammerman, A., & Shafer, G. (2005). *Algorithmic Learning in a Random World*. Springer.
+
+Barber, R. F., Candès, E. J., Ramdas, A., & Tibshirani, R. J. (2021). Predictive
+    inference with the jackknife+. *The Annals of Statistics*, 49(1), 486–507.
+
+Dunn, R., Wasserman, L., & Ramdas, A. (2022). Distribution-free prediction sets for
+    two-layer hierarchical models. *Journal of the American Statistical Association*, 1–12.
+
+Papadopoulos, H., Proedrou, K., Vovk, V., & Gammerman, A. (2008). Inductive confidence
+    machines for regression. *ECML 2002*, LNAI 2430, 345–356.
+
+Sadinle, M., Lei, J., & Wasserman, L. (2019). Least ambiguous prediction sets for
+    classification with an application to medical diagnostics. *JASA*, 114(526), 723–734.
 """
 
 from __future__ import annotations

@@ -1,23 +1,58 @@
-"""Typed result objects for permutation tests.
+"""Typed result containers and serialization primitives for statistical inference.
 
-Frozen dataclasses that provide:
+Provides immutable frozen dataclasses (Tier 6 of the 7-tier inference abstraction
+tower) for all model fitting, permutation testing, conformal prediction, causal
+invariance, and feature selection pipelines.
 
-* **Attribute access** — ``result.family``, ``result.method``, etc.
-* **Dict-like access** — ``result["family"]``, ``result.get("key")``,
-  ``"key" in result`` for consumers that prefer bracket syntax.
-* **Serialisation** — ``.to_dict()`` returns a plain ``dict[str, Any]``
-  with all NumPy types converted to native Python.
+Primary Components
+------------------
+* :class:`FitResult`: Unified single-model fit container across all model families and
+  compute backends, storing parameters, predictions, SEs, p-values, Fisher information,
+  and convergence flags.
+* :class:`IndividualTestResult`: Per-coefficient permutation and sign-flip test results,
+  carrying empirical (Phipson & Smyth) and classical asymptotic p-values, confidence
+  intervals, captured advisories, and formal inferential guarantee tier annotations.
+* :class:`JointTestResult`: Omnibus collective fit-improvement test results across
+  tested feature subsets.
+* :class:`ConfounderAnalysisResult`: Outcome of the 4-stage causal sieve (collider,
+  mediator, moderator, confounder) for a single predictor.
+* :class:`ConfounderAnalysisResultSet`: Dict-like mapping of predictor names to their
+  respective confounder analysis results.
+* :class:`KernelTestResult`: Nonparametric kernel test results for MMD, HSIC, and
+  residualized kernel regression tests.
+* :class:`ConformalResult`: Finite-sample distribution-free prediction intervals (regression)
+  or prediction sets (classification) from split conformal or jackknife+ pipelines.
+* :class:`ConformalEvaluationResult`: Out-of-sample empirical coverage verification,
+  sharpness, and Feature-Stratified Coverage (FSC) metrics.
+* :class:`InvarianceResult`: Multi-environment causal invariance testing decisions,
+  per-environment slopes, pooled coefficients, and guarantee tiers.
+* :class:`KnockoffResult`: False Discovery Rate (FDR) controlled feature selection results
+  via fixed-X or Model-X knockoff filter statistics and the knockoff+ threshold.
 
-Two concrete result types mirror the two test topologies:
+Immutability & Serialization Invariants
+---------------------------------------
+All result classes inherit from :class:`_DictAccessMixin`, providing:
+* **Attribute Access** — ``result.p_value``, ``result.params``, etc.
+* **Dict-Style Access** — ``result["p_value"]``, ``result.get("key")``, and ``"key" in result``.
+* **Full Serialization** — ``result.to_dict()`` returns a JSON-serializable Python dictionary
+  with all NumPy scalars, booleans, and arrays converted to native Python types via
+  :func:`_numpy_to_python`.
+* **Immutability Invariant** — Classes are decorated with ``@dataclass(frozen=True)``
+  to guarantee that statistical inference snapshots cannot be mutated after creation.
 
-* :class:`IndividualTestResult` — per-coefficient tests
-  (ter Braak, Kennedy individual, Freedman–Lane individual).
-* :class:`JointTestResult` — group-level improvement tests
-  (Kennedy joint, Freedman–Lane joint).
+Cross-Module Integration
+------------------------
+* Inbound: Constructed across all pipeline stages: :func:`~.core.randomization_test_regression`,
+  :mod:`~._strategies`, :func:`~.confounders.identify_confounders`, :func:`~._conformal.conformal_prediction`,
+  :func:`~._invariance.invariance_test`, :func:`~._knockoffs.knockoff_test`, and :mod:`~.families`.
+* Outbound: Formatted by ASCII table presentation routines in :mod:`~.display`
+  and re-exported in :mod:`~.randomization_tests.__init__`.
 
-Both types are frozen (immutable after construction) to communicate
-that results are a snapshot of a completed test — they should not be
-mutated after creation.
+References
+----------
+Phipson, B., & Smyth, G. K. (2010). Permutation p-values should never be zero:
+    calculating exact p-values when permutations are randomly drawn.
+    *Statistical Applications in Genetics and Molecular Biology*, 9(1), Article 39.
 """
 
 from __future__ import annotations

@@ -1,58 +1,54 @@
-"""ter Braak (1992) — full-model residual permutation, recentred null.
+r"""ter Braak (1992) full-model residual permutation with recentred null.
 
-Canonical algorithm (ter Braak 1992; Anderson & Legendre 1999, method
-“t-B”; Winkler et al. 2014, Table 2), for each H₀(j): β_j = 0:
+Canonical algorithm (ter Braak 1992; Anderson & Legendre 1999; Winkler et al. 2014)
+for partial regression testing (Tier 4 of the 7-tier inference abstraction tower).
+A single full-model fit and one batch resampling refit serve all predictors
+simultaneously, avoiding per-feature reduced model fits.
 
-1.  Fit the **full model** Y ~ X once.  Keep the fitted values ŷ and
-    residuals e = Y − ŷ.
+Primary Components
+------------------
+* :class:`TerBraakStrategy`: Individual per-feature regression test (``is_joint=False``).
 
-2.  **Permute** the residuals: π(e).
+Mathematical Foundations & Recentring Invariant
+-----------------------------------------------
+For each tested feature $j$:
+1. Fit the **full model** $Y \sim X$ once to obtain fitted values $\hat y$ and residuals $e = Y - \hat y$.
+2. **Permute** or sign-flip residuals: $\pi(e)$.
+3. **Reconstruct** synthetic outcomes retaining full signal: $Y^* = \hat y + \pi(e)$.
+4. **Refit** the full model on $(X, Y^*)$ and **recenter**:
 
-3.  **Reconstruct** a synthetic response about the full-model fit:
-    Y* = ŷ + π(e).  The full-model signal (including X_j's true
-    contribution) is retained.
+.. math::
+    \tilde\beta^*_{b, j} = \beta^*_{b, j} - \hat\beta_j
 
-4.  **Refit** the full model on (X, Y*) and **recentre**: the null
-    draws are β*_j − β̂_j, because under the permutation distribution
-    β*_j varies around the observed β̂_j, not around 0.  Recentring
-    makes the draws a zero-centred null for β̂_j − β_j — which is what
-    the package's ``|β*| ≥ |β̂|`` p-value count and shift-inversion
-    CIs require.
+Because $Y^*$ retains the true effect of $X_j$, raw permutation draws $\beta^*$
+vary around $\hat\beta_j$ rather than zero. Subtracting $\hat\beta_j$ recentres
+the null at zero, satisfying the mathematical invariance required for two-sided
+$|\beta^*| \ge |\hat\beta|$ p-value counts and shift-inversion confidence intervals.
 
-One full-model fit and one batch refit serve ALL features
-simultaneously — no per-feature reduced fits (contrast with
-Freedman–Lane, which fits a reduced model per tested coefficient).
+[ Guarantee: Asymptotically Exact ]
+Residuals are correlated through the full-model hat matrix $H = X(X^\top X)^{-1}X^\top$,
+providing asymptotic size control under exchangeable errors (Anderson & Robinson 2001).
 
-Guarantee: residuals are only approximately exchangeable under H₀
-(they are correlated through the hat matrix), so the test is
-**asymptotically exact**, not finite-sample exact (Anderson &
-Robinson 2001).
+Cross-Module Integration
+------------------------
+* Inbound: Instantiated by :class:`~.engine.PermutationEngine` when `method="ter_braak"`.
+* Outbound: Dispatches batch solves to :meth:`~._backends.BackendProtocol.batch_ols` or
+  GLM batch methods via :meth:`~.families.ModelFamily.batch_fit`.
 
-Two code paths:
+References
+----------
+ter Braak, C. J. F. (1992). Permutation versus bootstrap significance tests in
+    multiple regression and ANOVA. In *Bootstrapping and Related Techniques* (pp. 79–86).
 
-* **Residual path** — standard residual-permutation for families with
-  well-defined residuals (linear, logistic, Poisson, negative binomial).
-* **Direct Y permutation families** are rejected with a ``ValueError``
-  directing the user to ``method="manly"`` or ``method="kennedy"``.
+Anderson, M. J., & Legendre, P. (1999). An empirical comparison of permutation
+    methods for tests of partial regression coefficients in a linear model.
+    *Journal of Statistical Computation and Simulation*, 62(3), 271–303.
 
-References:
-    ter Braak, C. J. F. (1992). Permutation versus bootstrap
-    significance tests in multiple regression and ANOVA.
-    In K.-H. Jöckel et al. (Eds.), *Bootstrapping and Related
-    Techniques* (pp. 79–86). Springer.
+Anderson, M. J., & Robinson, J. (2001). Permutation tests for linear models.
+    *Australian & New Zealand Journal of Statistics*, 43(1), 75–88.
 
-    Anderson, M. J. & Legendre, P. (1999). An empirical comparison of
-    permutation methods for tests of partial regression coefficients
-    in a linear model. *J. Statistical Computation and Simulation*,
-    62(3), 271–303.
-
-    Anderson, M. J. & Robinson, J. (2001). Permutation tests for
-    linear models. *Australian & New Zealand J. Statistics*, 43(1),
-    75–88.
-
-    Winkler, A. M., Ridgway, G. R., Webster, M. A., Smith, S. M., &
-    Nichols, T. E. (2014). Permutation inference for the general
-    linear model. *NeuroImage*, 92, 381–397.
+Winkler, A. M., Ridgway, G. R., Webster, M. A., Smith, S. M., & Nichols, T. E. (2014).
+    Permutation inference for the general linear model. *NeuroImage*, 92, 381–397.
 """
 
 from __future__ import annotations

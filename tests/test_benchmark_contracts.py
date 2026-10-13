@@ -223,7 +223,7 @@ class TestBenchmarkContracts:
 
         repo_root = Path(__file__).resolve().parents[1]
         benchmark_dir = repo_root / "benchmarks"
-        summary_doc = benchmark_dir / "summaries" / "benchmark-suite-architecture.md"
+        summary_doc = repo_root / "docs" / "BENCHMARKS.md"
 
         assert summary_doc.is_file(), (
             f"Missing benchmark suite architecture doc: {summary_doc}"

@@ -1,33 +1,43 @@
-"""Backend abstraction layer for batch model fitting.
+r"""Computational backend abstraction layer and protocol definitions.
 
-Each backend implements the :class:`BackendProtocol` interface, which
-defines the contract for batch-fitting models across many permuted
-response (or design) matrices.  The core engine and family classes
-dispatch to the active backend via :func:`resolve_backend` rather than
-testing ``if _use_jax()`` at every call site.
+This module establishes the Tier 5 computational provider contract via
+:class:`BackendProtocol`, decoupling statistical testing strategies from specific
+hardware execution backends (NumPy on CPU vs. JAX on CPU/GPU/TPU).
 
-Resolution follows the policy set by :mod:`._config`:
+Backend Protocol Contract
+-------------------------
+Each backend implements a unified contract for batch-fitting models across many
+permuted response vectors or design tensors:
+* **Batch Resampling (32 Methods)**: Shared-X, varying-X, and paired resampling
+  across OLS, Logistic, Poisson, Negative Binomial, Ordinal, Multinomial, and LMMs.
+* **Fit-and-Score Primitives**: Joint parameter and deviance evaluations for DML.
+* **Pure Data Boundary**: All public methods accept NumPy arrays and return NumPy
+  arrays, isolating framework-specific DeviceArrays strictly within backend implementations.
 
-1. Programmatic override via :func:`~randomization_tests.set_backend`.
-2. ``RANDOMIZATION_TESTS_BACKEND`` environment variable.
+Hardware Resolution & Fallback Policies
+---------------------------------------
+Resolution follows the policy configured in :mod:`._config`:
+1. Context-isolated override via :func:`~randomization_tests.backend` or programmatic
+   :func:`~randomization_tests.set_backend`.
+2. The ``RANDOMIZATION_TESTS_BACKEND`` environment variable.
 3. Auto-detection: ``"jax"`` if importable, else ``"numpy"``.
 
-:func:`resolve_backend` translates the policy string into a concrete
-backend instance.  When ``"jax"`` is explicitly requested but JAX is
-not installed, an :class:`ImportError` is raised — explicit requests
-are never silently degraded.  The ``"auto"`` policy is the only mode
-that falls back from JAX to NumPy, and that is expected behaviour
-rather than a surprise.
+When ``"jax"`` is explicitly requested but JAX is not installed, an :class:`ImportError`
+is raised immediately—explicit requests are never silently degraded. The ``"auto"`` policy
+is the only mode that falls back from JAX to NumPy.
 
-Adding a new backend (e.g. CuPy) requires:
-
-1. A new module ``_backends/_cupy.py`` with a class implementing
-   :class:`BackendProtocol`.
-2. A branch in :func:`resolve_backend` mapping ``"cupy"`` to the new
-   class.
+Extensibility
+-------------
+Adding a new computational backend (e.g. CuPy or PyTorch) requires:
+1. A new module ``_backends/_cupy.py`` implementing :class:`BackendProtocol`.
+2. A branch in :func:`resolve_backend` mapping ``"cupy"`` to the new class.
 3. Adding ``"cupy"`` to ``_VALID_BACKENDS`` in :mod:`._config`.
 
-No changes to ``families.py`` or ``core.py`` are needed.
+Cross-Module Integration
+------------------------
+* Inbound: Called by :class:`~.engine.PermutationEngine` via :func:`resolve_backend`.
+* Outbound: Dispatches to :class:`~._backends._jax.JaxBackend` or
+  :class:`~._backends._numpy.NumpyBackend`.
 """
 
 from __future__ import annotations

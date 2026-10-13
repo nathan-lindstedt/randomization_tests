@@ -164,7 +164,7 @@ class FitResult:
 Supports:
 - Attribute access: `result.params`, `result.se`, `result.p_values`, `result.fisher_info`.
 - Dict-style access: `result["params"]`, `result["predictions"]`.
-- `result.conf_int(alpha=0.05)`: Asymmetric or Wald confidence intervals directly from observed Fisher information $SE_j = \sqrt{[\mathcal{I}^{-1}]_{jj}}$.
+- `result.conf_int(alpha=0.05)`: Asymmetric or Wald confidence intervals directly from observed Fisher information $\text{SE}_j = \sqrt{[\mathcal{I}^{-1}]_{jj}}$.
 - Duck-typing properties: `result.coef_` (slopes only) and `result.intercept_` for compatibility with scikit-learn estimators.
 
 ### `IndividualTestResult` and `JointTestResult`
@@ -189,7 +189,7 @@ Result object returned by kernel hypothesis tests (`mmd_test`, `hsic_test`,
 and `kernel_regression_test`).
 
 Provides:
-- `statistic`: Observed test statistic ($MMD^2$, $HSIC$, or kernel regression score).
+- `statistic`: Observed test statistic ($\text{MMD}^2$, $\text{HSIC}$, or kernel regression score).
 - `p_value`: Phipson & Smyth (2010) corrected permutation p-value.
 - `null_distribution`: Permuted statistic values under $H_0$, shape `(n_randomizations,)`.
 - `kernel_name`: Name or comma-separated names of the kernels used (e.g. `"gaussian"`, `"gaussian,gaussian"`).
@@ -226,7 +226,7 @@ Provides the method:
 Result object returned by `evaluate_conformal()` or `ConformalResult.evaluate()`.
 Contains out-of-sample empirical coverage verification metrics:
 - `empirical_coverage`: Observed marginal coverage rate $\frac{1}{n} \sum \mathbb{I}(y_i \in \mathcal{C}(x_i))$.
-- `nominal_coverage`: Nominal confidence target $1 - \alpha$.
+- `nominal_coverage`: Nominal confidence target ${1 - \alpha}$.
 - `n_eval`: Count of evaluated test observations.
 - `covered`: Boolean NumPy array of length $n$ indicating per-observation coverage.
 - `mean_interval_width` / `median_interval_width`: Sharpness metrics for continuous regression.
@@ -243,7 +243,7 @@ Provides:
 - `p_value`: Permutation p-value for the omnibus joint invariance test.
 - `environment_coefficients`: Dictionary of estimated slopes $\hat\beta_e$ for each environment.
 - `pooled_coefficient`: Slope estimate from the pooled (full-data) model.
-- `max_deviation`: Maximum observed slope deviation across environments $\max_e |\hat\beta_e - \hat\beta_{\text{pool}}|$.
+- `max_deviation`: Maximum observed slope deviation across environments $\max_e \lvert \hat\beta_e - \hat\beta_{\text{pool}} \rvert$.
 - `null_distribution`: Permuted test statistics under $H_0$.
 - `tier`: Exactness tier (`"tier_0_stratified"`, `"tier_1_residualized"`, or `"tier_2_cpt"`).
 - `guarantee_tier`: Theoretical guarantee level (`"finite_sample_exact"`, `"asymptotically_exact"`, or `"exact_up_to_tv_error"`).
@@ -258,7 +258,7 @@ Provides False Discovery Rate (FDR) controlled feature selection via the knockof
 threshold (Barber & Candès, 2015; Candès et al., 2018).
 Provides:
 - `selected_features`: List of feature names passing the knockoff+ selection threshold.
-- `knockoff_statistics`: NumPy array of W-statistics $W_j = |\hat\beta_j| - |\hat{\tilde\beta}_j|$ for each feature.
+- `knockoff_statistics`: NumPy array of W-statistics $W_j = \lvert \hat\beta_j \rvert - \lvert \hat{\tilde\beta}_j \rvert$ for each feature.
 - `fdr_level`: Target FDR bound $q \in (0, 1)$.
 - `threshold`: Knockoff+ threshold $\tau_+$ such that estimated $\text{FDP} \le q$.
 - `feature_names`: Full list of evaluated feature names.
@@ -1373,8 +1373,8 @@ outcomes (classification), constructs a prediction set of plausible class labels
 | `family` | Regression/classification family name or `ModelFamily` instance. `"auto"` detects binary vs continuous outcomes. |
 | `kernel` | Optional `Kernel` instance for locally-weighted adaptive conformal prediction (Papadopoulos et al. 2008). |
 | `groups` | Cluster labels `(n,)` or `ExchangeabilityTree` for clustered/hierarchical conformal prediction (Dunn, Wasserman & Ramdas 2022). |
-| `confidence_level` | Nominal coverage level $1 - \alpha$, default `0.95`. |
-| `method` | `"split"` (default, finite-sample exact) or `"jackknife_plus"` (leave-one-out, distribution-free $1 - 2\alpha$ theoretical guarantee). |
+| `confidence_level` | Nominal coverage level ${1 - \alpha}$, default `0.95`. |
+| `method` | `"split"` (default, finite-sample exact) or `"jackknife_plus"` (leave-one-out, distribution-free ${1 - 2\alpha}$ theoretical guarantee). |
 | `cal_ratio` | Fraction of data allocated to the calibration set in split conformal (default `0.5`). |
 | `fit_intercept` | Whether to fit an intercept column (default `True`). |
 | `random_state` | Seed for reproducible calibration splitting. |
@@ -1441,7 +1441,7 @@ $Y$ remains constant across experimental or observational environments.
 | `method` | Permutation strategy: `"auto"` (default, selects Tier 0 if `X` is discrete, else Tier 1), `"freedman_lane"`, `"kennedy"`, `"score"`, `"conditional"`, or `"stratified"`. |
 | `reduced_model` | Optional flexible machine learning estimator (e.g. `GradientBoostingRegressor`) for Double/Debiased Machine Learning (DML) non-linear confounding absorption. |
 | `n_randomizations` | Number of randomization draws (default `5000`). |
-| `confidence_level` | Confidence level $1 - \alpha$ for invariance decision (default `0.95`). |
+| `confidence_level` | Confidence level ${1 - \alpha}$ for invariance decision (default `0.95`). |
 | `random_state` | Seed for reproducible permutations. |
 
 **Returns:** `InvarianceResult` containing decision, p-value, per-environment slopes, pooled slope,
@@ -1547,6 +1547,7 @@ Tests the null hypothesis $H_0: X \perp Y$ given paired observations $(X_i, Y_i)
 Evaluates the non-negative $V$-statistic $\text{HSIC}_b = \frac{1}{n^2} \text{Tr}(K_c L_c)$, where
 $K_c$ and $L_c$ are doubly-centered Gram matrices. Permutes rows of $Y$ while holding $X$ fixed.
 The empirical permutation null distribution centers at the exact analytical expectation:
+
 $$\mathbb{E}_\pi[\text{HSIC}_b] = \frac{\text{Tr}(K_c)\text{Tr}(L_c)}{n^2(n-1)}$$
 
 | Parameter | Description |
@@ -1616,10 +1617,10 @@ Runtime-checkable protocol that every kernel implementation must satisfy.
 
 ### Concrete Kernels
 
-- `GaussianKernel(sigma="median")`: Radial Basis Function (RBF) kernel $k(x, y) = \exp(-\|x - y\|^2 / (2\sigma^2))$. When `sigma="median"`, sets $\sigma$ via the median pairwise Euclidean distance heuristic.
+- `GaussianKernel(sigma="median")`: Radial Basis Function (RBF) kernel $k(x, y) = \exp(-\Vert x - y \Vert^2 / (2\sigma^2))$. When `sigma="median"`, sets $\sigma$ via the median pairwise Euclidean distance heuristic.
 - `LinearKernel()`: Standard inner-product kernel $k(x, y) = x^T y$.
-- `LaplacianKernel(sigma="median")`: Exponential kernel $k(x, y) = \exp(-\|x - y\|_1 / \sigma)$. When `sigma="median"`, sets $\sigma$ via the median pairwise L1 distance heuristic.
-- `CosineKernel()`: Normalized angular similarity kernel $k(x, y) = \frac{x^T y}{\|x\|_2 \|y\|_2}$.
+- `LaplacianKernel(sigma="median")`: Exponential kernel $k(x, y) = \exp(-\Vert x - y \Vert_1 / \sigma)$. When `sigma="median"`, sets $\sigma$ via the median pairwise L1 distance heuristic.
+- `CosineKernel()`: Normalized angular similarity kernel $k(x, y) = \frac{x^T y}{\Vert x \Vert_2 \Vert y \Vert_2}$.
 - `PrecomputedKernel(K, validate_psd=True)`: Wraps an existing positive semi-definite Gram matrix.
 
 ### `KernelEval`
@@ -1901,3 +1902,30 @@ export RANDOMIZATION_TESTS_BACKEND=numpy
 import randomization_tests
 randomization_tests.set_backend("numpy")
 ```
+
+### JAX Computational Architecture & Capabilities
+
+When JAX is installed and active (`backend="jax"` or auto-detected), it serves as the primary high-performance numerical engine across the package. The architecture leverages fused XLA compilation, SIMD hardware acceleration via `jax.vmap`, automatic differentiation, and strict 64-bit IEEE 754 precision (`jax_enable_x64=True`).
+
+| Subsystem / Domain | JAX Implementation | Mathematical Invariant | Dispatch Target & Purpose |
+|---|---|---|---|
+| Batch Resampling (Shared $X$) | `_batch_shared_X` via `vmap` | Fixed $X \in \mathbb{R}^{n \times p}$, varying $Y \in \mathbb{R}^{B \times n}$ | `ter_braak`, `freedman_lane`, and `manly` batch refits across all GLM families. |
+| Batch Resampling (Varying $X$) | `_batch_varying_X` via `vmap` | Varying $X \in \mathbb{R}^{B \times n \times p}$, fixed $y \in \mathbb{R}^n$ | `kennedy` individual residual permutation and invariance environment testing. |
+| Batch Resampling (Paired) | `_batch_paired` via `vmap` | Varying $X \in \mathbb{R}^{B \times n \times p}$ and $Y \in \mathbb{R}^{B \times n}$ | Paired bootstrap and jackknife loops for confounder screening and DML. |
+| Convex GLM Optimization | `_newton_solve_static` | $H \succ 0$; static damping $\lambda_{\min} I = 10^{-8} I$ | Parameter-freezing Newton solve inside `while_loop` for Logistic, Poisson, NB2, Ordinal, Multinomial. |
+| Non-Convex Optimization | `_reml_newton_solve` | $H + \lambda_{\text{eff}} I \succ 0$; Gill–Murray floor | Levenberg–Marquardt–Nielsen solver guaranteeing monotonic descent for profile REML and Laplace criteria. |
+| Observed Fisher Information | `_fisher_information_se` | $\text{Cov}(\hat\beta) = [\nabla^2 \text{NLL}(\hat\beta)]^{-1}$ | Fast Wald standard errors and classical z-tests in `classical_p_values()`. |
+| Empirical Sandwich SEs | `_sandwich_se` | $V = H^{-1} (S^\top S) H^{-1}$ | Heteroscedasticity-robust covariance via `vmap(grad(nll_per_obs))` score outer products. |
+| Autodiff Cook's Distance | `_autodiff_cooks_d` | $D_i = \frac{1}{p} s_i^\top H^{-1} s_i$ | Observation influence diagnostics across all GLM families (including Ordinal and Multinomial). |
+| Profile Likelihood CIs | `_profile_ci_coefficients` | ${2[\text{NLL}_{\text{profile}}(\beta_j) - \text{NLL}_{\text{full}}] = \chi^2_1(1-\alpha)}$ | Constrained deviance bisection with quasi-complete separation guards. |
+| Tangent-Space Score Projection | `_glm_score_projection_row` | $a_j = [(X^\top W X)^{-1} X^\top]_j$ | Evaluates one-step Rao score test updates in $O(n \cdot B)$ FLOPs without refitting. |
+| LMM Henderson REML | `_reml_solve` | $O(G)$ Woodbury linear complexity | Profiles out fixed effects and $\sigma^2$ to solve variance ratio parameters $\theta$. |
+| GLMM Laplace Approximation | `_laplace_solve` | Two-loop unrolled computation graph | Inner unrolled IRLS mode-finding $\hat u(\theta)$ + outer LM-Nielsen Newton step for $\theta$. |
+
+**Numerical Precision & Float64 Mandate:**
+
+Statistical optimization requires float64 precision because the gradient noise floor scales as $\kappa(H) \times \varepsilon_{\text{mach}}$, where $\kappa(H)$ is the condition number of the Hessian. Under float32 ($\varepsilon \approx 6 \times 10^{-8}$), a moderately collinear design with $\kappa = 10^4$ produces a noise floor of $\sim 6 \times 10^{-4}$, preventing convergence to standard tolerances ($\tau = 10^{-8}$). Float64 ($\varepsilon \approx 2.22 \times 10^{-16}$) depresses the noise floor to $\sim 10^{-12}$, ensuring exact machine-precision gradient roots and matching statsmodels baselines to ${< 10^{-14}}$.
+
+**Parallel Execution Model:**
+
+Unlike CPU multiprocessing with `n_jobs`, JAX relies on SIMD hardware vectorisation via `vmap` and fused XLA kernels. Permutation slices execute in lockstep across hardware execution units without Python GIL contention, process-spawning overhead, or inter-process IPC serialization. Consequently, `n_jobs` is ignored when the JAX backend is active.

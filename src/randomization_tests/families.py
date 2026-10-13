@@ -1,33 +1,85 @@
-"""Model family protocol and resolution logic.
+r"""Model family protocol, GLM implementations, and resolution logic.
 
-The ``ModelFamily`` protocol defines the interface that every
-regression family must implement.  It decouples model-specific
-behaviour (fitting, residual computation, Y-reconstruction, batch
-fitting, diagnostics, classical p-values) from the permutation engine
-in ``core.py``, which dispatches to the active family via generic
-method calls instead of branching on ``is_binary``.
+The :class:`ModelFamily` protocol defines the foundational computational contract
+(Tier 2 of the 7-tier inference abstraction tower) that every regression and
+classification family must implement. It decouples model-specific behavior
+(fitting, predictions, residual evaluation, synthetic Y reconstruction, batch
+resampling dispatch, model diagnostics, and classical asymptotic p-values) from
+the permutation engine and statistical testing strategies.
 
-Each concrete family is a ``@dataclass`` that carries no mutable state
-and communicates exclusively through the protocol methods.  The
-``resolve_family`` helper maps a user-facing string (``"auto"``,
-``"linear"``, ``"logistic"``, etc.) to the appropriate family instance.
+Concrete Base Families
+----------------------
+The module provides six fully implemented, battle-tested exponential family classes:
 
-Architecture
-~~~~~~~~~~~~
-The protocol is deliberately minimal — every method maps 1:1 to an
-existing branch in the original ``core.py`` code, so that the core
-refactor is a mechanical replacement of ``if is_binary:`` checks
-with ``family.<method>()`` calls.  No new statistical logic is
-introduced here; the protocol merely formalises the interface that was
-previously implicit.
+1. :class:`LinearFamily`:
+   Continuous outcomes via Ordinary Least Squares (OLS) with $R^2$ and RSS goodness-of-fit
+   metrics. Supports exact Woodbury block-diagonal whitening and Prais–Winsten / Cochrane–Orcutt
+   Cholesky transforms for autoregressive longitudinal errors ($AR(p)$).
 
-Extensibility
-~~~~~~~~~~~~~
-New families (Poisson, negative binomial, ordinal, multinomial) are
-added by implementing the protocol in this module and registering them
-in the ``_FAMILIES`` dict.  The core engine, display module, and
-confounder module require zero changes per new family — they program
-against the protocol, not against concrete classes.
+2. :class:`LogisticFamily`:
+   Binary outcomes ($y \in \{0, 1\}$) via maximum likelihood with the canonical logit link.
+   Uses numerically stable softplus negative log-likelihood, Fisher working weights
+   $W = \hat\mu(1 - \hat\mu)$, and exact one-step tangent-space score test projections.
+
+3. :class:`PoissonFamily`:
+   Count outcomes ($y \in \mathbb{N}_0$) with the canonical log link, deviance goodness-of-fit
+   evaluation, dynamic linear predictor clipping ($\eta \in [-20, 20]$) against overflow,
+   and Fisher working weights $W = \hat\mu$.
+
+4. :class:`NegativeBinomialFamily`:
+   Overdispersed count outcomes ($y \in \mathbb{N}_0$) via the NB2 parameterisation with
+   variance function $V(\mu) = \mu + \alpha\mu^2$. Calibrates the dispersion parameter
+   $\alpha$ from observed data, evaluating working weights $W = \hat\mu / (1 + \alpha\hat\mu)$.
+
+5. :class:`OrdinalFamily`:
+   Ordered categorical outcomes ($y \in \{0, 1, \dots, K-1\}$ with $K \ge 3$) via the
+   proportional-odds cumulative logit model. Estimates $K-1$ strictly ordered cutpoints
+   (thresholds), derives exact piecewise score residuals $R[i, k]$, and vectorises
+   resampling across permutations via index-gather operations.
+
+6. :class:`MultinomialFamily`:
+   Unordered nominal categorical outcomes ($y \in \{0, 1, \dots, K-1\}$ with $K \ge 3$)
+   via the multinomial logit (softmax) model with reference category normalization.
+
+Core Protocol Operations
+------------------------
+Every family implements a unified interface:
+- ``fit(X, y, fit_intercept) -> FitResult``: Single-model fit returning a frozen dataclass
+  containing parameters, predictions, SEs, p-values, Fisher information, and convergence flags.
+- ``predict(model, X) -> np.ndarray``: Expected values on the response scale $\hat\mu$.
+- ``residuals(model, X, y) -> np.ndarray``: Family-appropriate residuals (raw, response, or probability).
+- ``reconstruct_y(predictions, permuted_residuals, rng) -> np.ndarray``: Synthetic outcome
+  construction under residual permutation and Rademacher sign-flipping.
+- ``score_project(X, y, feature_idx, residuals, perm_indices, ...) -> np.ndarray``:
+  Linear-complexity one-step Rao score test update in $O(n \cdot B)$ FLOPs without refitting.
+- ``classical_p_values(X, y, fit_intercept, *, robust_se, groups) -> np.ndarray``:
+  Asymptotic p-values utilizing fast JAX observed Fisher information inversion and
+  heteroscedasticity-robust Huber–White sandwich estimators.
+- ``fit_reduced(family, X_red, y, fit_intercept, reduced_model=...) -> tuple[Any, np.ndarray]``:
+  Fits null reduced models, integrating out-of-fold cross-fitting for Double/Debiased
+  Machine Learning (DML; Chernozhukov et al. 2018) with Neyman orthogonality.
+
+Family Resolution & Registry
+----------------------------
+The :func:`resolve_family` helper maps strings (``"auto"``, ``"linear"``, ``"logistic"``,
+etc.) or existing instances to configured family objects. Users can register custom
+families via :func:`register_family`.
+
+Cross-Module Integration
+------------------------
+* Inbound: Resolved by :func:`~.engine.PermutationEngine` and :func:`~.core.randomization_test_regression`.
+* Outbound: Dispatches batch refits to :mod:`~._backends` and score updates to
+  :func:`~._backends._jax._glm_score_projection_row`.
+
+References
+----------
+McCullagh, P., & Nelder, J. A. (1989). *Generalized Linear Models* (2nd ed.). Chapman & Hall.
+
+Chernozhukov, V., Chetverikov, D., Demirer, M., Duflo, E., Hansen, C., Newey, W.,
+    & Robins, J. (2018). Double/debiased machine learning for treatment and
+    structural parameters. *The Econometrics Journal*, 21(1), C1–C68.
+
+Rao, C. R. (1948). Large sample tests of composite hypotheses. *Sankhyā*, 9(1), 44–56.
 """
 
 from __future__ import annotations
@@ -2357,15 +2409,21 @@ class LogisticFamily:
         fit_intercept: bool = True,
         randomization: str = "permute",
     ) -> np.ndarray:
-        """Score projection via Fisher-information-weighted projection.
+        r"""Score projection via Fisher-information-weighted projection.
 
         Computes the one-step Newton update for feature *j*:
 
-            Δβ̂_j = [(X'WX)⁻¹ X']_j @ e_π
+        .. math::
+            \Delta\hat\beta_j = [(X^\top W X)^{-1} X^\top]_j \, e_\pi
 
-        where W = μ̂(1 − μ̂) are the logistic working weights
-        evaluated at the reduced-model MLE, and e = y − μ̂_red
+        where :math:`W = \hat\mu(1 - \hat\mu)` are the logistic working weights
+        evaluated at the reduced-model MLE, and :math:`e = y - \hat\mu_{\mathrm{red}}`
         are the response-scale residuals.
+
+        Delegates to :func:`~._backends._jax._glm_score_projection_row` to compute
+        the projection row :math:`a_j = [(X^\top W X)^{-1} X^\top]_j` in :math:`O(n \cdot p^2)`
+        FLOPs with a single linear solve, enabling :math:`B` score tests in
+        :math:`O(n \cdot B)` operations without iterative refitting.
 
         Requires ``y`` to fit the reduced model and compute μ̂.
         """
@@ -3105,15 +3163,20 @@ class PoissonFamily:
         fit_intercept: bool = True,
         randomization: str = "permute",
     ) -> np.ndarray:
-        """Score projection via Fisher-information-weighted projection.
+        r"""Score projection via Fisher-information-weighted projection.
 
         Computes the one-step Newton update for feature *j*:
 
-            Δβ̂_j = [(X'WX)⁻¹ X']_j @ e_π
+        .. math::
+            \Delta\hat\beta_j = [(X^\top W X)^{-1} X^\top]_j \, e_\pi
 
-        where W = μ̂ are the Poisson working weights (canonical link)
-        evaluated at the reduced-model MLE, and e = y − μ̂_red are
-        the response-scale residuals.
+        where :math:`W = \hat\mu` are the Poisson working weights (canonical link)
+        evaluated at the reduced-model MLE, and :math:`e = y - \hat\mu_{\mathrm{red}}`
+        are the response-scale residuals.
+
+        Delegates to :func:`~._backends._jax._glm_score_projection_row` to compute
+        the projection row :math:`a_j = [(X^\top W X)^{-1} X^\top]_j`, enabling :math:`B`
+        score tests in :math:`O(n \cdot B)` operations without iterative refitting.
 
         Requires ``y`` to fit the reduced model and compute μ̂.
         """
@@ -3825,15 +3888,20 @@ class NegativeBinomialFamily:
         fit_intercept: bool = True,
         randomization: str = "permute",
     ) -> np.ndarray:
-        """Score projection via Fisher-information-weighted projection.
+        r"""Score projection via Fisher-information-weighted projection.
 
         Computes the one-step Newton update for feature *j*:
 
-            Δβ̂_j = [(X'WX)⁻¹ X']_j @ e_π
+        .. math::
+            \Delta\hat\beta_j = [(X^\top W X)^{-1} X^\top]_j \, e_\pi
 
-        where W = μ̂ / (1 + α·μ̂) are the NB2 working weights
+        where :math:`W = \hat\mu / (1 + \alpha\hat\mu)` are the NB2 working weights
         (canonical link) evaluated at the reduced-model MLE, and
-        e = y − μ̂_red are the response-scale residuals.
+        :math:`e = y - \hat\mu_{\mathrm{red}}` are the response-scale residuals.
+
+        Delegates to :func:`~._backends._jax._glm_score_projection_row` to compute
+        the projection row :math:`a_j = [(X^\top W X)^{-1} X^\top]_j`, enabling :math:`B`
+        score tests in :math:`O(n \cdot B)` operations without iterative refitting.
 
         Requires ``y`` to fit the reduced model and compute μ̂.
         """

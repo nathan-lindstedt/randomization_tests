@@ -1,51 +1,70 @@
-"""Kennedy (1995) — exposure-model residual permutation.
+r"""Kennedy exposure-model residual permutation testing under FWL partialling.
 
-The Kennedy method separates the effect of confounders from the effect
-of the features of interest by permuting *exposure-model residuals*
-rather than the response variable Y.  This idea is rooted in the
-Frisch–Waugh–Lovell (FWL) theorem:
+The Kennedy (1995) method isolates the unique contribution of tested predictors by
+permuting *exposure-model residuals* rather than the response variable $Y$.
+This principle is grounded in the Frisch–Waugh–Lovell (FWL) theorem:
 
-    In a multiple regression Y ~ X + Z, the coefficient on X is
-    identical whether we regress Y on (X, Z) jointly, or first
-    partial out Z from X (regress X on Z, take residuals e_X) and
-    then regress Y on e_X.
+    In a multiple linear regression $Y \sim X + Z$, the coefficient on $X$ is
+    identical whether we regress $Y$ on $(X, Z)$ jointly, or first partial out
+    $Z$ from $X$ (regress $X$ on $Z$, extract residuals $e_X$), and then regress
+    $Y$ on $e_X$.
 
-Kennedy extends this to permutation testing: permuting the exposure
-residuals e_X breaks any association between X and Y while preserving
-the confounders’ relationship to Y intact.  This is valid under the
-null hypothesis that X has no effect on Y after controlling for Z.
+Primary Components
+------------------
+* :class:`KennedyIndividualStrategy`: Per-feature exposure residual permutation test.
+* :class:`KennedyJointStrategy`: Group-level omnibus exposure residual permutation test.
 
-**Guarantee**: the exposure
-residuals are ESTIMATED (X̂ from a finite-sample OLS fit of X on Z),
-so they are only approximately exchangeable — correlated through the
-exposure-model hat matrix.  Type I control is therefore
-**asymptotically exact**, not finite-sample exact (Anderson &
-Robinson 2001).  Anderson & Legendre (1999) found Kennedy-type
-schemes can inflate Type I error at very small n; prefer
-``method="freedman_lane"`` (reduced-model residual permutation) when
-n is small and the linear confounder model is trusted.  The
-permutation null of the coefficient is centred at zero — the same
-property that makes the ``|β*| ≥ |β̂|`` p-value count valid.
+Mathematical Foundations & Partialling Theory
+---------------------------------------------
+For each tested feature $X_j$, the nuisance block comprises conditioning covariates $Z$:
 
-Two strategies:
+.. math::
+    X_j = Z \gamma_j + e_{X_j}, \quad \hat X_j = Z \hat\gamma_j, \quad e_{X_j} = X_j - \hat X_j
 
-* **KennedyIndividualStrategy** — per-coefficient test.  For each
-  non-confounder predictor X_j:
-  1. Regress X_j on confounders Z to get exposure residuals e_{X_j}.
-  2. Permute e_{X_j} to get π(e_{X_j}).
-  3. Reconstruct X*_j = X̂_j + π(e_{X_j}) where X̂_j is the
-     confounder-predicted part.
-  4. Refit Y ~ (X*_1, …, X*_j, …, X_p) and record β*_j.
+Permuting $e_{X_j}$ breaks any association between $X_j$ and $Y$ while preserving
+the relationship between conditioning covariates $Z$ and $Y$:
 
-* **KennedyJointStrategy** — group-level improvement test.  All
-  non-confounder exposure residuals are permuted **row-wise** (same
-  shuffle for all columns) to preserve inter-predictor correlations.
-  The test statistic is the improvement in fit:
-  Δ = S(reduced) − S(full), where S is the family’s score.
+.. math::
+    X^*_j = \hat X_j + \pi(e_{X_j})
 
-Reference:
-    Kennedy, P. E. (1995). Randomization tests in econometrics.
-    *J. Business & Economic Statistics*, 13(1), 85–94.
+[ Guarantee: Asymptotically Exact (Kennedy) ]
+Exposure residuals are estimated from finite-sample fits and correlated through
+the exposure hat matrix, providing asymptotic size control (Anderson & Robinson 2001).
+
+Automated Conditional Fallback
+------------------------------
+When explicit `confounders` are supplied, $Z$ comprises those columns. When
+`confounders=None`, the implementation automatically falls back to testing each
+feature $X_j$ conditionally against all other available features $X_{-j}$ (emitting
+an informative advisory). This ensures that Kennedy testing always evaluates partial,
+conditional hypotheses rather than unconditional marginal associations.
+
+Varying-X Tensor Dispatch & Sign-Flipping
+-----------------------------------------
+Because column $j$ of the design matrix is replaced with permuted residuals per draw,
+the design matrix varies across replicates:
+- Operates via the **varying-X batch tensor** path ($X \in \mathbb{R}^{B \times n \times p}$)
+  in both NumPy and JAX backends.
+- Supports Rademacher sign-flipping ($s \odot e_X$) when errors are conditionally symmetric.
+
+Cross-Module Integration
+------------------------
+* Inbound: Instantiated by :func:`~._strategies.resolve_strategy` when
+  ``method="kennedy"`` or ``"kennedy_joint"``.
+* Outbound: Dispatches batch refits to :meth:`~._backends.BackendProtocol.batch_ols_varying_X`
+  or GLM varying-X batch solvers.
+
+References
+----------
+Kennedy, P. E. (1995). Randomization tests in econometrics.
+    *Journal of Business & Economic Statistics*, 13(1), 85–94.
+
+Anderson, M. J., & Legendre, P. (1999). An empirical comparison of permutation
+    methods for tests of partial regression coefficients in a linear model.
+    *Journal of Statistical Computation and Simulation*, 62(3), 271–303.
+
+Anderson, M. J., & Robinson, J. (2001). Permutation tests for linear models.
+    *Australian & New Zealand Journal of Statistics*, 43(1), 75–88.
 """
 
 from __future__ import annotations

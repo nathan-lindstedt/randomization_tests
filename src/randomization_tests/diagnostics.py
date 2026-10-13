@@ -1,64 +1,95 @@
-"""Extended model diagnostics for permutation test results.
+r"""Extended model diagnostics, confidence intervals, and sensitivity analysis.
 
-Provides per-predictor and model-level diagnostics that help users
-assess whether the assumptions underlying permutation tests are met
-and interpret coefficient importance.
+Provides comprehensive per-predictor, model-level, and design diagnostics to assess
+exchangeability assumptions, quantify collinearity and influence, evaluate exact
+and profile likelihood confidence intervals, and bound sensitivity to unmeasured confounding.
 
-Per-predictor diagnostics:
+Per-Predictor Diagnostics
+-------------------------
+* **Standardized Coefficients** (:func:`compute_standardized_coefs`):
+  Rescales coefficients so predictors measured on disparate scales are directly comparable.
+  For linear models: $\beta^*_j = \beta_j \cdot \text{SD}(X_j) / \text{SD}(Y)$.
+  For logistic and discrete models: $\beta^*_j = \beta_j \cdot \text{SD}(X_j)$ (log-odds change per SD of X).
 
-* **Standardized coefficients** — rescale coefficients so that
-  predictors measured on different scales are comparable.  For linear
-  models: β* = β · SD(X_j) / SD(Y).  For logistic models:
-  β* = β · SD(X_j) (log-odds change per SD of X).
+* **Variance Inflation Factor (VIF)** (:func:`compute_vif`):
+  Quantifies variance inflation from linear collinearity: $\text{VIF}_j = 1 / (1 - R^2_j)$.
+  $\text{VIF} > 5$ indicates problematic collinearity; $\text{VIF} > 10$ indicates severe instability.
 
-* **Variance Inflation Factor (VIF)** — quantifies multicollinearity.
-  VIF_j = 1 / (1 − R²_j) where R²_j is the R² from regressing X_j on
-  all other predictors.  VIF > 5 indicates problematic collinearity;
-  VIF > 10 is severe.  High VIF makes coefficient estimates unstable
-  regardless of whether you use permutation or asymptotic inference.
+* **Exposure R²** (:func:`compute_exposure_r_squared`):
+  Computes $R^2_{X_j \mid Z}$ measuring collinearity between each tested predictor and the
+  conditioning confounder set $Z$. High values signal variance starvation in partial tests.
 
-* **Monte Carlo standard error** — the SE of the empirical p-value
-  itself, due to the finite number of permutations B:
-  SE = √[p̂(1 − p̂) / (B + 1)].  Reports precision of the p-value
-  estimate so users know when to increase B.
+* **Monte Carlo Standard Error** (:func:`compute_monte_carlo_se`):
+  Quantifies sampling noise in the empirical p-value from drawing $B$ permutations:
+  $\text{SE}_{\text{MC}} = \sqrt{\hat p(1 - \hat p) / (B + 1)}$.
 
-* **Permutation-vs-asymptotic divergence** — flags predictors where the
-  empirical (permutation) and classical (asymptotic) p-values lead to
-  different conclusions at the chosen significance level.  Divergence
-  highlights exactly where the permutation test adds value over
-  classical inference.
+* **Permutation-vs-Asymptotic Divergence** (:func:`compute_divergence_flags`):
+  Flags features where empirical (permutation) and classical (asymptotic) p-values lead
+  to differing significance decisions at nominal significance levels ($\alpha \in \{0.05, 0.01, 0.001\}$).
 
-Model-level diagnostics:
+Model-Level Diagnostics
+-----------------------
+* **Breusch–Pagan Test** (:func:`compute_breusch_pagan`):
+  Tests for heteroscedasticity in linear models (Breusch & Pagan 1979). Significant
+  heteroscedasticity violates unit exchangeability underlying ter Braak residual shuffling.
 
-* **Breusch-Pagan test** (linear only) — tests the null hypothesis of
-  homoscedasticity (constant error variance).  Significant results
-  indicate heteroscedastic residuals, which violates the
-  exchangeability assumption underlying the ter Braak method.
+* **Deviance Residual Diagnostics** (:func:`compute_deviance_residual_diagnostics`):
+  Summarises GLM deviance residuals (mean $\approx 0$, variance $\approx 1$, outliers $|d_i| > 2$).
+  Includes a non-parametric runs test on sorted fitted values to detect model misspecification.
 
-  Reference: Breusch, T. S. & Pagan, A. R. (1979). A simple test for
-  heteroscedasticity and random coefficient variation.
-  *Econometrica*, 47(5), 1287–1294.
+* **Generalized Cook's Distance** (:func:`compute_cooks_distance`):
+  Identifies influential observations ($D_i > 4/n$). Supported across all linear and GLM families,
+  leveraging JAX autodiff empirical influence vectors ($D_i = \frac{1}{p} s_i^\top H^{-1} s_i$)
+  for families (Ordinal, Multinomial) unsupported by statsmodels.
 
-* **Deviance residual diagnostics** (logistic only) — summarises the
-  deviance residuals of the fitted model.  Under a correctly specified
-  model, deviance residuals should have mean ≈ 0, variance ≈ 1, and
-  no systematic patterns.  A high count of |d_i| > 2 flags poorly fit
-  observations.  A runs test on the sorted residuals detects
-  non-exchangeability patterns.
+* **Permutation Coverage** (:func:`compute_permutation_coverage`):
+  The proportion $B / n!$ of the total symmetric group reference space sampled.
 
-* **Cook's distance** — identifies influential observations.  Both linear
-  and logistic models delegate to the statsmodels influence API
-  (``OLSInfluence`` / ``GLMInfluence``), which computes
-  D_i = r*²_i · h_i / (p · (1 − h_i)).  Observations with D_i > 4/n
-  are flagged.
+Confidence Intervals Suite
+--------------------------
+* **Profile Likelihood CIs** (:func:`compute_profile_ci`):
+  Inverts profile likelihood deviance tests via vectorised bisection search,
+  $2[\text{NLL}_{\text{profile}}(\beta_j) - \text{NLL}_{\text{full}}] \le \chi^2_1(1 - \alpha)$.
+  Captures asymmetric likelihood curvature and includes separation guards returning NaN.
 
-  Reference: Cook, R. D. (1977). Detection of influential observation
-  in linear regression. *Technometrics*, 19(1), 15–18.
+* **Permutation-Inversion CIs** (:func:`compute_permutation_ci`):
+  Nonparametric confidence intervals constructed by shift-inverting the permutation test statistic.
 
-* **Effective permutation coverage** — the ratio B / n!, representing
-  what fraction of the total permutation space was sampled.  For small
-  n this is informative (e.g., 5000/40320 = 12.4% for n=8); for large
-  n it is essentially zero and reported as such.
+* **Exact Binomial P-Value CIs** (:func:`compute_pvalue_ci`):
+  Clopper–Pearson exact confidence intervals for the true permutation p-value under finite $B$.
+
+* **Wald & Standardized CIs** (:func:`compute_wald_ci`, :func:`compute_standardized_ci`):
+  Classical asymptotic confidence intervals and standardized effect size bounds.
+
+Sensitivity Analysis for Unmeasured Confounding
+-----------------------------------------------
+* **E-Values** (:func:`compute_e_value`):
+  Evaluates the minimum strength of association an unmeasured confounder must have with
+  both exposure and outcome to fully explain away observed associations (VanderWeele & Ding 2017).
+
+* **Rosenbaum Bounds** (:func:`rosenbaum_bounds`):
+  Calculates sensitivity parameter $\Gamma$ bounds for binary exposures, quantifying how much
+  hidden bias would be required to overturn statistical significance (Rosenbaum 2002).
+
+Cross-Module Integration
+------------------------
+* Inbound: Called by :func:`~.core.randomization_test_regression` to evaluate
+  post-fit diagnostics and confidence intervals; called by :func:`~.display.print_diagnostics_table`.
+* Outbound: Delegates to :mod:`statsmodels.api`, :mod:`scipy.stats`, and JAX autodiff
+  kernels in :mod:`~._backends._jax`.
+
+References
+----------
+Breusch, T. S., & Pagan, A. R. (1979). A simple test for heteroscedasticity and
+    random coefficient variation. *Econometrica*, 47(5), 1287–1294.
+
+Cook, R. D. (1977). Detection of influential observation in linear regression.
+    *Technometrics*, 19(1), 15–18.
+
+VanderWeele, T. J., & Ding, P. (2017). Sensitivity analysis in observational research:
+    introducing the E-value. *Annals of Internal Medicine*, 167(4), 268–274.
+
+Rosenbaum, P. R. (2002). *Observational Studies* (2nd ed.). Springer.
 """
 
 from __future__ import annotations

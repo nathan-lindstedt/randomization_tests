@@ -1,19 +1,66 @@
-"""Core permutation testing orchestrator.
+r"""Permutation testing orchestrator for linear, generalized linear, and mixed models.
 
-This module is the single entry-point for running a permutation test.
-It delegates to three subsystems:
+This module serves as the primary high-level entrypoint (Tier 1 of the 7-tier
+inference abstraction tower) for executing permutation and sign-flip regression
+tests via :func:`randomization_test_regression`.
 
-1. **Engine** (:mod:`randomization_tests.engine`) — resolves the
-   family, backend, and shared state (observed model, permutation
-   indices).
-2. **Strategy** (:mod:`randomization_tests._strategies`) — executes
-   the chosen permutation algorithm (ter Braak, Kennedy,
-   Freedman–Lane).
-3. **Result packaging** — computes p-values, diagnostics, and
-   constructs the typed result objects.
+Execution Pipeline
+------------------
+The orchestrator coordinates the testing workflow across three subsystems:
 
-The five permutation strategies are documented in their respective
-modules under ``_strategies/``.
+1. **Permutation Engine** (:mod:`randomization_tests.engine`):
+   Resolves the model family, calibrates nuisance parameters and variance components,
+   validates response compatibility, selects the hardware backend (NumPy vs JAX),
+   constructs random-effects designs or longitudinal $AR(p)$ whitening transforms,
+   fits the observed model, and pre-generates unique permutation matrices.
+
+2. **Testing Strategies** (:mod:`randomization_tests._strategies`):
+   Executes one of nine statistical testing strategies:
+   - ``"ter_braak"``: Full-model residual permutation with recentred null.
+   - ``"kennedy"`` / ``"kennedy_joint"``: Exposure-residual permutation under FWL partialling.
+   - ``"freedman_lane"`` / ``"freedman_lane_joint"``: Reduced-model residual permutation
+     with support for Double/Debiased Machine Learning (DML) cross-fitting.
+   - ``"manly"`` / ``"manly_joint"``: Direct response permutation for discrete outcomes.
+   - ``"score"`` / ``"score_joint"``: Null tangent-space Rao score projection without refitting.
+
+3. **Inference & Result Packaging** (:mod:`randomization_tests._results`):
+   Calculates exact empirical (Phipson & Smyth 2010) and classical asymptotic p-values,
+   computes comprehensive diagnostics (VIF, Breusch–Pagan, deviance residuals, autodiff
+   Cook's distance, E-values), evaluates profile likelihood and exact confidence
+   intervals, and packages results into immutable dataclasses.
+
+Statistical Testing Methods & Guarantees
+----------------------------------------
+* ``"freedman_lane"``: [ Guarantee: Asymptotically Exact (Canonical Freedman–Lane) ]
+* ``"freedman_lane"`` with ``reduced_model``: [ Guarantee: Asymptotically Exact (DML) ]
+* ``"manly"``: [ Guarantee: Finite-Sample Exact ] (for the complete null $Y \perp X$)
+* ``"score"`` / ``"score_joint"``: [ Guarantee: Asymptotically Exact (Score) ]
+* ``randomization="sign_flip"``: [ Guarantee: Exact Under Symmetry ]
+
+Cross-Module Integration
+------------------------
+* Inbound: Public user calls to :func:`randomization_test_regression`.
+* Outbound: Delegates to :class:`~.engine.PermutationEngine`, resolves strategies via
+  :func:`~._strategies.resolve_strategy`, calculates p-values via :func:`~.pvalues.calculate_p_values`,
+  and evaluates diagnostics in :mod:`~.diagnostics`.
+
+References
+----------
+Freedman, D., & Lane, D. (1983). A nonstochastic interpretation of reported
+    significance levels. *Journal of Business & Economic Statistics*, 1(4), 292–298.
+
+Kennedy, P. E. (1995). Randomization tests in econometrics. *Journal of Business &
+    Economic Statistics*, 13(1), 85–94.
+
+ter Braak, C. J. F. (1992). Permutation versus bootstrap significance tests in
+    multiple regression and ANOVA. In *Bootstrapping and Related Techniques* (pp. 79–86).
+
+Manly, B. F. J. (1997). *Randomization, Bootstrap and Monte Carlo Methods in Biology*
+    (2nd ed.). Chapman & Hall.
+
+Chernozhukov, V., Chetverikov, D., Demirer, M., Duflo, E., Hansen, C., Newey, W.,
+    & Robins, J. (2018). Double/debiased machine learning for treatment and
+    structural parameters. *The Econometrics Journal*, 21(1), C1–C68.
 """
 
 from __future__ import annotations

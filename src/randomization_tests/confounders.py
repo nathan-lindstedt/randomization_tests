@@ -1,68 +1,77 @@
-"""Confounder sieve via correlation screening, mediation, moderation & collider analysis.
+r"""Causal confounder sieve, mediation analysis, and sensitivity bounds.
 
-Controlling for the right variables is critical in observational studies.
-The confounder sieve identifies true confounders by systematically
-pulling out variables that play other causal roles — **colliders**,
-**mediators**, and **moderators** — from the set of candidates that
-pass dual-correlation screening.
+Controlling for the correct conditioning set is critical in observational studies.
+The confounder sieve identifies true confounders by systematically distinguishing
+them from variables that play other structural causal roles—**colliders**,
+**mediators**, and **moderators**—among candidate covariates that pass dual-correlation screening.
 
-Causal roles:
+Causal Roles & Directed Acyclic Graphs
+--------------------------------------
+* **Confounder** ($X \leftarrow Z \rightarrow Y$): Causes both exposure and outcome,
+  inducing spurious association. Must be controlled for.
+* **Mediator** ($X \rightarrow M \rightarrow Y$): Lies on the causal pathway.
+  Conditioning on a mediator blocks part of the true total causal effect.
+* **Moderator**: Modifies the magnitude or direction of the $X \rightarrow Y$ effect
+  (interaction). Informational—does not invalidate the conditional testing set.
+* **Collider** ($X \rightarrow Z \leftarrow Y$): Mutually caused by $X$ and $Y$.
+  Conditioning on a collider induces spurious M-bias association—must *not* be controlled.
 
-* **Confounder** (X ← Z → Y): causes both X and Y, creating a
-  spurious association.  Should be controlled for.
-* **Mediator** (X → M → Y): lies on the causal pathway.  Controlling
-  for it removes part of the *real* effect.
-* **Moderator**: changes the *strength* of the X → Y relationship
-  (interaction effect).  Informational — does not invalidate the
-  Kennedy conditioning set.
-* **Collider** (X → Z ← Y): both X and Y cause Z.  Conditioning on a
-  collider **creates** spurious association — must *not* be controlled.
+Workflow & Analysis Capabilities
+--------------------------------
+1. :func:`screen_potential_confounders` — Screen candidate variables correlated
+   with both exposure $X$ and response $Y$. Supports Pearson, partial, and distance
+   correlation (Székely & Rizzo 2007, 2013) with multiple-testing correction.
+2. :func:`identify_confounders` — Orchestrates the four-stage causal sieve
+   (collider $\to$ mediator $\to$ moderator $\to$ confounder). Returns a
+   :class:`~._results.ConfounderAnalysisResult` for a single predictor, or a
+   :class:`~._results.ConfounderAnalysisResultSet` across multiple predictors.
+3. :func:`mediation_analysis` — Evaluates indirect mediation pathways ($a \cdot b$)
+   via Baron & Kenny (1986) and Preacher & Hayes (2004, 2008), supporting percentile
+   and BCa bootstrap confidence intervals with cluster-robust block resampling
+   (Cameron, Gelbach & Miller 2008).
+4. :func:`moderation_analysis` — Assesses interaction effects ($X \cdot M$) to
+   determine whether candidate variables moderate the strength of the exposure effect.
+5. :func:`compute_e_value` & :func:`rosenbaum_bounds` — Re-exported sensitivity
+   analysis utilities quantifying robustness to unmeasured confounding.
 
-Workflow:
-    1. :func:`screen_potential_confounders` – find variables correlated
-       with both X and Y.  Supports Pearson, partial, and distance
-       correlation with optional multiple-testing correction.
-    2. :func:`identify_confounders` – orchestrates the four-stage sieve
-       (collider → mediator → moderator → confounder), returning a
-       :class:`~randomization_tests._results.ConfounderAnalysisResult`.
+Exploratory Nature & Statistical Guarantees
+-------------------------------------------
+The sieve is an **exploratory** tool for data-driven confounder selection.
+For guaranteed Type I error control, specify ``confounders=`` based on domain knowledge
+or a pre-registered analysis plan. Permutation p-values from downstream tests are
+exact conditional on the selected conditioning set.
 
-The sieve is an **exploratory** tool for data-driven confounder
-selection.  For guaranteed Type I error control, specify
-``confounders=`` based on domain knowledge or a pre-registered
-analysis plan.  The permutation p-value is exact conditional on the
-selected conditioning set.
+Cross-Module Integration
+------------------------
+* Inbound: Public user calls to sieve and sensitivity functions.
+* Outbound: Evaluates candidate path regressions via :func:`~.families.resolve_family`
+  and exports typed containers from :mod:`~._results`.
 
-References:
-    Baron, R. M. & Kenny, D. A. (1986). The moderator–mediator
-    variable distinction. *Journal of Personality and Social
-    Psychology*, 51(6), 1173–1182.
+References
+----------
+Baron, R. M., & Kenny, D. A. (1986). The moderator–mediator variable distinction.
+    *Journal of Personality and Social Psychology*, 51(6), 1173–1182.
 
-    Preacher, K. J. & Hayes, A. F. (2004). SPSS and SAS procedures for
-    estimating indirect effects in simple mediation models.  *Behavior
-    Research Methods*, 36(4), 717–731.
+Preacher, K. J., & Hayes, A. F. (2004). SPSS and SAS procedures for estimating
+    indirect effects in simple mediation models. *Behavior Research Methods*, 36(4), 717–731.
 
-    Preacher, K. J. & Hayes, A. F. (2008). Asymptotic and resampling
-    strategies for assessing and comparing indirect effects in multiple
-    mediator models.  *Behavior Research Methods*, 40(3), 879–891.
+Preacher, K. J., & Hayes, A. F. (2008). Asymptotic and resampling strategies for assessing
+    and comparing indirect effects in multiple mediator models. *Behavior Research Methods*, 40(3), 879–891.
 
-    Efron, B. (1987). Better bootstrap confidence intervals.  *Journal
-    of the American Statistical Association*, 82(397), 171–185.
+Efron, B. (1987). Better bootstrap confidence intervals. *Journal of the American
+    Statistical Association*, 82(397), 171–185.
 
-    Székely, G. J. & Rizzo, M. L. (2007). Measuring and testing
-    dependence by correlation of distances.  *The Annals of
-    Statistics*, 35(6), 2769–2794.
+Székely, G. J., & Rizzo, M. L. (2007). Measuring and testing dependence by correlation
+    of distances. *The Annals of Statistics*, 35(6), 2769–2794.
 
-    Székely, G. J. & Rizzo, M. L. (2013). The distance correlation
-    t-test of independence in high dimension.  *Journal of
-    Multivariate Analysis*, 117, 193–213.
+Székely, G. J., & Rizzo, M. L. (2013). The distance correlation t-test of independence
+    in high dimension. *Journal of Multivariate Analysis*, 117, 193–213.
 
-    VanderWeele, T. J. & Ding, P. (2017). Sensitivity analysis in
-    observational research: introducing the E-value.  *Annals of
-    Internal Medicine*, 167(4), 268–274.
+VanderWeele, T. J., & Ding, P. (2017). Sensitivity analysis in observational research:
+    introducing the E-value. *Annals of Internal Medicine*, 167(4), 268–274.
 
-    Cameron, A. C., Gelbach, J. B. & Miller, D. L. (2008).
-    Bootstrap-based improvements for inference with clustered errors.
-    *Review of Economics and Statistics*, 90(3), 414–427.
+Cameron, A. C., Gelbach, J. B., & Miller, D. L. (2008). Bootstrap-based improvements
+    for inference with clustered errors. *Review of Economics and Statistics*, 90(3), 414–427.
 """
 
 from __future__ import annotations

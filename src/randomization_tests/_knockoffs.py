@@ -1,16 +1,62 @@
-"""Model-X and Fixed-X Knockoff filter module (Phase 8, Steps 21-23).
+r"""Knockoff filter feature selection with controlled False Discovery Rate (FDR).
 
-Implements finite-sample FDR-controlled feature selection via the knockoff framework:
-- Barber & Candès (2015, Ann. Statist.): Fixed-X knockoffs (finite-sample exact FDR).
-- Candès, Fan, Janson & Lv (2018, JRSS-B): Model-X knockoffs (model-X approximate FDR).
+Implements finite-sample False Discovery Rate (FDR) controlled feature selection via
+the knockoff filter framework (Barber & Candès 2015; Candès, Fan, Janson & Lv 2018).
+
+Primary Components
+------------------
+* :func:`knockoff_test`: High-level entrypoint for FDR-controlled variable selection.
+* :class:`~._results.KnockoffResult`: Typed frozen dataclass container storing selected
+  features, W-statistics, threshold $\tau_+$, and diagnostic metrics.
+
+Mathematical Foundations & FDR Control
+--------------------------------------
+Constructs synthetic "knockoff" features $\tilde X$ that serve as negative controls:
+1. **Swap Invariance**: Swapping any subset of original features $X_j$ with their knockoff
+   counterparts $\tilde X_j$ preserves the joint covariate covariance structure:
+   $(X, \tilde X)_{\text{swap}(S)}^\top (X, \tilde X)_{\text{swap}(S)} = (X, \tilde X)^\top (X, \tilde X)$.
+2. **Conditional Independence**: Knockoffs are constructed without reference to the outcome $Y$,
+   satisfying $\tilde X \perp Y \mid X$.
+
+Two Supported Knockoff Regimes:
+* **Fixed-X Knockoffs** (Barber & Candès 2015):
+  Requires $n \ge 2p$. Constructs knockoffs deterministically via Gram matrix geometry:
+  $\tilde X = X(I - \Sigma^{-1} \text{diag}(s)) + \tilde U C$, where $C^\top C = 2\text{diag}(s) - \text{diag}(s)\Sigma^{-1}\text{diag}(s)$.
+  [ Guarantee: Finite-Sample Exact ]
+* **Model-X Knockoffs** (Candès et al. 2018):
+  Supports high-dimensional settings ($p > n$). Employs second-order Gaussian knockoffs
+  with equicorrelated diagonal shifts and Ledoit–Wolf empirical covariance shrinkage.
+  [ Guarantee: Model-X Approximate ]
+
+Feature Importance Statistics & Knockoff+ Threshold
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Feature importance is evaluated via signed contrast statistics:
+
+.. math::
+    W_j = \lvert \hat\beta_j \rvert - \lvert \hat{\tilde\beta}_j \rvert
+
+The data-dependent knockoff+ selection threshold is determined by:
+
+.. math::
+    \tau_+ = \min \left\{ t > 0 : \frac{1 + \#\{j : W_j \le -t\}}{\#\{j : W_j \ge t\} \vee 1} \le q \right\}
+
+guaranteeing $\mathbb{E}[\text{FDP}] \le q$ at target FDR level $q \in (0, 1)$.
+
+Cross-Module Integration
+------------------------
+* Inbound: Public user calls to :func:`knockoff_test`.
+* Outbound: Evaluates feature importance via :mod:`sklearn.linear_model`, verifies
+  swap exchangeability via :func:`~._kernel_tests.mmd_test`, and packages output
+  into :class:`~._results.KnockoffResult`.
 
 References
 ----------
 Barber, R. F., & Candès, E. J. (2015). Controlling the false discovery rate via
-    knockoffs. The Annals of Statistics, 43(5), 2055-2085.
-Candès, E., Fan, Y., Janson, L., & Lv, J. (2018). Panning for gold:‘model-X’
-    knockoffs for high dimensional controlled variable selection. Journal of the
-    Royal Statistical Society Series B: Statistical Methodology, 80(3), 551-577.
+    knockoffs. *The Annals of Statistics*, 43(5), 2055–2085.
+
+Candès, E., Fan, Y., Janson, L., & Lv, J. (2018). Panning for gold: 'model-X'
+    knockoffs for high dimensional controlled variable selection. *Journal of the
+    Royal Statistical Society Series B: Statistical Methodology*, 80(3), 551–577.
 """
 
 from __future__ import annotations

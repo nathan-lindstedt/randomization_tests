@@ -1,55 +1,74 @@
-"""Freedman–Lane (1983) — reduced-model residual permutation.
+r"""Freedman–Lane reduced-model residual permutation and Double Machine Learning.
 
-Canonical algorithm (Freedman & Lane 1983; Anderson & Legendre 1999;
-Winkler et al. 2014, Table 2).  For each H₀(j): β_j = 0, the nuisance
-block is everything except the tested regressor — X_{−j} — and:
+Implements canonical reduced-model residual permutation testing (Freedman & Lane 1983)
+and Double/Debiased Machine Learning (DML; Chernozhukov et al. 2018) for partial
+regression inference in linear and generalized linear models.
 
-1. Fit the **reduced model** Y ~ X_{−j} to get fitted values ŷ₋ⱼ and
-   residuals e₋ⱼ = Y − ŷ₋ⱼ.
-2. **Permute** the reduced-model residuals: π(e₋ⱼ).
-3. **Reconstruct** Y* = ŷ₋ⱼ + π(e₋ⱼ) — the nuisance signal is
-   preserved, any real contribution of X_j is destroyed.
-4. **Refit** the full model on (X, Y*) and extract β*_j.
+Primary Components
+------------------
+* :class:`FreedmanLaneIndividualStrategy`: Per-feature partial regression test.
+* :class:`FreedmanLaneJointStrategy`: Group-level omnibus fit improvement test.
 
-The null draws β*_j are centred at zero — the property the package's
-``|β*| ≥ |β̂|`` p-value count and shift-inversion CIs require.
+Mathematical Foundations & Algorithm Flow
+-----------------------------------------
+For each tested feature $j$, the nuisance block comprises all remaining predictors
+$X_{-j}$. The 4-step canonical workflow operates as follows:
 
-Guarantee: reduced-model residuals are only approximately
-exchangeable under H₀ (correlated through the reduced-model hat
-matrix), so the test is **asymptotically exact**, not finite-sample
-exact (Anderson & Robinson 2001).  Anderson & Legendre (1999) found
-the Freedman–Lane scheme to have among the best small-sample Type I
-and power properties of the residual-permutation methods.
+1. **Reduced-Model Fit**: Fit $Y \sim X_{-j}$ to obtain predictions $\hat y_{-j}$
+   and response-scale residuals $e_{-j} = Y - \hat y_{-j}$.
+2. **Residual Randomization**: Randomize $e_{-j}$ via permutation $\pi(e_{-j})$ or
+   Rademacher sign-flipping $s \odot e_{-j}$ (when ``randomization="sign_flip"``).
+3. **Synthetic Outcome Reconstruction**: Form $Y^* = \hat y_{-j} + \pi(e_{-j})$.
+   The nuisance relationship between $X_{-j}$ and $Y$ is preserved, while any
+   true contribution from $X_j$ is destroyed under the null.
+4. **Full-Model Batch Refit**: Refit the full model on $(X, Y^*)$ and extract
+   the null slope draws $\beta^*_j$.
 
-Two strategies:
+Double/Debiased Machine Learning (DML) Integration
+--------------------------------------------------
+When `reduced_model` is supplied, this module executes Double/Debiased Machine Learning
+(DML; Chernozhukov et al. 2018) out-of-fold:
+- Cross-fits non-linear nuisance regressions $g(Z) = \mathbb{E}[Y \mid Z]$ and
+  $m(Z) = \mathbb{E}[X \mid Z]$ using scikit-learn estimators.
+- Achieves **Neyman orthogonality**, preventing first-order bias from non-linear
+  confounder leakage and protecting Type I error control against power collapse.
+- Employs `GroupKFold` when cluster labels are present to eliminate cross-fold leakage.
 
-* **FreedmanLaneIndividualStrategy** — per-coefficient test.  For
-  each tested feature j, permutes the X_{−j} reduced-model residuals
-  and refits the full model on Y*.  Confounder columns are never
-  tested; their slots carry the observed coefficients.
+Inferential Guarantees
+----------------------
+* **Linear / GLM Freedman–Lane**: [ Guarantee: Asymptotically Exact (Canonical Freedman–Lane) ]
+  Reduced-model residuals are correlated through the hat matrix, providing asymptotic
+  size control under exchangeability (Anderson & Robinson 2001).
+* **DML Freedman–Lane**: [ Guarantee: Asymptotically Exact (DML) ]
+  Asymptotically exact under root-n rate conditions on nuisance learners.
+* **Rademacher Sign-Flipping**: [ Guarantee: Exact Under Symmetry ]
+  Exact under conditional residual symmetry about zero.
 
-* **FreedmanLaneJointStrategy** — group-level improvement test.  The
-  nuisance block is the confounder set Z; permutes the Y ~ Z
-  reduced-model residuals, and both reduced and full models are refit
-  per permutation with the improvement in fit as the test statistic.
+Cross-Module Integration
+------------------------
+* Inbound: Instantiated by :func:`~._strategies.resolve_strategy` when
+  ``method="freedman_lane"`` or ``"freedman_lane_joint"``.
+* Outbound: Dispatches batch refits to :meth:`~._backends.BackendProtocol.batch_ols`
+  or GLM batch solvers; calls :func:`~.families.fit_reduced` for nuisance fitting.
 
-References:
-    Freedman, D. & Lane, D. (1983). A nonstochastic interpretation of
-    reported significance levels. *J. Business & Economic Statistics*,
-    1(4), 292–298.
+References
+----------
+Freedman, D., & Lane, D. (1983). A nonstochastic interpretation of reported
+    significance levels. *Journal of Business & Economic Statistics*, 1(4), 292–298.
 
-    Anderson, M. J. & Legendre, P. (1999). An empirical comparison of
-    permutation methods for tests of partial regression coefficients
-    in a linear model. *J. Statistical Computation and Simulation*,
-    62(3), 271–303.
+Chernozhukov, V., Chetverikov, D., Demirer, M., Duflo, E., Hansen, C., Newey, W.,
+    & Robins, J. (2018). Double/debiased machine learning for treatment and
+    structural parameters. *The Econometrics Journal*, 21(1), C1–C68.
 
-    Anderson, M. J. & Robinson, J. (2001). Permutation tests for
-    linear models. *Australian & New Zealand J. Statistics*, 43(1),
-    75–88.
+Anderson, M. J., & Legendre, P. (1999). An empirical comparison of permutation
+    methods for tests of partial regression coefficients in a linear model.
+    *Journal of Statistical Computation and Simulation*, 62(3), 271–303.
 
-    Winkler, A. M., Ridgway, G. R., Webster, M. A., Smith, S. M., &
-    Nichols, T. E. (2014). Permutation inference for the general
-    linear model. *NeuroImage*, 92, 381–397.
+Anderson, M. J., & Robinson, J. (2001). Permutation tests for linear models.
+    *Australian & New Zealand Journal of Statistics*, 43(1), 75–88.
+
+Winkler, A. M., Ridgway, G. R., Webster, M. A., Smith, S. M., & Nichols, T. E. (2014).
+    Permutation inference for the general linear model. *NeuroImage*, 92, 381–397.
 """
 
 from __future__ import annotations

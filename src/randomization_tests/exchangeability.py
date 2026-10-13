@@ -1,68 +1,37 @@
-"""Hierarchical exchangeability structures (Winkler et al. 2015 PALM).
+r"""Hierarchical exchangeability structures and multi-level block constraints.
 
-This module defines the :class:`ExchangeabilityTree` data structure for
-representing multi-level nested exchangeability constraints.  A tree
-encodes which observations may be permuted or sign-flipped together
-at each level of a hierarchy.
+This module defines the :class:`ExchangeabilityTree` data structure for representing
+multi-level nested exchangeability constraints (Winkler et al. 2015 PALM). A tree
+encodes which observations may be permuted or sign-flipped together at each level
+of a hierarchy (e.g. students within classrooms within schools).
 
-Single-level exchangeability (flat cells) is handled by the existing
-generators in :mod:`permutations`.  The tree extends this to nested
-designs such as students within classrooms within schools, where
-different levels require different permutation strategies.
+Primary Components
+------------------
+* :class:`ExchangeabilityTree`: Complete tree representation of hierarchical constraints.
+* :class:`ExchangeabilityNode`: Individual block node tracking children, indices, and strategies.
 
-**Nested vs. crossed factors:**
-
-*  **Nested** — classroom ⊂ school.  Each inner group belongs to
-   exactly one outer group.  Represented by this tree.
-*  **Crossed** — school × gender.  Independent factors whose
-   combinations form cells.  Handled by ``_cross_classify()`` in
-   :mod:`core` and produce flat cell arrays.
-
-If a design has both nested and crossed elements, the crossed factors
-should be pre-cross-classified into the labels at the appropriate
-tree level before calling :meth:`ExchangeabilityTree.from_labels`.
-
-Strategy semantics at each level
+Strategy Semantics at Each Level
 --------------------------------
+The strategy at level $k$ dictates the valid permutation operations:
+* ``"within"``: Preserves block boundaries. At leaf nodes, permutes freely within
+  each block ($\prod n_c!$). At non-leaf nodes, recurses into child blocks without swapping.
+* ``"between"``: Swaps child blocks as whole units under the same-size constraint
+  ($\prod_s \text{count}_s!$), then recurses into children.
+* ``"two-stage"``: Composes between-block unit swaps and within-block permutations,
+  contributing $(\prod_s \text{count}_s!) \times (\prod n_c!)$.
+* ``"whole"``: Treats all observations at this level as unconstrained ($n!$).
 
-The strategy at level *k* determines what happens among the children
-(sub-blocks) of each node at that level:
+Cross-Module Integration
+------------------------
+* Inbound: Constructed from user grouping inputs via :meth:`ExchangeabilityTree.from_labels`
+  or :meth:`ExchangeabilityTree.from_dataframe`.
+* Outbound: Consumed by :func:`~.permutations.generate_nested_permutations` and
+  cluster-level sign-flipping routines.
 
-``"within"``
-    Preserve block boundaries.  At the **leaf** level this means free
-    permutation of observations within each block (contribution
-    ∏ n_c!).  At a **non-leaf** level this means "don't swap blocks
-    at this level — recurse into children and let deeper strategies
-    control permutation" (contribution 1 × recursion).
-
-``"between"``
-    Swap children as whole units (same-size constraint).  Contribution
-    ∏_s count_s!  where count_s is the number of children sharing each
-    unique size.  Then recurse into children for deeper permutation.
-
-``"two-stage"``
-    Compose between-block swaps and within-block free permutation at
-    this level.  Contribution (∏_s count_s!) × (∏ n_c!).  This
-    ignores sub-structure within children (children are treated as
-    structureless blocks), matching the single-level semantics.
-
-``"whole"``
-    All observations at this level are freely permutable, ignoring
-    block boundaries entirely.  Contribution n!.
-
-Example
--------
->>> import numpy as np
->>> schools = np.array([0, 0, 0, 0, 1, 1, 1, 1])
->>> classes = np.array([0, 0, 1, 1, 2, 2, 3, 3])
->>> tree = ExchangeabilityTree.from_labels(
-...     [schools, classes],
-...     strategies=["between", "within"],
-... )
->>> tree.n_levels
-2
->>> tree.to_flat_cells()   # leaf-level cell labels
-array([0, 0, 1, 1, 2, 2, 3, 3])
+References
+----------
+Winkler, A. M., Webster, M. A., Vidaurre, D., Nichols, T. E., & Smith, S. M. (2015).
+    Multi-level block permutation. *NeuroImage*, 123, 253–268.
 """
 
 from __future__ import annotations

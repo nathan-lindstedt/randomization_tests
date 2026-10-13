@@ -1,76 +1,79 @@
-"""Kernel-based permutation tests: MMD, HSIC, and kernel regression.
+r"""Kernel-based permutation tests for two-sample, independence, and partial independence.
 
-Three test functions are provided:
+Provides non-parametric hypothesis testing in Reproducing Kernel Hilbert Spaces (RKHS)
+using Maximum Mean Discrepancy (MMD), the Hilbert-Schmidt Independence Criterion (HSIC),
+and residualized kernel partial regression.
 
-:func:`mmd_test`
-    Maximum Mean Discrepancy two-sample test.  Tests H₀: P = Q given
-    samples X ~ P and Y ~ Q.  Uses the unbiased U-statistic estimator
-    of MMD²:
+Primary Components
+------------------
+* :func:`mmd_test`: Maximum Mean Discrepancy two-sample test ($H_0: P = Q$).
+* :func:`hsic_test`: Hilbert-Schmidt Independence Criterion test ($H_0: X \perp Y$).
+* :func:`kernel_regression_test`: Kernel partial independence test ($H_0: X \perp Y \mid Z$)
+  with support for Double/Debiased Machine Learning (DML) non-linear confounding absorption.
+* :class:`~._results.KernelTestResult`: Typed frozen dataclass container storing observed
+  statistic, permutation p-value, and permuted null distribution.
 
-        MMD²_u(X, Y) = (1/n_x(n_x-1)) Σ_{i≠j} k(xᵢ, xⱼ)
-                     + (1/n_y(n_y-1)) Σ_{i≠j} k(yᵢ, yⱼ)
-                     - (2/(n_x n_y))  Σᵢⱼ k(xᵢ, yⱼ)
+Mathematical Foundations & Inferential Guarantees
+-------------------------------------------------
+1. **Maximum Mean Discrepancy (MMD)**:
+   Tests $H_0: P = Q$ given samples $X \sim P$ and $Y \sim Q$. Uses the unbiased
+   $U$-statistic estimator:
 
-    Permutation validity: relabelling the pooled sample Z = [X; Y] and
-    extracting the first n_x points as the permuted "X" group is an
-    exchangeable operation under H₀, so the permutation test is
-    **finite-sample exact** — given two hypotheses: (i) observations
-    are exchangeable under H₀ (e.g. iid sampling), and (ii) all
-    data-dependent kernel tuning (median-heuristic bandwidth, Nyström
-    landmarks) is computed ONCE from label-free pooled data, never
-    per-group or per-permutation.  This module satisfies (ii) by
-    construction — preserve that invariant when modifying it.
+   .. math::
+       \mathrm{MMD}^2_u(X, Y) = \frac{1}{n_x(n_x-1)} \sum_{i \neq j} k(x_i, x_j)
+                              + \frac{1}{n_y(n_y-1)} \sum_{i \neq j} k(y_i, y_j)
+                              - \frac{2}{n_x n_y} \sum_{i, j} k(x_i, y_j)
 
-:func:`hsic_test`
-    Hilbert-Schmidt Independence Criterion independence test.  Tests
-    H₀: X ⊥ Y given paired observations (Xᵢ, Yᵢ).  The biased HSIC
-    estimator is:
+   [ Guarantee: Finite-Sample Exact ]
+   Relabelling the pooled sample is exchangeable under $H_0$, providing finite-sample
+   exact Type I error control under label-free kernel bandwidth estimation.
 
-        HSIC(X, Y) = (1/n²) tr(K_c L_c)
+2. **Hilbert-Schmidt Independence Criterion (HSIC)**:
+   Tests $H_0: X \perp Y$ given paired observations $(X_i, Y_i)_{i=1}^n$. Uses the
+   doubly-centred $V$-statistic:
 
-    where K_c = H K H and L_c = H L H are the doubly-centred kernel
-    matrices (H = I - 11ᵀ/n).
+   .. math::
+       \mathrm{HSIC}(X, Y) = \frac{1}{n^2} \mathrm{Tr}(K_c L_c)
 
-    Permutation validity: permuting the rows of Y (breaking the
-    pairing) is exchangeable under H₀, so the test is **finite-sample
-    exact** under the same two hypotheses as :func:`mmd_test`
-    (pair-exchangeability under H₀; label-free one-time kernel tuning
-    per variable).
+   where $K_c = H K H$ and $L_c = H L H$ with centering projection $H = I - \frac{1}{n}\mathbf{1}\mathbf{1}^\top$.
+   The permutation null distribution has analytical expectation:
 
-:func:`kernel_regression_test`
-    Partial independence test after residualising out confounders Z.
-    Computes OLS residuals e_X = X - Z(ZᵀZ)⁻¹ZᵀX and
-    e_Y = Y - Z(ZᵀZ)⁻¹ZᵀY, then runs :func:`hsic_test` on
-    (e_X, e_Y) with a linear kernel on e_X.
+   .. math::
+       \mathbb{E}_\pi[\mathrm{HSIC}_b] = \frac{\mathrm{Tr}(K_c)\mathrm{Tr}(L_c)}{n^2(n-1)}
 
-    Unlike the two tests above, this one is residual-based: it is
-    **asymptotically exact** only, and OLS removes only the LINEAR
-    component of confounding (see the function docstring).
+   [ Guarantee: Finite-Sample Exact ]
 
-All three functions:
+3. **Residualized Kernel Regression**:
+   Tests conditional independence $H_0: X \perp Y \mid Z$. When ``reduced_model=None``,
+   computes OLS residuals $e_X$ and $e_Y$. When ``reduced_model`` is supplied,
+   cross-fits non-linear nuisance functions out-of-fold via Double/Debiased Machine
+   Learning (DML; Chernozhukov et al. 2018), eliminating non-linear confounder leakage.
+   [ Guarantee: Asymptotically Exact (DML) ]
 
-* Use :func:`~randomization_tests.permutations.generate_unique_permutations`
-  for the null distribution — consistent with the permutation infrastructure
-  used throughout the package.
-* Apply the Phipson–Smyth corrected p-value: (b + 1) / (B + 1) where
-  b is the count of permuted statistics ≥ the observed statistic.
-* Return a :class:`~randomization_tests._results.KernelTestResult`.
-* Support Nyström approximation for large n via the *max_landmarks*
-  parameter (passed through to :meth:`Kernel.evaluate`).
+Cross-Module Integration
+------------------------
+* Inbound: Public user calls, text analysis in :func:`~._text.text_mmd_test`, and
+  knockoff swap diagnostics in :mod:`~._knockoffs`.
+* Outbound: Evaluates kernel Gram matrices and Nyström approximations via :mod:`~._kernels`,
+  draws permutations via :func:`~.permutations.generate_unique_permutations`, and packages
+  into :class:`~._results.KernelTestResult`.
 
 References
 ----------
 Gretton, A., Borgwardt, K., Rasch, M., Schölkopf, B., & Smola, A. (2012).
-    A kernel two-sample test. *Journal of Machine Learning Research*, 13,
-    723–773.
+    A kernel two-sample test. *Journal of Machine Learning Research*, 13, 723–773.
 
 Gretton, A., Fukumizu, K., Teo, C. H., Song, L., Schölkopf, B., & Smola,
     A. J. (2008). A kernel statistical test of independence. *Advances in
-    Neural Information Processing Systems*, 20.
+    Neural Information Processing Systems*, 20, 585–592.
+
+Chernozhukov, V., Chetverikov, D., Demirer, M., Duflo, E., Hansen, C., Newey, W.,
+    & Robins, J. (2018). Double/debiased machine learning for treatment and
+    structural parameters. *The Econometrics Journal*, 21(1), C1–C68.
 
 Phipson, B., & Smyth, G. K. (2010). Permutation p-values should never be
     zero: calculating exact p-values when permutations are randomly drawn.
-    *Statistical Applications in Genetics and Molecular Biology*, 9(1).
+    *Statistical Applications in Genetics and Molecular Biology*, 9(1), Article 39.
 """
 
 from __future__ import annotations
