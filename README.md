@@ -76,7 +76,7 @@ Pearl, J. 2009. *Causality: models, reasoning, and inference.* 2nd Ed. Cambridge
 
 Pesarin, F. and L. Salmaso. 2010. *Permutation tests for complex data: theory, applications and software.* Chichester, UK: John Wiley & Sons.
 
-Rao, C. R. 1948. "Large sample tests of statistical hypotheses concerning several parameters with applications to problems of estimation." *Mathematical Proceedings of the Cambridge Philosophical Society*, 44(1):50-57. https://doi.org/10.1017/S0305004100023987.
+Rao, C. R. 1948. "Large sample tests of statistical hypotheses concerning several parameters with applications to problems of estimation." *Mathematical Proceedings of the Cambridge Philosophical Society*, 44(1):50-57.
 
 Rigdon, J. and M. G. Hudgens. 2015. "Randomization inference for treatment effects on a binary outcome." *Statistics in Medicine*, 34(6):924-935.
 
