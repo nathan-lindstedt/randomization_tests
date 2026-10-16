@@ -172,9 +172,9 @@ machine learning, conformal prediction, and invariance testing.
     equation-specific exchangeability tree.
   - **Directed edges** — pairwise causal claims ($|T(e)| = 1$, $X \to Y$), each
     testable individually via per-coefficient permutation tests.
-  - **Directed hyperedges** — higher-order parental mechanisms ($|T(e)| \ge 2$,
-    $\{X_1, X_2\} \to Y$), representing irreducible multiplicative interactions
-    $\prod_{u \in T(e)} X_u$ in the Generalized SEM (Dong et al. 2026).
+  - **Directed hyperedges** — higher-order parental mechanisms ($|T(e)| \ge 2$, $\{X_1, X_2\} \to Y$),
+    representing multilinear tail-tuple interaction terms $\prod_{u \in T(e)} X_u$ in the SEM
+    design matrix (Dong et al. 2026).
   - **Exchangeability trees** — optional per-node or global
     permutation constraints inherited from the `ExchangeabilityTree` system,
     enabling different structural equations to carry different exchangeability
@@ -207,16 +207,17 @@ machine learning, conformal prediction, and invariance testing.
 - [ ] Independent permutation per equation by default: each equation
   is tested in isolation, conditioning on observed values of upstream
   nodes.
-- [ ] Optional propagated mode: permute upstream residualized exposure, refit downstream,
-  enabling permutation-based indirect-effect testing through multi-step paths.
+- [ ] Optional path-residual mode: conduct path-specific edge permutations
+  (e.g., residual permutation of mediator $M$ conditional on $X$ to isolate $M \to Y$),
+  enabling exact testing across multi-step paths without composite-null inflation.
 - [ ] Collect per-equation results into a unified graph-level result
   object (`GraphTestResult`).
 
 ### Indirect effect extraction
 
-- [ ] For a declared path X → M → Y, compute the product of per-edge
-  coefficients ($a \times b$) and test $H_0: ab = 0$ via the
-  propagated-mode permutation null.
+- [ ] For a declared path X → M → Y, compute the product of per-edge coefficients ($a \times b$)
+  and test $H_0: ab = 0$ via the maximum $p$-value rule ($p_{ab} = \max(p_a, p_b)$ across edge permutations)
+  or path-residual permutation nulls.
 - [ ] Path confidence intervals evaluated via case-resampling bootstrap
   percentiles (resampling rows/clusters and refitting all equations),
   strictly distinguishing hypothesis testing (zero-centred permutation null)
@@ -383,10 +384,10 @@ all metadata internally.  No remaining work here.
 
 ---
 
-## v0.7.0 — Causal Discovery & Visualisation
+## v0.7.0 — Causal Discovery & Visualization
 
 Adds methods for data-driven discovery of graph structure, feeding
-directly into the graph specification layer, plus visualisation
+directly into the graph specification layer, plus visualization
 utilities for permutation distributions and graph topology.
 
 ### Causal screening
@@ -409,14 +410,14 @@ utilities for permutation distributions and graph topology.
 - [ ] Document the assumptions and limitations of each approach clearly
   in the API reference.
 
-### Visualisation utilities
+### Visualization utilities
 
 - [ ] Permutation distribution histograms with observed test statistic
   annotated.
 - [ ] Coefficient forest plots comparing observed vs. permutation null
   distributions across predictors.
-- [ ] Graph topology visualisation: render the `CausalGraph` with
-  edges coloured and weighted by permutation p-values.
+- [ ] Graph topology visualization: render the `CausalGraph` with
+  edges colored and weighted by permutation p-values.
 - [ ] Option to return matplotlib Figure/Axes objects for further
   customisation, or render inline in Jupyter notebooks.
 
